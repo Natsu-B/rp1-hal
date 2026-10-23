@@ -59,7 +59,7 @@ lab/           実験・診断（公開 API ではない）
 | 置き場所 | 置くもの | 書き方 |
 |---|---|---|
 | 共有 SRAM | 全コードと rodata のロード元、`#[shared]` static、Linux から見える領域、DMA バッファ、再起動をまたぐ warm data | `#[shared]` を付けた static（型は §5.3 のものだけ） |
-| ISRAM（コアごと） | ISR、ホットループ、実行時の PCIe 状態機械（§3.3） | `#[isram]`。`#[proc0]` / `#[proc1]` と組み合わせるとそのコアの overlay、無印は両コアに展開 |
+| ISRAM（コアごと） | ISR、ホットループ、実行時の PCIe 状態機械 | `#[isram]` を根に自動配置（§3.3） |
 | DSRAM（コアごと） | スタック、既定の `.data` / `.bss`、`#[proc0]` / `#[proc1]` static、atomic、executor 状態 | 普通の static（§5 の検査を受ける） |
 | 共有 SRAM `0xff00..` | 予約 | linker ASSERT |
 | Linux DDR | 大きな bulk | `rp1-proto` の Region |
@@ -67,7 +67,23 @@ lab/           実験・診断（公開 API ではない）
 既定の `.data` / `.bss` を DSRAM に置く理由: 依存 crate が static の atomic で RMW をしても壊れない。
 大きなバッファは DSRAM に入らないので明示的に `#[shared]` にする。
 
-### 3.3 PCIe 初期化中の共有 SRAM
+### 3.3 ISRAM に置くものの決め方（自動）
+
+ライブラリ全体を ISRAM に入れるのではなく、速さが要る部分だけを入れる。
+
+- 根（root）: `#[isram]` を付けた関数と、各コアのベクタ表に載る ISR。
+- `cargo-rp1` が最終 ELF の呼び出しグラフから根の到達集合を求め、それを ISRAM に配置する（2 段リンク）。
+  - 片方のコアだけから到達する関数 → そのコアの ISRAM overlay。
+  - 両コアから到達する関数 → ISRAM の「共通部分」。同じアドレスで両コアの ISRAM にコピーする（両コアの予算を同じだけ使う）。
+  - それ以外（初期化コード、まれにしか呼ばない関数）は共有 SRAM のまま。両コアから呼べ、ISRAM を消費しない。
+- 予算超過、または根から 64 bit 除算・`core::fmt`・panic の書式付き経路に到達したら、警告かエラーにする。
+
+見積もり（現 PoC の `RP1.elf` 56d2e249 を静的解析）: コード全体 40.8 KB（FreeRTOS と OpenAMP を含む）。
+proc1 の entry とホットループからの到達集合は 6.9 KB / 38 関数（本体 2.7 KB、64 bit 除算 0.9 KB、プロファイラと初期化を含む）。
+ホット部分だけなら 3〜4 KB 程度で 8 KiB に収まる見込み。公式 FW が ISRAM に置いている量は 2.6 KB（STATIC）。
+共有 SRAM のアクセスは 1 回 1 µs 未満、コア間の競合でも約 2 倍（HW、§3.4）なので、ISRAM に置かなくても動作はする。
+
+### 3.4 PCIe 初期化中の共有 SRAM
 
 実機確認（2026-10-23、1 cold boot、`<lab>`）:
 proc0 が RP1 側の PCIe エンドポイントを立ち上げ、ホストが RC を再初期化して BAR2 を読む区間に、proc1 が ISRAM から共有 SRAM を
@@ -84,7 +100,7 @@ proc0 が RP1 側の PCIe エンドポイントを立ち上げ、ホストが RC
 1. cold boot のエンドポイント立ち上げ中も、M3 は共有 SRAM を通常どおり使ってよい（HW、1 boot）。コアを止める・PCIe 用の特別な区間を設ける必要はない。
 2. Linux から見える領域（BAR2）は世代番号を持ち、リンク確立後に新しい世代を書いてから有効化する。Linux 側は 0xffffffff や世代の変化を見たら読み直す。
 3. 実行時の PCIe イベント（Linux の PCIe probe、PERST、hot reset、L2）は未確認。v1.0 の PCIe 状態機械は ISRAM に置き、同じ計測（proc1 サンプラー）で確認してから規則を緩める。
-4. コア間の競合で共有 SRAM アクセスは約 2 倍まで遅くなる（HW）。遅延が問題になる処理は ISRAM / DSRAM に置く（§3.2）。
+4. コア間の競合で共有 SRAM アクセスは約 2 倍まで遅くなる（HW）。遅延が問題になる処理は ISRAM / DSRAM に置く（§3.2、§3.3）。
 
 ## 4. 所有権の宣言と `.note.rp1`
 
@@ -145,7 +161,7 @@ bulk = [{ name = "obs", size = 65536 }]
 
    関数ポインタと vtable は保守的に扱う（アドレスを取ったコアから到達可能とみなす）。依存 crate の static は metadata の許可リストで `per_core` 扱いにできる。
 
-コアごとに区別できるので、ISRAM はコアごとの overlay（各 8 KiB）にできる。
+コアごとに区別できるので、ISRAM はコアごとの overlay（各 8 KiB）にできる（配置は §3.3）。
 
 ### 5.3 共有に使える型
 
@@ -208,7 +224,7 @@ VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり
 
 1. 静的: `rp1-proto`（note v2）、`rp1-build`、`rp1-pac`、`rp1-rt`、`rp1-hal`（GPIO / UART / timer）、ELF 検査（§5.2）、`rp1boot`（SD / TFTP）。
 2. 実機: proc0 と proc1 が UART に出力し、`#[shared]` の `Spsc` で値を受け渡す。Linux は patch した DTB で起動し、UIO 経由でドアベルを往復させる。
-   §6.2・§7 の未検証項目と、§3.3 の Linux 起動時の PCIe probe をここで確かめる。
+   §6.2・§7 の未検証項目と、§3.4 の Linux 起動時の PCIe probe をここで確かめる。
 
 ## 9. 決定の記録
 
