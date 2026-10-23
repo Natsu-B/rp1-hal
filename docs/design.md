@@ -62,7 +62,7 @@ lab/           実験・診断（公開 API ではない）
 | ISRAM（コアごと） | ISR、ホットループ、実行時の PCIe 状態機械 | `#[isram]` を根に自動配置（§3.3） |
 | DSRAM（コアごと） | スタック、既定の `.data` / `.bss`、`#[proc0]` / `#[proc1]` static、atomic、executor 状態 | 普通の static（§5 の検査を受ける） |
 | 共有 SRAM `0xff00..` | 予約 | linker ASSERT |
-| Linux DDR | 外付け RAM（大きなバッファ、トレース、表）と bulk | `#[ext]` static（`ExtMem` トークンが要る）、`rp1-proto` の Region。api-sketch §4.3 |
+| Linux DDR | Linux との共有メモリ（`ring` / `channel` / `block`）。block は「遅くて大きい」外付け RAM としても使う | 宣言 `[[package.metadata.rp1.shm]]`、`Shm::enable` 後のハンドル。api-sketch §4.3 |
 
 既定の `.data` / `.bss` を DSRAM に置く理由: 依存 crate が static の atomic で RMW をしても壊れない。
 大きなバッファは DSRAM に入らないので明示的に `#[shared]` にする。
@@ -199,7 +199,7 @@ RMW atomic のメソッドは持たない。DSRAM を指す参照は他コアへ
 
 ### 6.2 未検証（最初の縦 1 本で確認する）
 
-- Raspberry Pi OS の標準カーネルに `uio_pdrv_genirq` があり、`of_id=generic-uio` を cmdline か modprobe 設定で渡せるか。
+- `uio_pdrv_genirq` は標準カーネル設定にある（`CONFIG_UIO_PDRV_GENIRQ=m`、確認済み）。`of_id=generic-uio` を cmdline か modprobe 設定で渡して実際に bind できるか。
 - proc1 → Linux の割り込み（HOST_EVENTS → hwirq58）を UIO ノードで受けられるか、rp1-mailbox と衝突しないか。
 - GPIO INTF のドアベルは pinctrl と同じページ。UIO で重ねてマップできるか。
 - UIO の IRQ 待ちの往復遅延。
@@ -220,15 +220,13 @@ VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり
 - 旧 PoC の実験用 feature（約 50 個）と hash 固定値は持ち込まない（`lab/`）。
 - 未検証: firmware が置いた initramfs を上書きせずに引き継げるか、`/chosen` をそのまま使えるか。
 
-## 7.1 外付け RAM の確保（`extmem`）
+## 7.1 Linux 共有メモリの確保（`shm`）
 
-1. 宣言 `extmem = { size = ... }` が note に入る。
-2. ローダーが Linux の DDR から連続領域を確保し、DT に `reserved-memory`（no-map）と UIO ノードを足し、ゼロ化する。
-3. ローダーはその物理アドレスを共有 SRAM のハンドオフ領域に書く（リンク確立後に BAR2 経由）。
-4. ファームは `ExtMem::enable` で outbound ATU を設定してからトークンを返す。PCIe リセットで ATU は消える（HW、2026-09-29 の記録）ので、
-   v0.1 は cold boot のみ保証する。
+詳細は api-sketch §4.3。ローダーが `reserved-memory`（no-map、連続）と `shm` ごとの `generic-uio` ノードを DT に足し、ゼロ化し、
+物理アドレスを共有 SRAM のハンドオフ領域に書く。ファームは `Shm::enable` で outbound ATU を設定してからハンドルを返す。
+PCIe リセットで ATU は消える（HW、2026-09-29）ので v0.1 は cold boot のみ保証。
 
-測ること（最初の縦 1 本で）: M3 からの読み出し遅延・連続読み出し帯域・書き込み帯域、Linux 側の非キャッシュ mmap の読み書き速度。
+測ること（最初の縦 1 本で）: M3 からの DDR 読み出し遅延・帯域・書き込み帯域、Linux 側 uncached（UIO）と cached（/dev/mem + DC CIVAC）の読み書き速度、UIO の IRQ 待ち遅延。
 
 ## 8. 進め方（最初の縦 1 本）
 
@@ -248,5 +246,5 @@ VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり
 | 2026-10-23 | コア別の関数・static とグローバル変数の両コア到達はビルドエラー | 1 イメージの安全性 |
 | 2026-10-23 | ローダーは SD / TFTP を通常の起動の形のまま扱う | 素直な構成 |
 | 2026-10-23 | api-sketch §8 の 1〜6 を了承。`log!` を v0.1 に入れ、UART0 専用。RP1 が UART0 を所有しない構成で `log!` を使えばエラー | ユーザー判断 |
-| 2026-10-23 | Linux の DDR を外付け RAM（遅く大きいメモリ）として使えるようにする | ユーザー要望 |
+| 2026-10-23 | Linux の DDR を共有メモリにし、`ring` / `channel` / `block` から選ぶ。block は外付け RAM（遅く大きいメモリ）を兼ねる | ユーザー要望・提案 |
 | 2026-10-23 | 「PCIe 初期化中に SRAM が不定」は記憶違いと確認。実機でも問題なし（§3.4） | ユーザー確認 + HW |

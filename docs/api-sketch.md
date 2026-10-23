@@ -32,7 +32,6 @@ protocol = { path = "../protocol" }
 board = "rpi-cm5"
 clock = { authority = "rp1", clk_sys_hz = 200_000_000 }
 log = { sink = "uart0", baudrate = 115_200 }   # UART0 をログ専用にする（§4.2）
-extmem = { size = "16MiB" }                     # Linux の DDR を外付け RAM として借りる（§4.3）
 
 [package.metadata.rp1.proc0]
 peripherals = ["UART2", "TIMER.ALARM0"]
@@ -42,13 +41,30 @@ pins = [4, 5]
 peripherals = ["TIMER.ALARM1"]
 pins = [22, 27]
 
-[[package.metadata.rp1.link.channel]]   # Linux との通信路
+# Linux と共有するメモリ（BCM2712 側の DDR）。kind で「リング」か「ブロック」を選ぶ（§4.3）
+[[package.metadata.rp1.shm]]            # 要求/応答の通信路 = 向きの違う 2 本のリング
 name = "ctl"
+kind = "channel"
 core = "proc1"
 message = "protocol::Cmd"               # Linux → M3
 reply = "protocol::Reply"               # M3 → Linux
 depth = 16
-doorbell = "irq"                        # Linux → proc1 を割り込みで通知（GPIO INTF）
+notify = "irq"                          # Linux → proc1 を割り込みで通知（GPIO INTF）。"poll" も可
+
+[[package.metadata.rp1.shm]]            # 片方向のリング（M3 → Linux の計測値ストリーム）
+name = "samples"
+kind = "ring"
+direction = "rp1-to-linux"
+core = "proc1"
+message = "protocol::Sample"
+depth = 4096
+
+[[package.metadata.rp1.shm]]            # 共有メモリブロック（大きな表やトレース）
+name = "trace"
+kind = "block"
+type = "protocol::Trace"                # 固定長の型。中身の同期は利用者か Seqlock 等で行う
+writer = "rp1"                          # "rp1" | "linux" | "both"
+linux_map = "uncached"                  # "uncached"（既定）| "cached"（試験的、§4.3）
 ```
 
 形式の詳細は設計 B で決める。ここでは「何をどこに書くか」だけ。
@@ -120,7 +136,8 @@ fn proc1_main(core: Proc1, p: rp1_rt::Resources<Proc1>) -> ! {
     let pins = hal::gpio::Pins::new(p.pins);            // 宣言した 22, 27 だけ
     let mut led = pins.gpio22.into_push_pull_output();
     let mut alarm = hal::timer::Alarm::new(p.TIMER_ALARM1);
-    let mut ctl = p.link.ctl;                           // Linux との通信路 "ctl"
+    let shm = rp1_link::Shm::enable(p.shm).unwrap();    // §4.3
+    let mut ctl = shm.ctl;                              // Linux との通信路 "ctl"
     let samples = SAMPLES.producer(&core);
 
     let mut period = None;
@@ -136,7 +153,7 @@ fn proc1_main(core: Proc1, p: rp1_rt::Resources<Proc1>) -> ! {
             led.toggle().ok();
             let v = sample();
             samples.enqueue(v).ok();
-            ctl.send(&protocol::Reply { seq: 0, value: v as i32 }).ok();
+            ctl.send(&protocol::Reply { seq: 0, value: v as i32 }).ok();   // channel "ctl"（§4.3）
         } else {
             ctl.wait();                                 // ドアベルの割り込みで起きる
         }
@@ -180,39 +197,75 @@ static SCRATCH: Cell<u32> = Cell::new(0);
 | `log` を宣言し、さらに proc0/proc1 の `peripherals` にも `UART0` を書いた | ビルドエラー（二重所有） | build.rs |
 | Linux DT が UART0 を使っている | デプロイ前にエラー | `cargo rp1 check --dtb`。ローダーも note を見て DT の UART0 を無効化する |
 
-### 4.3 外付け RAM（Linux の DDR を借りる）
+### 4.3 Linux と共有するメモリ（リング / ブロック）
+
+BCM2712 側の DDR に連続領域を 1 つ確保し、宣言した `shm` ごとに区切って使う。種類は 3 つ:
+
+| kind | 用途 | M3 側の型 | Linux 側の型 |
+|---|---|---|---|
+| `ring` | 片方向のメッセージ列（ストリーム） | `RingTx<T>` / `RingRx<T>` | `RingRx<T>` / `RingTx<T>` |
+| `channel` | 要求と応答（`ring` 2 本 + 通知） | `Channel<Req, Rep>` | `Channel<Req, Rep>` |
+| `block` | 共有メモリブロック（大きな表、トレース、外付け RAM として） | `Block<T>` | `BlockMap<T>` |
+
+M3 側:
 
 ```rust
-use rp1_rt::ext;
-
-#[ext]                                   // Linux の DDR 上（M3 から 0x8000_0000.. の窓で見える）
-static TRACE: ExtCell<[u32; 1 << 20]> = ExtCell::zeroed();   // 4 MiB。ゼロ化はローダーが行う
-
-#[entry(proc0)]
-fn main(core: Proc0, p: rp1_rt::Resources<Proc0>) -> ! {
-    // PCIe のリンクと outbound ATU が有効になるまでは触れない。トークンでそれを表す。
-    let ext = rp1_link::ExtMem::enable(p.extmem).unwrap();
-    let trace = TRACE.borrow_mut(&ext);          // &mut [u32; 1<<20]（1 コアだけが取れる）
-    trace[0] = 1;                                // 書き込みは posted で速い。読み出しは PCIe 往復で遅い
+#[entry(proc1)]
+fn proc1_main(core: Proc1, p: rp1_rt::Resources<Proc1>) -> ! {
+    // PCIe のリンクと outbound ATU が有効になるまでは shm に触れない。enable がそれを確かめてハンドルを返す。
+    let shm = rp1_link::Shm::enable(p.shm).unwrap();
+    let mut samples = shm.samples;               // RingTx<protocol::Sample>
+    let trace = shm.trace;                       // Block<protocol::Trace>
+    samples.push(&protocol::Sample { t: 0, v: 1 }).ok();
+    trace.write(|t| t.count += 1);               // 書き込みは posted で速い。読み出しは PCIe の往復で遅い
     // ...
 }
 ```
 
-Linux 側も同じ領域を名前で開ける（`fw.extmem("TRACE")`）。
+Linux 側:
 
-立ち位置は「遅くて大きいメモリ」（Optane 的な位置づけ）:
+```rust
+let fw = rp1_linux::Firmware::open()?;                       // note と UIO ノードを名前で照合
+let mut samples = fw.ring_rx::<protocol::Sample>("samples")?;
+let trace = fw.block::<protocol::Trace>("trace")?;
+while let Some(s) = samples.pop() { /* ... */ }
+let count = trace.read(|t| t.count);                         // 安全なコピー経由で読む（下記）
+```
 
-| | 共有 SRAM | Linux DDR（外付け RAM） |
+#### 置き場所の規則（「書く側から遠く、読む側に近く」）
+
+PCIe の書き込みは posted で速く、読み出しは往復が要って遅い。そこで各語を「読む側のローカル」に置く:
+
+| リングの向き | payload と head（書き手が更新） | tail（読み手が更新） |
 |---|---|---|
-| 容量 | 64 KiB（実質 40 KiB 前後） | 宣言した分（窓は最大 1 GiB、DOC） |
-| M3 からの読み出し | 1 µs 未満（HW） | PCIe の往復。**未測定** |
-| M3 からの書き込み | 同上 | posted なので速い見込み（HYP） |
-| キャッシュ | なし | M3 側なし（毎回 PCIe）。Linux 側は非キャッシュで mmap するか、キャッシュ保守が必要 |
-| 使えない時間 | なし | リンク確立と ATU 設定の前、PCIe リセット中（Linux 再起動は v0.1 対象外） |
-| 向く用途 | コア間の通信、小さな状態 | 大きなバッファ、トレース、ログの退避、表。ISR やホットループには使わない |
+| RP1 → Linux | Linux の DDR（RP1 は posted 書き込み、Linux はローカル読み） | 共有 SRAM（Linux は BAR2 へ posted 書き込み、RP1 はローカル読み） |
+| Linux → RP1 | 共有 SRAM（Linux は BAR2 へ posted 書き込み、RP1 はローカル読み）。SRAM は小さいので深さは小さく | Linux の DDR |
 
-規則: `#[ext]` の static には `ExtMem` トークン無しでは触れない（rustc）。ISRAM の根から `#[ext]` に届いたら警告（cargo-rp1）。
-コードを置く（`#[ext] fn`）ことも ARMv7-M 上は可能（0x8000_0000.. は実行可能領域）だが、v0.1 では扱わない。
+`block` は大きいので DDR に置く。RP1 からの読み出しは遅い前提（「遅くて大きいメモリ」）。
+
+#### Linux 側の確保と mmap（DT とユーザープロセスだけ）
+
+- ローダーが DT に `reserved-memory`（`no-map`、連続、2 MiB 境界）を 1 つ足し、ゼロ化し、物理アドレスを共有 SRAM のハンドオフ領域に書く。
+  既存の `rp1-ddr-scratch@21000000`（64 KiB、`no-map`）と同じやり方を一般化したもの（HW 実績あり）。
+- `shm` ごとに `generic-uio` ノードを足す（名前 `rp1:<name>`、領域 + 必要なら IRQ）。`/sys/class/uio/uioN/name` で探す。
+  標準カーネル（6.12.75-rpt-rpi-2712）は `CONFIG_UIO=m`、`CONFIG_UIO_PDRV_GENIRQ=m`（設定ファイルで確認、実機の動作は未確認）。
+  アクセス権は udev ルールでグループ（例 `rp1`）に与え、root を不要にする。
+- **mmap の属性**:
+  - `uncached`（既定）: UIO の物理メモリ mmap は arm64 では Device 属性になる（DOC: `uio_mmap_physical` が `pgprot_noncached`）。
+    Device 属性ではアラインされていないアクセスと `DC ZVA` がフォルトするため、libc の `memcpy` / `memset` を直接使うと SIGBUS になりうる。
+    `rp1-linux` は 8 バイト整列の volatile コピーだけを使い、利用者に生の `&[u8]` を渡さない。
+  - `cached`（試験的）: `no-map` を外した領域を `/dev/mem`（`O_SYNC` なし）で cacheable に mmap し、読む前・渡す前に `DC CIVAC` を
+    ユーザー空間から発行する（標準カーネルは `CONFIG_STRICT_DEVMEM` 無効なので RAM の mmap が可能。root が必要）。
+    RP1 からの PCIe 書き込みが CPU キャッシュとコヒーレントでない前提での保守。速さと正しさを測ってから採用を決める。
+- 順序: RP1 は payload → head を posted 書き込みし、同じ窓への読み出し 1 回で到達を確定してから通知する（既存の SHM 契約）。
+- 世代: 領域の先頭に magic と世代番号を置き、`Shm::enable` 後に RP1 が書く。Linux 側は世代が一致するまで読まない。
+
+#### 制約
+
+- v0.1 は cold boot のみ。PCIe リセットで outbound ATU が消える（HW、2026-09-29）。
+- kexec など、ローダーを通らない再起動は非対応（RP1 が古い物理アドレスへ書き続ける恐れがある）。
+  通常の再起動では EEPROM のブートローダーが RP1 をリセットするので、書き込みは止まる。
+- M3 から DDR を読む遅延・帯域、Linux 側の uncached / cached の速度は未測定。最初の縦 1 本で測る。
 
 ## 5. 何がエラーになるか
 
@@ -266,4 +319,4 @@ cargo rp1 run                # rp1.elf を TFTP（または SD）へ置き、CM5
 5. **async**: v0.1 では入れない。ブロッキング API と `try_*` API だけ（案）。Embassy は後から executor を載せられる形にしておく。
 6. **ログ**: v0.1 に入れる。出力先は UART0（§4.2）。
 
-2026-10-23: 1〜6 はこの案で了承（ユーザー）。外付け RAM（§4.3）を追加。
+2026-10-23: 1〜6 はこの案で了承（ユーザー）。Linux 共有メモリをリング / ブロックから選ぶ形（§4.3）を追加（ユーザー提案）。
