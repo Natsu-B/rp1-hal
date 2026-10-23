@@ -25,7 +25,7 @@ crates/
   rp1-hal      ドライバ、embedded-hal、Clocks、Resets、multicore、sync（Shared / Spsc / SeqLock / ExacMutex）
   rp1-proto    no_std。.note.rp1 v2、リング、ドアベル規約、wire 形式（M3 / ローダー / Linux 共通、ホストで試験）
   rp1-link     M3 側の Linux 連携（チャネル、bulk、SCMI clock server）
-  rp1-boot     no_std aarch64。RP1 の I2C bootstrap、ELF と note の検査、DTB の印の照合
+  rp1-boot     no_std aarch64。RP1 の I2C bootstrap、ELF と note の検査、overlay の適用（libfdt）と衝突検査
   rp1-build    build.rs 用。metadata → 型・linker script・note・DT overlay の生成（ボード表を同梱）
 boot/rp1boot   BCM2712 ローダー本体（SD / TFTP）
 linux/rp1-linux ユーザー空間ライブラリと CLI（UIO）
@@ -209,17 +209,17 @@ RMW atomic のメソッドは持たない。DSRAM を指す参照は他コアへ
 ## 7. BCM2712 third stage loader（`boot/rp1boot`）
 
 ```
-VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり処理。dtoverlay=rp1-app もここで適用）
+VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり処理。rp1 用の設定は書かない）
   → kernel=rp1boot.img
       1. 自分が起動した経路（/chosen/bootloader の boot-mode）で SD(FAT) か TFTP を選ぶ
       2. 同じ経路・同じ配置から rp1.elf と本来のカーネルを読む
-      3. .note.rp1 を検査し、note の SHA-256 を DTB の /rp1-firmware/rp1,note-sha256 と照合する。最終 DTB で RP1 所有の
-         周辺・ピンが Linux 側で有効になっていないかも読み取りで検査する（どちらかに当たれば停止）
+      3. .note.rp1 を検査し、ELF の .rp1.dtbo を DTB に最後に当てる（libfdt）。当てた後の DTB で、他のノードが RP1 のピンを
+         pinctrl で取っていないかを検査する（当たれば停止）
       4. I2C で RP1 を bootrom に戻して書き込み、起動する。共有メモリの物理アドレスをハンドオフ語に書く
-      5. DTB は書き換えずに、本来のカーネルへ EL2 でジャンプ（initramfs と cmdline も firmware が用意したもの）
+      5. overlay を当てた DTB で、本来のカーネルへ EL2 でジャンプ（initramfs と cmdline は firmware が用意したもの）
 ```
 
-- Linux 用の DT の調整はビルド時に overlay として生成し、VPU ファームが当てる（declaration-and-note.md §3）。ローダーは DT を書き換えず、検査だけする。
+- Linux 用の DT の調整はビルド時に overlay として生成して ELF に入れ、ローダーが最後に当てる（declaration-and-note.md §3）。
 - SD と TFTP は「ファイルを読む部分」だけが違う。ファイル名と配置は同じ。
 - 旧 PoC の実験用 feature（約 50 個）と hash 固定値は持ち込まない（`lab/`）。
 - 未検証: firmware が置いた initramfs を上書きせずに引き継げるか、`/chosen` をそのまま使えるか。
@@ -253,4 +253,4 @@ shm ごとの `generic-uio` ノードに焼き込む。ローダーはそのア�
 | 2026-10-23 | api-sketch §8 の 1〜6 を了承。`log!` を v0.1 に入れ、UART0 専用。RP1 が UART0 を所有しない構成で `log!` を使えばエラー | ユーザー判断 |
 | 2026-10-23 | Linux の DDR を共有メモリにし、`ring` / `channel` / `block` から選ぶ。block は外付け RAM（遅く大きいメモリ）を兼ねる | ユーザー要望・提案 |
 | 2026-10-23 | 「PCIe 初期化中に SRAM が不定」は記憶違いと確認。実機でも問題なし（§3.4） | ユーザー確認 + HW |
-| 2026-10-23 | Linux 用の DT 調整は rp1-build が overlay として生成し、VPU ファームの dtoverlay= で当てる。ローダーは note と DTB の印を照合するだけ | ユーザー提案 |
+| 2026-10-23 | Linux 用の DT 調整は rp1-build が overlay として生成し、ELF に入れてローダーが最後に当てる（libfdt）。ローダーは当てた後の DTB の衝突も検査 | ユーザー提案・指摘 |

@@ -8,11 +8,11 @@ firmware/Cargo.toml [package.metadata.rp1]
         │  build.rs（1 行: rp1_build::configure()）
         ├─▶ OUT_DIR/rp1.rs        … コアごとの Resources 型、shm ハンドル、cfg、note のバイト列
         ├─▶ OUT_DIR/rp1-layout.x  … 共有 SRAM 区画・ISRAM/DSRAM・予約の linker script
-        ├─▶ OUT_DIR/rp1-app.dtbo  … Linux 用の DT overlay（§3）
+        ├─▶ OUT_DIR/rp1-app.dtbo  … Linux 用の DT overlay（§3）。ELF の .rp1.dtbo セクション（非ロード）に入る
         └─▶ cargo:rustc-cfg=...   … rp1_log など
-cargo rp1 build（リンク後）: 到達解析・ISRAM 配置・ELF 検査（設計 E）。rp1.elf と rp1-app.dtbo を出力
-VPU ファーム: config.txt の dtoverlay=rp1-app で overlay を適用し、適用済み DTB をローダーに渡す
-ローダー:   ELF の .note.rp1 を読む → DTB の印と照合 → RP1 起動 → DTB はそのまま Linux へ（書き換えない）
+cargo rp1 build（リンク後）: 到達解析・ELF 検査（設計 E）、overlay をホストで試し当て。成果物は rp1.elf 1 つ
+VPU ファーム: いつもどおり config.txt / overlay を処理し、DTB をローダーに渡す（rp1 用の設定は書かない）
+ローダー:   ELF の .note.rp1 を読む → ELF の .rp1.dtbo を DTB に最後に当てる → 残りの衝突を検査 → RP1 起動 → Linux へ
 Linux:      /proc/device-tree の note のコピーと UIO ノードを読む
 ```
 
@@ -182,7 +182,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 
 | 読み手 | 使うレコード | 失敗時 |
 |---|---|---|
-| ローダー | ENTRY、SHM_AREA（ハンドオフ）、note 全体の SHA-256、OWNERSHIP（最終 DTB の検査、§3.2） | 知らない critical レコード・CRC 不一致・DTB の印（§3.2）と不一致 → RP1 を起動せず停止（ログに理由） |
+| ローダー | ENTRY、SHM_AREA（ハンドオフ）、OWNERSHIP（当てた後の DTB の検査、§3.2）。overlay 本体は `.rp1.dtbo` | 知らない critical レコード・CRC 不一致・DTB の印（§3.2）と不一致 → RP1 を起動せず停止（ログに理由） |
 | Linux 側 `rp1-linux` | overlay が載せたコピー（`/rp1-firmware` ノードの `rp1,note` プロパティ）の SHM_*、FIRMWARE | 型 ID 不一致・名前が無い → `Err` |
 | `cargo rp1 check --dtb` | OWNERSHIP、LOG | Linux DT との衝突を一覧にして失敗 |
 
@@ -198,33 +198,38 @@ Linux 側の調整はすべてビルド時に overlay として作る。ロー�
 | クロック | clk-rp1 を無効化し、`arm,scmi`（rp1 mailbox + shmem）を足し、各利用者ノードの `clocks` を SCMI 側に付け替える | CLOCK（authority = rp1 のときだけ） |
 | ログ | UART0 のノードを `disabled` | LOG |
 | 共有メモリ | `reserved-memory`（no-map、連続）1 つと、shm ごとの `generic-uio` ノード（名前 `rp1:<name>`、領域、IRQ） | SHM_* |
-| 照合用の印 | `/rp1-firmware { rp1,note = [note のバイト列]; rp1,note-sha256 = [..]; }` | note 全体 |
+| Linux 向けの note のコピー | `/rp1-firmware { rp1,note = [note のバイト列]; rp1,owned-nodes = ".."; }` | note 全体、OWNERSHIP |
 
 - 外部参照はボード表が持つラベル（Raspberry Pi の DTB が持つ `__symbols__`）で書く。overlay は `-@` 付きでコンパイルする。
 - 共有メモリの物理アドレスはビルド時に決める（ボード表の固定領域。現行の `rp1-ddr-scratch@21000000` と同じやり方）。
   これでローダーが確保・計算する必要がなくなる。
 - ホストで検証できる: `fdtoverlay` で標準 DTB に当て、`dtc` で読めること・参照が解決することを `cargo rp1 build` で確認する。
 
-### 3.2 適用と照合
+### 3.2 適用（ローダー）と検査
 
-1. `cargo rp1 deploy` が `rp1.elf` を起動元のルートに、`rp1-app.dtbo` を `overlays/` に置く。config.txt には一度だけ
-   `kernel=rp1boot.img` と `dtoverlay=rp1-app` を書く（ファイル名は固定、中身だけ差し替える）。
-2. VPU ファームが起動時に overlay を適用する。SD でもネットブート（TFTP）でも同じ（ファームの通常機能）。
-3. ローダーは ELF の note の SHA-256 を計算し、渡された DTB の `/rp1-firmware/rp1,note-sha256` と比べる。
-   - 一致: RP1 を起動し、DTB はそのまま Linux に渡す。
-   - 不一致・印が無い: overlay と ELF の組が違う。RP1 を起動せず、理由をログに出して停止する（古い overlay で Linux が起動して RP1 と食い違うのを防ぐ）。
-4. 共有メモリの物理アドレスは overlay と note の両方に入っている。ローダーはそれを共有 SRAM のハンドオフ語に書くだけ。
-5. **最終 DTB の所有権検査（読み取りのみ）**: config.txt の他の設定（`enable_uart=1`、`dtparam=uart0=on`、後から当てる別の overlay）が
-   RP1 の周辺を有効に戻していないかを確かめる。次のどれかに当たれば RP1 を起動せず停止し、どの設定が衝突したかをログに出す。
-   - OWNERSHIP の周辺に対応するノードが `status = "okay"`（ノードのパスは overlay の `/rp1-firmware/rp1,owned-nodes` に列挙しておく）
-   - 有効なノードの `pinctrl-*` が RP1 所有のピンを含むグループを参照している
-   - `gpio-reserved-ranges` から RP1 のピンが外れている
+overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ローダーが当てる（2026-10-23 変更。前案は VPU ファームの `dtoverlay=` で当て、
+ローダーは照合だけだった）。理由:
+
+- ELF と overlay が 1 つのファイルなので、組の食い違いが起きない（ハッシュ照合が不要）。
+- ローダーは VPU ファームの後に動くので、最後に当てる側になる。`enable_uart=1` や `dtparam=uart0=on` で有効に戻されても上書きできる。
+- config.txt に rp1 用の `dtoverlay=` を書かない。`kernel=` を標準カーネルに戻せば素の Raspberry Pi OS として起動する。
+
+手順:
+
+1. `.note.rp1` を検査する（CRC、知らない critical レコード）。
+2. `.rp1.dtbo` を、渡された DTB に当てる。実装は libfdt の `fdt_overlay_apply` を使う（U-Boot と同じ。ビルド時の `fdtoverlay` 検証と挙動がそろう）。
+   DTB はローダーの作業領域に広げてから当てる。参照先のラベルが無い（ボード表とカーネル系列が合わない）場合は停止する。
+3. 当てた後の DTB を読み取りで検査し、次に当たれば RP1 を起動せず停止して理由をログに出す。
+   - 有効なノードの `pinctrl-*` が RP1 所有のピンを含むグループを参照している（他の overlay が同じピンを使っている）
+   - OWNERSHIP の周辺に対応するノード（`/rp1-firmware/rp1,owned-nodes` に列挙）が有効
+4. RP1 を起動し、共有メモリの物理アドレス（overlay と note の両方にある）を共有 SRAM のハンドオフ語に書く。
+5. DTB を Linux に渡す。
 
 ### 3.3 RP1 専用の IO（UART0 など）を Linux から守る範囲
 
 | 経路 | 防げるか | 方法 |
 |---|---|---|
-| カーネルのドライバが probe する | 防ぐ | overlay の `disabled` + ローダーの最終 DTB 検査 |
+| カーネルのドライバが probe する | 防ぐ | ローダーが最後に当てる overlay の `disabled` |
 | 別のノードが pinctrl で同じピンを取る | 防ぐ | ローダーの最終 DTB 検査 |
 | libgpiod などがピンを要求する | 防ぐ（RP1 の GPIO ドライバで効くかは未確認） | `gpio-reserved-ranges` |
 | 共有クロック（clk_uart は UART0〜5 共通）を Linux が変える | 条件付き | `clock.authority = "rp1"` なら RP1 が SCMI で変更を拒否できる。`authority = "linux"` で UART0 を RP1、他の UART を Linux が持つ宣言はビルドエラー |
@@ -238,13 +243,12 @@ Linux 側の調整はすべてビルド時に overlay として作る。ロー�
 
 
 - overlay はノードの削除ができない（無効化と上書きだけ）。必要な調整はこの範囲に収める。
-- `dtoverlay=rp1-app` を残したままローダーを外す（`kernel=` を標準カーネルに戻す）と、RP1 ファームが無いのに Linux は SCMI を待つ。
-  2 行は必ずセットで扱う（`cargo rp1 deploy` が両方を管理する）。
-- 標準ファームの overlay 適用でできないこと（サイズ上限、適用順序など）は未確認。TODO に入れる。
+- overlay が参照する RP1 のノード名・ラベルはカーネルの系列で変わりうる（上流カーネルの RP1 ドライバは RP1 のノードを実行時に
+  overlay として入れる方式）。ボード表は対応するカーネル系列ごとに持ち、合わなければ手順 2 で必ず停止する。
 
 ## 4. 決めたいこと（設計 B の論点）
 
 1. 宣言は `Cargo.toml` + 1 行の `build.rs`（案）。build.rs を無くしたい場合は、linker script を固定にして proc-macro だけで型と note を作る方法もある（その場合、共有 SRAM の区画は宣言から変えられない）。
 2. ボード表（既定の所有権、Linux 必須のもの、DT ラベル、共有メモリの固定領域）は `rp1-build` に同梱（案）。別 crate にすると build.rs から読みにくい。
-3. Linux 側の調整はビルド時に生成する overlay（§3）で行い、VPU ファームの `dtoverlay=` で当てる。ローダーは照合だけ（ユーザー提案を発展、2026-10-23）。
+3. Linux 側の調整はビルド時に生成する overlay（§3）で行い、ELF に入れてローダーが最後に当てる（2026-10-23 ユーザー指摘で変更）。
 4. 番号（ピン・ブロック・型 ID）の安定性: `rp1-proto` の enum を正本にし、v0.x の間も番号は変えない（案）。
