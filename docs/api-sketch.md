@@ -67,7 +67,7 @@ writer = "rp1"                          # "rp1" | "linux" | "both"
 linux_map = "uncached"                  # "uncached"（既定）| "cached"（試験的、§4.3）
 ```
 
-形式の詳細は設計 B で決める。ここでは「何をどこに書くか」だけ。
+全項目と検査は [declaration-and-note.md](declaration-and-note.md)（設計 B）。
 
 ## 3. protocol/src/lib.rs（共有メッセージ）
 
@@ -95,13 +95,15 @@ use rp1_hal::core::{Proc0, Proc1};
 use rp1_hal::sync::Spsc;
 use rp1_rt::{entry, interrupt, isram, shared};
 
+rp1_rt::bind!();          // 宣言から生成した mod rp1（Proc0Resources など、declaration-and-note.md §1.5）
+
 // 両コアで共有するデータは #[shared] だけ。共有 SRAM に置かれ、型は RMW atomic を持たないものに限られる。
 // 書き手と読み手のコアを型で決める（proc1 が書き、proc0 が読む）。
 #[shared]
 static SAMPLES: Spsc<u32, 64, Proc1, Proc0> = Spsc::new();
 
 #[entry(proc0)]
-fn main(core: Proc0, p: rp1_rt::Resources<Proc0>) -> ! {
+fn main(core: Proc0, p: rp1::Proc0Resources) -> ! {
     // clock.authority = "rp1" なので、Resources<Proc0> にだけ clock_authority が入っている。
     let clocks = hal::clocks::Clocks::authority(p.clock_authority)
         .clk_sys(200.MHz())
@@ -132,7 +134,7 @@ fn main(core: Proc0, p: rp1_rt::Resources<Proc0>) -> ! {
 }
 
 #[entry(proc1)]
-fn proc1_main(core: Proc1, p: rp1_rt::Resources<Proc1>) -> ! {
+fn proc1_main(core: Proc1, p: rp1::Proc1Resources) -> ! {
     let pins = hal::gpio::Pins::new(p.pins);            // 宣言した 22, 27 だけ
     let mut led = pins.gpio22.into_push_pull_output();
     let mut alarm = hal::timer::Alarm::new(p.TIMER_ALARM1);
@@ -211,7 +213,7 @@ M3 側:
 
 ```rust
 #[entry(proc1)]
-fn proc1_main(core: Proc1, p: rp1_rt::Resources<Proc1>) -> ! {
+fn proc1_main(core: Proc1, p: rp1::Proc1Resources) -> ! {
     // PCIe のリンクと outbound ATU が有効になるまでは shm に触れない。enable がそれを確かめてハンドルを返す。
     let shm = rp1_link::Shm::enable(p.shm).unwrap();
     let mut samples = shm.samples;               // RingTx<protocol::Sample>

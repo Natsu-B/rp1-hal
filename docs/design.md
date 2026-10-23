@@ -136,6 +136,8 @@ bulk = [{ name = "obs", size = 65536 }]
 
 ### 4.2 `.note.rp1` v2
 
+詳細な形式は [declaration-and-note.md](declaration-and-note.md) §2。
+
 旧 `Rp1BootInfoV1`（固定長、所有物は 64 bit のビット列）を TLV に広げる。ローダーと Linux 側ツールはこれだけを読む。
 中身: ABI 版、entry / スタック、メモリ配置、コアごとの所有物（ピン・ブロック・IRQ）、clock 権限、通信路（領域・ドアベル・UIO 範囲）、
 ファーム版、宣言のハッシュ。形式の正本は `rp1-proto`。
