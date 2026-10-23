@@ -8,10 +8,12 @@ firmware/Cargo.toml [package.metadata.rp1]
         │  build.rs（1 行: rp1_build::configure()）
         ├─▶ OUT_DIR/rp1.rs        … コアごとの Resources 型、shm ハンドル、cfg、note のバイト列
         ├─▶ OUT_DIR/rp1-layout.x  … 共有 SRAM 区画・ISRAM/DSRAM・予約の linker script
+        ├─▶ OUT_DIR/rp1-app.dtbo  … Linux 用の DT overlay（§3）
         └─▶ cargo:rustc-cfg=...   … rp1_log など
-cargo rp1 build（リンク後）: 到達解析・ISRAM 配置・ELF 検査（設計 E）
-ローダー: ELF の .note.rp1 を読む → RP1 起動、DT patch。note のコピーを DT に載せる
-Linux:   /proc/device-tree の note のコピーと UIO ノードを読む
+cargo rp1 build（リンク後）: 到達解析・ISRAM 配置・ELF 検査（設計 E）。rp1.elf と rp1-app.dtbo を出力
+VPU ファーム: config.txt の dtoverlay=rp1-app で overlay を適用し、適用済み DTB をローダーに渡す
+ローダー:   ELF の .note.rp1 を読む → DTB の印と照合 → RP1 起動 → DTB はそのまま Linux へ（書き換えない）
+Linux:      /proc/device-tree の note のコピーと UIO ノードを読む
 ```
 
 ## 1. 宣言の書き方
@@ -173,20 +175,55 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 - id（ピン番号、ブロック番号）の割り当ては `rp1-proto` の enum が正本。番号は一度決めたら変えない。
 - 型 ID: `#[derive(Message)]` が「型名・サイズ・各フィールドのオフセットと型」から計算する 64 bit のハッシュ。
   Linux 側の `fw.channel::<Cmd, Reply>("ctl")` はこれを note と照合し、違えば開けない。
-- note に含めないもの: イメージのハッシュ（ローダーが自分で計算する）、Linux DT のノード名（ローダーのボード表が持つ）。
+- note に含めないもの: イメージのハッシュ（ローダーが自分で計算する）、Linux DT のノード名（ビルド時にボード表から overlay に焼き込む）。
 
 ### 2.3 読み手の動き
 
 | 読み手 | 使うレコード | 失敗時 |
 |---|---|---|
-| ローダー | ENTRY、OWNERSHIP、CLOCK、LOG、SHM_* | 知らない critical レコード・CRC 不一致・ボード表と矛盾 → RP1 を起動せず停止（ログに理由） |
-| ローダーの DT patch | OWNERSHIP（周辺・ピンを `disabled`、pinctrl から外す）、CLOCK（SCMI へ差し替え）、SHM_*（reserved-memory と UIO ノード） | 同上 |
-| Linux 側 `rp1-linux` | DT に載ったコピー（`/rp1-firmware` ノードの `rp1,note` プロパティ）の SHM_*、FIRMWARE | 型 ID 不一致・名前が無い → `Err` |
+| ローダー | ENTRY、SHM_AREA（ハンドオフ）、note 全体の SHA-256 | 知らない critical レコード・CRC 不一致・DTB の印（§3.2）と不一致 → RP1 を起動せず停止（ログに理由） |
+| Linux 側 `rp1-linux` | overlay が載せたコピー（`/rp1-firmware` ノードの `rp1,note` プロパティ）の SHM_*、FIRMWARE | 型 ID 不一致・名前が無い → `Err` |
 | `cargo rp1 check --dtb` | OWNERSHIP、LOG | Linux DT との衝突を一覧にして失敗 |
 
-## 3. 決めたいこと（設計 B の論点）
+## 3. Linux 用 DT overlay（`rp1-app.dtbo`）
+
+Linux 側の調整はすべてビルド時に overlay として作る。ローダーは DT を書き換えない。
+
+### 3.1 中身（宣言とボード表から生成）
+
+| 断片 | 内容 | 元になる宣言 |
+|---|---|---|
+| 周辺・ピン | RP1 が持つ周辺のノードを `status = "disabled"`、該当ピンを pinctrl / gpio-hog から外す | OWNERSHIP |
+| クロック | clk-rp1 を無効化し、`arm,scmi`（rp1 mailbox + shmem）を足し、各利用者ノードの `clocks` を SCMI 側に付け替える | CLOCK（authority = rp1 のときだけ） |
+| ログ | UART0 のノードを `disabled` | LOG |
+| 共有メモリ | `reserved-memory`（no-map、連続）1 つと、shm ごとの `generic-uio` ノード（名前 `rp1:<name>`、領域、IRQ） | SHM_* |
+| 照合用の印 | `/rp1-firmware { rp1,note = [note のバイト列]; rp1,note-sha256 = [..]; }` | note 全体 |
+
+- 外部参照はボード表が持つラベル（Raspberry Pi の DTB が持つ `__symbols__`）で書く。overlay は `-@` 付きでコンパイルする。
+- 共有メモリの物理アドレスはビルド時に決める（ボード表の固定領域。現行の `rp1-ddr-scratch@21000000` と同じやり方）。
+  これでローダーが確保・計算する必要がなくなる。
+- ホストで検証できる: `fdtoverlay` で標準 DTB に当て、`dtc` で読めること・参照が解決することを `cargo rp1 build` で確認する。
+
+### 3.2 適用と照合
+
+1. `cargo rp1 deploy` が `rp1.elf` を起動元のルートに、`rp1-app.dtbo` を `overlays/` に置く。config.txt には一度だけ
+   `kernel=rp1boot.img` と `dtoverlay=rp1-app` を書く（ファイル名は固定、中身だけ差し替える）。
+2. VPU ファームが起動時に overlay を適用する。SD でもネットブート（TFTP）でも同じ（ファームの通常機能）。
+3. ローダーは ELF の note の SHA-256 を計算し、渡された DTB の `/rp1-firmware/rp1,note-sha256` と比べる。
+   - 一致: RP1 を起動し、DTB はそのまま Linux に渡す。
+   - 不一致・印が無い: overlay と ELF の組が違う。RP1 を起動せず、理由をログに出して停止する（古い overlay で Linux が起動して RP1 と食い違うのを防ぐ）。
+4. 共有メモリの物理アドレスは overlay と note の両方に入っている。ローダーはそれを共有 SRAM のハンドオフ語に書くだけ。
+
+### 3.3 注意
+
+- overlay はノードの削除ができない（無効化と上書きだけ）。必要な調整はこの範囲に収める。
+- `dtoverlay=rp1-app` を残したままローダーを外す（`kernel=` を標準カーネルに戻す）と、RP1 ファームが無いのに Linux は SCMI を待つ。
+  2 行は必ずセットで扱う（`cargo rp1 deploy` が両方を管理する）。
+- 標準ファームの overlay 適用でできないこと（サイズ上限、適用順序など）は未確認。TODO に入れる。
+
+## 4. 決めたいこと（設計 B の論点）
 
 1. 宣言は `Cargo.toml` + 1 行の `build.rs`（案）。build.rs を無くしたい場合は、linker script を固定にして proc-macro だけで型と note を作る方法もある（その場合、共有 SRAM の区画は宣言から変えられない）。
-2. ボード表（既定の所有権、Linux 必須のもの、DT ラベル）は `rp1-build` に同梱（案）。別 crate にすると build.rs から読みにくい。
-3. Linux 側は note を DT 経由で受け取る（案）。ELF を Linux 側に置いて読む方法より、ローダーが実際に使った値と必ず一致する。
+2. ボード表（既定の所有権、Linux 必須のもの、DT ラベル、共有メモリの固定領域）は `rp1-build` に同梱（案）。別 crate にすると build.rs から読みにくい。
+3. Linux 側の調整はビルド時に生成する overlay（§3）で行い、VPU ファームの `dtoverlay=` で当てる。ローダーは照合だけ（ユーザー提案を発展、2026-10-23）。
 4. 番号（ピン・ブロック・型 ID）の安定性: `rp1-proto` の enum を正本にし、v0.x の間も番号は変えない（案）。

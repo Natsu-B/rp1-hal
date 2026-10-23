@@ -25,8 +25,8 @@ crates/
   rp1-hal      ドライバ、embedded-hal、Clocks、Resets、multicore、sync（Shared / Spsc / SeqLock / ExacMutex）
   rp1-proto    no_std。.note.rp1 v2、リング、ドアベル規約、wire 形式（M3 / ローダー / Linux 共通、ホストで試験）
   rp1-link     M3 側の Linux 連携（チャネル、bulk、SCMI clock server）
-  rp1-boot     no_std aarch64。RP1 の I2C bootstrap、ELF と note の検査、DT patch
-  rp1-build    build.rs 用。metadata → 型・memory.x・note の生成
+  rp1-boot     no_std aarch64。RP1 の I2C bootstrap、ELF と note の検査、DTB の印の照合
+  rp1-build    build.rs 用。metadata → 型・linker script・note・DT overlay の生成（ボード表を同梱）
 boot/rp1boot   BCM2712 ローダー本体（SD / TFTP）
 linux/rp1-linux ユーザー空間ライブラリと CLI（UIO）
 tools/         rp1-regdb、cargo-rp1（ビルド・ELF 検査・バンドル・run）
@@ -209,31 +209,33 @@ RMW atomic のメソッドは持たない。DSRAM を指す参照は他コアへ
 ## 7. BCM2712 third stage loader（`boot/rp1boot`）
 
 ```
-VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり処理）
+VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり処理。dtoverlay=rp1-app もここで適用）
   → kernel=rp1boot.img
       1. 自分が起動した経路（/chosen/bootloader の boot-mode）で SD(FAT) か TFTP を選ぶ
       2. 同じ経路・同じ配置から rp1.elf と本来のカーネルを読む
-      3. .note.rp1 を検査し、I2C で RP1 を bootrom に戻して書き込み、起動する
-      4. firmware が渡した DTB を note に従って patch（周辺の無効化、UIO、reserved-memory、SCMI）
-      5. 本来のカーネルへ EL2 でジャンプ（initramfs と cmdline は firmware が用意したものをそのまま渡す）
+      3. .note.rp1 を検査し、note の SHA-256 を DTB の /rp1-firmware/rp1,note-sha256 と照合する（不一致なら停止）
+      4. I2C で RP1 を bootrom に戻して書き込み、起動する。共有メモリの物理アドレスをハンドオフ語に書く
+      5. DTB は書き換えずに、本来のカーネルへ EL2 でジャンプ（initramfs と cmdline も firmware が用意したもの）
 ```
 
+- Linux 用の DT の調整はビルド時に overlay として生成し、VPU ファームが当てる（declaration-and-note.md §3）。ローダーは DT を書き換えない。
 - SD と TFTP は「ファイルを読む部分」だけが違う。ファイル名と配置は同じ。
 - 旧 PoC の実験用 feature（約 50 個）と hash 固定値は持ち込まない（`lab/`）。
 - 未検証: firmware が置いた initramfs を上書きせずに引き継げるか、`/chosen` をそのまま使えるか。
 
 ## 7.1 Linux 共有メモリの確保（`shm`）
 
-詳細は api-sketch §4.3。ローダーが `reserved-memory`（no-map、連続）と `shm` ごとの `generic-uio` ノードを DT に足し、ゼロ化し、
-物理アドレスを共有 SRAM のハンドオフ領域に書く。ファームは `Shm::enable` で outbound ATU を設定してからハンドルを返す。
-PCIe リセットで ATU は消える（HW、2026-09-29）ので v0.1 は cold boot のみ保証。
+詳細は api-sketch §4.3。物理アドレスはビルド時にボード表の固定領域から決め、overlay の `reserved-memory`（no-map、連続）と
+shm ごとの `generic-uio` ノードに焼き込む。ローダーはそのアドレスを共有 SRAM のハンドオフ語に書く。
+ゼロ化はファームが `Shm::enable` で行う（ローダーは DDR を触らない）。
+ファームは `Shm::enable` で outbound ATU を設定してからハンドルを返す。PCIe リセットで ATU は消える（HW、2026-09-29）ので v0.1 は cold boot のみ保証。
 
 測ること（最初の縦 1 本で）: M3 からの DDR 読み出し遅延・帯域・書き込み帯域、Linux 側 uncached（UIO）と cached（/dev/mem + DC CIVAC）の読み書き速度、UIO の IRQ 待ち遅延。
 
 ## 8. 進め方（最初の縦 1 本）
 
 1. 静的: `rp1-proto`（note v2）、`rp1-build`、`rp1-pac`、`rp1-rt`、`rp1-hal`（GPIO / UART / timer）、ELF 検査（§5.2）、`rp1boot`（SD / TFTP）。
-2. 実機: proc0 と proc1 が UART に出力し、`#[shared]` の `Spsc` で値を受け渡す。Linux は patch した DTB で起動し、UIO 経由でドアベルを往復させる。
+2. 実機: proc0 と proc1 が UART に出力し、`#[shared]` の `Spsc` で値を受け渡す。Linux は overlay を当てた DTB で起動し、UIO 経由でドアベルを往復させる。
    §6.2・§7 の未検証項目と、§3.4 の Linux 起動時の PCIe probe をここで確かめる。
 
 ## 9. 決定の記録
@@ -250,3 +252,4 @@ PCIe リセットで ATU は消える（HW、2026-09-29）ので v0.1 は cold b
 | 2026-10-23 | api-sketch §8 の 1〜6 を了承。`log!` を v0.1 に入れ、UART0 専用。RP1 が UART0 を所有しない構成で `log!` を使えばエラー | ユーザー判断 |
 | 2026-10-23 | Linux の DDR を共有メモリにし、`ring` / `channel` / `block` から選ぶ。block は外付け RAM（遅く大きいメモリ）を兼ねる | ユーザー要望・提案 |
 | 2026-10-23 | 「PCIe 初期化中に SRAM が不定」は記憶違いと確認。実機でも問題なし（§3.4） | ユーザー確認 + HW |
+| 2026-10-23 | Linux 用の DT 調整は rp1-build が overlay として生成し、VPU ファームの dtoverlay= で当てる。ローダーは note と DTB の印を照合するだけ | ユーザー提案 |

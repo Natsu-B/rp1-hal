@@ -247,9 +247,9 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
 
 #### Linux 側の確保と mmap（DT とユーザープロセスだけ）
 
-- ローダーが DT に `reserved-memory`（`no-map`、連続、2 MiB 境界）を 1 つ足し、ゼロ化し、物理アドレスを共有 SRAM のハンドオフ領域に書く。
+- ビルド時に生成する overlay（declaration-and-note.md §3）が `reserved-memory`（`no-map`、連続、2 MiB 境界）を 1 つ足す。物理アドレスはボード表の固定領域。ゼロ化はファームが `Shm::enable` で行う。
   既存の `rp1-ddr-scratch@21000000`（64 KiB、`no-map`）と同じやり方を一般化したもの（HW 実績あり）。
-- `shm` ごとに `generic-uio` ノードを足す（名前 `rp1:<name>`、領域 + 必要なら IRQ）。`/sys/class/uio/uioN/name` で探す。
+- overlay が `shm` ごとに `generic-uio` ノードを足す（名前 `rp1:<name>`、領域 + 必要なら IRQ）。`/sys/class/uio/uioN/name` で探す。
   標準カーネル（6.12.75-rpt-rpi-2712）は `CONFIG_UIO=m`、`CONFIG_UIO_PDRV_GENIRQ=m`（設定ファイルで確認、実機の動作は未確認）。
   アクセス権は udev ルールでグループ（例 `rp1`）に与え、root を不要にする。
 - **mmap の属性**:
@@ -306,9 +306,9 @@ fn main() -> anyhow::Result<()> {
 ## 7. 使い方の流れ
 
 ```
-cargo rp1 build              # firmware をビルド → 到達解析・ISRAM 配置・ELF 検査 → .note.rp1 付き rp1.elf
+cargo rp1 build              # firmware をビルド → 到達解析・ISRAM 配置・ELF 検査 → .note.rp1 付き rp1.elf と rp1-app.dtbo
 cargo rp1 check --dtb X.dtb  # 宣言と Linux DT の衝突を検査
-cargo rp1 run                # rp1.elf を TFTP（または SD）へ置き、CM5 を再起動し、UART を表示
+cargo rp1 run                # rp1.elf と overlays/rp1-app.dtbo を TFTP（または SD）へ置き、CM5 を再起動し、UART を表示
 ```
 
 ## 8. この案で決めたいこと（設計 A の論点）
