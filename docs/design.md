@@ -59,7 +59,7 @@ lab/           実験・診断（公開 API ではない）
 | 置き場所 | 置くもの | 書き方 |
 |---|---|---|
 | 共有 SRAM | 全コードと rodata のロード元、`#[shared]` static、Linux から見える領域、DMA バッファ、再起動をまたぐ warm data | `#[shared]` を付けた static（型は §5.3 のものだけ） |
-| ISRAM（コアごと） | ISR、ホットループ、**PCIe 初期化・再初期化中に走るコード**（§3.3） | `#[isram]`。`#[proc0]` / `#[proc1]` と組み合わせるとそのコアの overlay、無印は両コアに展開 |
+| ISRAM（コアごと） | ISR、ホットループ、実行時の PCIe 状態機械（§3.3） | `#[isram]`。`#[proc0]` / `#[proc1]` と組み合わせるとそのコアの overlay、無印は両コアに展開 |
 | DSRAM（コアごと） | スタック、既定の `.data` / `.bss`、`#[proc0]` / `#[proc1]` static、atomic、executor 状態 | 普通の static（§5 の検査を受ける） |
 | 共有 SRAM `0xff00..` | 予約 | linker ASSERT |
 | Linux DDR | 大きな bulk | `rp1-proto` の Region |
@@ -67,20 +67,24 @@ lab/           実験・診断（公開 API ではない）
 既定の `.data` / `.bss` を DSRAM に置く理由: 依存 crate が static の atomic で RMW をしても壊れない。
 大きなバッファは DSRAM に入らないので明示的に `#[shared]` にする。
 
-### 3.3 PCIe 初期化中の共有 SRAM（要確認）
+### 3.3 PCIe 初期化中の共有 SRAM
 
-PCIe EP の初期化・再初期化の間は、共有 SRAM へのアクセスが不定になる前提で設計する。
-旧 HAL の `pcie_ep_init.rs` が初期化コードを ISRAM に移してから実行していること、公式 FW が PCIe 状態機械を ISRAM に置くことと整合する
-（どちらも STATIC。不定になる実機記録の場所は未特定のため、確認して出典を足すこと）。
+実機確認（2026-10-23、1 cold boot、`<lab>`）:
+proc0 が RP1 側の PCIe エンドポイントを立ち上げ、ホストが RC を再初期化して BAR2 を読む区間に、proc1 が ISRAM から共有 SRAM を
+3 秒間計測した。**データ不一致 0、フォルト 0、1 アクセス最大 42 サイクル（約 50 MHz 時）**で、PCIe の再初期化の時点に段差は無かった（HW）。
+最初の約 1.1 秒だけ 1 回の計測あたり 40→最大 92 サイクルに増えたのは、proc0 が共有 SRAM 上のコードを実行していたためのコア間競合と見られる（推論）。
+「不定」に見えたのはホスト側だけで、リンクが落ちている間は BAR2 の読み出しが 0xffffffff になる（HW）。
+未確認: Linux 起動時の PCIe probe、実行中の PERST / hot reset、ホスト DMA、200 MHz 時。
+
+このため規則は「共有 SRAM が壊れる」前提ではなく、次の 2 点を前提にする。
+(a) リンクが落ちている間、ホストから見た BAR2 は無効、(b) 実行時の PCIe 状態機械（v1.0）は未確認なので ISRAM に置く。
 
 規則:
 
-1. PCIe 初期化区間（以下 PCIe 区間）で実行するコード・データ・スタックはすべて ISRAM / DSRAM に置く。
-   `rp1-rt` は PCIe 区間用の関数を `#[pcie_safe]` で受け、ELF 検査で「PCIe 区間から到達できるコードとデータが共有 SRAM に無い」ことを確かめる。
-2. PCIe 区間の間、もう一方のコアは ISRAM 上の待機ループ（WFE）で止める。cold boot では proc1 を PCIe 区間の後に起動する。
-3. PCIe 区間より前に共有 SRAM へ書いた内容は信用しない。`#[shared]` の初期化（`.shared_data` コピーと `.shared_bss` ゼロ化）は PCIe 区間の後に行う。
-4. Linux から見える領域（BAR2）は世代番号を持ち、PCIe 区間の後に新しい世代を書いてから有効化する。Linux 側は世代が変わったら読み直す。
-5. ホストが PCIe を再初期化する場合（ローダーの RP1 再起動、Linux の rescan）も同じ規則にする。実行時の再初期化（v1.0 の PCIe 状態機械）は ISRAM 常駐。
+1. cold boot のエンドポイント立ち上げ中も、M3 は共有 SRAM を通常どおり使ってよい（HW、1 boot）。コアを止める・PCIe 用の特別な区間を設ける必要はない。
+2. Linux から見える領域（BAR2）は世代番号を持ち、リンク確立後に新しい世代を書いてから有効化する。Linux 側は 0xffffffff や世代の変化を見たら読み直す。
+3. 実行時の PCIe イベント（Linux の PCIe probe、PERST、hot reset、L2）は未確認。v1.0 の PCIe 状態機械は ISRAM に置き、同じ計測（proc1 サンプラー）で確認してから規則を緩める。
+4. コア間の競合で共有 SRAM アクセスは約 2 倍まで遅くなる（HW）。遅延が問題になる処理は ISRAM / DSRAM に置く（§3.2）。
 
 ## 4. 所有権の宣言と `.note.rp1`
 
@@ -138,7 +142,6 @@ bulk = [{ name = "obs", size = 65536 }]
    - proc1 から到達できる関数が `.text.proc0` を呼んでいたらエラー（逆も）
    - 書き込み可能な static のうち、両コアから到達できて `#[shared]` / `#[per_core]` のどちらも付いていないものはエラー
    - 共有 SRAM を指す LDREX/STREX があればエラー
-   - PCIe 区間から共有 SRAM に到達していたらエラー（§3.3）
 
    関数ポインタと vtable は保守的に扱う（アドレスを取ったコアから到達可能とみなす）。依存 crate の static は metadata の許可リストで `per_core` 扱いにできる。
 
@@ -205,7 +208,7 @@ VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり
 
 1. 静的: `rp1-proto`（note v2）、`rp1-build`、`rp1-pac`、`rp1-rt`、`rp1-hal`（GPIO / UART / timer）、ELF 検査（§5.2）、`rp1boot`（SD / TFTP）。
 2. 実機: proc0 と proc1 が UART に出力し、`#[shared]` の `Spsc` で値を受け渡す。Linux は patch した DTB で起動し、UIO 経由でドアベルを往復させる。
-   §3.3・§6.2・§7 の未検証項目をここで確かめる。
+   §6.2・§7 の未検証項目と、§3.3 の Linux 起動時の PCIe probe をここで確かめる。
 
 ## 9. 決定の記録
 
