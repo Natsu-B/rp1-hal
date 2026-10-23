@@ -47,7 +47,7 @@ lab/           実験・診断（公開 API ではない）
 | 共有 SRAM `0x2000_0000` | 64 KiB | 両コア、Linux（BAR2）、DMA | **壊れる**（STREX が失敗を返しつつ書く） | 遅い | HW（KG-a §1.5、G2） |
 | ISRAM `0x1000_0000` | 各コア 8 KiB | 自コアのみ（同アドレス別実体） | 可 | 共有 SRAM 実行の約 3 倍 | HW（PROF v3） |
 | DSRAM `0x1000_2000` | 各コア 8 KiB | 自コアのみ（同アドレス別実体） | 可 | 読みは 20 倍以上 | HW |
-| Linux DDR（outbound 窓） | 64 KiB × 2（拡張可） | M3 と Linux | — | PCIe 越し | HW（SHM） |
+| Linux DDR（outbound 窓） | 窓は 0x8000_0000..0xbfff_ffff の 1 GiB（DOC）。実績は 64 KiB × 2 | M3 と Linux | — | PCIe 越し。M3 からの読み出し遅延は未測定 | HW（SHM）/ DOC |
 
 - ROM は proc0 DSRAM `0x1000_2000..0x1000_30d0` を起動時と watchdog 再起動時に上書きする（STATIC）。
 - proc1 は ROM から entry に入る時点で MSP = `0x1000_30d0`（自分の DSRAM）（HW + STATIC）。
@@ -62,7 +62,7 @@ lab/           実験・診断（公開 API ではない）
 | ISRAM（コアごと） | ISR、ホットループ、実行時の PCIe 状態機械 | `#[isram]` を根に自動配置（§3.3） |
 | DSRAM（コアごと） | スタック、既定の `.data` / `.bss`、`#[proc0]` / `#[proc1]` static、atomic、executor 状態 | 普通の static（§5 の検査を受ける） |
 | 共有 SRAM `0xff00..` | 予約 | linker ASSERT |
-| Linux DDR | 大きな bulk | `rp1-proto` の Region |
+| Linux DDR | 外付け RAM（大きなバッファ、トレース、表）と bulk | `#[ext]` static（`ExtMem` トークンが要る）、`rp1-proto` の Region。api-sketch §4.3 |
 
 既定の `.data` / `.bss` を DSRAM に置く理由: 依存 crate が static の atomic で RMW をしても壊れない。
 大きなバッファは DSRAM に入らないので明示的に `#[shared]` にする。
@@ -220,6 +220,16 @@ VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり
 - 旧 PoC の実験用 feature（約 50 個）と hash 固定値は持ち込まない（`lab/`）。
 - 未検証: firmware が置いた initramfs を上書きせずに引き継げるか、`/chosen` をそのまま使えるか。
 
+## 7.1 外付け RAM の確保（`extmem`）
+
+1. 宣言 `extmem = { size = ... }` が note に入る。
+2. ローダーが Linux の DDR から連続領域を確保し、DT に `reserved-memory`（no-map）と UIO ノードを足し、ゼロ化する。
+3. ローダーはその物理アドレスを共有 SRAM のハンドオフ領域に書く（リンク確立後に BAR2 経由）。
+4. ファームは `ExtMem::enable` で outbound ATU を設定してからトークンを返す。PCIe リセットで ATU は消える（HW、2026-09-29 の記録）ので、
+   v0.1 は cold boot のみ保証する。
+
+測ること（最初の縦 1 本で）: M3 からの読み出し遅延・連続読み出し帯域・書き込み帯域、Linux 側の非キャッシュ mmap の読み書き速度。
+
 ## 8. 進め方（最初の縦 1 本）
 
 1. 静的: `rp1-proto`（note v2）、`rp1-build`、`rp1-pac`、`rp1-rt`、`rp1-hal`（GPIO / UART / timer）、ELF 検査（§5.2）、`rp1boot`（SD / TFTP）。
@@ -237,3 +247,6 @@ VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり
 | 2026-10-23 | 宣言は `[package.metadata.rp1]`、ローダーは `.note.rp1` を読む | 別ファイル不要、ビルド前に宣言が存在する |
 | 2026-10-23 | コア別の関数・static とグローバル変数の両コア到達はビルドエラー | 1 イメージの安全性 |
 | 2026-10-23 | ローダーは SD / TFTP を通常の起動の形のまま扱う | 素直な構成 |
+| 2026-10-23 | api-sketch §8 の 1〜6 を了承。`log!` を v0.1 に入れ、UART0 専用。RP1 が UART0 を所有しない構成で `log!` を使えばエラー | ユーザー判断 |
+| 2026-10-23 | Linux の DDR を外付け RAM（遅く大きいメモリ）として使えるようにする | ユーザー要望 |
+| 2026-10-23 | 「PCIe 初期化中に SRAM が不定」は記憶違いと確認。実機でも問題なし（§3.4） | ユーザー確認 + HW |

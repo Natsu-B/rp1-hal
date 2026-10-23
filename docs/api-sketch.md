@@ -31,10 +31,12 @@ protocol = { path = "../protocol" }
 [package.metadata.rp1]
 board = "rpi-cm5"
 clock = { authority = "rp1", clk_sys_hz = 200_000_000 }
+log = { sink = "uart0", baudrate = 115_200 }   # UART0 をログ専用にする（§4.2）
+extmem = { size = "16MiB" }                     # Linux の DDR を外付け RAM として借りる（§4.3）
 
 [package.metadata.rp1.proc0]
-peripherals = ["UART0", "TIMER.ALARM0"]
-pins = [14, 15]
+peripherals = ["UART2", "TIMER.ALARM0"]
+pins = [4, 5]
 
 [package.metadata.rp1.proc1]
 peripherals = ["TIMER.ALARM1"]
@@ -90,10 +92,13 @@ fn main(core: Proc0, p: rp1_rt::Resources<Proc0>) -> ! {
         .freeze()
         .unwrap();
 
-    let pins = hal::gpio::Pins::new(p.pins);           // 宣言した 14, 15 だけを持つ
+    rp1_rt::log::init(p.log, &clocks);                  // ここから log! が UART0 に出る（それまでは捨てて数える）
+    log!("proc0 up, clk_sys={}", clocks.sys());
+
+    let pins = hal::gpio::Pins::new(p.pins);           // 宣言した 4, 5 だけを持つ
     let mut uart = hal::uart::Uart::new(
-        p.UART0,
-        (pins.gpio14.into_function(), pins.gpio15.into_function()),
+        p.UART2,
+        (pins.gpio4.into_function(), pins.gpio5.into_function()),
         hal::uart::Config::default().baudrate(115_200.Hz()),
         &clocks,
     )
@@ -158,6 +163,57 @@ static TICKS: AtomicU32 = AtomicU32::new(0);   // DSRAM なので atomic RMW を
 static SCRATCH: Cell<u32> = Cell::new(0);
 ```
 
+### 4.2 log!
+
+- 宣言 `log = { sink = "uart0" }` で UART0 はログ専用になり、`Resources` には `UART0` ではなく `log`（初期化用トークン）が入る。
+- `log!` は両コア・割り込みから使える。両コアの出力は EXAC によるコア間ロックで 1 行単位に直列化する。
+  割り込み中にロックが取れなければその行を捨てて数える（待たない）。`log::init` 前の出力も捨てて数える。
+- 115200 baud は約 11.5 byte/ms なので、`log!` は遅い。ISRAM の根（ISR・`#[isram]`）から `log!` に届くと cargo-rp1 が警告する。
+- 将来 `sink = "link"`（Linux への通信路）を足せるようにしておく。
+
+**エラーにする条件**:
+
+| 状況 | 結果 | 検出 |
+|---|---|---|
+| `log!` を使ったのに `log` を宣言していない | `compile_error!("log! needs [package.metadata.rp1] log = { sink = \"uart0\" }")` | rustc（build.rs が `cfg(rp1_log)` を出し、`log!` の展開先で判定） |
+| `log = { sink = "uart0" }` だが UART0 が RP1 の所有でない（ボード既定や宣言で Linux 所有） | ビルドエラー | build.rs（宣言の検査） |
+| `log` を宣言し、さらに proc0/proc1 の `peripherals` にも `UART0` を書いた | ビルドエラー（二重所有） | build.rs |
+| Linux DT が UART0 を使っている | デプロイ前にエラー | `cargo rp1 check --dtb`。ローダーも note を見て DT の UART0 を無効化する |
+
+### 4.3 外付け RAM（Linux の DDR を借りる）
+
+```rust
+use rp1_rt::ext;
+
+#[ext]                                   // Linux の DDR 上（M3 から 0x8000_0000.. の窓で見える）
+static TRACE: ExtCell<[u32; 1 << 20]> = ExtCell::zeroed();   // 4 MiB。ゼロ化はローダーが行う
+
+#[entry(proc0)]
+fn main(core: Proc0, p: rp1_rt::Resources<Proc0>) -> ! {
+    // PCIe のリンクと outbound ATU が有効になるまでは触れない。トークンでそれを表す。
+    let ext = rp1_link::ExtMem::enable(p.extmem).unwrap();
+    let trace = TRACE.borrow_mut(&ext);          // &mut [u32; 1<<20]（1 コアだけが取れる）
+    trace[0] = 1;                                // 書き込みは posted で速い。読み出しは PCIe 往復で遅い
+    // ...
+}
+```
+
+Linux 側も同じ領域を名前で開ける（`fw.extmem("TRACE")`）。
+
+立ち位置は「遅くて大きいメモリ」（Optane 的な位置づけ）:
+
+| | 共有 SRAM | Linux DDR（外付け RAM） |
+|---|---|---|
+| 容量 | 64 KiB（実質 40 KiB 前後） | 宣言した分（窓は最大 1 GiB、DOC） |
+| M3 からの読み出し | 1 µs 未満（HW） | PCIe の往復。**未測定** |
+| M3 からの書き込み | 同上 | posted なので速い見込み（HYP） |
+| キャッシュ | なし | M3 側なし（毎回 PCIe）。Linux 側は非キャッシュで mmap するか、キャッシュ保守が必要 |
+| 使えない時間 | なし | リンク確立と ATU 設定の前、PCIe リセット中（Linux 再起動は v0.1 対象外） |
+| 向く用途 | コア間の通信、小さな状態 | 大きなバッファ、トレース、ログの退避、表。ISR やホットループには使わない |
+
+規則: `#[ext]` の static には `ExtMem` トークン無しでは触れない（rustc）。ISRAM の根から `#[ext]` に届いたら警告（cargo-rp1）。
+コードを置く（`#[ext] fn`）ことも ARMv7-M 上は可能（0x8000_0000.. は実行可能領域）だが、v0.1 では扱わない。
+
 ## 5. 何がエラーになるか
 
 | 書いたコード | 結果 | 検出する場所 |
@@ -208,4 +264,6 @@ cargo rp1 run                # rp1.elf を TFTP（または SD）へ置き、CM5
 3. **共有データの型**: `Spsc<T, N, Writer, Reader>` のように、書き手と読み手のコアを型引数で持たせる（案）。
 4. **Linux 通信のメッセージ**: 固定長の `#[derive(Message)]` 型に限る（案）。可変長は bulk 領域を別に使う。
 5. **async**: v0.1 では入れない。ブロッキング API と `try_*` API だけ（案）。Embassy は後から executor を載せられる形にしておく。
-6. **ログ**: `rp1_rt::log!` を UART か Linux への通信路に出す。v0.1 で入れるかは未定。
+6. **ログ**: v0.1 に入れる。出力先は UART0（§4.2）。
+
+2026-10-23: 1〜6 はこの案で了承（ユーザー）。外付け RAM（§4.3）を追加。
