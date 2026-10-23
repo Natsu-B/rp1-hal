@@ -10,7 +10,7 @@ firmware/Cargo.toml [package.metadata.rp1]
         ├─▶ OUT_DIR/rp1-layout.x  … 共有 SRAM 区画・ISRAM/DSRAM・予約の linker script
         ├─▶ OUT_DIR/rp1-app.dtbo  … Linux 用の DT overlay（§3）。ELF の .rp1.dtbo セクション（非ロード）に入る
         └─▶ cargo:rustc-cfg=...   … rp1_log など
-cargo rp1 build（リンク後）: 到達解析・ELF 検査（設計 E）、overlay をホストで試し当て。成果物は rp1.elf 1 つ
+cargo rp1 build（リンク後）: ELF 検査（設計 E）、overlay をホストで試し当て。成果物は起動一式（§4）
 VPU ファーム: いつもどおり config.txt / overlay を処理し、DTB をローダーに渡す（rp1 用の設定は書かない）
 ローダー:   ELF の .note.rp1 を読む → ELF の .rp1.dtbo を DTB に最後に当てる → 残りの衝突を検査 → RP1 起動 → Linux へ
 Linux:      /proc/device-tree の note のコピーと UIO ノードを読む
@@ -169,6 +169,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 | 0x0010 | 1 | OWNERSHIP | 件数 u32 + `{ kind u8, owner u8, id u16 }` の列。kind: 1 ピン / 2 ブロック / 3 アラーム / 4 バンク電圧 / 5 システム。owner: 1 proc0 / 2 proc1 / 3 RP1 システム |
 | 0x0011 | 1 | CLOCK | authority u8（1 rp1 / 2 linux）、clk_sys_hz u32 |
 | 0x0012 | 0 | LOG | sink u8（1 uart0）、baudrate u32 |
+| 0x0013 | 1 | BOOT | config.txt の SHA-256、cmdline.txt の SHA-256、本来のカーネルのファイル名（文字列） |
 | 0x0020 | 1 | SHM_AREA | DDR 側の合計サイズ u32、境界 u32、共有 SRAM のハンドオフ語のアドレス u32、SRAM 側の合計 u16 |
 | 0x0021 | 1 | SHM_REGION | 1 件 1 レコード: kind u8、direction u8、core u8、notify u8、linux_map u8、writer u8、DDR オフセット/長さ u32×2、SRAM オフセット/長さ u16×2、要素長 u32、depth u32、型 ID u64（要求/応答で 2 つ）、名前（u8 長さ + UTF-8）、型名（同） |
 
@@ -246,7 +247,33 @@ overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ロ
 - overlay が参照する RP1 のノード名・ラベルはカーネルの系列で変わりうる（上流カーネルの RP1 ドライバは RP1 のノードを実行時に
   overlay として入れる方式）。ボード表は対応するカーネル系列ごとに持ち、合わなければ手順 2 で必ず停止する。
 
-## 4. 決めたいこと（設計 B の論点）
+## 4. 起動一式（成果物）
+
+`cargo rp1 build` は起動に必要なファイルを 1 つのディレクトリにまとめて出す。SD でも TFTP でも、この一式をそのまま置く。
+
+```
+target/rp1/boot/
+  config.txt       生成。kernel=rp1boot.img、arm_64bit=1 など固定の行 + 宣言の config_extra
+  cmdline.txt      生成。console、uio_pdrv_genirq.of_id=generic-uio など必須の引数 + 宣言の cmdline_extra
+  rp1boot.img      ローダー
+  rp1.elf          ファーム（.note.rp1、.rp1.dtbo 入り）
+  （本来のカーネルと initramfs は利用者が用意。ファイル名は宣言の boot.kernel / boot.initramfs）
+```
+
+```toml
+[package.metadata.rp1.boot]
+kernel = "kernel_2712.img"              # 本来の Linux カーネル（config.txt の kernel= はローダーが使う）
+initramfs = "initramfs_2712"            # 省略可
+config_extra = ["dtparam=audio=off"]    # config.txt に足す行（rp1 の所有物と衝突する行はビルドエラー）
+cmdline_extra = "quiet"                 # cmdline.txt に足す引数
+```
+
+**必ずこの一式を使う**: config.txt と cmdline.txt の SHA-256 を note の BOOT レコードに入れる。ローダーは自分が起動した経路
+（SD / TFTP）から config.txt と cmdline.txt を読み直してハッシュを照合し、違えば RP1 を起動せず停止する
+（「手で config.txt を書き換えた」「別の一式と混ざった」を止める）。
+これで利用者の dtparam や別の overlay との衝突が原則起きなくなるので、ローダーの当てた後の検査（§3.2 手順 3）は保険として残す。
+
+## 5. 決めたいこと（設計 B の論点）
 
 1. 宣言は `Cargo.toml` + 1 行の `build.rs`（案）。build.rs を無くしたい場合は、linker script を固定にして proc-macro だけで型と note を作る方法もある（その場合、共有 SRAM の区画は宣言から変えられない）。
 2. ボード表（既定の所有権、Linux 必須のもの、DT ラベル、共有メモリの固定領域）は `rp1-build` に同梱（案）。別 crate にすると build.rs から読みにくい。

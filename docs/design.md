@@ -59,7 +59,7 @@ lab/           実験・診断（公開 API ではない）
 | 置き場所 | 置くもの | 書き方 |
 |---|---|---|
 | 共有 SRAM | 全コードと rodata のロード元、`#[shared]` static、Linux から見える領域、DMA バッファ、再起動をまたぐ warm data | `#[shared]` を付けた static（型は §5.3 のものだけ） |
-| ISRAM（コアごと） | ISR、ホットループ、実行時の PCIe 状態機械 | `#[isram]` を根に自動配置（§3.3） |
+| ISRAM（コアごと） | ISR、ホットループ、実行時の PCIe 状態機械 | `#[isram]`（v0.1 は手で付ける、§3.3） |
 | DSRAM（コアごと） | スタック、既定の `.data` / `.bss`、`#[proc0]` / `#[proc1]` static、atomic、executor 状態 | 普通の static（§5 の検査を受ける） |
 | 共有 SRAM `0xff00..` | 予約 | linker ASSERT |
 | Linux DDR | Linux との共有メモリ（`ring` / `channel` / `block`）。block は「遅くて大きい」外付け RAM としても使う | 宣言 `[[package.metadata.rp1.shm]]`、`Shm::enable` 後のハンドル。api-sketch §4.3 |
@@ -67,9 +67,14 @@ lab/           実験・診断（公開 API ではない）
 既定の `.data` / `.bss` を DSRAM に置く理由: 依存 crate が static の atomic で RMW をしても壊れない。
 大きなバッファは DSRAM に入らないので明示的に `#[shared]` にする。
 
-### 3.3 ISRAM に置くものの決め方（自動）
+### 3.3 ISRAM に置くものの決め方
 
 ライブラリ全体を ISRAM に入れるのではなく、速さが要る部分だけを入れる。
+
+**v0.1**: 手で付けた `#[isram]` の関数と ISR だけを ISRAM に置く。両コアに同じ ISRAM イメージを展開する（共通、各コア 8 KiB）。
+予算超過は linker の ASSERT でエラー。以下の自動配置は v0.2 で検討する。
+
+**v0.2 案（自動配置）**:
 
 - 根（root）: `#[isram]` を付けた関数と、各コアのベクタ表に載る ISR。
 - `cargo-rp1` が最終 ELF の呼び出しグラフから根の到達集合を求め、それを ISRAM に配置する（2 段リンク）。
@@ -142,34 +147,40 @@ bulk = [{ name = "obs", size = 65536 }]
 中身: ABI 版、entry / スタック、メモリ配置、コアごとの所有物（ピン・ブロック・IRQ）、clock 権限、通信路（領域・ドアベル・UIO 範囲）、
 ファーム版、宣言のハッシュ。形式の正本は `rp1-proto`。
 
-## 5. コアの区別とグローバル変数の検査
+## 5. コアの区別とグローバル変数（誤用を「書けなくする」）
 
-### 5.1 書き方
+方針（2026-10-23 変更）: リンク後に誤用を見つけてエラーにするのではなく、型と配置で誤用を書けない形にする。
+リンク後の ELF 検査は、確実に分かる事実（共有 SRAM 上の LDREX/STREX、ISRAM・DSRAM の予算）だけに使う。
 
-- `#[rp1::proc0] fn` / `#[rp1::proc1] fn`: そのコアだけで動く関数。セクション `.text.proc0.*` / `.text.proc1.*`。
-- 無印の fn: どちらのコアからも呼べる。
-- `#[rp1::proc0] static` / `#[rp1::proc1] static`: そのコア専用（DSRAM）。
-- `#[rp1::shared] static`: 両コアで共有（共有 SRAM、§5.3 の型のみ）。
-- `#[rp1::per_core] static`: 両コアから使うが、コアごとに別の値でよいもの（DSRAM、thread_local と同じ意味）。
+### 5.1 規則
 
-### 5.2 検査（2 段）
+| 対象 | 置き場所 | 共有されるか | 守る仕組み |
+|---|---|---|---|
+| 普通の `static`（自分のものも外部 crate のものも） | コアごとの DSRAM に別コピー | されない（thread_local と同じ意味） | 配置そのもの。両コアから触っても競合は起きない |
+| `#[shared] static` | 共有 SRAM | される | 型が `SharedSafe`（RMW atomic を持たない `Shared<T>`、`Spsc`、`SeqLock`、`ExacMutex`）でなければ rustc エラー |
+| `#[proc0] static` / `#[proc1] static` | DSRAM | されない | `Local<T, Proc0>` に包まれ、`Proc0` トークンが無いと読めない（rustc） |
+| コア専用の処理 | — | — | 資源（`rp1::Proc0Resources` の中身）やトークンを引数に取る。相手コアは持っていないので呼べない（rustc） |
+| コア間で渡すもの | — | — | 値渡し（`Copy`）か `#[shared]` 領域へのハンドルだけを受け付ける API。DSRAM へのポインタは渡せない（rustc） |
+| 割り込み | 各コアのベクタ表 | — | `#[interrupt(proc1)]` でコアを明示 |
 
-1. **コンパイル時（rustc）**: コアトークン `Proc0` / `Proc1`（大きさ 0、`!Send` `!Sync`）を各 entry だけが受け取る。
-   コア専用 static と `Resources` はトークンを要求するので、別コアのコードからは触れない。
-2. **リンク後（cargo-rp1 の ELF 検査、エラーでビルド失敗）**: proc0 entry・proc1 entry・各コアのベクタ表から呼び出しグラフを辿り、
-   - proc1 から到達できる関数が `.text.proc0` を呼んでいたらエラー（逆も）
-   - 書き込み可能な static のうち、両コアから到達できて `#[shared]` / `#[per_core]` のどちらも付いていないものはエラー
-   - 共有 SRAM を指す LDREX/STREX があればエラー
+### 5.2 リンク後の ELF 検査（cargo-rp1、v0.1）
 
-   関数ポインタと vtable は保守的に扱う（アドレスを取ったコアから到達可能とみなす）。依存 crate の static は metadata の許可リストで `per_core` 扱いにできる。
+- 共有 SRAM を対象にする LDREX/STREX があればエラー。
+- ISRAM・DSRAM・共有 SRAM の予算超過はエラー（linker の ASSERT と同じ内容を分かりやすく表示）。
+- 呼び出しグラフの到達解析は v0.1 では行わない（ISRAM の自動配置とあわせて v0.2 で検討）。
 
-コアごとに区別できるので、ISRAM はコアごとの overlay（各 8 KiB）にできる（配置は §3.3）。
+### 5.3 この方針の副作用（受け入れる）
 
-### 5.3 共有に使える型
+- DSRAM は各コア 8 KiB からスタックを引いた残り。外部 crate の大きな static は DSRAM に入らずリンクエラーになる。その場合は
+  大きなバッファを `#[shared]` にするか、外部 crate のセクションを共有 SRAM に移す指定（宣言で `shared_sections = [...]`）を使う。
+- 外部 crate の「一度だけ取れる」仕組み（例: `pac::Peripherals::take()`）はコアごとに別のフラグになり、両コアで取れる。
+  rp1-hal の資源は宣言から型で分けるので影響しないが、抜け道の `take()` / `steal()` は両コアで取れることを文書に明記する。
+- 両コアに同じ static があることを「1 つのグローバル」と思って使うと、値が共有されない。`#[shared]` を使うよう文書と例で示す。
 
-`Shared<T: Copy>`（volatile load/store のみ）、`Spsc<T, N>`（1 書き手 1 読み手）、`SeqLock<T>`、`ExacMutex<T>`（EXAC によるコア間排他、HW H8）。
-RMW atomic のメソッドは持たない。DSRAM を指す参照は他コアへ渡せない（相手は自分の DSRAM を読んでしまう）。
-コア間 API は値渡しか、`#[shared]` 領域を指すハンドルだけを受け付ける。
+### 5.4 共有に使える型
+
+`Shared<T: Copy>`（volatile load/store のみ）、`Spsc<T, N, Writer, Reader>`（1 書き手 1 読み手、コアを型引数で固定）、`SeqLock<T>`、`ExacMutex<T>`（EXAC によるコア間排他、HW H8）。
+RMW atomic のメソッドは持たない。
 
 ## 6. Linux 連携（DT とユーザープロセスだけ）
 
@@ -233,6 +244,21 @@ shm ごとの `generic-uio` ノードに焼き込む。ローダーはそのア�
 
 測ること（最初の縦 1 本で）: M3 からの DDR 読み出し遅延・帯域・書き込み帯域、Linux 側 uncached（UIO）と cached（/dev/mem + DC CIVAC）の読み書き速度、UIO の IRQ 待ち遅延。
 
+## 8.1 v0.1 の範囲
+
+| 入れる | 後回し（v0.2 以降） |
+|---|---|
+| 2 コアのランタイム（1 イメージ、`#[entry(proc0/1)]`、proc1 起動、DSRAM の既定配置、`#[shared]`/`#[proc0]`/`#[proc1]`） | ISRAM の自動配置（2 段リンク）と到達解析 |
+| 手で付ける `#[isram]`（共通 ISRAM イメージ） | コアごとの ISRAM overlay |
+| 宣言 → 型・linker script・note・overlay の生成（rp1-build） | `channel` の正式 API（v0.1 は `ring` 2 本で組めることを例で示す） |
+| 起動一式（config.txt、cmdline.txt、rp1boot.img、rp1.elf）の生成と照合 | async / Embassy |
+| ローダー（SD / TFTP、overlay 適用、config.txt 照合、RP1 起動） | Linux 側の cached マップ |
+| Linux 共有メモリ `ring` と `block`（UIO、uncached） | 実行時の PCIe 状態機械、Linux 再起動への追従 |
+| SCMI クロックサーバー（clock.authority = rp1 が既定のため必須） | DMA / PIO / ADC / I2S / SPI / I2C のドライバ |
+| `log!`（UART0） | `log!` の Linux 通信路への出力 |
+| GPIO / UART / timer（alarm）ドライバと embedded-hal | |
+| ELF 検査（共有 SRAM 上の LDREX/STREX、予算） | |
+
 ## 8. 進め方（最初の縦 1 本）
 
 1. 静的: `rp1-proto`（note v2）、`rp1-build`、`rp1-pac`、`rp1-rt`、`rp1-hal`（GPIO / UART / timer）、ELF 検査（§5.2）、`rp1boot`（SD / TFTP）。
@@ -254,3 +280,7 @@ shm ごとの `generic-uio` ノードに焼き込む。ローダーはそのア�
 | 2026-10-23 | Linux の DDR を共有メモリにし、`ring` / `channel` / `block` から選ぶ。block は外付け RAM（遅く大きいメモリ）を兼ねる | ユーザー要望・提案 |
 | 2026-10-23 | 「PCIe 初期化中に SRAM が不定」は記憶違いと確認。実機でも問題なし（§3.4） | ユーザー確認 + HW |
 | 2026-10-23 | Linux 用の DT 調整は rp1-build が overlay として生成し、ELF に入れてローダーが最後に当てる（libfdt）。ローダーは当てた後の DTB の衝突も検査 | ユーザー提案・指摘 |
+| 2026-10-23 | クロックは RP1 が SCMI で管理する（`clock.authority = "rp1"` が既定）。Linux に任せると、Linux から見て利用者のいない RP1 専用ブロックのクロックを `clk_disable_unused` が止めるため | ユーザー判断 |
+| 2026-10-23 | 誤用はリンク後に検出するのではなく、型と配置で書けなくする（§5）。v0.1 では到達解析をしない | ユーザー指摘 |
+| 2026-10-23 | config.txt と cmdline.txt を成果物（起動一式）にし、必ずそれを使う。ローダーがハッシュを照合する | ユーザー提案 |
+| 2026-10-23 | v0.1 の範囲を絞る（§8.1） | ユーザー許可 |

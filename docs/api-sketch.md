@@ -162,7 +162,7 @@ fn proc1_main(core: Proc1, p: rp1::Proc1Resources) -> ! {
     }
 }
 
-// ホットな処理は #[isram]。ここから呼ばれる関数も自動で ISRAM に入る（設計 §3.3）。
+// ホットな処理は #[isram]。v0.1 は手で付けた関数だけが ISRAM に入る（自動配置は v0.2、設計 §3.3）。
 #[isram]
 fn sample() -> u32 { /* ... */ 0 }
 
@@ -175,11 +175,11 @@ fn TIMER_IRQ_1() { /* ... */ }
 ### 4.1 コア専用・コアごとの static
 
 ```rust
-#[rp1_rt::proc1]                 // proc1 専用（proc1 の DSRAM）。proc0 から届くとビルドエラー
+#[rp1_rt::proc1]                 // proc1 専用。Local<AtomicU32, Proc1> になり、Proc1 トークンが無いと読めない
 static TICKS: AtomicU32 = AtomicU32::new(0);   // DSRAM なので atomic RMW を使ってよい
+// 使い方: TICKS.get(&core).fetch_add(1, Relaxed);
 
-#[rp1_rt::per_core]              // 両コアが使うが値はコアごと（thread_local と同じ意味）
-static SCRATCH: Cell<u32> = Cell::new(0);
+static SCRATCH: AtomicU32 = AtomicU32::new(0); // 印の無い static はコアごとに別コピー（thread_local と同じ意味）
 ```
 
 ### 4.2 log!
@@ -271,16 +271,21 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
 
 ## 5. 何がエラーになるか
 
+方針: 誤用はリンク後に見つけるのではなく、型と配置で書けなくする（design.md §5）。
+
 | 書いたコード | 結果 | 検出する場所 |
 |---|---|---|
 | proc0 から `p.UART1` を使う（宣言していない） | フィールドが存在しない | rustc |
 | proc1 で `SAMPLES.consumer(&core)` | `Proc1` は consumer を取れない | rustc |
 | `Proc1` トークンを proc0 に渡す | `!Send` | rustc |
 | `#[shared] static X: AtomicU32` | `AtomicU32` は `SharedSafe` を実装しない | rustc |
-| proc0 から `#[rp1_rt::proc1]` の関数や static に届く | ビルドエラー | cargo-rp1（リンク後の到達解析） |
-| 印の無い書き込み可能な static に両コアから届く | ビルドエラー（`#[shared]` か `#[per_core]` を付けるよう促す） | cargo-rp1 |
-| ISRAM の予算超過、ISR から 64 bit 除算や `core::fmt` に届く | 警告 / エラー | cargo-rp1 |
-| Linux DT が使っているピンや周辺を宣言した | デプロイ前にエラー | `cargo rp1 check --dtb` |
+| proc0 から `#[rp1_rt::proc1] static` を読む | `Proc1` トークンが無いので読めない | rustc |
+| 普通の `static` に両コアから触る | エラーにしない。コアごとに別コピーなので競合しない（値も共有されない） | — |
+| DSRAM に置いた値への参照を相手コアに渡す | コア間 API が値渡しか `#[shared]` ハンドルしか受け付けない | rustc |
+| 共有 SRAM 上で LDREX/STREX（`unsafe` や外部 crate 経由） | ビルドエラー | cargo-rp1（ELF 検査） |
+| ISRAM・DSRAM・共有 SRAM の予算超過 | ビルドエラー | linker / cargo-rp1 |
+| `log!` を使ったのに `log` の宣言が無い / UART0 を RP1 が持てない | コンパイルエラー / ビルドエラー | rustc / build.rs |
+| Linux DT が使っているピンや周辺を宣言した | デプロイ前にエラー | `cargo rp1 check`、ローダー |
 
 ## 6. Linux 側（linux-app/src/main.rs）
 
