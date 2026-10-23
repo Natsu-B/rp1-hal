@@ -1,0 +1,14 @@
+/target/
+**/target/
+
+# Firmware blobs, images, and hardware logs are never committed.
+*.bin
+*.elf
+*.img
+*.dtb
+*.log
+*.sha256
+logs/
+images/
+
+.env
