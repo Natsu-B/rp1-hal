@@ -103,6 +103,7 @@ PCIe、mailbox ch0（SCMI 用）、共有 SRAM の予約域は、ボード表が
 | 同じピン・ブロックを 2 か所で宣言（proc0 と proc1、log と core など） | `UART0 is claimed by both log and proc0` |
 | ボード表で Linux 必須のもの（Ethernet の GEM、USB、SD など）を宣言 | `GEM is required by Linux on rpi-cm5` |
 | `log` があるのに UART0 が RP1 の所有になれない（ボード表で Linux 必須） | `log sink uart0 requires UART0 to be owned by RP1` |
+| クロックを共有する相手を Linux が持ち、`clock.authority = "linux"`（例: UART0 を RP1、UART1 を Linux） | `UART0 shares clk_uart with UART1 (linux); set clock.authority = "rp1"` |
 | `gpio_irq` が `pins` に無い | `gpio_irq 27 is not in proc1.pins` |
 | `clock.authority = "linux"` なのに `clk_sys_hz` がある | `clk_sys_hz requires clock.authority = "rp1"` |
 | shm の名前が重複・形式違反、depth が 2 の冪でない、kind と項目が合わない | `shm 'ctl': 'direction' is only valid for kind = "ring"` |
@@ -181,7 +182,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 
 | 読み手 | 使うレコード | 失敗時 |
 |---|---|---|
-| ローダー | ENTRY、SHM_AREA（ハンドオフ）、note 全体の SHA-256 | 知らない critical レコード・CRC 不一致・DTB の印（§3.2）と不一致 → RP1 を起動せず停止（ログに理由） |
+| ローダー | ENTRY、SHM_AREA（ハンドオフ）、note 全体の SHA-256、OWNERSHIP（最終 DTB の検査、§3.2） | 知らない critical レコード・CRC 不一致・DTB の印（§3.2）と不一致 → RP1 を起動せず停止（ログに理由） |
 | Linux 側 `rp1-linux` | overlay が載せたコピー（`/rp1-firmware` ノードの `rp1,note` プロパティ）の SHM_*、FIRMWARE | 型 ID 不一致・名前が無い → `Err` |
 | `cargo rp1 check --dtb` | OWNERSHIP、LOG | Linux DT との衝突を一覧にして失敗 |
 
@@ -193,7 +194,7 @@ Linux 側の調整はすべてビルド時に overlay として作る。ロー�
 
 | 断片 | 内容 | 元になる宣言 |
 |---|---|---|
-| 周辺・ピン | RP1 が持つ周辺のノードを `status = "disabled"`、該当ピンを pinctrl / gpio-hog から外す | OWNERSHIP |
+| 周辺・ピン | RP1 が持つ周辺のノードを `status = "disabled"`。RP1 のピンを GPIO コントローラーの `gpio-reserved-ranges` に入れ、libgpiod から要求できなくする | OWNERSHIP |
 | クロック | clk-rp1 を無効化し、`arm,scmi`（rp1 mailbox + shmem）を足し、各利用者ノードの `clocks` を SCMI 側に付け替える | CLOCK（authority = rp1 のときだけ） |
 | ログ | UART0 のノードを `disabled` | LOG |
 | 共有メモリ | `reserved-memory`（no-map、連続）1 つと、shm ごとの `generic-uio` ノード（名前 `rp1:<name>`、領域、IRQ） | SHM_* |
@@ -213,8 +214,28 @@ Linux 側の調整はすべてビルド時に overlay として作る。ロー�
    - 一致: RP1 を起動し、DTB はそのまま Linux に渡す。
    - 不一致・印が無い: overlay と ELF の組が違う。RP1 を起動せず、理由をログに出して停止する（古い overlay で Linux が起動して RP1 と食い違うのを防ぐ）。
 4. 共有メモリの物理アドレスは overlay と note の両方に入っている。ローダーはそれを共有 SRAM のハンドオフ語に書くだけ。
+5. **最終 DTB の所有権検査（読み取りのみ）**: config.txt の他の設定（`enable_uart=1`、`dtparam=uart0=on`、後から当てる別の overlay）が
+   RP1 の周辺を有効に戻していないかを確かめる。次のどれかに当たれば RP1 を起動せず停止し、どの設定が衝突したかをログに出す。
+   - OWNERSHIP の周辺に対応するノードが `status = "okay"`（ノードのパスは overlay の `/rp1-firmware/rp1,owned-nodes` に列挙しておく）
+   - 有効なノードの `pinctrl-*` が RP1 所有のピンを含むグループを参照している
+   - `gpio-reserved-ranges` から RP1 のピンが外れている
 
-### 3.3 注意
+### 3.3 RP1 専用の IO（UART0 など）を Linux から守る範囲
+
+| 経路 | 防げるか | 方法 |
+|---|---|---|
+| カーネルのドライバが probe する | 防ぐ | overlay の `disabled` + ローダーの最終 DTB 検査 |
+| 別のノードが pinctrl で同じピンを取る | 防ぐ | ローダーの最終 DTB 検査 |
+| libgpiod などがピンを要求する | 防ぐ（RP1 の GPIO ドライバで効くかは未確認） | `gpio-reserved-ranges` |
+| 共有クロック（clk_uart は UART0〜5 共通）を Linux が変える | 条件付き | `clock.authority = "rp1"` なら RP1 が SCMI で変更を拒否できる。`authority = "linux"` で UART0 を RP1、他の UART を Linux が持つ宣言はビルドエラー |
+| root が `/dev/mem`・`/dev/gpiomem0`・`pinctrl` ツールで直接書く | 防がない | DT では不可能（標準カーネルは `STRICT_DEVMEM` 無効）。型や宣言による保護はセキュリティ境界ではない（設計 §1.2） |
+
+同じ考え方は UART0 以外の RP1 専用ブロック（SPI、I2C、PWM など）にも当てはまる。PWM のようにブロック単位で共有されるもの・
+クロックを共有するものは、ボード表に「共有している相手」を持たせ、ビルド時に同じ検査をする。
+
+### 3.4 注意
+
+
 
 - overlay はノードの削除ができない（無効化と上書きだけ）。必要な調整はこの範囲に収める。
 - `dtoverlay=rp1-app` を残したままローダーを外す（`kernel=` を標準カーネルに戻す）と、RP1 ファームが無いのに Linux は SCMI を待つ。

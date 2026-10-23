@@ -213,12 +213,13 @@ VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり
   → kernel=rp1boot.img
       1. 自分が起動した経路（/chosen/bootloader の boot-mode）で SD(FAT) か TFTP を選ぶ
       2. 同じ経路・同じ配置から rp1.elf と本来のカーネルを読む
-      3. .note.rp1 を検査し、note の SHA-256 を DTB の /rp1-firmware/rp1,note-sha256 と照合する（不一致なら停止）
+      3. .note.rp1 を検査し、note の SHA-256 を DTB の /rp1-firmware/rp1,note-sha256 と照合する。最終 DTB で RP1 所有の
+         周辺・ピンが Linux 側で有効になっていないかも読み取りで検査する（どちらかに当たれば停止）
       4. I2C で RP1 を bootrom に戻して書き込み、起動する。共有メモリの物理アドレスをハンドオフ語に書く
       5. DTB は書き換えずに、本来のカーネルへ EL2 でジャンプ（initramfs と cmdline も firmware が用意したもの）
 ```
 
-- Linux 用の DT の調整はビルド時に overlay として生成し、VPU ファームが当てる（declaration-and-note.md §3）。ローダーは DT を書き換えない。
+- Linux 用の DT の調整はビルド時に overlay として生成し、VPU ファームが当てる（declaration-and-note.md §3）。ローダーは DT を書き換えず、検査だけする。
 - SD と TFTP は「ファイルを読む部分」だけが違う。ファイル名と配置は同じ。
 - 旧 PoC の実験用 feature（約 50 個）と hash 固定値は持ち込まない（`lab/`）。
 - 未検証: firmware が置いた initramfs を上書きせずに引き継げるか、`/chosen` をそのまま使えるか。
