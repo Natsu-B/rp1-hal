@@ -173,14 +173,29 @@ bulk = [{ name = "obs", size = 65536 }]
 
 - DSRAM は各コア 8 KiB からスタックを引いた残り。外部 crate の大きな static は DSRAM に入らずリンクエラーになる。その場合は
   大きなバッファを `#[shared]` にするか、外部 crate のセクションを共有 SRAM に移す指定（宣言で `shared_sections = [...]`）を使う。
-- 外部 crate の「一度だけ取れる」仕組み（例: `pac::Peripherals::take()`）はコアごとに別のフラグになり、両コアで取れる。
-  rp1-hal の資源は宣言から型で分けるので影響しないが、抜け道の `take()` / `steal()` は両コアで取れることを文書に明記する。
+- 外部 crate の「一度だけ取れる」仕組みはコアごとに別のフラグになる。扱いは §5.5。
 - 両コアに同じ static があることを「1 つのグローバル」と思って使うと、値が共有されない。`#[shared]` を使うよう文書と例で示す。
 
 ### 5.4 共有に使える型
 
 `Shared<T: Copy>`（volatile load/store のみ）、`Spsc<T, N, Writer, Reader>`（1 書き手 1 読み手、コアを型引数で固定）、`SeqLock<T>`、`ExacMutex<T>`（EXAC によるコア間排他、HW H8）。
 RMW atomic のメソッドは持たない。
+
+### 5.5 資源の取得（どのコアで使うかは宣言で静的に決める）
+
+- 周辺・ピン・アラームをどのコアが使うかは宣言で静的に決まり、`rp1::Proc0Resources` / `Proc1Resources` の型になる（declaration-and-note.md §1.5）。
+- **安全な取得経路はこれだけにする**: `rp1-pac` は svd2rust の `critical-section` feature を切って生成し、`Peripherals::take()` を持たない
+  （`unsafe fn steal()` だけ）。rp1-hal も独自の `take()` を持たない。
+- **一度だけを保証するのはトークン**: コアのトークン `Proc0` / `Proc1` は利用者が作れない型で、ランタイムが各コアの起動時に 1 回だけ作り、
+  資源と一緒に `#[entry]` へ渡す。取得済みフラグを持たないので、フラグがコアごとに別コピーになる問題は起きない。
+- **実行時の確認**: ランタイムは資源を渡す前にコア番号（`0xe00ff01c`）を確かめ、宣言と違うコアなら停止する。
+- 外部 crate の「一度だけ取れる」仕組みの扱い:
+
+| 例 | コアごとの別コピーの結果 | 扱い |
+|---|---|---|
+| `cortex_m::Peripherals::take()`（NVIC、SysTick、SCB、MPU） | 正しい。これらはコアごとに別の実体（HW: NVIC と VTOR はコアごとに独立） | そのまま使う |
+| `static_cell` 等で `&'static mut` を得る | 各コアが自分のコピーを得る。物理的に別のメモリなので安全 | そのまま使う |
+| 外部 crate が RP1 の周辺を `steal()` する | 防げない（`unsafe` の中） | 文書に明記。設計 §1.2「型の保護はセキュリティ境界ではない」 |
 
 ## 6. Linux 連携（DT とユーザープロセスだけ）
 
