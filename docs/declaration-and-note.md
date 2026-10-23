@@ -42,6 +42,7 @@ board = "rpi-cm5"                         # ボード表（既定の所有権・
 clock = { authority = "rp1", clk_sys_hz = 200_000_000 }  # authority: "rp1" | "linux"
 log = { sink = "uart0", baudrate = 115_200 }             # 省略すると log! はコンパイルエラー
 stack = { proc0 = "2KiB", proc1 = "2KiB" }               # 省略時は各 2 KiB（DSRAM）
+link_page = "16KiB"                       # 共有 SRAM の Linux 用ページ。"none" なら全リングが placement = "linux"（v0.1 未実装）
 
 [package.metadata.rp1.proc0]
 peripherals = ["UART2", "TIMER.ALARM0"]   # 語彙は §1.3
@@ -66,6 +67,8 @@ notify = "irq"                            # "irq" | "poll"。Linux → M3 の通
 name = "samples"
 kind = "ring"
 direction = "rp1-to-linux"                # ring のみ: "rp1-to-linux" | "linux-to-rp1"
+overflow = "overwrite"                    # ring のみ: "reject"（既定）| "overwrite"
+placement = "reader-local"                # ring のみ: "reader-local"（既定）| "linux"（v0.1 未実装）
 core = "proc1"
 message = "protocol::Sample"
 depth = 4096
@@ -171,7 +174,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 | 0x0012 | 0 | LOG | sink u8（1 uart0）、baudrate u32 |
 | 0x0013 | 1 | BOOT | config.txt の SHA-256、cmdline.txt の SHA-256、本来のカーネルのファイル名（文字列） |
 | 0x0020 | 1 | SHM_AREA | DDR 側の合計サイズ u32、境界 u32、共有 SRAM のハンドオフ語のアドレス u32、SRAM 側の合計 u16 |
-| 0x0021 | 1 | SHM_REGION | 1 件 1 レコード: kind u8、direction u8、core u8、notify u8、linux_map u8、writer u8、DDR オフセット/長さ u32×2、SRAM オフセット/長さ u16×2、要素長 u32、depth u32、型 ID u64（要求/応答で 2 つ）、名前（u8 長さ + UTF-8）、型名（同） |
+| 0x0021 | 1 | SHM_REGION | 1 件 1 レコード: kind u8、direction u8、core u8、notify u8、linux_map u8、writer u8、overflow u8（1 reject / 2 overwrite）、placement u8（1 reader-local / 2 linux）、DDR オフセット/長さ u32×2、SRAM オフセット/長さ u16×2、要素長 u32、depth u32、型 ID u64（要求/応答で 2 つ）、名前（u8 長さ + UTF-8）、型名（同） |
 
 - 文字列は `u8 長さ + UTF-8`（最大 255）。
 - id（ピン番号、ブロック番号）の割り当ては `rp1-proto` の enum が正本。番号は一度決めたら変えない。
