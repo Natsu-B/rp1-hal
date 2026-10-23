@@ -318,8 +318,8 @@ cargo rp1 run                # rp1.elf を TFTP（または SD）へ置き、CM5
 
 ## 8. この案で決めたいこと（設計 A の論点）
 
-1. **Resources の受け取り方**: 各 `#[entry]` が自分の `rp1::ProcNResources` を引数で受け取る（案）。安全な `take()` は持たず、
-   抜け道は `unsafe` な `pac::Peripherals::steal()` だけ（design.md §5.5、2026-10-23 変更）。
+1. **Resources の受け取り方**: 各 `#[entry]` が自分の `Resources<ProcN>` を引数で受け取る（案）。rp-hal 流の
+   `pac::Peripherals::take()` は抜け道として残す。
 2. **proc1 の起動**: proc0 が `p.proc1.start()` で明示的に起動する（案）。自動起動にはしない（クロック設定の後に起動したいため）。
 3. **共有データの型**: `Spsc<T, N, Writer, Reader>` のように、書き手と読み手のコアを型引数で持たせる（案）。
 4. **Linux 通信のメッセージ**: 固定長の `#[derive(Message)]` 型に限る（案）。可変長は bulk 領域を別に使う。
