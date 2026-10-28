@@ -89,7 +89,17 @@ pub fn isram(args: TokenStream, input: TokenStream) -> TokenStream {
         return error("isram takes no arguments");
     }
     let f = parse_macro_input!(input as ItemFn);
-    quote!(#[unsafe(link_section = ".isram.text")] #[inline(never)] #f).into()
+    // Only the bare-metal RP1 target has ISRAM; host builds (tests, Linux users of rp1-proto)
+    // keep ordinary placement and inlining.
+    quote!(
+        #[cfg_attr(
+            all(target_arch = "arm", target_os = "none"),
+            unsafe(link_section = ".isram.text"),
+            inline(never)
+        )]
+        #f
+    )
+    .into()
 }
 
 #[proc_macro_attribute]
