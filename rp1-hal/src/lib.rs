@@ -17,9 +17,11 @@ pub enum Error {
     Hardware,
     NotReady,
 }
+#[inline(always)]
 pub(crate) fn read(address: usize) -> u32 {
     unsafe { (address as *const u32).read_volatile() }
 }
+#[inline(always)]
 pub(crate) fn write(address: usize, value: u32) {
     unsafe {
         (address as *mut u32).write_volatile(value);

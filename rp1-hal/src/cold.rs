@@ -442,7 +442,18 @@ impl EndpointService {
         }
     }
 
+    /// The steady state (PERSTn high, no pending low edge) is one register read from ISRAM;
+    /// the reconfiguration transaction itself is cold and runs from shared SRAM.
+    #[rp1_rt::isram]
     pub fn poll(&mut self) -> Option<Result<Reconfigured, ReconfigError>> {
+        if self.low_at.is_none() && read(reconfig::MONITOR2) & (1 << 17) != 0 {
+            return None;
+        }
+        self.poll_slow()
+    }
+    #[cold]
+    #[inline(never)]
+    fn poll_slow(&mut self) -> Option<Result<Reconfigured, ReconfigError>> {
         let mut io = |op| Ok(mmio(op));
         self.poll_with(&mut io)
     }

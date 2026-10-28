@@ -79,9 +79,11 @@ impl Doorbell {
     pub fn new(pin: Pin<27>) -> Self {
         Self { _pin: pin }
     }
+    #[inline(always)]
     pub fn pending(&self) -> bool {
         read(0x400d_0114) & (1 << 27) != 0
     }
+    #[inline(always)]
     pub fn acknowledge(&mut self) {
         write(0x400d_3114, 1 << 27);
     }

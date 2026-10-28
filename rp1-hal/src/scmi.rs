@@ -403,7 +403,19 @@ impl Service {
     }
 
     /// Answers one pending request, if any. Call from proc0's main loop; never blocks.
+    ///
+    /// The idle check (one SYSCFG read) runs from ISRAM; the request handling is cold and
+    /// stays in shared SRAM, so a polling loop does not fetch from shared SRAM while idle.
+    #[rp1_rt::isram]
     pub fn poll(&mut self) -> Option<Event> {
+        if read(PROC_EVENTS) & CHANNEL == 0 {
+            return None;
+        }
+        self.serve_pending()
+    }
+    #[cold]
+    #[inline(never)]
+    fn serve_pending(&mut self) -> Option<Event> {
         serve(&mut self.server, &mut self.transport)
     }
 
