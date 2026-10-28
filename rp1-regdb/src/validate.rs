@@ -111,12 +111,13 @@ fn validate_peripheral(definition: &PeripheralDefinition, errors: &mut Vec<Strin
         _ => {}
     }
     if let Some(view) = &peripheral.atomic_view
-        && (peripheral.kind != PeripheralKind::Rp1NativeApb || view.kind != AtomicKind::Rp1Native) {
-            errors.push(format!(
+        && (peripheral.kind != PeripheralKind::Rp1NativeApb || view.kind != AtomicKind::Rp1Native)
+    {
+        errors.push(format!(
                 "{source}: peripheral {}: [ATOMIC_VIEW_KIND] native atomic view requires rp1-native-apb",
                 peripheral.name
             ));
-        }
+    }
 
     let mut custom = BTreeMap::new();
     for view in &peripheral.custom_views {

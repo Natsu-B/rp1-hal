@@ -132,9 +132,11 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
             loads.push((pa, pa + mem));
             image_end = image_end.max(pa + mem);
             if let Some((start, len)) = sec.file_range()
-                && offset < start + len && offset + size > start {
-                    return Err("note must not be in a PT_LOAD".into());
-                }
+                && offset < start + len
+                && offset + size > start
+            {
+                return Err("note must not be in a PT_LOAD".into());
+            }
         }
     }
     // .bss is NOLOAD and outside every PT_LOAD; take the DSRAM high-water mark from the linker symbol.

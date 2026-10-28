@@ -396,7 +396,6 @@ pub enum ApiExposure {
     CratePrivate,
 }
 
-
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum RawWriteExposure {
@@ -415,7 +414,6 @@ pub enum AtomicKind {
     Rp1Native,
     Custom,
 }
-
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
