@@ -1,0 +1,15 @@
+[peripheral]
+id = "uart3"
+name = "UART3"
+module = "uart3"
+kind = "external-ip"
+base = 0x4003c000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "UART3"
+external_ip = "arm-pl011"
+clock_dependency = "uartclk and apb_pclk"
+reset_dependency = "RESETS.CTRL1.UART3"
+pinmux_dependency = "IO_BANK/PADS selection"
+note = "RP1 UART3 register block. Bus=APB. No RP1 atomic alias listed."

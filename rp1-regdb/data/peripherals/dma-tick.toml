@@ -1,0 +1,253 @@
+[peripheral]
+id = "dma_tick"
+name = "DMA_TICK"
+module = "dma_tick"
+kind = "rp1-native-apb"
+base = 0x40158000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "DMA_TICK_RW"
+note = "RP1 DMA_TICK_RW register block. Bus=APB. Atomic alias: normal read/write access."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "tick0_en"
+name = "TICK0_EN"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "DMA tick 0 enable bits"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "req"
+name = "REQ"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generation of handshakes on tick0 output"
+[[register.field]]
+id = "single"
+name = "SINGLE"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Generate dma_single as well as burst requests"
+
+[[register]]
+id = "tick0_ctrl"
+name = "TICK0_CTRL"
+offset = 0x4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "DMA tick 0 control"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "finish_clear"
+name = "FINISH_CLEAR"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Clear enable/single when DMAC asserts dma_finish"
+[[register.field]]
+id = "disable"
+name = "DISABLE"
+lsb = 1
+width = 1
+api_write = "public"
+write_behavior = "plain"
+verified_read = "not-applicable"
+verified_write = "official"
+origin = "official"
+note = "Write 1 to SET alias to force-disable handshake"
+[[register.field]]
+id = "dwell"
+name = "DWELL"
+lsb = 4
+width = 5
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Handshake state machine idle dwell in bus-clock cycles"
+[[register.field]]
+id = "dreq"
+name = "DREQ"
+lsb = 12
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Current state of dreq input"
+
+[[register]]
+id = "tick1_en"
+name = "TICK1_EN"
+offset = 0x8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "DMA tick 1 enable bits"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "req"
+name = "REQ"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generation of handshakes on tick1 output"
+[[register.field]]
+id = "single"
+name = "SINGLE"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Generate dma_single as well as burst requests"
+
+[[register]]
+id = "tick1_ctrl"
+name = "TICK1_CTRL"
+offset = 0xc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "DMA tick 1 control"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "finish_clear"
+name = "FINISH_CLEAR"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Clear enable/single when DMAC asserts dma_finish"
+[[register.field]]
+id = "disable"
+name = "DISABLE"
+lsb = 1
+width = 1
+api_write = "public"
+write_behavior = "plain"
+verified_read = "not-applicable"
+verified_write = "official"
+origin = "official"
+note = "Write 1 to SET alias to force-disable handshake"
+[[register.field]]
+id = "dwell"
+name = "DWELL"
+lsb = 4
+width = 5
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Handshake state machine idle dwell in bus-clock cycles"
+[[register.field]]
+id = "dreq"
+name = "DREQ"
+lsb = 12
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Current state of dreq input"

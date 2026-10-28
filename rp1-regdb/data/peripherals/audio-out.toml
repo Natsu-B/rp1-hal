@@ -1,0 +1,17 @@
+[peripheral]
+id = "audio_out"
+name = "AUDIO_OUT"
+module = "audio_out"
+kind = "rp1-native-apb"
+base = 0x40094000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "AUDIO_OUT_RW"
+note = "RP1 AUDIO_OUT_RW register block. Bus=APB. Atomic alias: normal read/write access."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000

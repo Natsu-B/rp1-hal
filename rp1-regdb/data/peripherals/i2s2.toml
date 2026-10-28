@@ -1,0 +1,15 @@
+[peripheral]
+id = "i2s2"
+name = "I2S2"
+module = "i2s2"
+kind = "external-ip"
+base = 0x400a8000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "I2S2"
+external_ip = "synopsys-designware-i2s"
+clock_dependency = "ClockId::I2s"
+reset_dependency = "RESETS field I2S2 when present"
+pinmux_dependency = "IO_BANK/PADS function selection where externally pinned"
+note = "RP1 I2S2 register block. Bus=APB. No RP1 atomic alias listed."

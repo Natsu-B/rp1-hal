@@ -1,0 +1,5 @@
+error[E0599]: no method named `candidate_bit6` found for mutable reference `&mut AtomicSetW<CTRL0_SPEC>` in the current scope
+ --> tests/ui/atomic_hidden_field.rs:2:37
+  |
+2 |     resets.ctrl0().atomic_set(|w| w.candidate_bit6().set());
+  |                                     ^^^^^^^^^^^^^^ method not found in `&mut AtomicSetW<CTRL0_SPEC>`

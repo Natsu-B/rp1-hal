@@ -1,0 +1,17 @@
+[package]
+name = "rp1-pac"
+version = "0.0.1"
+edition = "2024"
+description = "TOML-generated peripheral access crate for Raspberry Pi RP1"
+
+[dependencies]
+cortex-m = "0.7.7"
+critical-section = { version = "1.1", optional = true }
+
+[features]
+default = []
+critical-section = ["dep:critical-section"]
+vectors = []
+
+[dev-dependencies]
+trybuild = "1"

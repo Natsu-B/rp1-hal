@@ -1,0 +1,11 @@
+error[E0599]: no method named `timehw` found for struct `TIMER` in the current scope
+ --> tests/ui/state_machine_write.rs:3:23
+  |
+3 |     peripherals.TIMER.timehw().write(|w| w);
+  |                       ^^^^^^ private field, not a method
+  |
+help: there is a method `timehr` with a similar name
+  |
+3 -     peripherals.TIMER.timehw().write(|w| w);
+3 +     peripherals.TIMER.timehr().write(|w| w);
+  |

@@ -1,0 +1,15 @@
+[peripheral]
+id = "usbhost0"
+name = "USBHOST0"
+module = "usbhost0"
+kind = "external-ip"
+base = 0x40200000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "USBHOST0"
+external_ip = "usb-xhci-host"
+clock_dependency = "ClockId::Usbh0Microframe + ClockId::Usbh0Suspend"
+reset_dependency = "RESETS field USBHOST0 when present"
+pinmux_dependency = "IO_BANK/PADS function selection where externally pinned"
+note = "RP1 USBHOST0 register block. Bus=AXI3. No RP1 atomic alias listed."

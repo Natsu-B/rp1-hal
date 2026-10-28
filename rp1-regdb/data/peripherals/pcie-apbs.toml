@@ -1,0 +1,2552 @@
+[peripheral]
+id = "pcie_apbs"
+name = "PCIE_APBS"
+module = "pcie_apbs"
+kind = "rp1-native-apb"
+base = 0x40108000
+size = 0x1000
+ownership = "singleton"
+default_origin = "linux"
+legacy_svd_name = "PCIE_RW"
+note = "Only independently understood pre-DBI controller registers are exposed; state-machine-only controls remain hidden."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[peripheral.custom_views]]
+id = "msix-set"
+kind = "set"
+offset = 0x800
+
+[[peripheral.custom_views]]
+id = "msix-clear"
+kind = "clear"
+offset = 0xc00
+
+[[register]]
+id = "dbi"
+name = "DBI"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Address fields for DBI access"
+[register.api]
+read = "public"
+[[register.field]]
+id = "asel"
+name = "ASEL"
+lsb = 0
+width = 2
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "b0: cs2, b1: cdm/elbi select"
+[[register.field.enum_value]]
+name = "NORMAL_MISC"
+value = 0x0
+note = "Normal / miscellaneous DBI access"
+[[register.field.enum_value]]
+name = "SHADOW"
+value = 0x1
+note = "Shadow DBI access"
+[[register.field.enum_value]]
+name = "ELBI"
+value = 0x2
+note = "ELBI DBI access"
+[[register.field.enum_value]]
+name = "IATU_DMA"
+value = 0x3
+note = "iATU / DMA DBI access"
+[[register.field]]
+id = "func_num"
+name = "FUNC_NUM"
+lsb = 2
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "CDM access function number"
+[[register.field]]
+id = "atu_region"
+name = "ATU_REGION"
+lsb = 5
+width = 9
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "iATU access region number and direction"
+
+[[register]]
+id = "control"
+name = "CONTROL"
+offset = 0x4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Miscellaneous control bits"
+[register.api]
+read = "public"
+[[register.field]]
+id = "app_req_retry_en"
+name = "APP_REQ_RETRY_EN"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Defer upstream PCIe configuration requests; complete them with retry status"
+[[register.field]]
+id = "app_dbi_ro_wr_disable"
+name = "APP_DBI_RO_WR_DISABLE"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "DBI read-only write disable"
+[[register.field]]
+id = "app_ltssm_enable"
+name = "APP_LTSSM_ENABLE"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable link training / establishment"
+[[register.field]]
+id = "set_hot_rst_app_ltssm_enable"
+name = "SET_HOT_RST_APP_LTSSM_ENABLE"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-set"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable link training/establishment following hot reset request; self-clearing"
+[[register.field]]
+id = "clk2fc_sel"
+name = "CLK2FC_SEL"
+lsb = 4
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Select PCIe clock to send to frequency counter"
+[[register.field]]
+id = "cperstn_disable"
+name = "CPERSTN_DISABLE"
+lsb = 7
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Gate CPERSTN source"
+[[register.field]]
+id = "cperstn_assert"
+name = "CPERSTN_ASSERT"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Assert CPERSTN"
+[[register.field]]
+id = "mem_pd"
+name = "MEM_PD"
+lsb = 9
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Power down all PCIe memories"
+
+[[register]]
+id = "msix_cfg"
+name = "MSIX_CFG"
+offset = 0x8
+width = 32
+repeat_count = 64
+repeat_stride = 4
+public_count = 61
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "64 physical slots are retained for layout; only 61 Linux-visible vectors are publicly indexed. IACK is self-clearing and has no writer."
+[register.api]
+read = "public"
+[register.atomic]
+kind = "custom"
+set = "typed"
+clear = "typed"
+set_view = "msix-set"
+clear_view = "msix-clear"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Interrupt enable"
+[[register.field]]
+id = "test"
+name = "TEST"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ORed with interrupt source for test purposes"
+[[register.field]]
+id = "iack"
+name = "IACK"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "self-clearing"
+verified_read = "official"
+verified_write = "unverified"
+origin = "official"
+note = "Interrupt acknowledge; write 1 to clear automatic interrupt mask; self-clearing"
+[[register.field]]
+id = "iack_en"
+name = "IACK_EN"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable interrupt acknowledge functionality"
+[[register.field]]
+id = "tc"
+name = "TC"
+lsb = 12
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PCIe traffic class"
+[[register.field]]
+id = "func"
+name = "FUNC"
+lsb = 16
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PCIe function"
+
+[[register]]
+id = "intstatl"
+name = "INTSTATL"
+offset = 0x108
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "Raw interrupt status [31:0]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "vector0"
+name = "VECTOR0"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 0"
+[[register.field]]
+id = "vector1"
+name = "VECTOR1"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 1"
+[[register.field]]
+id = "vector2"
+name = "VECTOR2"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 2"
+[[register.field]]
+id = "vector3"
+name = "VECTOR3"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 3"
+[[register.field]]
+id = "vector4"
+name = "VECTOR4"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 4"
+[[register.field]]
+id = "vector5"
+name = "VECTOR5"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 5"
+[[register.field]]
+id = "vector6"
+name = "VECTOR6"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 6"
+[[register.field]]
+id = "vector7"
+name = "VECTOR7"
+lsb = 7
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 7"
+[[register.field]]
+id = "vector8"
+name = "VECTOR8"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 8"
+[[register.field]]
+id = "vector9"
+name = "VECTOR9"
+lsb = 9
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 9"
+[[register.field]]
+id = "vector10"
+name = "VECTOR10"
+lsb = 10
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 10"
+[[register.field]]
+id = "vector11"
+name = "VECTOR11"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 11"
+[[register.field]]
+id = "vector12"
+name = "VECTOR12"
+lsb = 12
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 12"
+[[register.field]]
+id = "vector13"
+name = "VECTOR13"
+lsb = 13
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 13"
+[[register.field]]
+id = "vector14"
+name = "VECTOR14"
+lsb = 14
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 14"
+[[register.field]]
+id = "vector15"
+name = "VECTOR15"
+lsb = 15
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 15"
+[[register.field]]
+id = "vector16"
+name = "VECTOR16"
+lsb = 16
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 16"
+[[register.field]]
+id = "vector17"
+name = "VECTOR17"
+lsb = 17
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 17"
+[[register.field]]
+id = "vector18"
+name = "VECTOR18"
+lsb = 18
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 18"
+[[register.field]]
+id = "vector19"
+name = "VECTOR19"
+lsb = 19
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 19"
+[[register.field]]
+id = "vector20"
+name = "VECTOR20"
+lsb = 20
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 20"
+[[register.field]]
+id = "vector21"
+name = "VECTOR21"
+lsb = 21
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 21"
+[[register.field]]
+id = "vector22"
+name = "VECTOR22"
+lsb = 22
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 22"
+[[register.field]]
+id = "vector23"
+name = "VECTOR23"
+lsb = 23
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 23"
+[[register.field]]
+id = "vector24"
+name = "VECTOR24"
+lsb = 24
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 24"
+[[register.field]]
+id = "vector25"
+name = "VECTOR25"
+lsb = 25
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 25"
+[[register.field]]
+id = "vector26"
+name = "VECTOR26"
+lsb = 26
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 26"
+[[register.field]]
+id = "vector27"
+name = "VECTOR27"
+lsb = 27
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 27"
+[[register.field]]
+id = "vector28"
+name = "VECTOR28"
+lsb = 28
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 28"
+[[register.field]]
+id = "vector29"
+name = "VECTOR29"
+lsb = 29
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 29"
+[[register.field]]
+id = "vector30"
+name = "VECTOR30"
+lsb = 30
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 30"
+[[register.field]]
+id = "vector31"
+name = "VECTOR31"
+lsb = 31
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 31"
+
+[[register]]
+id = "intstath"
+name = "INTSTATH"
+offset = 0x10c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "Raw interrupt status [63:32]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "vector32"
+name = "VECTOR32"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 32"
+[[register.field]]
+id = "vector33"
+name = "VECTOR33"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 33"
+[[register.field]]
+id = "vector34"
+name = "VECTOR34"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 34"
+[[register.field]]
+id = "vector35"
+name = "VECTOR35"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 35"
+[[register.field]]
+id = "vector36"
+name = "VECTOR36"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 36"
+[[register.field]]
+id = "vector37"
+name = "VECTOR37"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 37"
+[[register.field]]
+id = "vector38"
+name = "VECTOR38"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 38"
+[[register.field]]
+id = "vector39"
+name = "VECTOR39"
+lsb = 7
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 39"
+[[register.field]]
+id = "vector40"
+name = "VECTOR40"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 40"
+[[register.field]]
+id = "vector41"
+name = "VECTOR41"
+lsb = 9
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 41"
+[[register.field]]
+id = "vector42"
+name = "VECTOR42"
+lsb = 10
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 42"
+[[register.field]]
+id = "vector43"
+name = "VECTOR43"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 43"
+[[register.field]]
+id = "vector44"
+name = "VECTOR44"
+lsb = 12
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 44"
+[[register.field]]
+id = "vector45"
+name = "VECTOR45"
+lsb = 13
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 45"
+[[register.field]]
+id = "vector46"
+name = "VECTOR46"
+lsb = 14
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 46"
+[[register.field]]
+id = "vector47"
+name = "VECTOR47"
+lsb = 15
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 47"
+[[register.field]]
+id = "vector48"
+name = "VECTOR48"
+lsb = 16
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 48"
+[[register.field]]
+id = "vector49"
+name = "VECTOR49"
+lsb = 17
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 49"
+[[register.field]]
+id = "vector50"
+name = "VECTOR50"
+lsb = 18
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 50"
+[[register.field]]
+id = "vector51"
+name = "VECTOR51"
+lsb = 19
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 51"
+[[register.field]]
+id = "vector52"
+name = "VECTOR52"
+lsb = 20
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 52"
+[[register.field]]
+id = "vector53"
+name = "VECTOR53"
+lsb = 21
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 53"
+[[register.field]]
+id = "vector54"
+name = "VECTOR54"
+lsb = 22
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 54"
+[[register.field]]
+id = "vector55"
+name = "VECTOR55"
+lsb = 23
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 55"
+[[register.field]]
+id = "vector56"
+name = "VECTOR56"
+lsb = 24
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 56"
+[[register.field]]
+id = "vector57"
+name = "VECTOR57"
+lsb = 25
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 57"
+[[register.field]]
+id = "vector58"
+name = "VECTOR58"
+lsb = 26
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 58"
+[[register.field]]
+id = "vector59"
+name = "VECTOR59"
+lsb = 27
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 59"
+[[register.field]]
+id = "vector60"
+name = "VECTOR60"
+lsb = 28
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 60"
+[[register.field]]
+id = "vector61"
+name = "VECTOR61"
+lsb = 29
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 61"
+[[register.field]]
+id = "vector62"
+name = "VECTOR62"
+lsb = 30
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 62"
+[[register.field]]
+id = "vector63"
+name = "VECTOR63"
+lsb = 31
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "MSIx raw interrupt status vector 63"
+
+[[register]]
+id = "phy_test"
+name = "PHY_TEST"
+offset = 0x110
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Address fields for PCIe PHY_TEST access"
+[register.api]
+read = "public"
+[[register.field]]
+id = "powerdown"
+name = "POWERDOWN"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PHY IDDQ power-down control"
+[[register.field]]
+id = "bypass"
+name = "BYPASS"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "All circuits power-down but leave reference clocks active"
+[[register.field]]
+id = "burnin"
+name = "BURNIN"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "All circuits activator"
+
+[[register]]
+id = "phy_param_ctrl0"
+name = "PHY_PARAM_CTRL0"
+offset = 0x114
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PHY parameter control0"
+[register.api]
+read = "public"
+[[register.field]]
+id = "phy_rx0_eq"
+name = "PHY_RX0_EQ"
+lsb = 0
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "RX0 equalizer"
+[[register.field]]
+id = "phy_tx0_term_offset"
+name = "PHY_TX0_TERM_OFFSET"
+lsb = 3
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "TX0 termination offset"
+[[register.field]]
+id = "phy_rx1_eq"
+name = "PHY_RX1_EQ"
+lsb = 8
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "RX1 equalizer"
+[[register.field]]
+id = "phy_tx1_term_offset"
+name = "PHY_TX1_TERM_OFFSET"
+lsb = 11
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "TX1 termination offset"
+[[register.field]]
+id = "phy_rx2_eq"
+name = "PHY_RX2_EQ"
+lsb = 16
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "RX2 equalizer"
+[[register.field]]
+id = "phy_tx2_term_offset"
+name = "PHY_TX2_TERM_OFFSET"
+lsb = 19
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "TX2 termination offset"
+[[register.field]]
+id = "phy_rx3_eq"
+name = "PHY_RX3_EQ"
+lsb = 24
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "RX3 equalizer"
+[[register.field]]
+id = "phy_tx3_term_offset"
+name = "PHY_TX3_TERM_OFFSET"
+lsb = 27
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "TX3 termination offset"
+
+[[register]]
+id = "phy_param_ctrl1"
+name = "PHY_PARAM_CTRL1"
+offset = 0x118
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PHY parameter control1"
+[register.api]
+read = "public"
+[[register.field]]
+id = "pcs_tx_deemph_gen2_3p5db"
+name = "PCS_TX_DEEMPH_GEN2_3P5DB"
+lsb = 0
+width = 6
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Gen2 TX deemphasis at 3.5 dB"
+[[register.field]]
+id = "pcs_tx_deemph_gen2_6db"
+name = "PCS_TX_DEEMPH_GEN2_6DB"
+lsb = 6
+width = 6
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Gen2 TX deemphasis at 6.0 dB"
+[[register.field]]
+id = "pcs_tx_deemph_gen1"
+name = "PCS_TX_DEEMPH_GEN1"
+lsb = 12
+width = 6
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Gen1 TX deemphasis"
+[[register.field]]
+id = "pcs_tx_swing_full"
+name = "PCS_TX_SWING_FULL"
+lsb = 18
+width = 7
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "TX amplitude - full swing mode"
+[[register.field]]
+id = "pcs_tx_swing_low"
+name = "PCS_TX_SWING_LOW"
+lsb = 25
+width = 7
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "TX amplitude - low swing mode"
+
+[[register]]
+id = "phy_cr_acc_ctrl"
+name = "PHY_CR_ACC_CTRL"
+offset = 0x11c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PHY control-register access control"
+[register.api]
+read = "public"
+[[register.field]]
+id = "addr"
+name = "ADDR"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PHY control register address"
+[[register.field]]
+id = "write"
+name = "WRITE"
+lsb = 16
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-set"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Register write command; self-clearing"
+[[register.field]]
+id = "read"
+name = "READ"
+lsb = 17
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-set"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Register read command; self-clearing"
+[[register.field]]
+id = "busy"
+name = "BUSY"
+lsb = 18
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "PHY CR interface busy"
+[[register.field]]
+id = "phy_pipe_rst"
+name = "PHY_PIPE_RST"
+lsb = 19
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Gate into PHY PCS/PIPE reset; advisable during PHY control-register writes"
+
+[[register]]
+id = "phy_cr_acc_data"
+name = "PHY_CR_ACC_DATA"
+offset = 0x120
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "fifo"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PHY control-register access read/write data"
+[register.api]
+read = "public"
+[[register.field]]
+id = "wdata"
+name = "WDATA"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PHY register write data"
+[[register.field]]
+id = "rdata"
+name = "RDATA"
+lsb = 16
+width = 16
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "PHY register read data"
+
+[[register]]
+id = "ltssm_state_new"
+name = "LTSSM_STATE_NEW"
+offset = 0x124
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "New LTSSM state"
+[register.api]
+read = "public"
+[[register.field]]
+id = "state"
+name = "STATE"
+lsb = 0
+width = 6
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "New LTSSM state; FIFO-style read side effect per RP1 table type RF"
+
+[[register]]
+id = "ltssm_state_filter"
+name = "LTSSM_STATE_FILTER"
+offset = 0x12c
+width = 32
+repeat_count = 4
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x3f
+note = "LTSSM state filter"
+[register.api]
+read = "public"
+[[register.field]]
+id = "val"
+name = "VAL"
+lsb = 0
+width = 6
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Filter out state changes to this LTSSM state"
+
+[[register]]
+id = "axi_lookup"
+name = "AXI_LOOKUP"
+offset = 0x140
+width = 32
+repeat_count = 16
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Per-master AXI lookup / TLP and VDM traffic classes"
+[register.api]
+read = "public"
+[[register.field]]
+id = "tlp_tc"
+name = "TLP_TC"
+lsb = 0
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "TLP traffic class"
+[[register.field]]
+id = "vdm_tc"
+name = "VDM_TC"
+lsb = 4
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "VDM traffic class"
+
+[[register]]
+id = "vdm_config_reg0"
+name = "VDM_CONFIG_REG0"
+offset = 0x180
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "VDM config register 0"
+[register.api]
+read = "public"
+[[register.field]]
+id = "payload"
+name = "PAYLOAD"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Message payload"
+
+[[register]]
+id = "vdm_config_reg1"
+name = "VDM_CONFIG_REG1"
+offset = 0x184
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "VDM config register 1"
+[register.api]
+read = "public"
+[[register.field]]
+id = "req"
+name = "REQ"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-set"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Message request; write 1 to generate config message; self-clearing"
+
+[[register]]
+id = "vdm_panic_reg"
+name = "VDM_PANIC_REG"
+offset = 0x188
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "VDM panic register"
+[register.api]
+read = "public"
+[[register.field]]
+id = "payload"
+name = "PAYLOAD"
+lsb = 8
+width = 24
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Message payload [31:8]"
+
+[[register]]
+id = "vdm_test"
+name = "VDM_TEST"
+offset = 0x18c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "VDM test requesters"
+[register.api]
+read = "public"
+[[register.field]]
+id = "req0_tc"
+name = "REQ0_TC"
+lsb = 0
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Requester 0 traffic class"
+[[register.field]]
+id = "req0_panic"
+name = "REQ0_PANIC"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Requester 0 panic bit"
+[[register.field]]
+id = "req1_tc"
+name = "REQ1_TC"
+lsb = 4
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Requester 1 traffic class"
+[[register.field]]
+id = "req1_panic"
+name = "REQ1_PANIC"
+lsb = 7
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Requester 1 panic bit"
+[[register.field]]
+id = "req2_tc"
+name = "REQ2_TC"
+lsb = 8
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Requester 2 traffic class"
+[[register.field]]
+id = "req2_panic"
+name = "REQ2_PANIC"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Requester 2 panic bit"
+[[register.field]]
+id = "req3_tc"
+name = "REQ3_TC"
+lsb = 12
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Requester 3 traffic class"
+[[register.field]]
+id = "req3_panic"
+name = "REQ3_PANIC"
+lsb = 15
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Requester 3 panic bit"
+
+[[register]]
+id = "vdm_header"
+name = "VDM_HEADER"
+offset = 0x190
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Vendor-defined message header"
+[register.api]
+read = "public"
+[[register.field]]
+id = "type"
+name = "TYPE"
+lsb = 0
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Message type; fmt hardwired to 3'b001, default Msg"
+[[register.field]]
+id = "tc"
+name = "TC"
+lsb = 5
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Traffic class"
+[[register.field]]
+id = "ep"
+name = "EP"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Error poisoned"
+[[register.field]]
+id = "td"
+name = "TD"
+lsb = 9
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "TLP digest"
+[[register.field]]
+id = "attr"
+name = "ATTR"
+lsb = 10
+width = 2
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Attribute"
+[[register.field]]
+id = "func_num"
+name = "FUNC_NUM"
+lsb = 12
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Function number"
+[[register.field]]
+id = "tag"
+name = "TAG"
+lsb = 15
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Tag"
+[[register.field]]
+id = "code"
+name = "CODE"
+lsb = 23
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Vendor-defined message code"
+
+[[register]]
+id = "pm_control"
+name = "PM_CONTROL"
+offset = 0x194
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Power-management control"
+[register.api]
+read = "public"
+[[register.field]]
+id = "app_clk_pm_en"
+name = "APP_CLK_PM_EN"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable clock PM feature"
+[[register.field]]
+id = "app_xfer_pending"
+name = "APP_XFER_PENDING"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Application has transfers pending"
+[[register.field]]
+id = "app_req_exit_l1"
+name = "APP_REQ_EXIT_L1"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Request L1 exit"
+[[register.field]]
+id = "app_ready_entr_l23"
+name = "APP_READY_ENTR_L23"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Ready to enter L2/L3 state"
+[[register.field]]
+id = "app_req_entr_l1"
+name = "APP_REQ_ENTR_L1"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-set"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Request L1-ASPM entry; self-clearing"
+[[register.field]]
+id = "apps_pm_xmt_pme"
+name = "APPS_PM_XMT_PME"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-set"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Request L1/L2 PM exit; self-clearing PME support must be enabled"
+[[register.field]]
+id = "app_clk_req_n"
+name = "APP_CLK_REQ_N"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Reference clock required; set if refclk can be removed"
+
+[[register]]
+id = "pm_status"
+name = "PM_STATUS"
+offset = 0x198
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Power-management status"
+[register.api]
+read = "public"
+[[register.field]]
+id = "pm_linkst_in_l0s"
+name = "PM_LINKST_IN_L0S"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "PM in L0s state"
+[[register.field]]
+id = "pm_l1_entry_started"
+name = "PM_L1_ENTRY_STARTED"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "L1 entry process is in progress"
+[[register.field]]
+id = "pm_linkst_in_l1"
+name = "PM_LINKST_IN_L1"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "PM in L1 state"
+[[register.field]]
+id = "pm_linkst_in_l2"
+name = "PM_LINKST_IN_L2"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "PM in L2 state"
+[[register.field]]
+id = "pm_linkst_l2_exit"
+name = "PM_LINKST_L2_EXIT"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "PM exiting L2 state"
+[[register.field]]
+id = "pm_dstate"
+name = "PM_DSTATE"
+lsb = 5
+width = 3
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Current D-state"
+[[register.field]]
+id = "pm_slave_state"
+name = "PM_SLAVE_STATE"
+lsb = 8
+width = 5
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Current state of PM slave controller"
+[[register.field]]
+id = "pm_master_state"
+name = "PM_MASTER_STATE"
+lsb = 13
+width = 5
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Current state of PM master controller"
+[[register.field]]
+id = "pm_current_state"
+name = "PM_CURRENT_STATE"
+lsb = 18
+width = 3
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Current link state for debug"
+[[register.field]]
+id = "pm_xtlh_block_tlp"
+name = "PM_XTLH_BLOCK_TLP"
+lsb = 21
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Application must stop generating new outgoing requests due to PM state"
+
+[[register]]
+id = "monitor0"
+name = "MONITOR0"
+offset = 0x19c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "Internal signals for debug"
+[register.api]
+read = "public"
+[[register.field]]
+id = "cxpl_debug_info_l"
+name = "CXPL_DEBUG_INFO_L"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "cxpl_debug_info[31:0]"
+
+[[register]]
+id = "monitor1"
+name = "MONITOR1"
+offset = 0x1a0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "Internal signals for debug"
+[register.api]
+read = "public"
+[[register.field]]
+id = "cxpl_debug_info_h"
+name = "CXPL_DEBUG_INFO_H"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "cxpl_debug_info[63:32]"
+
+[[register]]
+id = "monitor2"
+name = "MONITOR2"
+offset = 0x1a4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "Internal signals for debug"
+[register.api]
+read = "public"
+[[register.field]]
+id = "cxpl_debug_info_ei"
+name = "CXPL_DEBUG_INFO_EI"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "cxpl_debug_info_ei[15:0]"
+[[register.field]]
+id = "core_alive"
+name = "CORE_ALIVE"
+lsb = 16
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "State of core_alive signal, synchronised"
+[[register.field]]
+id = "perstn"
+name = "PERSTN"
+lsb = 17
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "State of PCIe PERSTN signal, synchronised"
+[[register.field]]
+id = "link_reset_req"
+name = "LINK_RESET_REQ"
+lsb = 18
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "State of link_reset_req signal, synchronised"
+[[register.field]]
+id = "smlh_link_up"
+name = "SMLH_LINK_UP"
+lsb = 19
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "PHY link up"
+[[register.field]]
+id = "rdlh_link_up"
+name = "RDLH_LINK_UP"
+lsb = 20
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Data link layer up"
+[[register.field]]
+id = "brdg_slv_xfer_pending"
+name = "BRDG_SLV_XFER_PENDING"
+lsb = 21
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "brdg_slv_xfer_pending"
+[[register.field]]
+id = "brdg_dbi_xfer_pending"
+name = "BRDG_DBI_XFER_PENDING"
+lsb = 22
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "brdg_dbi_xfer_pending"
+[[register.field]]
+id = "radm_xfer_pending"
+name = "RADM_XFER_PENDING"
+lsb = 23
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "radm_xfer_pending"
+
+[[register]]
+id = "intr"
+name = "INTR"
+offset = 0x1a8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Raw interrupts"
+[register.api]
+read = "public"
+[[register.field]]
+id = "core_alive"
+name = "CORE_ALIVE"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Core alive"
+[[register.field]]
+id = "perstn"
+name = "PERSTN"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PCIe PERSTN"
+[[register.field]]
+id = "link_reset_req"
+name = "LINK_RESET_REQ"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Link reset request"
+[[register.field]]
+id = "ltssm_state_fifo_not_empty"
+name = "LTSSM_STATE_FIFO_NOT_EMPTY"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "LTSSM state FIFO not empty"
+[[register.field]]
+id = "radm_pm_turnoff"
+name = "RADM_PM_TURNOFF"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "RADM PM turnoff"
+[[register.field]]
+id = "smlh_link_up"
+name = "SMLH_LINK_UP"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PHY link up"
+[[register.field]]
+id = "rdlh_link_up"
+name = "RDLH_LINK_UP"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Data link layer up"
+
+[[register]]
+id = "inte"
+name = "INTE"
+offset = 0x1ac
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Interrupt enable"
+[register.api]
+read = "public"
+[[register.field]]
+id = "core_alive"
+name = "CORE_ALIVE"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Core alive"
+[[register.field]]
+id = "perstn"
+name = "PERSTN"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PCIe PERSTN"
+[[register.field]]
+id = "link_reset_req"
+name = "LINK_RESET_REQ"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Link reset request"
+[[register.field]]
+id = "ltssm_state_fifo_not_empty"
+name = "LTSSM_STATE_FIFO_NOT_EMPTY"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "LTSSM state FIFO not empty"
+[[register.field]]
+id = "radm_pm_turnoff"
+name = "RADM_PM_TURNOFF"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "RADM PM turnoff"
+[[register.field]]
+id = "smlh_link_up"
+name = "SMLH_LINK_UP"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PHY link up"
+[[register.field]]
+id = "rdlh_link_up"
+name = "RDLH_LINK_UP"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Data link layer up"
+
+[[register]]
+id = "intf"
+name = "INTF"
+offset = 0x1b0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Interrupt force"
+[register.api]
+read = "public"
+[[register.field]]
+id = "core_alive"
+name = "CORE_ALIVE"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Core alive"
+[[register.field]]
+id = "perstn"
+name = "PERSTN"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PCIe PERSTN"
+[[register.field]]
+id = "link_reset_req"
+name = "LINK_RESET_REQ"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Link reset request"
+[[register.field]]
+id = "ltssm_state_fifo_not_empty"
+name = "LTSSM_STATE_FIFO_NOT_EMPTY"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "LTSSM state FIFO not empty"
+[[register.field]]
+id = "radm_pm_turnoff"
+name = "RADM_PM_TURNOFF"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "RADM PM turnoff"
+[[register.field]]
+id = "smlh_link_up"
+name = "SMLH_LINK_UP"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PHY link up"
+[[register.field]]
+id = "rdlh_link_up"
+name = "RDLH_LINK_UP"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Data link layer up"
+
+[[register]]
+id = "ints"
+name = "INTS"
+offset = 0x1b4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "Interrupt status after masking and forcing"
+[register.api]
+read = "public"
+[[register.field]]
+id = "core_alive"
+name = "CORE_ALIVE"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Core alive"
+[[register.field]]
+id = "perstn"
+name = "PERSTN"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "PCIe PERSTN"
+[[register.field]]
+id = "link_reset_req"
+name = "LINK_RESET_REQ"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Link reset request"
+[[register.field]]
+id = "ltssm_state_fifo_not_empty"
+name = "LTSSM_STATE_FIFO_NOT_EMPTY"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "LTSSM state FIFO not empty"
+[[register.field]]
+id = "radm_pm_turnoff"
+name = "RADM_PM_TURNOFF"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "RADM PM turnoff"
+[[register.field]]
+id = "smlh_link_up"
+name = "SMLH_LINK_UP"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "PHY link up"
+[[register.field]]
+id = "rdlh_link_up"
+name = "RDLH_LINK_UP"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Data link layer up"
+
+[[register]]
+id = "undocumented_c0"
+name = "UNDOCUMENTED_C0"
+offset = 0x1c0
+width = 32
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "static"
+verified_write = "static"
+origin = "inferred"
+note = "Undocumented endpoint sequencing companion gate. Retained as hidden state-machine metadata; no register accessor or writer is generated."
+[[register.field]]
+id = "candidate_bit1"
+name = "CANDIDATE_BIT1"
+lsb = 1
+width = 1
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "static"
+origin = "inferred"
+
+[[register]]
+id = "undocumented_c8"
+name = "UNDOCUMENTED_C8"
+offset = 0x1c8
+width = 32
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "static"
+verified_write = "static"
+origin = "official-firmware"
+note = "Internal endpoint-core reset sequencing hold/request word. Retained as hidden state-machine metadata; no register accessor or writer is generated."
+[[register.field]]
+id = "reset_sequence_hold"
+name = "RESET_SEQUENCE_HOLD"
+lsb = 1
+width = 1
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "static"
+origin = "official-firmware"

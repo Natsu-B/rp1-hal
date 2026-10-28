@@ -1,0 +1,1084 @@
+[peripheral]
+id = "eth_cfg"
+name = "ETH_CFG"
+module = "eth_cfg"
+kind = "rp1-native-apb"
+base = 0x40104000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "ETH_CFG_RW"
+note = "RP1 ETH_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "control"
+name = "CONTROL"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "General Ethernet control register"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "tsu_ms"
+name = "TSU_MS"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "TSU master/slave"
+[[register.field]]
+id = "tsu_inc_ctrl"
+name = "TSU_INC_CTRL"
+lsb = 1
+width = 2
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "TSU increment control"
+[[register.field]]
+id = "buserr_en"
+name = "BUSERR_EN"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable MAC bus errors to pass through fabric"
+[[register.field]]
+id = "mem_pd"
+name = "MEM_PD"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Memory power down"
+
+[[register]]
+id = "status"
+name = "STATUS"
+offset = 0x4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "General Ethernet status register"
+[register.api]
+read = "public"
+[[register.field]]
+id = "rgmii_link_status"
+name = "RGMII_LINK_STATUS"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "RGMII link status"
+[[register.field]]
+id = "rgmii_speed"
+name = "RGMII_SPEED"
+lsb = 1
+width = 2
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "RGMII speed: 0=10Mb, 1=100Mb, 2=1Gb"
+[[register.field]]
+id = "rgmii_duplex"
+name = "RGMII_DUPLEX"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "RGMII duplex mode"
+[[register.field]]
+id = "arlen_illegal"
+name = "ARLEN_ILLEGAL"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Illegal AXI read address transaction"
+[[register.field]]
+id = "awlen_illegal"
+name = "AWLEN_ILLEGAL"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Illegal AXI write address transaction"
+
+[[register]]
+id = "tsu_timer_cnt0"
+name = "TSU_TIMER_CNT0"
+offset = 0x8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "TSU timer count value [31:0]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "cnt0"
+name = "CNT0"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "TSU timer count [31:0]"
+
+[[register]]
+id = "tsu_timer_cnt1"
+name = "TSU_TIMER_CNT1"
+offset = 0xc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "TSU timer count value [63:32]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "cnt1"
+name = "CNT1"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "TSU timer count [63:32]"
+
+[[register]]
+id = "tsu_timer_cnt2"
+name = "TSU_TIMER_CNT2"
+offset = 0x10
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "TSU timer count value [93:64]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "cnt2"
+name = "CNT2"
+lsb = 0
+width = 30
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "TSU timer count [93:64]"
+
+[[register]]
+id = "clkgen"
+name = "CLKGEN"
+offset = 0x14
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Clock control"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "speed_override"
+name = "SPEED_OVERRIDE"
+lsb = 0
+width = 2
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Speed override value"
+[[register.field]]
+id = "speed_override_en"
+name = "SPEED_OVERRIDE_EN"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Use specified speed instead of MAC speed"
+[[register.field]]
+id = "speed_from_mac"
+name = "SPEED_FROM_MAC"
+lsb = 4
+width = 2
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Speed from MAC"
+[[register.field]]
+id = "kill"
+name = "KILL"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Asynchronously kill clock generator"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Start/stop clock generator cleanly"
+[[register.field]]
+id = "dc50"
+name = "DC50"
+lsb = 8
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Duty-cycle correction for odd divisors"
+[[register.field]]
+id = "txclkdelen"
+name = "TXCLKDELEN"
+lsb = 9
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Add delay to RGMII TX clock"
+
+[[register]]
+id = "clk2fc"
+name = "CLK2FC"
+offset = 0x18
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Clock-to-fabric clock select"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "sel"
+name = "SEL"
+lsb = 0
+width = 2
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Clock source select"
+[[register.field.enum_value]]
+name = "NONE"
+value = 0x0
+note = "No clock selected"
+[[register.field.enum_value]]
+name = "RGMII_TX_CLK"
+value = 0x1
+note = "RGMII TX clock"
+[[register.field.enum_value]]
+name = "RGMII_RX_CLK"
+value = 0x2
+note = "RGMII RX clock"
+
+[[register]]
+id = "intr"
+name = "INTR"
+offset = 0x1c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Raw interrupts"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "ethernet"
+name = "ETHERNET"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ethernet"
+[[register.field]]
+id = "wol"
+name = "WOL"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "wol"
+[[register.field]]
+id = "ieee1588_pdelay_resp_tx"
+name = "IEEE1588_PDELAY_RESP_TX"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay resp tx"
+[[register.field]]
+id = "ieee1588_pdelay_req_tx"
+name = "IEEE1588_PDELAY_REQ_TX"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay req tx"
+[[register.field]]
+id = "ieee1588_delay_req_tx"
+name = "IEEE1588_DELAY_REQ_TX"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 delay req tx"
+[[register.field]]
+id = "ieee1588_sync_frame_tx"
+name = "IEEE1588_SYNC_FRAME_TX"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sync frame tx"
+[[register.field]]
+id = "ieee1588_sof_tx"
+name = "IEEE1588_SOF_TX"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sof tx"
+[[register.field]]
+id = "ieee1588_pdelay_resp_rx"
+name = "IEEE1588_PDELAY_RESP_RX"
+lsb = 7
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay resp rx"
+[[register.field]]
+id = "ieee1588_pdelay_req_rx"
+name = "IEEE1588_PDELAY_REQ_RX"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay req rx"
+[[register.field]]
+id = "ieee1588_delay_req_rx"
+name = "IEEE1588_DELAY_REQ_RX"
+lsb = 9
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 delay req rx"
+[[register.field]]
+id = "ieee1588_sync_frame_rx"
+name = "IEEE1588_SYNC_FRAME_RX"
+lsb = 10
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sync frame rx"
+[[register.field]]
+id = "ieee1588_sof_rx"
+name = "IEEE1588_SOF_RX"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sof rx"
+[[register.field]]
+id = "ieee1588_tsu_timer_cmp_val"
+name = "IEEE1588_TSU_TIMER_CMP_VAL"
+lsb = 12
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 tsu timer cmp val"
+
+[[register]]
+id = "inte"
+name = "INTE"
+offset = 0x20
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Interrupt enable"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "ethernet"
+name = "ETHERNET"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ethernet"
+[[register.field]]
+id = "wol"
+name = "WOL"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "wol"
+[[register.field]]
+id = "ieee1588_pdelay_resp_tx"
+name = "IEEE1588_PDELAY_RESP_TX"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay resp tx"
+[[register.field]]
+id = "ieee1588_pdelay_req_tx"
+name = "IEEE1588_PDELAY_REQ_TX"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay req tx"
+[[register.field]]
+id = "ieee1588_delay_req_tx"
+name = "IEEE1588_DELAY_REQ_TX"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 delay req tx"
+[[register.field]]
+id = "ieee1588_sync_frame_tx"
+name = "IEEE1588_SYNC_FRAME_TX"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sync frame tx"
+[[register.field]]
+id = "ieee1588_sof_tx"
+name = "IEEE1588_SOF_TX"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sof tx"
+[[register.field]]
+id = "ieee1588_pdelay_resp_rx"
+name = "IEEE1588_PDELAY_RESP_RX"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay resp rx"
+[[register.field]]
+id = "ieee1588_pdelay_req_rx"
+name = "IEEE1588_PDELAY_REQ_RX"
+lsb = 8
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay req rx"
+[[register.field]]
+id = "ieee1588_delay_req_rx"
+name = "IEEE1588_DELAY_REQ_RX"
+lsb = 9
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 delay req rx"
+[[register.field]]
+id = "ieee1588_sync_frame_rx"
+name = "IEEE1588_SYNC_FRAME_RX"
+lsb = 10
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sync frame rx"
+[[register.field]]
+id = "ieee1588_sof_rx"
+name = "IEEE1588_SOF_RX"
+lsb = 11
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sof rx"
+[[register.field]]
+id = "ieee1588_tsu_timer_cmp_val"
+name = "IEEE1588_TSU_TIMER_CMP_VAL"
+lsb = 12
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 tsu timer cmp val"
+
+[[register]]
+id = "intf"
+name = "INTF"
+offset = 0x24
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Interrupt force"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "ethernet"
+name = "ETHERNET"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ethernet"
+[[register.field]]
+id = "wol"
+name = "WOL"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "wol"
+[[register.field]]
+id = "ieee1588_pdelay_resp_tx"
+name = "IEEE1588_PDELAY_RESP_TX"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay resp tx"
+[[register.field]]
+id = "ieee1588_pdelay_req_tx"
+name = "IEEE1588_PDELAY_REQ_TX"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay req tx"
+[[register.field]]
+id = "ieee1588_delay_req_tx"
+name = "IEEE1588_DELAY_REQ_TX"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 delay req tx"
+[[register.field]]
+id = "ieee1588_sync_frame_tx"
+name = "IEEE1588_SYNC_FRAME_TX"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sync frame tx"
+[[register.field]]
+id = "ieee1588_sof_tx"
+name = "IEEE1588_SOF_TX"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sof tx"
+[[register.field]]
+id = "ieee1588_pdelay_resp_rx"
+name = "IEEE1588_PDELAY_RESP_RX"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay resp rx"
+[[register.field]]
+id = "ieee1588_pdelay_req_rx"
+name = "IEEE1588_PDELAY_REQ_RX"
+lsb = 8
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 pdelay req rx"
+[[register.field]]
+id = "ieee1588_delay_req_rx"
+name = "IEEE1588_DELAY_REQ_RX"
+lsb = 9
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 delay req rx"
+[[register.field]]
+id = "ieee1588_sync_frame_rx"
+name = "IEEE1588_SYNC_FRAME_RX"
+lsb = 10
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sync frame rx"
+[[register.field]]
+id = "ieee1588_sof_rx"
+name = "IEEE1588_SOF_RX"
+lsb = 11
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 sof rx"
+[[register.field]]
+id = "ieee1588_tsu_timer_cmp_val"
+name = "IEEE1588_TSU_TIMER_CMP_VAL"
+lsb = 12
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "ieee1588 tsu timer cmp val"
+
+[[register]]
+id = "ints"
+name = "INTS"
+offset = 0x28
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "Interrupt status after masking and forcing"
+[register.api]
+read = "public"
+[[register.field]]
+id = "ethernet"
+name = "ETHERNET"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ethernet"
+[[register.field]]
+id = "wol"
+name = "WOL"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "wol"
+[[register.field]]
+id = "ieee1588_pdelay_resp_tx"
+name = "IEEE1588_PDELAY_RESP_TX"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 pdelay resp tx"
+[[register.field]]
+id = "ieee1588_pdelay_req_tx"
+name = "IEEE1588_PDELAY_REQ_TX"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 pdelay req tx"
+[[register.field]]
+id = "ieee1588_delay_req_tx"
+name = "IEEE1588_DELAY_REQ_TX"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 delay req tx"
+[[register.field]]
+id = "ieee1588_sync_frame_tx"
+name = "IEEE1588_SYNC_FRAME_TX"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 sync frame tx"
+[[register.field]]
+id = "ieee1588_sof_tx"
+name = "IEEE1588_SOF_TX"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 sof tx"
+[[register.field]]
+id = "ieee1588_pdelay_resp_rx"
+name = "IEEE1588_PDELAY_RESP_RX"
+lsb = 7
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 pdelay resp rx"
+[[register.field]]
+id = "ieee1588_pdelay_req_rx"
+name = "IEEE1588_PDELAY_REQ_RX"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 pdelay req rx"
+[[register.field]]
+id = "ieee1588_delay_req_rx"
+name = "IEEE1588_DELAY_REQ_RX"
+lsb = 9
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 delay req rx"
+[[register.field]]
+id = "ieee1588_sync_frame_rx"
+name = "IEEE1588_SYNC_FRAME_RX"
+lsb = 10
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 sync frame rx"
+[[register.field]]
+id = "ieee1588_sof_rx"
+name = "IEEE1588_SOF_RX"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 sof rx"
+[[register.field]]
+id = "ieee1588_tsu_timer_cmp_val"
+name = "IEEE1588_TSU_TIMER_CMP_VAL"
+lsb = 12
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "ieee1588 tsu timer cmp val"

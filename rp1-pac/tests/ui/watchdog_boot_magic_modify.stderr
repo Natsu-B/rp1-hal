@@ -1,0 +1,18 @@
+error[E0599]: the method `modify` exists for reference `&Reg<BOOT_MAGIC_SPEC>`, but its trait bounds were not satisfied
+ --> tests/ui/watchdog_boot_magic_modify.rs:6:10
+  |
+3 | /     peripherals
+4 | |         .WATCHDOG
+5 | |         .boot_magic()
+6 | |         .modify(|_, w| w.value().bits(0x5250_3100));
+  | |         -^^^^^^ method cannot be called on `&Reg<BOOT_MAGIC_SPEC>` due to unsatisfied trait bounds
+  | |_________|
+  |
+  |
+ ::: src/generated/watchdog.rs
+  |
+  |       pub struct BOOT_MAGIC_SPEC;
+  |       -------------------------- doesn't satisfy `BOOT_MAGIC_SPEC: Modifiable`
+  |
+  = note: the following trait bounds were not satisfied:
+          `BOOT_MAGIC_SPEC: Modifiable`

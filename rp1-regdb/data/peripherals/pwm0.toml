@@ -1,0 +1,1748 @@
+[peripheral]
+id = "pwm0"
+name = "PWM0"
+module = "pwm0"
+kind = "rp1-native-apb"
+base = 0x40098000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "PWM0_RW"
+note = "RP1 PWM0_RW register block. Bus=APB. Atomic alias: normal read/write access."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "global_ctrl"
+name = "GLOBAL_CTRL"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Global control bits"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "chan0_en"
+name = "CHAN0_EN"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable channel 0"
+[[register.field]]
+id = "chan1_en"
+name = "CHAN1_EN"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable channel 1"
+[[register.field]]
+id = "chan2_en"
+name = "CHAN2_EN"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable channel 2"
+[[register.field]]
+id = "chan3_en"
+name = "CHAN3_EN"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable channel 3"
+[[register.field]]
+id = "set_update"
+name = "SET_UPDATE"
+lsb = 31
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Trigger settings update; self-clearing"
+
+[[register]]
+id = "fifo_ctrl"
+name = "FIFO_CTRL"
+offset = 0x4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "fifo"
+hardware_write = "fifo"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "FIFO thresholding and status"
+[register.api]
+read = "public"
+[[register.field]]
+id = "level"
+name = "LEVEL"
+lsb = 0
+width = 5
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Number of available words in FIFO"
+[[register.field]]
+id = "flush"
+name = "FLUSH"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Assert to flush FIFO"
+[[register.field]]
+id = "flush_done"
+name = "FLUSH_DONE"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "FIFO flush completed in PWM clock domain"
+[[register.field]]
+id = "threshold"
+name = "THRESHOLD"
+lsb = 11
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "DREQ threshold"
+[[register.field]]
+id = "dwell_time"
+name = "DWELL_TIME"
+lsb = 16
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Delay in bus cycles before successive DREQs"
+[[register.field]]
+id = "dreq_en"
+name = "DREQ_EN"
+lsb = 31
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Generate DMA request signals"
+
+[[register]]
+id = "common_range"
+name = "COMMON_RANGE"
+offset = 0x8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Common counter range"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "range"
+name = "RANGE"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter range"
+
+[[register]]
+id = "common_duty"
+name = "COMMON_DUTY"
+offset = 0xc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Common counter compare"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "duty"
+name = "DUTY"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter compare"
+
+[[register]]
+id = "duty_fifo"
+name = "DUTY_FIFO"
+offset = 0x10
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "none"
+hardware_write = "fifo"
+verified_read = "not-applicable"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "32-bit interface to 128-bit backed duty-cycle FIFO"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+write_behavior = "plain"
+verified_read = "not-applicable"
+verified_write = "official"
+origin = "official"
+note = "Duty FIFO write data"
+
+[[register]]
+id = "chan0_ctrl"
+name = "CHAN0_CTRL"
+offset = 0x14
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Channel 0 control register"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "mode"
+name = "MODE"
+lsb = 0
+width = 3
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PWM generation mode"
+[[register.field]]
+id = "invert"
+name = "INVERT"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Invert output bit"
+[[register.field]]
+id = "bind"
+name = "BIND"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Bind channel to common range/duty/fifo"
+[[register.field]]
+id = "usefifo"
+name = "USEFIFO"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Use duty FIFO"
+[[register.field]]
+id = "sdm"
+name = "SDM"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Use sigma-delta noise shaping modulator"
+[[register.field]]
+id = "dither"
+name = "DITHER"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Add 1-bit LSB dither in SDM mode"
+[[register.field]]
+id = "fifo_pop_mask"
+name = "FIFO_POP_MASK"
+lsb = 8
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter overflow events generate FIFO pop events"
+[[register.field]]
+id = "sdm_bitwidth"
+name = "SDM_BITWIDTH"
+lsb = 12
+width = 4
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Quantise 16-bit input to sdm_bitwidth+1-bit output"
+[[register.field]]
+id = "sdm_bias"
+name = "SDM_BIAS"
+lsb = 16
+width = 16
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Unsigned offset added to output PWM code"
+
+[[register]]
+id = "chan0_range"
+name = "CHAN0_RANGE"
+offset = 0x18
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 0 counter range"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "range"
+name = "RANGE"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter range"
+
+[[register]]
+id = "chan0_phase"
+name = "CHAN0_PHASE"
+offset = 0x1c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 0 counter phase offset"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "phase"
+name = "PHASE"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter phase offset"
+
+[[register]]
+id = "chan0_duty"
+name = "CHAN0_DUTY"
+offset = 0x20
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 0 counter compare"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "duty"
+name = "DUTY"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter compare"
+
+[[register]]
+id = "chan1_ctrl"
+name = "CHAN1_CTRL"
+offset = 0x24
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Channel 1 control register"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "mode"
+name = "MODE"
+lsb = 0
+width = 3
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PWM generation mode"
+[[register.field]]
+id = "invert"
+name = "INVERT"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Invert output bit"
+[[register.field]]
+id = "bind"
+name = "BIND"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Bind channel to common range/duty/fifo"
+[[register.field]]
+id = "usefifo"
+name = "USEFIFO"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Use duty FIFO"
+[[register.field]]
+id = "sdm"
+name = "SDM"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Use sigma-delta noise shaping modulator"
+[[register.field]]
+id = "dither"
+name = "DITHER"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Add 1-bit LSB dither in SDM mode"
+[[register.field]]
+id = "fifo_pop_mask"
+name = "FIFO_POP_MASK"
+lsb = 8
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter overflow events generate FIFO pop events"
+[[register.field]]
+id = "sdm_bitwidth"
+name = "SDM_BITWIDTH"
+lsb = 12
+width = 4
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Quantise 16-bit input to sdm_bitwidth+1-bit output"
+[[register.field]]
+id = "sdm_bias"
+name = "SDM_BIAS"
+lsb = 16
+width = 16
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Unsigned offset added to output PWM code"
+
+[[register]]
+id = "chan1_range"
+name = "CHAN1_RANGE"
+offset = 0x28
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 1 counter range"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "range"
+name = "RANGE"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter range"
+
+[[register]]
+id = "chan1_phase"
+name = "CHAN1_PHASE"
+offset = 0x2c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 1 counter phase offset"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "phase"
+name = "PHASE"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter phase offset"
+
+[[register]]
+id = "chan1_duty"
+name = "CHAN1_DUTY"
+offset = 0x30
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 1 counter compare"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "duty"
+name = "DUTY"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter compare"
+
+[[register]]
+id = "chan2_ctrl"
+name = "CHAN2_CTRL"
+offset = 0x34
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Channel 2 control register"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "mode"
+name = "MODE"
+lsb = 0
+width = 3
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PWM generation mode"
+[[register.field]]
+id = "invert"
+name = "INVERT"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Invert output bit"
+[[register.field]]
+id = "bind"
+name = "BIND"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Bind channel to common range/duty/fifo"
+[[register.field]]
+id = "usefifo"
+name = "USEFIFO"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Use duty FIFO"
+[[register.field]]
+id = "sdm"
+name = "SDM"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Use sigma-delta noise shaping modulator"
+[[register.field]]
+id = "dither"
+name = "DITHER"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Add 1-bit LSB dither in SDM mode"
+[[register.field]]
+id = "fifo_pop_mask"
+name = "FIFO_POP_MASK"
+lsb = 8
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter overflow events generate FIFO pop events"
+[[register.field]]
+id = "sdm_bitwidth"
+name = "SDM_BITWIDTH"
+lsb = 12
+width = 4
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Quantise 16-bit input to sdm_bitwidth+1-bit output"
+[[register.field]]
+id = "sdm_bias"
+name = "SDM_BIAS"
+lsb = 16
+width = 16
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Unsigned offset added to output PWM code"
+
+[[register]]
+id = "chan2_range"
+name = "CHAN2_RANGE"
+offset = 0x38
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 2 counter range"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "range"
+name = "RANGE"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter range"
+
+[[register]]
+id = "chan2_phase"
+name = "CHAN2_PHASE"
+offset = 0x3c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 2 counter phase offset"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "phase"
+name = "PHASE"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter phase offset"
+
+[[register]]
+id = "chan2_duty"
+name = "CHAN2_DUTY"
+offset = 0x40
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 2 counter compare"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "duty"
+name = "DUTY"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter compare"
+
+[[register]]
+id = "chan3_ctrl"
+name = "CHAN3_CTRL"
+offset = 0x44
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Channel 3 control register"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "mode"
+name = "MODE"
+lsb = 0
+width = 3
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PWM generation mode"
+[[register.field]]
+id = "invert"
+name = "INVERT"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Invert output bit"
+[[register.field]]
+id = "bind"
+name = "BIND"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Bind channel to common range/duty/fifo"
+[[register.field]]
+id = "usefifo"
+name = "USEFIFO"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Use duty FIFO"
+[[register.field]]
+id = "sdm"
+name = "SDM"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Use sigma-delta noise shaping modulator"
+[[register.field]]
+id = "dither"
+name = "DITHER"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Add 1-bit LSB dither in SDM mode"
+[[register.field]]
+id = "fifo_pop_mask"
+name = "FIFO_POP_MASK"
+lsb = 8
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter overflow events generate FIFO pop events"
+[[register.field]]
+id = "sdm_bitwidth"
+name = "SDM_BITWIDTH"
+lsb = 12
+width = 4
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Quantise 16-bit input to sdm_bitwidth+1-bit output"
+[[register.field]]
+id = "sdm_bias"
+name = "SDM_BIAS"
+lsb = 16
+width = 16
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Unsigned offset added to output PWM code"
+
+[[register]]
+id = "chan3_range"
+name = "CHAN3_RANGE"
+offset = 0x48
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 3 counter range"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "range"
+name = "RANGE"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter range"
+
+[[register]]
+id = "chan3_phase"
+name = "CHAN3_PHASE"
+offset = 0x4c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 3 counter phase offset"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "phase"
+name = "PHASE"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter phase offset"
+
+[[register]]
+id = "chan3_duty"
+name = "CHAN3_DUTY"
+offset = 0x50
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Channel 3 counter compare"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "duty"
+name = "DUTY"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Counter compare"
+
+[[register]]
+id = "intr"
+name = "INTR"
+offset = 0x54
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Raw interrupts"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "fifo_underflow"
+name = "FIFO_UNDERFLOW"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo underflow"
+[[register.field]]
+id = "fifo_overflow"
+name = "FIFO_OVERFLOW"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo overflow"
+[[register.field]]
+id = "fifo_empty"
+name = "FIFO_EMPTY"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo empty"
+[[register.field]]
+id = "fifo_full"
+name = "FIFO_FULL"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo full"
+[[register.field]]
+id = "dreq_active"
+name = "DREQ_ACTIVE"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "dreq active"
+[[register.field]]
+id = "chan0_reload"
+name = "CHAN0_RELOAD"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan0 reload"
+[[register.field]]
+id = "chan1_reload"
+name = "CHAN1_RELOAD"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan1 reload"
+[[register.field]]
+id = "chan2_reload"
+name = "CHAN2_RELOAD"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan2 reload"
+[[register.field]]
+id = "chan3_reload"
+name = "CHAN3_RELOAD"
+lsb = 8
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan3 reload"
+
+[[register]]
+id = "inte"
+name = "INTE"
+offset = 0x58
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Interrupt enable"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "fifo_underflow"
+name = "FIFO_UNDERFLOW"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo underflow"
+[[register.field]]
+id = "fifo_overflow"
+name = "FIFO_OVERFLOW"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo overflow"
+[[register.field]]
+id = "fifo_empty"
+name = "FIFO_EMPTY"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo empty"
+[[register.field]]
+id = "fifo_full"
+name = "FIFO_FULL"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo full"
+[[register.field]]
+id = "dreq_active"
+name = "DREQ_ACTIVE"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "dreq active"
+[[register.field]]
+id = "chan0_reload"
+name = "CHAN0_RELOAD"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan0 reload"
+[[register.field]]
+id = "chan1_reload"
+name = "CHAN1_RELOAD"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan1 reload"
+[[register.field]]
+id = "chan2_reload"
+name = "CHAN2_RELOAD"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan2 reload"
+[[register.field]]
+id = "chan3_reload"
+name = "CHAN3_RELOAD"
+lsb = 8
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan3 reload"
+
+[[register]]
+id = "intf"
+name = "INTF"
+offset = 0x5c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Interrupt force"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "fifo_underflow"
+name = "FIFO_UNDERFLOW"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo underflow"
+[[register.field]]
+id = "fifo_overflow"
+name = "FIFO_OVERFLOW"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo overflow"
+[[register.field]]
+id = "fifo_empty"
+name = "FIFO_EMPTY"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo empty"
+[[register.field]]
+id = "fifo_full"
+name = "FIFO_FULL"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "fifo full"
+[[register.field]]
+id = "dreq_active"
+name = "DREQ_ACTIVE"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "dreq active"
+[[register.field]]
+id = "chan0_reload"
+name = "CHAN0_RELOAD"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan0 reload"
+[[register.field]]
+id = "chan1_reload"
+name = "CHAN1_RELOAD"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan1 reload"
+[[register.field]]
+id = "chan2_reload"
+name = "CHAN2_RELOAD"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan2 reload"
+[[register.field]]
+id = "chan3_reload"
+name = "CHAN3_RELOAD"
+lsb = 8
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "chan3 reload"
+
+[[register]]
+id = "ints"
+name = "INTS"
+offset = 0x60
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+reset_value = 0x0
+note = "Interrupt status after masking and forcing"
+[register.api]
+read = "public"
+[[register.field]]
+id = "fifo_underflow"
+name = "FIFO_UNDERFLOW"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "fifo underflow"
+[[register.field]]
+id = "fifo_overflow"
+name = "FIFO_OVERFLOW"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "fifo overflow"
+[[register.field]]
+id = "fifo_empty"
+name = "FIFO_EMPTY"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "fifo empty"
+[[register.field]]
+id = "fifo_full"
+name = "FIFO_FULL"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "fifo full"
+[[register.field]]
+id = "dreq_active"
+name = "DREQ_ACTIVE"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "dreq active"
+[[register.field]]
+id = "chan0_reload"
+name = "CHAN0_RELOAD"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "chan0 reload"
+[[register.field]]
+id = "chan1_reload"
+name = "CHAN1_RELOAD"
+lsb = 6
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "chan1 reload"
+[[register.field]]
+id = "chan2_reload"
+name = "CHAN2_RELOAD"
+lsb = 7
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "chan2 reload"
+[[register.field]]
+id = "chan3_reload"
+name = "CHAN3_RELOAD"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "chan3 reload"

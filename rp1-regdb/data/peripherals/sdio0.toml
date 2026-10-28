@@ -1,0 +1,15 @@
+[peripheral]
+id = "sdio0"
+name = "SDIO0"
+module = "sdio0"
+kind = "external-ip"
+base = 0x40180000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "SDIO0"
+external_ip = "sdhci-compatible-host"
+clock_dependency = "platform clock dependency; see RP1 integration"
+reset_dependency = "RESETS field SDIO0 when present"
+pinmux_dependency = "IO_BANK/PADS function selection where externally pinned"
+note = "RP1 SDIO0 register block. Bus=AHB. No RP1 atomic alias listed."

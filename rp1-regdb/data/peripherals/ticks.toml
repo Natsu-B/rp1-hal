@@ -1,0 +1,905 @@
+[peripheral]
+id = "ticks"
+name = "TICKS"
+module = "ticks"
+kind = "rp1-native-apb"
+base = 0x40174000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "TICKS_RW"
+note = "RP1 TICKS block at 0x40174000: 8 groups, 12-byte group stride, and 3 registers per group. Boot ROM initialization writes cycle value 0x32 and enables each group; that software initialization is distinct from hardware reset values and does not authorize additional writers."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "timer_ctrl"
+name = "TIMER_CTRL"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Controls the tick generator"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Start/stop tick generation"
+[[register.field]]
+id = "running"
+name = "RUNNING"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Tick generator is running"
+
+[[register]]
+id = "timer_cycles"
+name = "TIMER_CYCLES"
+offset = 0x4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
+note = "Total number of clk_tick cycles before next tick"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "cycles"
+name = "CYCLES"
+lsb = 0
+width = 9
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Total clk_tick cycles before next tick"
+
+[[register]]
+id = "timer_count"
+name = "TIMER_COUNT"
+offset = 0x8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Countdown timer before next tick"
+[register.api]
+read = "public"
+[[register.field]]
+id = "count"
+name = "COUNT"
+lsb = 0
+width = 9
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Remaining clk_tick cycles before next tick"
+
+[[register]]
+id = "watchdog_ctrl"
+name = "WATCHDOG_CTRL"
+offset = 0xc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Controls the tick generator"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Start/stop tick generation"
+[[register.field]]
+id = "running"
+name = "RUNNING"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Tick generator is running"
+
+[[register]]
+id = "watchdog_cycles"
+name = "WATCHDOG_CYCLES"
+offset = 0x10
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
+note = "Total number of clk_tick cycles before next tick"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "cycles"
+name = "CYCLES"
+lsb = 0
+width = 9
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Total clk_tick cycles before next tick"
+
+[[register]]
+id = "watchdog_count"
+name = "WATCHDOG_COUNT"
+offset = 0x14
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Countdown timer before next tick"
+[register.api]
+read = "public"
+[[register.field]]
+id = "count"
+name = "COUNT"
+lsb = 0
+width = 9
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Remaining clk_tick cycles before next tick"
+
+[[register]]
+id = "proc_ctrl"
+name = "PROC_CTRL"
+offset = 0x18
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Controls the tick generator"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Start/stop tick generation"
+[[register.field]]
+id = "running"
+name = "RUNNING"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Tick generator is running"
+
+[[register]]
+id = "proc_cycles"
+name = "PROC_CYCLES"
+offset = 0x1c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
+note = "Total number of clk_tick cycles before next tick"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "cycles"
+name = "CYCLES"
+lsb = 0
+width = 9
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Total clk_tick cycles before next tick"
+
+[[register]]
+id = "proc_count"
+name = "PROC_COUNT"
+offset = 0x20
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Countdown timer before next tick"
+[register.api]
+read = "public"
+[[register.field]]
+id = "count"
+name = "COUNT"
+lsb = 0
+width = 9
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Remaining clk_tick cycles before next tick"
+
+[[register]]
+id = "dma0_ctrl"
+name = "DMA0_CTRL"
+offset = 0x24
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Controls the tick generator"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Start/stop tick generation"
+[[register.field]]
+id = "running"
+name = "RUNNING"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Tick generator is running"
+
+[[register]]
+id = "dma0_cycles"
+name = "DMA0_CYCLES"
+offset = 0x28
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
+note = "Total number of clk_tick cycles before next tick"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "cycles"
+name = "CYCLES"
+lsb = 0
+width = 9
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Total clk_tick cycles before next tick"
+
+[[register]]
+id = "dma0_count"
+name = "DMA0_COUNT"
+offset = 0x2c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Countdown timer before next tick"
+[register.api]
+read = "public"
+[[register.field]]
+id = "count"
+name = "COUNT"
+lsb = 0
+width = 9
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Remaining clk_tick cycles before next tick"
+
+[[register]]
+id = "dma1_ctrl"
+name = "DMA1_CTRL"
+offset = 0x30
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Controls the tick generator"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Start/stop tick generation"
+[[register.field]]
+id = "running"
+name = "RUNNING"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Tick generator is running"
+
+[[register]]
+id = "dma1_cycles"
+name = "DMA1_CYCLES"
+offset = 0x34
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
+note = "Total number of clk_tick cycles before next tick"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "cycles"
+name = "CYCLES"
+lsb = 0
+width = 9
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Total clk_tick cycles before next tick"
+
+[[register]]
+id = "dma1_count"
+name = "DMA1_COUNT"
+offset = 0x38
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Countdown timer before next tick"
+[register.api]
+read = "public"
+[[register.field]]
+id = "count"
+name = "COUNT"
+lsb = 0
+width = 9
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Remaining clk_tick cycles before next tick"
+
+[[register]]
+id = "io_bank0_ctrl"
+name = "IO_BANK0_CTRL"
+offset = 0x3c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Controls the tick generator"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Start/stop tick generation"
+[[register.field]]
+id = "running"
+name = "RUNNING"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Tick generator is running"
+
+[[register]]
+id = "io_bank0_cycles"
+name = "IO_BANK0_CYCLES"
+offset = 0x40
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
+note = "Total number of clk_tick cycles before next tick"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "cycles"
+name = "CYCLES"
+lsb = 0
+width = 28
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Total clk_tick cycles before next tick"
+
+[[register]]
+id = "io_bank0_count"
+name = "IO_BANK0_COUNT"
+offset = 0x44
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Countdown timer before next tick"
+[register.api]
+read = "public"
+[[register.field]]
+id = "count"
+name = "COUNT"
+lsb = 0
+width = 28
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Remaining clk_tick cycles before next tick"
+
+[[register]]
+id = "io_bank1_ctrl"
+name = "IO_BANK1_CTRL"
+offset = 0x48
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Controls the tick generator"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Start/stop tick generation"
+[[register.field]]
+id = "running"
+name = "RUNNING"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Tick generator is running"
+
+[[register]]
+id = "io_bank1_cycles"
+name = "IO_BANK1_CYCLES"
+offset = 0x4c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
+note = "Total number of clk_tick cycles before next tick"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "cycles"
+name = "CYCLES"
+lsb = 0
+width = 28
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Total clk_tick cycles before next tick"
+
+[[register]]
+id = "io_bank1_count"
+name = "IO_BANK1_COUNT"
+offset = 0x50
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Countdown timer before next tick"
+[register.api]
+read = "public"
+[[register.field]]
+id = "count"
+name = "COUNT"
+lsb = 0
+width = 28
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Remaining clk_tick cycles before next tick"
+
+[[register]]
+id = "io_bank2_ctrl"
+name = "IO_BANK2_CTRL"
+offset = 0x54
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+note = "Controls the tick generator"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Start/stop tick generation"
+[[register.field]]
+id = "running"
+name = "RUNNING"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Tick generator is running"
+
+[[register]]
+id = "io_bank2_cycles"
+name = "IO_BANK2_CYCLES"
+offset = 0x58
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+reset_value = 0x0
+boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
+note = "Total number of clk_tick cycles before next tick"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "cycles"
+name = "CYCLES"
+lsb = 0
+width = 28
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Total clk_tick cycles before next tick"
+
+[[register]]
+id = "io_bank2_count"
+name = "IO_BANK2_COUNT"
+offset = 0x5c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Countdown timer before next tick"
+[register.api]
+read = "public"
+[[register.field]]
+id = "count"
+name = "COUNT"
+lsb = 0
+width = 28
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Remaining clk_tick cycles before next tick"

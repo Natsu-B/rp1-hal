@@ -1,0 +1,13 @@
+error[E0599]: the method `clear` exists for reference `&Reg<ARMED_SPEC>`, but its trait bounds were not satisfied
+ --> tests/ui/timer_armed_clear.rs:3:31
+  |
+3 |     peripherals.TIMER.armed().clear(|w| w.alarm().clear());
+  |                               ^^^^^ method cannot be called on `&Reg<ARMED_SPEC>` due to unsatisfied trait bounds
+  |
+ ::: src/generated/timer.rs
+  |
+  |     pub struct ARMED_SPEC;
+  |     --------------------- doesn't satisfy `ARMED_SPEC: WriteOneToClear`
+  |
+  = note: the following trait bounds were not satisfied:
+          `ARMED_SPEC: WriteOneToClear`

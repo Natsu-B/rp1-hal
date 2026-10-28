@@ -1,0 +1,3451 @@
+[peripheral]
+id = "clocks_main"
+name = "CLOCKS_MAIN"
+module = "clocks_main"
+kind = "rp1-native-apb"
+base = 0x40018000
+size = 0x1000
+ownership = "singleton"
+default_origin = "linux"
+legacy_svd_name = "CLOCKS_MAIN_RW"
+note = "RP1 CLOCKS_MAIN register block with supplemental register semantics. Alias behavior: normal read/write access. Register layout recovered from the Linux RP1 common-clock driver. Unknown offsets remain split RAW arrays."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "gpclk_oe_ctrl"
+name = "GPCLK_OE_CTRL"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "General-purpose clock output-enable control; individual bit names remain raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "General-purpose clock output-enable control; individual bit names remain raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_sys_ctrl"
+name = "CLK_SYS_CTRL"
+offset = 0x14
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_sys_div_int"
+name = "CLK_SYS_DIV_INT"
+offset = 0x18
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 24
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "24-bit integer divider."
+
+[[register]]
+id = "clk_sys_sel"
+name = "CLK_SYS_SEL"
+offset = 0x20
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_slow_sys_ctrl"
+name = "CLK_SLOW_SYS_CTRL"
+offset = 0x24
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_slow_sys_div_int"
+name = "CLK_SLOW_SYS_DIV_INT"
+offset = 0x28
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_slow_sys_sel"
+name = "CLK_SLOW_SYS_SEL"
+offset = 0x30
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_dma_ctrl"
+name = "CLK_DMA_CTRL"
+offset = 0x44
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_dma_div_int"
+name = "CLK_DMA_DIV_INT"
+offset = 0x48
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_dma_sel"
+name = "CLK_DMA_SEL"
+offset = 0x50
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_uart_ctrl"
+name = "CLK_UART_CTRL"
+offset = 0x54
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_uart_div_int"
+name = "CLK_UART_DIV_INT"
+offset = 0x58
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_uart_sel"
+name = "CLK_UART_SEL"
+offset = 0x60
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_eth_ctrl"
+name = "CLK_ETH_CTRL"
+offset = 0x64
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_eth_div_int"
+name = "CLK_ETH_DIV_INT"
+offset = 0x68
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_eth_sel"
+name = "CLK_ETH_SEL"
+offset = 0x70
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_pwm0_ctrl"
+name = "CLK_PWM0_CTRL"
+offset = 0x74
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_pwm0_div_int"
+name = "CLK_PWM0_DIV_INT"
+offset = 0x78
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "16-bit integer divider."
+
+[[register]]
+id = "clk_pwm0_div_frac"
+name = "CLK_PWM0_DIV_FRAC"
+offset = 0x7c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Sixteen-bit fractional divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Fractional divider value."
+
+[[register]]
+id = "clk_pwm0_sel"
+name = "CLK_PWM0_SEL"
+offset = 0x80
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_pwm1_ctrl"
+name = "CLK_PWM1_CTRL"
+offset = 0x84
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_pwm1_div_int"
+name = "CLK_PWM1_DIV_INT"
+offset = 0x88
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "16-bit integer divider."
+
+[[register]]
+id = "clk_pwm1_div_frac"
+name = "CLK_PWM1_DIV_FRAC"
+offset = 0x8c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Sixteen-bit fractional divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Fractional divider value."
+
+[[register]]
+id = "clk_pwm1_sel"
+name = "CLK_PWM1_SEL"
+offset = 0x90
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_audio_in_ctrl"
+name = "CLK_AUDIO_IN_CTRL"
+offset = 0x94
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_audio_in_div_int"
+name = "CLK_AUDIO_IN_DIV_INT"
+offset = 0x98
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_audio_in_sel"
+name = "CLK_AUDIO_IN_SEL"
+offset = 0xa0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_audio_out_ctrl"
+name = "CLK_AUDIO_OUT_CTRL"
+offset = 0xa4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_audio_out_div_int"
+name = "CLK_AUDIO_OUT_DIV_INT"
+offset = 0xa8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_audio_out_sel"
+name = "CLK_AUDIO_OUT_SEL"
+offset = 0xb0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_i2s_ctrl"
+name = "CLK_I2S_CTRL"
+offset = 0xb4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_i2s_div_int"
+name = "CLK_I2S_DIV_INT"
+offset = 0xb8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_i2s_sel"
+name = "CLK_I2S_SEL"
+offset = 0xc0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_mipi0_cfg_ctrl"
+name = "CLK_MIPI0_CFG_CTRL"
+offset = 0xc4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_mipi0_cfg_div_int"
+name = "CLK_MIPI0_CFG_DIV_INT"
+offset = 0xc8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_mipi0_cfg_sel"
+name = "CLK_MIPI0_CFG_SEL"
+offset = 0xd0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_mipi1_cfg_ctrl"
+name = "CLK_MIPI1_CFG_CTRL"
+offset = 0xd4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_mipi1_cfg_div_int"
+name = "CLK_MIPI1_CFG_DIV_INT"
+offset = 0xd8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_mipi1_cfg_sel"
+name = "CLK_MIPI1_CFG_SEL"
+offset = 0xe0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_pcie_aux_ctrl"
+name = "CLK_PCIE_AUX_CTRL"
+offset = 0xe4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_pcie_aux_div_int"
+name = "CLK_PCIE_AUX_DIV_INT"
+offset = 0xe8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_pcie_aux_sel"
+name = "CLK_PCIE_AUX_SEL"
+offset = 0xf0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_usbh0_microframe_ctrl"
+name = "CLK_USBH0_MICROFRAME_CTRL"
+offset = 0xf4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_usbh0_microframe_div_int"
+name = "CLK_USBH0_MICROFRAME_DIV_INT"
+offset = 0xf8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_usbh0_microframe_sel"
+name = "CLK_USBH0_MICROFRAME_SEL"
+offset = 0x100
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_usbh1_microframe_ctrl"
+name = "CLK_USBH1_MICROFRAME_CTRL"
+offset = 0x104
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_usbh1_microframe_div_int"
+name = "CLK_USBH1_MICROFRAME_DIV_INT"
+offset = 0x108
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_usbh1_microframe_sel"
+name = "CLK_USBH1_MICROFRAME_SEL"
+offset = 0x110
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_usbh0_suspend_ctrl"
+name = "CLK_USBH0_SUSPEND_CTRL"
+offset = 0x114
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_usbh0_suspend_div_int"
+name = "CLK_USBH0_SUSPEND_DIV_INT"
+offset = 0x118
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_usbh0_suspend_sel"
+name = "CLK_USBH0_SUSPEND_SEL"
+offset = 0x120
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_usbh1_suspend_ctrl"
+name = "CLK_USBH1_SUSPEND_CTRL"
+offset = 0x124
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_usbh1_suspend_div_int"
+name = "CLK_USBH1_SUSPEND_DIV_INT"
+offset = 0x128
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_usbh1_suspend_sel"
+name = "CLK_USBH1_SUSPEND_SEL"
+offset = 0x130
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_eth_tsu_ctrl"
+name = "CLK_ETH_TSU_CTRL"
+offset = 0x134
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_eth_tsu_div_int"
+name = "CLK_ETH_TSU_DIV_INT"
+offset = 0x138
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_eth_tsu_sel"
+name = "CLK_ETH_TSU_SEL"
+offset = 0x140
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_adc_ctrl"
+name = "CLK_ADC_CTRL"
+offset = 0x144
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_adc_div_int"
+name = "CLK_ADC_DIV_INT"
+offset = 0x148
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_adc_sel"
+name = "CLK_ADC_SEL"
+offset = 0x150
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_sdio_timer_ctrl"
+name = "CLK_SDIO_TIMER_CTRL"
+offset = 0x154
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_sdio_timer_div_int"
+name = "CLK_SDIO_TIMER_DIV_INT"
+offset = 0x158
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_sdio_timer_sel"
+name = "CLK_SDIO_TIMER_SEL"
+offset = 0x160
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_sdio_alt_src_ctrl"
+name = "CLK_SDIO_ALT_SRC_CTRL"
+offset = 0x164
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_sdio_alt_src_div_int"
+name = "CLK_SDIO_ALT_SRC_DIV_INT"
+offset = 0x168
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "8-bit integer divider."
+
+[[register]]
+id = "clk_sdio_alt_src_sel"
+name = "CLK_SDIO_ALT_SRC_SEL"
+offset = 0x170
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_gp0_ctrl"
+name = "CLK_GP0_CTRL"
+offset = 0x174
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_gp0_div_int"
+name = "CLK_GP0_DIV_INT"
+offset = 0x178
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "16-bit integer divider."
+
+[[register]]
+id = "clk_gp0_div_frac"
+name = "CLK_GP0_DIV_FRAC"
+offset = 0x17c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Sixteen-bit fractional divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Fractional divider value."
+
+[[register]]
+id = "clk_gp0_sel"
+name = "CLK_GP0_SEL"
+offset = 0x180
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_gp1_ctrl"
+name = "CLK_GP1_CTRL"
+offset = 0x184
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_gp1_div_int"
+name = "CLK_GP1_DIV_INT"
+offset = 0x188
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "16-bit integer divider."
+
+[[register]]
+id = "clk_gp1_div_frac"
+name = "CLK_GP1_DIV_FRAC"
+offset = 0x18c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Sixteen-bit fractional divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Fractional divider value."
+
+[[register]]
+id = "clk_gp1_sel"
+name = "CLK_GP1_SEL"
+offset = 0x190
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_gp2_ctrl"
+name = "CLK_GP2_CTRL"
+offset = 0x194
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_gp2_div_int"
+name = "CLK_GP2_DIV_INT"
+offset = 0x198
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "16-bit integer divider."
+
+[[register]]
+id = "clk_gp2_div_frac"
+name = "CLK_GP2_DIV_FRAC"
+offset = 0x19c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Sixteen-bit fractional divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Fractional divider value."
+
+[[register]]
+id = "clk_gp2_sel"
+name = "CLK_GP2_SEL"
+offset = 0x1a0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_gp3_ctrl"
+name = "CLK_GP3_CTRL"
+offset = 0x1a4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_gp3_div_int"
+name = "CLK_GP3_DIV_INT"
+offset = 0x1a8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "16-bit integer divider."
+
+[[register]]
+id = "clk_gp3_div_frac"
+name = "CLK_GP3_DIV_FRAC"
+offset = 0x1ac
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Sixteen-bit fractional divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Fractional divider value."
+
+[[register]]
+id = "clk_gp3_sel"
+name = "CLK_GP3_SEL"
+offset = 0x1b0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_gp4_ctrl"
+name = "CLK_GP4_CTRL"
+offset = 0x1b4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_gp4_div_int"
+name = "CLK_GP4_DIV_INT"
+offset = 0x1b8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "16-bit integer divider."
+
+[[register]]
+id = "clk_gp4_div_frac"
+name = "CLK_GP4_DIV_FRAC"
+offset = 0x1bc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Sixteen-bit fractional divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Fractional divider value."
+
+[[register]]
+id = "clk_gp4_sel"
+name = "CLK_GP4_SEL"
+offset = 0x1c0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_gp5_ctrl"
+name = "CLK_GP5_CTRL"
+offset = 0x1c4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "auxsrc"
+name = "AUXSRC"
+lsb = 5
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Auxiliary parent selector."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable generated clock output."
+
+[[register]]
+id = "clk_gp5_div_int"
+name = "CLK_GP5_DIV_INT"
+offset = 0x1c8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer clock divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "16-bit integer divider."
+
+[[register]]
+id = "clk_gp5_div_frac"
+name = "CLK_GP5_DIV_FRAC"
+offset = 0x1cc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Sixteen-bit fractional divider. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Fractional divider value."
+
+[[register]]
+id = "clk_gp5_sel"
+name = "CLK_GP5_SEL"
+offset = 0x1d0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Generated-clock selected-source status; bit encoding is clock-specific and intentionally left raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_sys_resus_ctrl"
+name = "CLK_SYS_RESUS_CTRL"
+offset = 0x20c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "System-clock resuscitation control; fields remain raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "System-clock resuscitation control; fields remain raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "clk_slow_sys_resus_ctrl"
+name = "CLK_SLOW_SYS_RESUS_CTRL"
+offset = 0x214
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Slow-system-clock resuscitation control; fields remain raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Slow-system-clock resuscitation control; fields remain raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "fc0_ref_khz"
+name = "FC0_REF_KHZ"
+offset = 0x21c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter reference frequency in kHz. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter reference frequency in kHz. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "fc0_min_khz"
+name = "FC0_MIN_KHZ"
+offset = 0x220
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter minimum expected kHz. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter minimum expected kHz. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "fc0_max_khz"
+name = "FC0_MAX_KHZ"
+offset = 0x224
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter maximum expected kHz. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter maximum expected kHz. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "fc0_delay"
+name = "FC0_DELAY"
+offset = 0x228
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter start delay. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter start delay. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "fc0_interval"
+name = "FC0_INTERVAL"
+offset = 0x22c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter measurement interval. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter measurement interval. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "fc0_src"
+name = "FC0_SRC"
+offset = 0x230
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter source selector. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Frequency-counter source selector. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "fc0_status"
+name = "FC0_STATUS"
+offset = 0x234
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Frequency-counter status. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "done"
+name = "DONE"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Measurement complete."
+[[register.field]]
+id = "running"
+name = "RUNNING"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Measurement running."
+
+[[register]]
+id = "fc0_result"
+name = "FC0_RESULT"
+offset = 0x238
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Frequency-counter result; fractional portion begins at bit 5. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Frequency-counter result; fractional portion begins at bit 5. [Source: Linux RP1 common-clock driver.]"

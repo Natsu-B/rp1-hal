@@ -1,0 +1,11 @@
+[peripheral]
+id = "exac"
+name = "EXAC"
+module = "exac"
+kind = "memory-mapped"
+base = 0x40400000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "EXAC"
+note = "RP1 EXAC register block. Bus=AXI3. No RP1 atomic alias listed."

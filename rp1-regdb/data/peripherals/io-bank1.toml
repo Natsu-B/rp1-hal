@@ -1,0 +1,1316 @@
+[peripheral]
+id = "io_bank1"
+name = "IO_BANK1"
+module = "io_bank1"
+kind = "rp1-native-apb"
+base = 0x400d4000
+size = 0x1000
+ownership = "singleton"
+default_origin = "linux"
+legacy_svd_name = "IO_BANK1_RW"
+note = "RP1 IO_BANK1 register block with supplemental register semantics. Alias behavior: normal read/write access. Bank geometry and interrupt offsets are recovered from the Linux pinctrl driver; register fields are inherited from the public bank-0 layout. Unknown offsets remain split RAW arrays."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "gpio_status"
+name = "GPIO_STATUS"
+offset = 0x0
+width = 32
+repeat_count = 6
+repeat_stride = 8
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO status"
+[register.api]
+read = "public"
+[[register.field]]
+id = "outfromperi"
+name = "OUTFROMPERI"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Output signal from selected peripheral before override"
+[[register.field]]
+id = "outtopad"
+name = "OUTTOPAD"
+lsb = 9
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Output signal to pad after override"
+[[register.field]]
+id = "oefromperi"
+name = "OEFROMPERI"
+lsb = 12
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Output enable from selected peripheral before override"
+[[register.field]]
+id = "oetopad"
+name = "OETOPAD"
+lsb = 13
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Output enable to pad after override"
+[[register.field]]
+id = "inisdirect"
+name = "INISDIRECT"
+lsb = 16
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Input signal from pad goes directly to selected peripheral"
+[[register.field]]
+id = "infrompad"
+name = "INFROMPAD"
+lsb = 17
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Input signal from pad before filtering and override"
+[[register.field]]
+id = "infiltered"
+name = "INFILTERED"
+lsb = 18
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Input signal from pad after filtering before override"
+[[register.field]]
+id = "intoperi"
+name = "INTOPERI"
+lsb = 19
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Input signal to peripheral after filtering and override"
+[[register.field]]
+id = "event_edge_low"
+name = "EVENT_EDGE_LOW"
+lsb = 20
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Input pin has seen falling edge"
+[[register.field]]
+id = "event_edge_high"
+name = "EVENT_EDGE_HIGH"
+lsb = 21
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Input pin has seen rising edge"
+[[register.field]]
+id = "event_level_low"
+name = "EVENT_LEVEL_LOW"
+lsb = 22
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Input pin is low"
+[[register.field]]
+id = "event_level_high"
+name = "EVENT_LEVEL_HIGH"
+lsb = 23
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Input pin is high"
+[[register.field]]
+id = "event_f_edge_low"
+name = "EVENT_F_EDGE_LOW"
+lsb = 24
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Input pin has seen a filtered falling edge"
+[[register.field]]
+id = "event_f_edge_high"
+name = "EVENT_F_EDGE_HIGH"
+lsb = 25
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Input pin has seen a filtered rising edge"
+[[register.field]]
+id = "event_db_level_low"
+name = "EVENT_DB_LEVEL_LOW"
+lsb = 26
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Debounced input pin is low"
+[[register.field]]
+id = "event_db_level_high"
+name = "EVENT_DB_LEVEL_HIGH"
+lsb = 27
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Debounced input pin is high"
+[[register.field]]
+id = "irqcombined"
+name = "IRQCOMBINED"
+lsb = 28
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Interrupt to processors after masking"
+[[register.field]]
+id = "irqtoproc"
+name = "IRQTOPROC"
+lsb = 29
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Interrupt to processors after mask and override"
+
+[[register]]
+id = "gpio_ctrl"
+name = "GPIO_CTRL"
+offset = 0x4
+width = 32
+repeat_count = 6
+repeat_stride = 8
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO control including function select and overrides"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "funcsel"
+name = "FUNCSEL"
+lsb = 0
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Function select; 31 is NULL"
+[[register.field]]
+id = "f_m"
+name = "F_M"
+lsb = 5
+width = 7
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Filter/debounce time constant M"
+[[register.field]]
+id = "outover"
+name = "OUTOVER"
+lsb = 12
+width = 2
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Output override"
+[[register.field]]
+id = "oeover"
+name = "OEOVER"
+lsb = 14
+width = 2
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Output-enable override"
+[[register.field]]
+id = "inover"
+name = "INOVER"
+lsb = 16
+width = 2
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Input override"
+[[register.field]]
+id = "irqmask_edge_low"
+name = "IRQMASK_EDGE_LOW"
+lsb = 20
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Masks edge-low interrupt into interrupt output"
+[[register.field]]
+id = "irqmask_edge_high"
+name = "IRQMASK_EDGE_HIGH"
+lsb = 21
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Masks edge-high interrupt into interrupt output"
+[[register.field]]
+id = "irqmask_level_low"
+name = "IRQMASK_LEVEL_LOW"
+lsb = 22
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Masks level-low interrupt into interrupt output"
+[[register.field]]
+id = "irqmask_level_high"
+name = "IRQMASK_LEVEL_HIGH"
+lsb = 23
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Masks level-high interrupt into interrupt output"
+[[register.field]]
+id = "irqmask_f_edge_low"
+name = "IRQMASK_F_EDGE_LOW"
+lsb = 24
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Masks filtered edge-low interrupt into interrupt output"
+[[register.field]]
+id = "irqmask_f_edge_high"
+name = "IRQMASK_F_EDGE_HIGH"
+lsb = 25
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Masks filtered edge-high interrupt into interrupt output"
+[[register.field]]
+id = "irqmask_db_level_low"
+name = "IRQMASK_DB_LEVEL_LOW"
+lsb = 26
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Masks debounced level-low interrupt into interrupt output"
+[[register.field]]
+id = "irqmask_db_level_high"
+name = "IRQMASK_DB_LEVEL_HIGH"
+lsb = 27
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Masks debounced level-high interrupt into interrupt output"
+[[register.field]]
+id = "irqreset"
+name = "IRQRESET"
+lsb = 28
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-set"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Reset interrupt edge detector; self-clearing"
+[[register.field]]
+id = "irqover"
+name = "IRQOVER"
+lsb = 30
+width = 2
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Interrupt override"
+
+[[register]]
+id = "intr"
+name = "INTR"
+offset = 0x100
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Raw interrupts"
+[register.api]
+read = "public"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "proc0_inte"
+name = "PROC0_INTE"
+offset = 0x104
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Interrupt enable for proc0"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "proc0_intf"
+name = "PROC0_INTF"
+offset = 0x108
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Interrupt force for proc0"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "proc0_ints"
+name = "PROC0_INTS"
+offset = 0x10c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Interrupt status after masking and forcing for proc0"
+[register.api]
+read = "public"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "proc1_inte"
+name = "PROC1_INTE"
+offset = 0x110
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Interrupt enable for proc1"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "proc1_intf"
+name = "PROC1_INTF"
+offset = 0x114
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Interrupt force for proc1"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "proc1_ints"
+name = "PROC1_INTS"
+offset = 0x118
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Interrupt status after masking and forcing for proc1"
+[register.api]
+read = "public"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "pcie_inte"
+name = "PCIE_INTE"
+offset = 0x11c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Interrupt enable for PCIe"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "pcie_intf"
+name = "PCIE_INTF"
+offset = 0x120
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Interrupt force for PCIe"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "pcie_ints"
+name = "PCIE_INTS"
+offset = 0x124
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Interrupt status after masking and forcing for PCIe"
+[register.api]
+read = "public"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO33 bank-local bit."

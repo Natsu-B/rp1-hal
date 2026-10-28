@@ -1,0 +1,354 @@
+[peripheral]
+id = "watchdog"
+name = "WATCHDOG"
+module = "watchdog"
+kind = "rp1-native-apb"
+base = 0x40154000
+size = 0x1000
+ownership = "singleton"
+default_origin = "reverse-engineered"
+legacy_svd_name = "WATCHDOG_RW"
+note = "RP2040-compatible layout where independently verified; no Rp1Lk provenance remains."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "ctrl"
+name = "CTRL"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "hardware"
+verified_write = "hardware"
+origin = "hardware"
+note = "ENABLE and countdown were hardware-verified. Pause controls and TRIGGER writes remain unverified."
+[register.api]
+read = "public"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+[[register.field]]
+id = "time"
+name = "TIME"
+lsb = 0
+width = 24
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Current watchdog countdown value."
+[[register.field]]
+id = "pause_jtag"
+name = "PAUSE_JTAG"
+lsb = 24
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "unverified"
+origin = "inferred"
+note = "Compatibility-derived: pause while JTAG is active; RP1 write behavior untested."
+[[register.field]]
+id = "pause_dbg0"
+name = "PAUSE_DBG0"
+lsb = 25
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "unverified"
+origin = "inferred"
+note = "Compatibility-derived: pause while processor 0 is debugged; RP1 write behavior untested."
+[[register.field]]
+id = "pause_dbg1"
+name = "PAUSE_DBG1"
+lsb = 26
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "unverified"
+origin = "inferred"
+note = "Compatibility-derived: pause while processor 1 is debugged; RP1 write behavior untested."
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 30
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "hardware"
+origin = "hardware"
+note = "Enable watchdog countdown; bounded enable/disable hardware proof passed."
+[[register.field]]
+id = "trigger"
+name = "TRIGGER"
+lsb = 31
+width = 1
+api_read = "public"
+write_behavior = "command"
+verified_read = "official"
+verified_write = "unverified"
+origin = "official"
+note = "Force watchdog action; observed in the verified RP1 boot handoff."
+
+[[register]]
+id = "load"
+name = "LOAD"
+offset = 0x4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "none"
+hardware_write = "command"
+verified_read = "not-applicable"
+verified_write = "hardware"
+origin = "hardware"
+note = "Bounded countdown load command; not an ordinary RW register."
+[register.api]
+command = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 24
+api_write = "public"
+write_behavior = "command"
+verified_read = "not-applicable"
+verified_write = "official"
+origin = "official"
+note = "24-bit reload value."
+
+[[register]]
+id = "reason"
+name = "REASON"
+offset = 0x8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Last reset reason raw value 0x2 was observed. Bit meanings are compatibility-derived; a watchdog-expiry reset was not induced. [Evidence: HardwareProven]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "timer"
+name = "TIMER"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "inferred"
+note = "Compatibility-derived TIMER bit; no watchdog-expiry reset was induced."
+[[register.field]]
+id = "force"
+name = "FORCE"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "inferred"
+note = "Compatibility-derived FORCE bit; raw bit 1 was observed set in hardware."
+
+[[register]]
+id = "boot_magic"
+name = "BOOT_MAGIC"
+offset = 0xc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "hardware"
+verified_write = "hardware"
+origin = "hardware"
+note = "Boot ROM start-service magic gate; this word is state-machine input, not general scratch memory."
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Observed Boot ROM start-service magic-gate state."
+
+[[register]]
+id = "proc0_encoded_entry"
+name = "PROC0_ENCODED_ENTRY"
+offset = 0x10
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "hardware"
+verified_write = "hardware"
+origin = "hardware"
+note = "Boot ROM start-service proc0 encoded entry; encoding XOR constant is 0xb007c0de."
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+
+[[register]]
+id = "proc1_encoded_entry"
+name = "PROC1_ENCODED_ENTRY"
+offset = 0x14
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "hardware"
+verified_write = "hardware"
+origin = "hardware"
+note = "Boot ROM start-service proc1 encoded entry; encoding XOR constant is 0x4ff83f2d."
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+
+[[register]]
+id = "proc0_initial_sp"
+name = "PROC0_INITIAL_SP"
+offset = 0x18
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "hardware"
+verified_write = "hardware"
+origin = "hardware"
+note = "Boot ROM start-service proc0 initial stack pointer; this word is not general scratch memory."
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+
+[[register]]
+id = "proc1_initial_sp"
+name = "PROC1_INITIAL_SP"
+offset = 0x1c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "state-machine-only"
+verified_read = "hardware"
+verified_write = "hardware"
+origin = "hardware"
+note = "Boot ROM start-service proc1 initial stack pointer; this word is not general scratch memory."
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+
+[[register]]
+id = "scratch"
+name = "SCRATCH"
+offset = 0x20
+width = 32
+repeat_count = 3
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "hardware"
+verified_write = "unverified"
+origin = "hardware"
+note = "Remaining scratch words; unrestricted firmware use and write behavior are not yet verified."
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "hardware"
+verified_write = "unverified"
+origin = "hardware"
+note = "Read-only PAC exposure until general scratch writes are verified."
+
+[[register]]
+id = "identification_tag"
+name = "IDENTIFICATION_TAG"
+offset = 0x2c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Observed raw value 0x57444f47. IDENTIFICATION_TAG is a conservative inference; hardware_write=none is fail-closed PAC policy, not physical write proof."
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Observed ASCII WDOG value (0x57444F47); this is not the watchdog tick generator. PAC read-only exposure is policy; physical write behavior remains unknown. [Evidence: HardwareReadProven.]"

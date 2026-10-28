@@ -1,0 +1,776 @@
+schema = "rp1-regdb-v3"
+data_files = [
+    "peripherals/adc.toml",
+    "peripherals/audio-in.toml",
+    "peripherals/audio-out.toml",
+    "peripherals/busfabric-axishim.toml",
+    "peripherals/busfabric-monitor.toml",
+    "peripherals/clocks-main.toml",
+    "peripherals/clocks-video.toml",
+    "peripherals/dma.toml",
+    "peripherals/dma-tick.toml",
+    "peripherals/eth.toml",
+    "peripherals/eth-cfg.toml",
+    "peripherals/exac.toml",
+    "peripherals/i2c0.toml",
+    "peripherals/i2c1.toml",
+    "peripherals/i2c2.toml",
+    "peripherals/i2c3.toml",
+    "peripherals/i2c4.toml",
+    "peripherals/i2c5.toml",
+    "peripherals/i2c6.toml",
+    "peripherals/i2s0.toml",
+    "peripherals/i2s1.toml",
+    "peripherals/i2s2.toml",
+    "peripherals/io-bank0.toml",
+    "peripherals/io-bank1.toml",
+    "peripherals/io-bank2.toml",
+    "peripherals/mipi0-cfg.toml",
+    "peripherals/mipi0-csidma.toml",
+    "peripherals/mipi0-csihost.toml",
+    "peripherals/mipi0-dsidma.toml",
+    "peripherals/mipi0-dsihost.toml",
+    "peripherals/mipi0-isp.toml",
+    "peripherals/mipi1-cfg.toml",
+    "peripherals/mipi1-csidma.toml",
+    "peripherals/mipi1-csihost.toml",
+    "peripherals/mipi1-dsidma.toml",
+    "peripherals/mipi1-dsihost.toml",
+    "peripherals/mipi1-isp.toml",
+    "peripherals/otp.toml",
+    "peripherals/pads-bank0.toml",
+    "peripherals/pads-bank1.toml",
+    "peripherals/pads-bank2.toml",
+    "peripherals/pads-eth.toml",
+    "peripherals/pcie-apbs.toml",
+    "peripherals/pio.toml",
+    "peripherals/pll-audio.toml",
+    "peripherals/pll-sys.toml",
+    "peripherals/pll-video.toml",
+    "peripherals/power.toml",
+    "peripherals/pwm0.toml",
+    "peripherals/pwm1.toml",
+    "peripherals/resets.toml",
+    "peripherals/rosc0.toml",
+    "peripherals/rosc1.toml",
+    "peripherals/sdio0.toml",
+    "peripherals/sdio0-cfg.toml",
+    "peripherals/sdio1.toml",
+    "peripherals/sdio1-cfg.toml",
+    "peripherals/spi0.toml",
+    "peripherals/spi1.toml",
+    "peripherals/spi2.toml",
+    "peripherals/spi3.toml",
+    "peripherals/spi4.toml",
+    "peripherals/spi5.toml",
+    "peripherals/spi6.toml",
+    "peripherals/spi7.toml",
+    "peripherals/spi8.toml",
+    "peripherals/syscfg.toml",
+    "peripherals/sysinfo.toml",
+    "peripherals/sys-rio0.toml",
+    "peripherals/sys-rio1.toml",
+    "peripherals/sys-rio2.toml",
+    "peripherals/ticks.toml",
+    "peripherals/timer.toml",
+    "peripherals/uart0.toml",
+    "peripherals/uart1.toml",
+    "peripherals/uart2.toml",
+    "peripherals/uart3.toml",
+    "peripherals/uart4.toml",
+    "peripherals/uart5.toml",
+    "peripherals/usbhost0.toml",
+    "peripherals/usbhost0-cfg.toml",
+    "peripherals/usbhost1.toml",
+    "peripherals/usbhost1-cfg.toml",
+    "peripherals/vbusctrl.toml",
+    "peripherals/video-out-cfg.toml",
+    "peripherals/video-out-dpi.toml",
+    "peripherals/video-out-vec.toml",
+    "peripherals/watchdog.toml",
+    "peripherals/xosc.toml",
+]
+
+[device]
+name = "RP1"
+address_unit_bits = 8
+register_width = 32
+
+[core]
+architecture = "armv7-m"
+implementation = "cortex-m3"
+revision = "r2p1"
+cpuid = 0x412fc231
+processor_count = 2
+endianness = "little"
+
+[core.nvic]
+external_slots = 64
+assigned_interrupts = 61
+priority_bits = 3
+verification = "hardware"
+
+[core.mpu]
+present = true
+kind = "unified"
+data_regions = 8
+instruction_regions = 0
+verification = "hardware"
+
+[core.mpu.proc0_privileged_shared_sram_data_read]
+processor = 0
+mode = "privileged-thread"
+access = "data-read"
+target = "shared-sram"
+region = 7
+region_size_bytes = 32
+permission = "no-access"
+exception_number = 4
+precise_memmanage = { verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "proc0 privileged Thread-mode data read from region-7 32-byte shared-SRAM no-access mapping" }
+data_access_violation = { verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "proc0 privileged Thread-mode data read from region-7 32-byte shared-SRAM no-access mapping", note = "CFSR.DACCVIOL was set." }
+fault_address_valid = { verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "proc0 privileged Thread-mode data read from region-7 32-byte shared-SRAM no-access mapping", note = "CFSR.MMARVALID was set." }
+exact_fault_address = { verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "proc0 privileged Thread-mode data read from region-7 32-byte shared-SRAM no-access mapping", note = "MMFAR exactly matched the tested address." }
+hardfault_escalation = { verification = "hardware", result = "not-observed", class = "scoped-behavior", scope = "proc0 privileged Thread-mode data read from region-7 32-byte shared-SRAM no-access mapping", note = "HFSR remained zero; this is not a global no-escalation guarantee." }
+exact_pc_recovery = { verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "proc0 privileged Thread-mode data read from region-7 32-byte shared-SRAM no-access mapping" }
+single_handler_entry = { verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "proc0 privileged Thread-mode data read from region-7 32-byte shared-SRAM no-access mapping" }
+
+[core.systick]
+calib = 0x00001387
+tenms = 4999
+reference_present = true
+skew = false
+nominal_reference_hz = 500000
+calib_verification = "hardware"
+frequency_verification = "architectural"
+
+[core.dwt]
+present = true
+comparators = 4
+cycle_counter = false
+profiling_counters = false
+external_match_trigger = false
+trace_packets = false
+verification = "hardware"
+
+[core.fpb]
+present = true
+code_comparators = 6
+literal_comparators = 2
+verification = "hardware"
+
+[core.instructions]
+hardware_divide = { verification = "hardware", result = "confirmed", class = "capability" }
+exclusive_load = { verification = "hardware", result = "confirmed", class = "capability" }
+exclusive_store = { verification = "hardware", result = "not-observed", class = "scoped-behavior", scope = "tested-firmware-sram-path", note = "No successful STREX was observed on the tested firmware SRAM path; instruction absence is not claimed." }
+
+[boot_rom]
+present = true
+public_lookup_table = { verification = "static", result = "not-observed", class = "scoped-behavior", scope = "current-boot-rom-analysis", note = "No public lookup table was found in the analyzed scope; absence is not claimed." }
+official_firmware_rom_calls = { verification = "static", result = "not-observed", class = "scoped-behavior", scope = "current-official-firmware-analysis", note = "No official-firmware ROM calls were found in the analyzed scope; absence is not claimed." }
+
+[pci_endpoint]
+vendor_id = 0x1de4
+device_id = 0x0001
+origin = "linux"
+verified = "hardware"
+note = "Fixed RP1 PCI endpoint identity; BAR assignment values are host/runtime policy and are intentionally not canonical register metadata."
+
+[[address_space]]
+name = "PERIPHERAL"
+local_base = 0x40000000
+size = 0x00400000
+host_base = 0x1f00000000
+origin = "hardware"
+verified = "hardware"
+note = "RP1 local peripheral aperture and BCM2712 host alias used by the verified BAR mapping."
+
+[[address_space]]
+name = "SRAM"
+local_base = 0x20000000
+size = 0x00010000
+host_base = 0x1f00400000
+origin = "hardware"
+verified = "hardware"
+note = "RP1 SRAM aperture exported by the verified endpoint BAR2 mapping."
+
+[[gpio_bank]]
+id = 0
+first_gpio = 0
+gpio_count = 28
+io_offset = 0x0000
+interrupt_enable_offset = 0x011c
+interrupt_status_offset = 0x0124
+rio_offset = 0x0000
+pads_offset = 0x0004
+origin = "linux"
+verified = "static"
+
+[[gpio_bank]]
+id = 1
+first_gpio = 28
+gpio_count = 6
+io_offset = 0x4000
+interrupt_enable_offset = 0x411c
+interrupt_status_offset = 0x4124
+rio_offset = 0x4000
+pads_offset = 0x4004
+origin = "linux"
+verified = "static"
+
+[[gpio_bank]]
+id = 2
+first_gpio = 34
+gpio_count = 20
+io_offset = 0x8000
+interrupt_enable_offset = 0x811c
+interrupt_status_offset = 0x8124
+rio_offset = 0x8000
+pads_offset = 0x8004
+origin = "linux"
+verified = "static"
+
+[[clock]]
+name = "PllSysCore"
+id = 0
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllAudioCore"
+id = 1
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllVideoCore"
+id = 2
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllSys"
+id = 3
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllAudio"
+id = 4
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllVideo"
+id = 5
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllSysPrimaryPhase"
+id = 6
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllSysSecondaryPhase"
+id = 7
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllAudioPrimaryPhase"
+id = 8
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllSysSecondary"
+id = 9
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllAudioSecondary"
+id = 10
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllVideoSecondary"
+id = 11
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Sys"
+id = 12
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "SlowSys"
+id = 13
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Dma"
+id = 14
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Uart"
+id = 15
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Ethernet"
+id = 16
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Pwm0"
+id = 17
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Pwm1"
+id = 18
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "AudioIn"
+id = 19
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "AudioOut"
+id = 20
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "I2s"
+id = 21
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Mipi0Config"
+id = 22
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Mipi1Config"
+id = 23
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PcieAux"
+id = 24
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Usbh0Microframe"
+id = 25
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Usbh1Microframe"
+id = 26
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Usbh0Suspend"
+id = 27
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Usbh1Suspend"
+id = 28
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "EthernetTsu"
+id = 29
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Adc"
+id = 30
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "SdioTimer"
+id = 31
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "SdioAltSource"
+id = 32
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Gp0"
+id = 33
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Gp1"
+id = 34
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Gp2"
+id = 35
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Gp3"
+id = 36
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Gp4"
+id = 37
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Gp5"
+id = 38
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Vec"
+id = 39
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Dpi"
+id = 40
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Mipi0Dpi"
+id = 41
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Mipi1Dpi"
+id = 42
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllVideoPrimaryPhase"
+id = 43
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "PllAudioTertiary"
+id = 44
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Mipi0DsiByteclock"
+id = 45
+origin = "linux"
+verified = "static"
+[[clock]]
+name = "Mipi1DsiByteclock"
+id = 46
+origin = "linux"
+verified = "static"
+
+[[interrupt]]
+name = "IO_BANK0"
+number = 0
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "IO_BANK1"
+number = 1
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "IO_BANK2"
+number = 2
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "AUDIO_IN"
+number = 3
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "AUDIO_OUT"
+number = 4
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "PWM0"
+number = 5
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "ETH"
+number = 6
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "I2C0"
+number = 7
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "I2C1"
+number = 8
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "I2C2"
+number = 9
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "I2C3"
+number = 10
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "I2C4"
+number = 11
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "I2C5"
+number = 12
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "I2C6"
+number = 13
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "I2S0"
+number = 14
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "I2S1"
+number = 15
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "I2S2"
+number = 16
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SDIO0"
+number = 17
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SDIO1"
+number = 18
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SPI0"
+number = 19
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SPI1"
+number = 20
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SPI2"
+number = 21
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SPI3"
+number = 22
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SPI4"
+number = 23
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SPI5"
+number = 24
+origin = "linux"
+verified = "static"
+
+[[interrupt]]
+name = "UART0"
+number = 25
+origin = "hardware"
+verified = "hardware"
+
+[[interrupt]]
+name = "TIMER_0"
+number = 26
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "TIMER_1"
+number = 27
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "TIMER_2"
+number = 28
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "TIMER_3"
+number = 29
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "USBHOST0"
+number = 30
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "USBHOST0_0"
+number = 31
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "USBHOST0_1"
+number = 32
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "USBHOST0_2"
+number = 33
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "USBHOST0_3"
+number = 34
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "USBHOST1"
+number = 35
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "USBHOST1_0"
+number = 36
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "USBHOST1_1"
+number = 37
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "USBHOST1_2"
+number = 38
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "USBHOST1_3"
+number = 39
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "DMA"
+number = 40
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "PWM1"
+number = 41
+origin = "linux"
+verified = "static"
+
+[[interrupt]]
+name = "UART1"
+number = 42
+origin = "hardware"
+verified = "hardware"
+[[interrupt]]
+name = "UART2"
+number = 43
+origin = "hardware"
+verified = "hardware"
+[[interrupt]]
+name = "UART3"
+number = 44
+origin = "hardware"
+verified = "hardware"
+[[interrupt]]
+name = "UART4"
+number = 45
+origin = "hardware"
+verified = "hardware"
+[[interrupt]]
+name = "UART5"
+number = 46
+origin = "hardware"
+verified = "hardware"
+
+[[interrupt]]
+name = "MIPI0"
+number = 47
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "MIPI1"
+number = 48
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "VIDEO_OUT"
+number = 49
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "PIO_0"
+number = 50
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "PIO_1"
+number = 51
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "ADC_FIFO"
+number = 52
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "PCIE_OUT"
+number = 53
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SPI6"
+number = 54
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SPI7"
+number = 55
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SPI8"
+number = 56
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "PROC_MISC"
+number = 57
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "SYSCFG"
+number = 58
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "CLOCKS_DEFAULT"
+number = 59
+origin = "linux"
+verified = "static"
+[[interrupt]]
+name = "VBUSCTRL"
+number = 60
+origin = "linux"
+verified = "static"

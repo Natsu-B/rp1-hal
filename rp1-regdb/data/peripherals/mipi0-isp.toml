@@ -1,0 +1,15 @@
+[peripheral]
+id = "mipi0_isp"
+name = "MIPI0_ISP"
+module = "mipi0_isp"
+kind = "external-ip"
+base = 0x40124000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "MIPI0_ISP"
+external_ip = "mipi-isp"
+clock_dependency = "platform clock dependency; see RP1 integration"
+reset_dependency = "RESETS field MIPI0_ISP when present"
+pinmux_dependency = "IO_BANK/PADS function selection where externally pinned"
+note = "RP1 MIPI0_ISP register block. Bus=APB. No RP1 atomic alias listed."

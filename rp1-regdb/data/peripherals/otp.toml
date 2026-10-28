@@ -1,0 +1,17 @@
+[peripheral]
+id = "otp"
+name = "OTP"
+module = "otp"
+kind = "rp1-native-apb"
+base = 0x4000c000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "OTP_RW"
+note = "RP1 OTP block used by the Boot ROM read/configuration path. Unknown register bodies remain hidden; no programming, erase, lock, safe raw-write, modify, or atomic API is exposed."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000

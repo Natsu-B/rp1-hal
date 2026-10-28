@@ -1,0 +1,15 @@
+[peripheral]
+id = "uart0"
+name = "UART0"
+module = "uart0"
+kind = "external-ip"
+base = 0x40030000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "UART0"
+external_ip = "arm-pl011"
+clock_dependency = "uartclk and apb_pclk"
+reset_dependency = "RESETS.CTRL1.UART0"
+pinmux_dependency = "IO_BANK/PADS selection"
+note = "PL011 register model is supplied by arm-pl011-uart."

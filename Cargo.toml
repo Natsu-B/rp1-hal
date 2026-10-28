@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["rp1-regdb", "rp1-pac"]
+default-members = ["rp1-regdb", "rp1-pac"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

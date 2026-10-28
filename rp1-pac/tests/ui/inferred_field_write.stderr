@@ -1,0 +1,5 @@
+error[E0599]: no method named `candidate_bit6` found for mutable reference `&mut W<CTRL0_SPEC>` in the current scope
+ --> tests/ui/inferred_field_write.rs:6:26
+  |
+6 |         .modify(|_, w| w.candidate_bit6().set_bit());
+  |                          ^^^^^^^^^^^^^^ method not found in `&mut W<CTRL0_SPEC>`

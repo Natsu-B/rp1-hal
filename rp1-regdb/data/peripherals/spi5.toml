@@ -1,0 +1,15 @@
+[peripheral]
+id = "spi5"
+name = "SPI5"
+module = "spi5"
+kind = "external-ip"
+base = 0x40064000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "SPI5"
+external_ip = "synopsys-dw-apb-ssi"
+clock_dependency = "ClockId::Sys"
+reset_dependency = "RESETS field SPI5 when present"
+pinmux_dependency = "IO_BANK/PADS function selection where externally pinned"
+note = "RP1 SPI5 register block. Bus=APB. No RP1 atomic alias listed."

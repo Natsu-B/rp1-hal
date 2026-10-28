@@ -1,0 +1,10 @@
+error[E0599]: no method named `write_with_zero` found for reference `&Reg<CTRL1_SPEC>` in the current scope
+ --> tests/ui/resets_zero_write.rs:6:10
+  |
+3 | /     peripherals
+4 | |         .RESETS
+5 | |         .ctrl1()
+6 | |         .write_with_zero(|writer| writer.uart0().set_bit());
+  | |         -^^^^^^^^^^^^^^^ method not found in `&Reg<CTRL1_SPEC>`
+  | |_________|
+  |

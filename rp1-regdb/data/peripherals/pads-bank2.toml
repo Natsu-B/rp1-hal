@@ -1,0 +1,159 @@
+[peripheral]
+id = "pads_bank2"
+name = "PADS_BANK2"
+module = "pads_bank2"
+kind = "rp1-native-apb"
+base = 0x400f8000
+size = 0x1000
+ownership = "singleton"
+default_origin = "linux"
+legacy_svd_name = "PADS_BANK2_RW"
+note = "RP1 PADS_BANK2 register block with supplemental register semantics. Alias behavior: normal read/write access. Bank geometry and pad fields are recovered from the Linux pinctrl driver; fields are inherited from the public bank-0 layout. Unknown offsets remain split RAW arrays."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "voltage_select"
+name = "VOLTAGE_SELECT"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Voltage select per bank: 0=3.3V thresholds, 1=1.8V thresholds"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "voltage_select"
+name = "VOLTAGE_SELECT"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Voltage select"
+
+[[register]]
+id = "gpio"
+name = "GPIO"
+offset = 0x4
+width = 32
+repeat_count = 20
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Pad control register"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "slewfast"
+name = "SLEWFAST"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Slew rate control; 1=Fast, 0=Slow"
+[[register.field]]
+id = "schmitt"
+name = "SCHMITT"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable Schmitt trigger"
+[[register.field]]
+id = "pde"
+name = "PDE"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Pull-down enable"
+[[register.field]]
+id = "pue"
+name = "PUE"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Pull-up enable"
+[[register.field]]
+id = "drive"
+name = "DRIVE"
+lsb = 4
+width = 2
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Drive strength"
+[[register.field]]
+id = "ie"
+name = "IE"
+lsb = 6
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Input enable"
+[[register.field]]
+id = "od"
+name = "OD"
+lsb = 7
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Output disable; priority over peripheral output enable"

@@ -1,0 +1,5 @@
+error[E0599]: no method named `set` found for struct `AtomicXorBitWriter<'a, W, O>` in the current scope
+ --> tests/ui/atomic_xor_wrong_operation.rs:2:45
+  |
+2 |     resets.ctrl1().atomic_xor(|w| w.uart0().set());
+  |                                             ^^^ method not found in `AtomicXorBitWriter<'_, AtomicXorW<CTRL1_SPEC>, 26>`

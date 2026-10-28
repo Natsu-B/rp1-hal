@@ -1,0 +1,18 @@
+error[E0599]: the method `modify` exists for reference `&Reg<DONE0_SPEC>`, but its trait bounds were not satisfied
+ --> tests/ui/resets_done0_proc1_write.rs:6:10
+  |
+3 | /     peripherals
+4 | |         .RESETS
+5 | |         .done0()
+6 | |         .modify(|_, w| w.proc1().set_bit());
+  | |         -^^^^^^ method cannot be called on `&Reg<DONE0_SPEC>` due to unsatisfied trait bounds
+  | |_________|
+  |
+  |
+ ::: src/generated/resets.rs
+  |
+  |       pub struct DONE0_SPEC;
+  |       --------------------- doesn't satisfy `DONE0_SPEC: Modifiable`
+  |
+  = note: the following trait bounds were not satisfied:
+          `DONE0_SPEC: Modifiable`

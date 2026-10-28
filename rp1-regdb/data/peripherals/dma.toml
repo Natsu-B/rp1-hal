@@ -1,0 +1,15 @@
+[peripheral]
+id = "dma"
+name = "DMA"
+module = "dma"
+kind = "external-ip"
+base = 0x40188000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "DMA"
+external_ip = "synopsys-dw-axi-dmac"
+clock_dependency = "ClockId::Dma"
+reset_dependency = "RESETS field DMA when present"
+pinmux_dependency = "IO_BANK/PADS function selection where externally pinned"
+note = "RP1 DMA register block. Bus=AHB. No RP1 atomic alias listed."

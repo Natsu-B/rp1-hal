@@ -1,0 +1,17 @@
+[peripheral]
+id = "busfabric_axishim"
+name = "BUSFABRIC_AXISHIM"
+module = "busfabric_axishim"
+kind = "rp1-native-apb"
+base = 0x400c4000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "BUSFABRIC_AXISHIM_RW"
+note = "RP1 BUSFABRIC_AXISHIM_RW register block. Bus=APB. Atomic alias: normal read/write access."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000

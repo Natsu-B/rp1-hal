@@ -1,0 +1,17 @@
+[peripheral]
+id = "video_out_dpi"
+name = "VIDEO_OUT_DPI"
+module = "video_out_dpi"
+kind = "rp1-native-apb"
+base = 0x40148000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "VIDEO_OUT_DPI_RW"
+note = "RP1 VIDEO_OUT_DPI_RW register block. Bus=APB. Atomic alias: normal read/write access."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000

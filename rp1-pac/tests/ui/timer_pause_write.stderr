@@ -1,0 +1,5 @@
+error[E0599]: no method named `write` found for reference `&Reg<PAUSE_SPEC>` in the current scope
+ --> tests/ui/timer_pause_write.rs:3:31
+  |
+3 |     peripherals.TIMER.pause().write(|w| w);
+  |                               ^^^^^ method not found in `&Reg<PAUSE_SPEC>`

@@ -1,0 +1,497 @@
+[peripheral]
+id = "timer"
+name = "TIMER"
+module = "timer"
+kind = "rp1-native-apb"
+base = 0x400ac000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "TIMER_RW"
+note = "RP1 timer block. RAW_HIGH/RAW_LOW advance at one tick per microsecond; coherent raw reads use high-low-high and retry on rollover. Write protocols are exposed only where independently verified."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "timehw"
+name = "TIMEHW"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "none"
+hardware_write = "state-machine-only"
+verified_read = "not-applicable"
+verified_write = "hardware"
+origin = "hardware"
+note = "Upper half of the coordinated timer write protocol; hidden from the general PAC API."
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+write_behavior = "plain"
+verified_read = "not-applicable"
+verified_write = "hardware"
+origin = "hardware"
+note = "Writing the high half commits it with the low half staged in TIMELW. [Evidence: HardwareProven]"
+
+[[register]]
+id = "timelw"
+name = "TIMELW"
+offset = 0x4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "none"
+hardware_write = "state-machine-only"
+verified_read = "not-applicable"
+verified_write = "hardware"
+origin = "hardware"
+note = "Stages the lower half of the coordinated timer write protocol; the following TIMEHW write commits both halves. Hidden from the general PAC API."
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+write_behavior = "plain"
+verified_read = "not-applicable"
+verified_write = "hardware"
+origin = "hardware"
+note = "Stages the writable low half without immediately changing time. [Evidence: HardwareProven]"
+
+[[register]]
+id = "timehr"
+name = "TIMEHR"
+offset = 0x8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Latched high half; read after TIMELR. [Evidence: HardwareProven]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Latched high half; read after TIMELR. [Evidence: HardwareProven]"
+
+[[register]]
+id = "timelr"
+name = "TIMELR"
+offset = 0xc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Low half; reading latches TIMEHR. [Evidence: HardwareProven]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Low half; reading latches TIMEHR. [Evidence: HardwareProven]"
+
+[[register]]
+id = "alarm"
+name = "ALARM"
+offset = 0x10
+width = 32
+repeat_count = 4
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "command"
+verified_read = "hardware"
+verified_write = "hardware"
+origin = "hardware"
+note = "Writing an alarm value arms that channel; represented as a command rather than ordinary RW state."
+[register.api]
+read = "public"
+command = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+api_write = "public"
+write_behavior = "command"
+verified_read = "hardware"
+verified_write = "hardware"
+origin = "hardware"
+note = "Low-32-bit compare and arm register for alarm 0. [Evidence: HardwareProven]"
+
+[[register]]
+id = "armed"
+name = "ARMED"
+offset = 0x20
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "write-one-to-clear"
+verified_read = "hardware"
+verified_write = "unverified"
+origin = "official"
+note = "Alarm writes set ARMED and firing automatically clears it. Explicit W1C disarm is not hardware-verified and is not exposed."
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[[register.field]]
+id = "alarm"
+name = "ALARM"
+lsb = 0
+width = 4
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_write = "unverified"
+
+[[register]]
+id = "raw_high"
+name = "RAW_HIGH"
+offset = 0x24
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Side-effect-free free-running counter high half; use high-low-high coherent reads. One tick per microsecond was hardware-proven. [Evidence: HardwareProven]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Side-effect-free free-running counter high half; use high-low-high coherent reads. One tick per microsecond was hardware-proven. [Evidence: HardwareProven]"
+
+[[register]]
+id = "raw_low"
+name = "RAW_LOW"
+offset = 0x28
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Side-effect-free free-running counter low half; use high-low-high coherent reads. [Evidence: HardwareProven]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Side-effect-free free-running counter low half; use high-low-high coherent reads. [Evidence: HardwareProven]"
+
+[[register]]
+id = "debug_pause"
+name = "DEBUG_PAUSE"
+offset = 0x2c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "hardware"
+verified_write = "unverified"
+origin = "hardware"
+note = "Pause while processor debug ports are active. [Evidence: HardwareReadProven; write semantics remain unverified.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "proc0"
+name = "PROC0"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Pause for processor 0 debug."
+[[register.field]]
+id = "proc1"
+name = "PROC1"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Pause for processor 1 debug."
+
+[[register]]
+id = "pause"
+name = "PAUSE"
+offset = 0x30
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "hardware"
+verified_write = "unverified"
+origin = "hardware"
+note = "Global timer pause. [Evidence: HardwareReadProven; write semantics remain unverified.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "enable"
+name = "ENABLE"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Pause the timer when set."
+
+[[register]]
+id = "intr"
+name = "INTR"
+offset = 0x34
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "write-one-to-clear"
+verified_read = "hardware"
+verified_write = "hardware"
+origin = "hardware"
+note = "Raw alarm interrupt status. W1C behavior was independently hardware-verified."
+[register.api]
+read = "public"
+w1c = "public"
+[[register.field]]
+id = "alarm"
+name = "ALARM"
+lsb = 0
+width = 4
+api_read = "public"
+api_write = "public"
+write_behavior = "write-one-to-clear"
+
+[[register]]
+id = "inte"
+name = "INTE"
+offset = 0x38
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "hardware"
+verified_write = "unverified"
+origin = "hardware"
+note = "Alarm interrupt enable. [Evidence: HardwareReadProven; write semantics remain unverified.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "alarm0"
+name = "ALARM0"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Alarm 0 interrupt bit."
+[[register.field]]
+id = "alarm1"
+name = "ALARM1"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Alarm 1 interrupt bit."
+[[register.field]]
+id = "alarm2"
+name = "ALARM2"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Alarm 2 interrupt bit."
+[[register.field]]
+id = "alarm3"
+name = "ALARM3"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Alarm 3 interrupt bit."
+
+[[register]]
+id = "intf"
+name = "INTF"
+offset = 0x3c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "write-one-to-set"
+verified_read = "hardware"
+verified_write = "unverified"
+origin = "hardware"
+note = "Alarm interrupt force. [Evidence: HardwareReadProven; write semantics remain unverified.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "alarm0"
+name = "ALARM0"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Alarm 0 interrupt bit."
+[[register.field]]
+id = "alarm1"
+name = "ALARM1"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Alarm 1 interrupt bit."
+[[register.field]]
+id = "alarm2"
+name = "ALARM2"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Alarm 2 interrupt bit."
+[[register.field]]
+id = "alarm3"
+name = "ALARM3"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Alarm 3 interrupt bit."
+
+[[register]]
+id = "ints"
+name = "INTS"
+offset = 0x40
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "hardware"
+verified_write = "not-applicable"
+origin = "hardware"
+note = "Masked and forced alarm interrupt status. [Evidence: HardwareReadProven; write semantics remain unverified.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "alarm0"
+name = "ALARM0"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Alarm 0 interrupt bit."
+[[register.field]]
+id = "alarm1"
+name = "ALARM1"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Alarm 1 interrupt bit."
+[[register.field]]
+id = "alarm2"
+name = "ALARM2"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Alarm 2 interrupt bit."
+[[register.field]]
+id = "alarm3"
+name = "ALARM3"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Alarm 3 interrupt bit."

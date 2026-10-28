@@ -1,0 +1,435 @@
+[peripheral]
+id = "pll_audio"
+name = "PLL_AUDIO"
+module = "pll_audio"
+kind = "rp1-native-apb"
+base = 0x40024000
+size = 0x1000
+ownership = "singleton"
+default_origin = "linux"
+legacy_svd_name = "PLL_AUDIO_RW"
+note = "RP1 PLL_AUDIO register block with supplemental register semantics. Alias behavior: normal read/write access. PLL layout recovered from the Linux RP1 common-clock driver. Unknown offsets remain split RAW arrays."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "cs"
+name = "CS"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "PLL control/status. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "refdiv"
+name = "REFDIV"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Reference-divider field as masked by Linux."
+[[register.field]]
+id = "lock"
+name = "LOCK"
+lsb = 31
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "PLL lock indication."
+
+[[register]]
+id = "pwr"
+name = "PWR"
+offset = 0x4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "PLL power control. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "pd"
+name = "PD"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "PLL power-down."
+[[register.field]]
+id = "dacpd"
+name = "DACPD"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "DAC power-down."
+[[register.field]]
+id = "dsmpd"
+name = "DSMPD"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Delta-sigma modulator power-down."
+[[register.field]]
+id = "postdivpd"
+name = "POSTDIVPD"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Post-divider power-down."
+[[register.field]]
+id = "phase4pd"
+name = "PHASE4PD"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Four-phase output power-down."
+[[register.field]]
+id = "vcopd"
+name = "VCOPD"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "VCO power-down."
+
+[[register]]
+id = "fbdiv_int"
+name = "FBDIV_INT"
+offset = 0x8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer feedback divider; exact implemented width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer feedback divider; exact implemented width remains raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "fbdiv_frac"
+name = "FBDIV_FRAC"
+offset = 0xc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Fractional feedback divider; exact implemented width remains raw. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "value"
+name = "VALUE"
+lsb = 0
+width = 32
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Fractional feedback divider; exact implemented width remains raw. [Source: Linux RP1 common-clock driver.]"
+
+[[register]]
+id = "prim"
+name = "PRIM"
+offset = 0x10
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Primary PLL divider and phase-output control. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "phase"
+name = "PHASE"
+lsb = 0
+width = 2
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Phase selection: 0/90/180/270 degrees."
+[[register.field]]
+id = "phase_enable"
+name = "PHASE_ENABLE"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Enable phase output. PLL_SYS bit 4 supplies Linux clock ID 6/APB PCLK and is hardware-proven."
+[[register.field]]
+id = "div2"
+name = "DIV2"
+lsb = 12
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Second primary post-divider."
+[[register.field]]
+id = "div1"
+name = "DIV1"
+lsb = 16
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "First primary post-divider."
+
+[[register]]
+id = "sec"
+name = "SEC"
+offset = 0x14
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Secondary PLL divider and phase-output control. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "phase"
+name = "PHASE"
+lsb = 0
+width = 2
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Phase selection: 0/90/180/270 degrees."
+[[register.field]]
+id = "phase_enable"
+name = "PHASE_ENABLE"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable phase output."
+[[register.field]]
+id = "div"
+name = "DIV"
+lsb = 8
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Secondary divider."
+[[register.field]]
+id = "reset"
+name = "RESET"
+lsb = 16
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Secondary divider reset."
+[[register.field]]
+id = "implemented"
+name = "IMPLEMENTED"
+lsb = 31
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Secondary output implemented indication."
+
+[[register]]
+id = "tern"
+name = "TERN"
+offset = 0x18
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Tertiary PLL divider and phase-output control; PLL_AUDIO only. [Source: Linux RP1 common-clock driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "phase"
+name = "PHASE"
+lsb = 0
+width = 2
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Phase selection: 0/90/180/270 degrees."
+[[register.field]]
+id = "phase_enable"
+name = "PHASE_ENABLE"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Enable phase output."
+[[register.field]]
+id = "div"
+name = "DIV"
+lsb = 8
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Secondary divider."
+[[register.field]]
+id = "reset"
+name = "RESET"
+lsb = 16
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "Secondary divider reset."
+[[register.field]]
+id = "implemented"
+name = "IMPLEMENTED"
+lsb = 31
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "Secondary output implemented indication."

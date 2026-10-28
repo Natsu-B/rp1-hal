@@ -1,0 +1,15 @@
+[peripheral]
+id = "i2c1"
+name = "I2C1"
+module = "i2c1"
+kind = "external-ip"
+base = 0x40074000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "I2C1"
+external_ip = "synopsys-dw-apb-i2c"
+clock_dependency = "ClockId::Sys"
+reset_dependency = "RESETS field I2C1 when present"
+pinmux_dependency = "IO_BANK/PADS function selection where externally pinned"
+note = "RP1 I2C1 register block. Bus=APB. No RP1 atomic alias listed."

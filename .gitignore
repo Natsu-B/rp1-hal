@@ -6,6 +6,7 @@
 *.elf
 *.img
 *.dtb
+*.dtbo
 *.log
 *.sha256
 logs/

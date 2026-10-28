@@ -1,0 +1,15 @@
+[peripheral]
+id = "eth"
+name = "ETH"
+module = "eth"
+kind = "external-ip"
+base = 0x40100000
+size = 0x1000
+ownership = "singleton"
+default_origin = "official"
+legacy_svd_name = "ETH"
+external_ip = "cadence-gem"
+clock_dependency = "ClockId::Ethernet"
+reset_dependency = "RESETS field ETH when present"
+pinmux_dependency = "IO_BANK/PADS function selection where externally pinned"
+note = "RP1 ETH register block. Bus=APB. No RP1 atomic alias listed."

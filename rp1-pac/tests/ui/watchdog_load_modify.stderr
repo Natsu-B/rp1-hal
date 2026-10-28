@@ -1,0 +1,13 @@
+error[E0599]: the method `modify` exists for reference `&Reg<LOAD_SPEC>`, but its trait bounds were not satisfied
+ --> tests/ui/watchdog_load_modify.rs:3:33
+  |
+3 |     peripherals.WATCHDOG.load().modify(|_, w| w);
+  |                                 ^^^^^^ method cannot be called on `&Reg<LOAD_SPEC>` due to unsatisfied trait bounds
+  |
+ ::: src/generated/watchdog.rs
+  |
+  |     pub struct LOAD_SPEC;
+  |     -------------------- doesn't satisfy `LOAD_SPEC: Modifiable`
+  |
+  = note: the following trait bounds were not satisfied:
+          `LOAD_SPEC: Modifiable`

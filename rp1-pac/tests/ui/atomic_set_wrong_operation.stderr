@@ -1,0 +1,5 @@
+error[E0599]: no method named `clear` found for struct `AtomicSetBitWriter<'a, W, O>` in the current scope
+ --> tests/ui/atomic_set_wrong_operation.rs:2:45
+  |
+2 |     resets.ctrl1().atomic_set(|w| w.uart0().clear());
+  |                                             ^^^^^ method not found in `AtomicSetBitWriter<'_, AtomicSetW<CTRL1_SPEC>, 26>`

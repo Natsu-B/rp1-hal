@@ -1,0 +1,371 @@
+[peripheral]
+id = "sys_rio1"
+name = "SYS_RIO1"
+module = "sys_rio1"
+kind = "rp1-native-apb"
+base = 0x400e4000
+size = 0x1000
+ownership = "singleton"
+default_origin = "linux"
+legacy_svd_name = "SYS_RIO1_RW"
+note = "RP1 SYS_RIO1 register block with supplemental register semantics. Alias behavior: normal read/write access. Bank geometry is recovered from the Linux pinctrl driver; register fields are inherited from the public bank-0 layout. Unknown offsets remain split RAW arrays."
+
+[peripheral.atomic_view]
+kind = "rp1-native"
+xor_offset = 0x1000
+set_offset = 0x2000
+clear_offset = 0x3000
+
+[[register]]
+id = "out"
+name = "OUT"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "RIO_OUT controls GPIO output drive"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "oe"
+name = "OE"
+offset = 0x4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "RIO_OE controls GPIO output-enable drive"
+[register.api]
+read = "public"
+modify = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "typed"
+clear = "typed"
+xor = "typed"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+api_write = "public"
+write_behavior = "plain"
+verified_read = "official"
+verified_write = "official"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "nosync_in"
+name = "NOSYNC_IN"
+offset = 0x8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "RIO_NOSYNC_IN samples GPIO inputs directly"
+[register.api]
+read = "public"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO33 bank-local bit."
+
+[[register]]
+id = "sync_in"
+name = "SYNC_IN"
+offset = 0xc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "RIO_SYNC_IN samples GPIO inputs synchronised with clk_sys"
+[register.api]
+read = "public"
+[[register.field]]
+id = "gpio28"
+name = "GPIO28"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO28 bank-local bit."
+[[register.field]]
+id = "gpio29"
+name = "GPIO29"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO29 bank-local bit."
+[[register.field]]
+id = "gpio30"
+name = "GPIO30"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO30 bank-local bit."
+[[register.field]]
+id = "gpio31"
+name = "GPIO31"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO31 bank-local bit."
+[[register.field]]
+id = "gpio32"
+name = "GPIO32"
+lsb = 4
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO32 bank-local bit."
+[[register.field]]
+id = "gpio33"
+name = "GPIO33"
+lsb = 5
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "official"
+verified_write = "not-applicable"
+origin = "official"
+note = "GPIO33 bank-local bit."

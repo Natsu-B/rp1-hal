@@ -1,0 +1,11 @@
+error[E0599]: no method named `atomic_set_bits` found for reference `&Reg<CTRL0_SPEC>` in the current scope
+ --> tests/ui/safe_raw_atomic_mask.rs:3:32
+  |
+3 |     peripherals.RESETS.ctrl0().atomic_set_bits(1 << 6);
+  |                                ^^^^^^^^^^^^^^^
+  |
+help: there is a method `atomic_set` with a similar name
+  |
+3 -     peripherals.RESETS.ctrl0().atomic_set_bits(1 << 6);
+3 +     peripherals.RESETS.ctrl0().atomic_set(1 << 6);
+  |

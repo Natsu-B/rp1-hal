@@ -1,0 +1,11 @@
+error[E0599]: no method named `clear_bit` found for struct `AtomicClearBitWriter<'a, W, O>` in the current scope
+ --> tests/ui/atomic_clear_normal_writer_method.rs:2:47
+  |
+2 |     resets.ctrl1().atomic_clear(|w| w.uart0().clear_bit());
+  |                                               ^^^^^^^^^
+  |
+help: there is a method `clear` with a similar name
+  |
+2 -     resets.ctrl1().atomic_clear(|w| w.uart0().clear_bit());
+2 +     resets.ctrl1().atomic_clear(|w| w.uart0().clear());
+  |
