@@ -45,6 +45,9 @@ pub fn reserved_gpios(dtb: &Path) -> Result<std::collections::BTreeSet<u32>> {
 pub const BOARD_GPIO_RESERVED: std::ops::RangeInclusive<u8> = 2..=53;
 /// Unlabelled RP1 GPIO hogs of the stock bcm2712-rpi-cm5*.dtb (lines 46 and 48).
 pub const BOARD_GPIO_HOGS: &[&str] = &["micclk1_hog", "micdat1_hog"];
+/// Stock-enabled Linux consumers of RP1 lines in the board reservation (PWR LED on GPIO44,
+/// camera regulator enable on GPIO34); they would fail to probe with -EINVAL.
+pub const BOARD_RESERVED_GPIO_USERS: &[&str] = &["led_pwr", "cam0_reg"];
 /// Stock-enabled RP1 nodes that need clk-rp1 or the stock RP1 firmware (disabled when RP1
 /// is the clock authority).
 pub const BOARD_NO_SCMI_CLOCK: &[&str] = &[
@@ -169,6 +172,9 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
             .collect::<Vec<_>>()
             .join(" "),
     );
+    for label in BOARD_RESERVED_GPIO_USERS {
+        fragment(&format!("target = <&{label}>"), "status = \"disabled\";");
+    }
     if d.clock.authority == "rp1" {
         // design §6/§9: RP1 owns its clocks. Linux's clk-rp1 is disabled (otherwise
         // clk_disable_unused stops clocks of RP1-only blocks) and the stock DT gets the SCMI

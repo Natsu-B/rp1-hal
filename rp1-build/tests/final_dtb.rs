@@ -12,6 +12,8 @@ const BASE: &str = r#"/dts-v1/;
     openamp-address-space { status = "okay"; };
     rp1_firmware: rp1_firmware { mboxes = <&rp1_mbox 0>; };
     pcie2: pcie { };
+    leds { led_pwr: led-pwr { gpios = <&rp1_gpio 44 1>; }; };
+    cam0_reg: cam0_reg { gpio = <&rp1_gpio 34 0>; };
     soc-gpio { soc22: grp22 { pins = "gpio22"; }; };
     soc-user { pinctrl-0 = <&soc22>; };
     rp1 { #address-cells = <1>; #size-cells = <1>;
@@ -119,6 +121,16 @@ fn gpio_hog_on_reserved_line_is_rejected() {
         &[r#"&rp1_gpio { micclk1_hog { status = "okay"; }; };"#],
     );
     assert!(c.iter().any(|c| c.contains("GPIO46")), "{c:?}");
+    // Same for a consumer of a withheld line (the stock PWR LED on GPIO44).
+    let c = conflicts("", "", &[r#"&led_pwr { status = "okay"; };"#]);
+    assert!(c.iter().any(|c| c.contains("GPIO44")), "{c:?}");
+    // GPIO0/1 stay Linux's.
+    let c = conflicts(
+        "",
+        r#"user01 { gpios = <&rp1_gpio 0 0 &rp1_gpio 1 0>; };"#,
+        &[],
+    );
+    assert!(c.is_empty(), "{c:?}");
 }
 
 #[test]

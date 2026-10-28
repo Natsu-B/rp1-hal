@@ -320,6 +320,11 @@ fn overlay_applies_to_a_copy_of_the_stock_board_dtb() {
     for l in ["rp1_clocks", "rp1_firmware", "rp1_fw_shmem"]
         .into_iter()
         .chain(rp1_build::overlay::BOARD_NO_SCMI_CLOCK.iter().copied())
+        .chain(
+            rp1_build::overlay::BOARD_RESERVED_GPIO_USERS
+                .iter()
+                .copied(),
+        )
     {
         assert!(!m.enabled(label(l)), "{l} still enabled");
     }
