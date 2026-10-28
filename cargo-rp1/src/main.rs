@@ -7,7 +7,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     const USAGE: &str = "usage: cargo rp1 check <firmware.elf> [--dtb <base.dtb>]\n       \
         cargo rp1 bundle <firmware.elf> --kernel <Image[.gz]> [--initramfs <file>] \
-        [--loader <rp1boot.img>] [--cmdline <args>] [--config-extra <line>]... --out <dir>";
+        [--loader <rp1boot.img>] [--cmdline <args>] [--config-extra <line>]... --out <dir>\n       \
+        cargo rp1 isram-plan <firmware.elf> [--out <plan.x>]\n       \
+        cargo rp1 build <cargo build arguments> (two-stage link with automatic ISRAM placement)";
+    if args.first().is_some_and(|s| s == "isram-plan") {
+        return isram_plan(&args[1..]).map_err(|e| format!("{e}\n{USAGE}").into());
+    }
+    if args.first().is_some_and(|s| s == "build") {
+        return build(&args[1..]);
+    }
     if args.first().is_some_and(|s| s == "bundle") {
         return bundle(&args[1..]).map_err(|e| format!("{e}\n{USAGE}").into());
     }
@@ -108,4 +116,103 @@ fn main() {
         eprintln!("cargo-rp1: {e}");
         std::process::exit(1);
     }
+}
+
+fn objdump() -> std::ffi::OsString {
+    std::env::var_os("RP1_OBJDUMP").unwrap_or_else(|| "arm-none-eabi-objdump".into())
+}
+fn print_plan(plan: &cargo_rp1::isram::Plan) {
+    for (name, size) in &plan.functions {
+        println!("  isram+ {size:5} {name}");
+    }
+    for name in &plan.boundaries {
+        println!("  stays (cold/panic/fmt) {name}");
+    }
+    for name in &plan.pre_isram {
+        println!("  stays (runs before ISRAM is copied) {name}");
+    }
+    println!(
+        "STATIC: ISRAM plan {} functions, {} B now + {} B planned = {}/{} B",
+        plan.functions.len(),
+        plan.current_bytes,
+        plan.planned_bytes,
+        plan.total_bytes(),
+        cargo_rp1::isram::ISRAM_SIZE
+    );
+}
+/// `cargo rp1 isram-plan`: print the automatic placement for a linked ELF.
+fn isram_plan(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
+    let elf = PathBuf::from(args.first().ok_or("missing ELF")?);
+    let plan = cargo_rp1::isram::plan(&elf, Path::new(&objdump()))?;
+    print_plan(&plan);
+    match (args.get(1).and_then(|a| a.to_str()), args.get(2)) {
+        (Some("--out"), Some(out)) => std::fs::write(out, plan.fragment())?,
+        (None, None) => {}
+        _ => return Err("unexpected isram-plan arguments".into()),
+    }
+    Ok(())
+}
+/// Run `cargo build` and return the RP1 executable it produced (exactly one).
+fn cargo_build(
+    args: &[std::ffi::OsString],
+    plan: Option<&Path>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut cmd = std::process::Command::new(cargo);
+    cmd.arg("build")
+        .arg("--message-format=json-render-diagnostics")
+        .args(args);
+    match plan {
+        Some(p) => cmd.env("RP1_ISRAM_PLAN", p),
+        None => cmd.env_remove("RP1_ISRAM_PLAN"),
+    };
+    let out = cmd.stderr(std::process::Stdio::inherit()).output()?;
+    if !out.status.success() {
+        return Err("cargo build failed".into());
+    }
+    let mut elves = Vec::new();
+    for line in String::from_utf8(out.stdout)?.lines() {
+        if let Some(i) = line.find("\"executable\":\"") {
+            let rest = &line[i + 14..];
+            let path = &rest[..rest.find('"').ok_or("bad cargo message")?];
+            if path.contains("thumbv7m-none-eabi") {
+                elves.push(PathBuf::from(path));
+            }
+        }
+    }
+    match elves.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => Err("no thumbv7m-none-eabi executable built (pass --target thumbv7m-none-eabi -p <firmware>)".into()),
+        _ => Err("more than one RP1 executable; select one with -p".into()),
+    }
+}
+/// `cargo rp1 build`: first link, plan from its call graph, second link with the plan, then
+/// check that every planned function landed in ISRAM and the budgets hold.
+fn build(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> {
+    let objdump = objdump();
+    let first = cargo_build(args, None)?;
+    let plan = cargo_rp1::isram::plan(&first, Path::new(&objdump))?;
+    print_plan(&plan);
+    if plan.total_bytes() > cargo_rp1::isram::ISRAM_SIZE {
+        return Err(format!(
+            "ISRAM plan {} B exceeds {} B; mark large callees #[rp1_rt::cold] or drop #[isram] roots",
+            plan.total_bytes(),
+            cargo_rp1::isram::ISRAM_SIZE
+        )
+        .into());
+    }
+    let fragment = first.with_extension("isram.x");
+    std::fs::write(&fragment, plan.fragment())?;
+    let second = cargo_build(args, Some(&fragment))?;
+    cargo_rp1::isram::verify(&second, &plan)?;
+    let report = cargo_rp1::check(&second, Path::new(&objdump))?;
+    println!(
+        "STATIC: {} built with automatic ISRAM placement (plan {}): image {}/49152 B, ISRAM {}/8192 B, DSRAM {} B + declared stack",
+        second.display(),
+        fragment.display(),
+        report.image_bytes,
+        report.isram_bytes,
+        report.dsram_bytes
+    );
+    Ok(())
 }

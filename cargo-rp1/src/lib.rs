@@ -6,6 +6,7 @@ use std::{
     process::Command,
 };
 pub mod boot;
+pub mod isram;
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Debug)]
 pub struct Report {
