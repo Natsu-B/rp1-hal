@@ -1,0 +1,34 @@
+[package]
+name = "dual-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dual-core"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+rp1-hal = { path = "../../rp1-hal" }
+rp1-rt = { path = "../../rp1-rt" }
+rp1-proto = { path = "../../rp1-proto" }
+
+[build-dependencies]
+rp1-build = { path = "../../rp1-build" }
+
+[package.metadata.rp1]
+schema = 1
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+log = { sink = "uart0", baudrate = 115200 }
+
+[package.metadata.rp1.proc0]
+pins = [22]
+peripherals = ["TIMER.ALARM0"]
+
+[package.metadata.rp1.proc1]
+pins = [27]
+gpio_irq = [27]
+peripherals = ["TIMER.ALARM1"]

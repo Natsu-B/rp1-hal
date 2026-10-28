@@ -1,0 +1,5 @@
+[alias]
+rp1 = "run -p cargo-rp1 --"
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"

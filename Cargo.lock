@@ -132,6 +132,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dual-core"
+version = "0.1.0"
+dependencies = [
+ "rp1-build",
+ "rp1-hal",
+ "rp1-proto",
+ "rp1-rt",
+]
+
+[[package]]
 name = "embedded-hal"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -240,6 +250,14 @@ name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+
+[[package]]
+name = "linux-doorbell"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rp1-proto",
+]
 
 [[package]]
 name = "linux-raw-sys"
