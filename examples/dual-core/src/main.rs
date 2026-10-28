@@ -44,8 +44,8 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             unsafe {
                 (0x2000_c014 as *mut u32).write_volatile(value);
             }
+            // Linux polls the reply word; v0.1 has no RP1 -> Linux interrupt (design §9).
             rp1_proto::barrier();
-            doorbell.notify_linux();
         }
         core::hint::spin_loop();
     }

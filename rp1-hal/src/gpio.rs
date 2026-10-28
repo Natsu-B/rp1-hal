@@ -69,7 +69,9 @@ impl<const N: u8> InputPin for Pin<N, Input> {
     }
 }
 
-/// GPIO27 force-event doorbell for proc1. The GPIO itself must be reserved by the declaration.
+/// GPIO27 force-event doorbell for proc1 (Linux -> RP1 only). There is no RP1 -> Linux
+/// interrupt in v0.1: HOST_EVENTS / hwirq58 belongs to rp1-mailbox (SCMI), so Linux polls.
+/// The GPIO itself must be reserved by the declaration.
 pub struct Doorbell {
     _pin: Pin<27>,
 }
@@ -82,8 +84,5 @@ impl Doorbell {
     }
     pub fn acknowledge(&mut self) {
         write(0x400d_3114, 1 << 27);
-    }
-    pub fn notify_linux(&mut self) {
-        write(0x4000_a00c, 1 << 1);
     }
 }

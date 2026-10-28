@@ -36,17 +36,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("missing overlay")?
                 .data()?,
         )?;
-        let result = rp1_build::overlay::apply(&base, &overlay, &merged);
-        let _ = std::fs::remove_file(&overlay);
-        if result.is_ok() {
-            let result = Command::new("dtc")
+        let result = rp1_build::overlay::apply(&base, &overlay, &merged).and_then(|()| {
+            let decoded = Command::new("dtc")
                 .args(["-I", "dtb", "-O", "dts"])
                 .arg(&merged)
                 .output()?;
-            if !result.status.success() {
+            if !decoded.status.success() {
                 return Err("merged DTB failed decoding".into());
             }
-        }
+            // Overlays replace gpio-reserved-ranges; Linux must not end up with more pins.
+            let before = rp1_build::overlay::reserved_gpios(&base)?;
+            let after = rp1_build::overlay::reserved_gpios(&merged)?;
+            let freed: Vec<_> = before.difference(&after).collect();
+            if !freed.is_empty() {
+                return Err(format!("overlay would hand RP1 GPIOs {freed:?} back to Linux").into());
+            }
+            Ok(())
+        });
+        let _ = std::fs::remove_file(&overlay);
         let _ = std::fs::remove_file(&merged);
         result?;
     }

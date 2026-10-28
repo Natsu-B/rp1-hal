@@ -114,21 +114,40 @@ fn overlay_applies_to_a_copy_of_scmi_linux() {
     let dts = String::from_utf8(out.stdout).unwrap();
     assert!(dts.contains("rp1:link"));
     assert!(dts.contains("gpio-reserved-ranges"));
-    // The mailbox node is re-bound as the UIO events device; its consumers are disabled.
-    let mbox = dts
-        .split("mailbox@8000 {")
-        .nth(1)
-        .unwrap()
-        .split("};")
-        .next()
+    // rp1-mailbox stays bound (SCMI transport); no UIO node takes an interrupt.
+    let base_dts = Command::new("dtc")
+        .args(["-I", "dtb", "-O", "dts"])
+        .arg(&copy)
+        .output()
         .unwrap();
-    assert!(
-        mbox.contains("\"generic-uio\"")
-            && mbox.contains("rp1:events")
-            && mbox.contains("interrupts = <0x3a 0x04>"),
-        "{mbox}"
+    let base_dts = String::from_utf8(base_dts.stdout).unwrap();
+    let mbox = |dts: &str| {
+        dts.split("mailbox@8000 {")
+            .nth(1)
+            .unwrap()
+            .split("};")
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        mbox(&dts),
+        mbox(&base_dts),
+        "overlay must not touch rp1-mailbox"
     );
-    assert!(!dts.contains("raspberrypi,rp1-mbox"));
+    assert!(!dts.contains("rp1:events"));
+    for uio in dts.split("\"generic-uio\"").skip(1) {
+        let body = &uio[..uio.find("};").unwrap()];
+        assert!(
+            !body.contains("interrupts"),
+            "UIO node with interrupts: {body}"
+        );
+    }
+    // Linux never gains pins: the merged reservation is a superset of the base one.
+    let base_pins = rp1_build::overlay::reserved_gpios(&copy).unwrap();
+    let merged_pins = rp1_build::overlay::reserved_gpios(&merged).unwrap();
+    assert!(merged_pins.is_superset(&base_pins));
+    assert!([14, 15, 22, 27].iter().all(|p| merged_pins.contains(p)));
     // Root and /reserved-memory are <2 1>: regs must be 3 cells.
     assert!(
         dts.contains("reg = <0x1f 0x40c000 0x4000>;"),
@@ -138,14 +157,12 @@ fn overlay_applies_to_a_copy_of_scmi_linux() {
         dts.contains("reg = <0x00 0x21000000 0x10000>;"),
         "scratch reg cells"
     );
-    for node in ["openamp-address-space {", "scmi {"] {
+    let status = |node: &str| {
         let body = dts.split(node).nth(1).unwrap();
-        let head = &body[..body.find("};").unwrap()];
-        assert!(
-            head.contains("status = \"disabled\""),
-            "{node} not disabled"
-        );
-    }
+        body[..body.find("};").unwrap()].contains("status = \"disabled\"")
+    };
+    assert!(status("openamp-address-space {"), "remoteproc not disabled");
+    assert!(!status("scmi {"), "SCMI must stay enabled");
     let out = Command::new("dtc")
         .args(["-I", "dtb", "-O", "dts"])
         .arg(&overlay)

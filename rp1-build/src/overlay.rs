@@ -32,6 +32,34 @@ pub fn apply(base: &Path, overlay: &Path, destination: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// RP1 GPIO numbers that `dtb` withholds from Linux (`gpio-reserved-ranges` of the node
+/// labelled `rp1_gpio`), read with the host `fdtget`.
+pub fn reserved_gpios(dtb: &Path) -> Result<std::collections::BTreeSet<u32>> {
+    let fdtget = |args: &[&str]| -> Result<String> {
+        let out = Command::new("fdtget").arg(dtb).args(args).output()?;
+        if !out.status.success() {
+            return Err(format!("fdtget failed: {}", String::from_utf8_lossy(&out.stderr)).into());
+        }
+        Ok(String::from_utf8(out.stdout)?.trim().to_string())
+    };
+    let path = fdtget(&["/__symbols__", "rp1_gpio"])?;
+    let cells = match fdtget(&["-t", "u", &path, "gpio-reserved-ranges"]) {
+        Ok(cells) => cells,
+        Err(_) => return Ok(Default::default()),
+    };
+    let cells: Vec<u32> = cells
+        .split_whitespace()
+        .map(str::parse)
+        .collect::<std::result::Result<_, _>>()?;
+    if !cells.len().is_multiple_of(2) {
+        return Err("gpio-reserved-ranges must be <start count> pairs".into());
+    }
+    Ok(cells.chunks(2).flat_map(|c| c[0]..c[0] + c[1]).collect())
+}
+
+/// rpi-cm5 lab profile (scmi_linux.dtb): Linux keeps only GPIO 0..1 on the RP1 bank.
+pub const BOARD_GPIO_RESERVED: std::ops::RangeInclusive<u8> = 2..=53;
+
 pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
     let regions = d.regions()?;
     let ddr_end = regions.last().map_or(65536, |r| r.ddr_offset + r.ddr_len);
@@ -50,11 +78,16 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         ));
         n += 1;
     };
+    // gpio-reserved-ranges is replaced, not merged, by an overlay. Emit the union of the board
+    // profile's reservation and the declared pins so Linux never gets more pins than the base DT
+    // gives it (`cargo rp1 check --dtb` verifies this against the actual DTB).
     let mut pins: Vec<_> = d.proc0.pins.iter().chain(&d.proc1.pins).copied().collect();
     if d.log.is_some() {
         pins.extend([14, 15]);
     }
+    pins.extend(BOARD_GPIO_RESERVED);
     pins.sort();
+    pins.dedup();
     let ranges = pins
         .iter()
         .map(|p| format!("{p} 1"))
@@ -112,24 +145,19 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
             ),
         );
     }
-    // HOST_EVENTS (RP1 hwirq 58) is requested exclusively by rp1-mailbox, and uio_pdrv_genirq
-    // cannot share it (HW 2026-10-28: -EBUSY). Re-bind the mailbox node itself as the UIO
-    // "rp1:events" device so it keeps its reg, interrupts and interrupt-parent.
-    fragment(
-        "target = <&rp1_mbox>",
-        r#"compatible = "generic-uio"; linux,uio-name = "rp1:events"; status = "okay";"#,
-    );
-    // Everything that consumed the mailbox goes away with it: the OpenAMP remoteproc (lab
-    // scmi_linux profile, no label, so by path) and the SCMI agent (its transport is this mailbox).
+    // rp1-mailbox keeps HOST_EVENTS (hwirq 58) and stays SCMI's transport; UIO cannot share that
+    // IRQ (HW 2026-10-28: -EBUSY). v0.1 has no proc1 -> Linux interrupt: the UIO nodes above carry
+    // no interrupts and Linux polls the link page. Only the OpenAMP remoteproc (mailbox channels
+    // 1..3, not SCMI's channel 0) is disabled; it has no label in the lab profile, so by path.
     fragment(
         "target-path = \"/openamp-address-space\"",
         "status = \"disabled\";",
     );
-    fragment("target = <&rp1_scmi>", "status = \"disabled\";");
     if d.clock.authority == "rp1" {
-        // Linux must not drive the RP1 clock generator (clk_disable_unused). Consumers rewritten to
-        // SCMI clocks by the scmi_linux profile stay deferred until SCMI has a non-mailbox doorbell.
+        // scmi_linux profiles already supply the clock-consumer rewrites and mailbox/shmem wiring.
         fragment("target = <&rp1_clocks>", "status = \"disabled\";");
+        fragment("target = <&rp1_scmi>", "status = \"okay\";");
+        fragment("target = <&rp1_scmi_clocks>", "status = \"okay\";");
     }
     s.push_str("};\n");
     Ok(s)

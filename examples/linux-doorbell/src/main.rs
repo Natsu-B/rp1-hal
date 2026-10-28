@@ -80,36 +80,38 @@ impl Drop for Mapping {
     }
 }
 
+/// Linux -> RP1: GPIO27 PROC1_INTF force bit. RP1 -> Linux: polling the reply word in the link
+/// page. v0.1 has no RP1 -> Linux interrupt (hwirq58 belongs to rp1-mailbox / SCMI), so no
+/// `read()` on a UIO IRQ.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() != 3 {
-        return Err(
-            "usage: linux-doorbell /dev/uio<link> /dev/uio<doorbell> /dev/uio<events>".into(),
-        );
+    if args.len() != 2 {
+        return Err("usage: linux-doorbell /dev/uio<rp1:link> /dev/uio<rp1:doorbell>".into());
     }
     let mut link = Mapping::open(Path::new(&args[0]), "rp1:link")?;
     let mut gpio = Mapping::open(Path::new(&args[1]), "rp1:doorbell")?;
-    let mut events = Mapping::open(Path::new(&args[2]), "rp1:events")?;
     for sequence in 1..=10u32 {
-        events.write(0x300c, 1 << 1);
+        link.write(0x14, 0);
         link.write(0x10, sequence);
-        // Same-window read completes the posted SRAM write before a BAR1 doorbell.
-        if link.read(0x10) != sequence {
+        // Same-window read completes the posted SRAM writes before a BAR1 doorbell.
+        if link.read(0x10) != sequence || link.read(0x14) != 0 {
             return Err("posted write readback mismatch".into());
         }
         gpio.write(0x2114, 1 << 27);
         let start = Instant::now();
-        while events.read(0x0c) & (1 << 1) == 0 {
+        loop {
+            match link.read(0x14) {
+                v if v == sequence => break,
+                // Link down reads as all-ones (design §3.4): fail rather than spin on it.
+                u32::MAX => return Err("BAR2 reads 0xffffffff: PCIe link down".into()),
+                _ => {}
+            }
             if start.elapsed() > Duration::from_secs(1) {
                 return Err("RP1 doorbell reply timed out".into());
             }
-            std::thread::yield_now();
+            std::hint::spin_loop();
         }
         rp1_proto::barrier();
-        if link.read(0x14) != sequence {
-            return Err("RP1 echo mismatch".into());
-        }
-        events.write(0x300c, 1 << 1);
         println!("doorbell {sequence}: {:?}", start.elapsed());
     }
     Ok(())
