@@ -44,13 +44,15 @@ pull-up and 12 mA sink strength; **external pull-ups are required**. Initializat
 disables the pad output during mux selection. It releases only the owned I2C reset;
 cold bring-up must already have started GPIO bank0 and the raw microsecond timer.
 
-STATIC: `Standard`, `Fast`, and `FastPlus` select nominal 100 kHz, 400 kHz and 1 MHz.
-Counts follow Raspberry Pi's [DesignWare clock calculation](https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/i2c/busses/i2c-designware-master.c)
-with the RP1 DT's 100 ns rise / 65 ns fall assumptions. Actual timing depends on
-pull-ups, capacitance, stretching and FIFO service. The existing admitted 200 MHz
-`clk_sys` is used without programming any shared clock or changing SCMI ownership.
-Clock drift fails admission. The existing clock policy's unchecked CLK_SYS mux
-encoding remains HYP (see `clocks.rs`); an arbitrary clock tree is unsupported.
+HW: the controller clock (`ic_clk`) measures **50 MHz**, although the adopted clock tuple
+reports `clk_sys` = 200 MHz: with counts computed for 200 MHz, SCL was 25 kHz and the
+high period was exactly HCNT + SPKLEN + 7 cycles of 20 ns. `Standard`, `Fast`, and
+`FastPlus` therefore program counts for 50 MHz with a 3-cycle (60 ns) spike filter:
+SCL high/low targets 4.6/5.4 us, 0.9/1.6 us and 0.4/0.6 us (I2C minimums kept), i.e.
+nominal 100 kHz, 400 kHz and 1 MHz. Measured rates are in the hardware RESULT. Actual
+timing depends on pull-ups, capacitance, stretching and FIFO service. No shared clock
+is programmed and SCMI ownership is unchanged. Clock drift fails admission. Why
+`clk_sys` is not 200 MHz is open (the unchecked CLK_SYS mux encoding, see `clocks.rs`).
 
 STATIC: address NACK, data NACK and arbitration loss map to embedded-hal's matching
 error kinds. Other aborts retain `IC_TX_ABRT_SOURCE`. FIFO errors are reported as
@@ -66,7 +68,9 @@ NACK/abort mapping, timer wrap, stalled transfers, pin types and DT ownership.
 
 The hardware fixture is `lab/shm-firmware/src/i2c_proof.rs` with the dedicated
 `lab/esp32-i2c-peer` firmware. It only writes the ESP32 at 0x2d; negative probes at
-0x2e are reads. `lab/check-shm.sh` requests the proof after the existing Linux/SHM
+0x2e are reads. The peer reloads its reply only after a read that ends in STOP, so the
+proof starts with an unchecked resync read and runs read-then-write last.
+`lab/check-shm.sh` requests the proof after the existing Linux/SHM
 checks. `lab/measure-i2c.py` uses passive ESP32 RMT capture for SCL periods. Its
 `--self-test` checks extraction without hardware. The peer temporarily replaces the
 general ESP32 trace firmware, retaining CM5 boot controls and leaving other pins as

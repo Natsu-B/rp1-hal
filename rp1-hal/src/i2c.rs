@@ -1,5 +1,6 @@
 //! Polling, seven-bit DesignWare master (DOC: RP1 §9 and Linux i2c-designware).
-//! Uses the adopted 200 MHz clk_sys without changing shared clocks or SCMI votes.
+//! Runs from the controller clock as measured on hardware (50 MHz) without changing shared
+//! clocks or SCMI votes.
 //! External pull-ups are required. Only bank-0 routes are exposed; I2C4..6 are internal.
 use crate::{
     gpio::{Function, Pin},
@@ -15,7 +16,7 @@ offsets! {
     CON = con, TAR = tar, DATA = data_cmd, SS_HCNT = ss_scl_hcnt, SS_LCNT = ss_scl_lcnt,
     FS_HCNT = fs_scl_hcnt, FS_LCNT = fs_scl_lcnt, MASK = intr_mask, RAW = raw_intr_stat,
     RX_TL = rx_tl, TX_TL = tx_tl, CLEAR = clr_intr, ENABLE = enable, STATUS = status,
-    HOLD = sda_hold, ABORT_SOURCE = tx_abrt_source, ENABLE_STATUS = enable_status,
+    HOLD = sda_hold, SPKLEN = fs_spklen, ABORT_SOURCE = tx_abrt_source, ENABLE_STATUS = enable_status,
     PARAM = comp_param_1, TYPE = comp_type,
 }
 const STOP: u32 = 1 << 9;
@@ -146,14 +147,29 @@ impl<const N: u8> Token<N> {
     }
 }
 
-// DOC: rpi-6.12.y clock_calc, RP1 DT rise=100ns/fall=65ns, at the adopted 200MHz.
-// Timing includes the controller's hold/stretch behavior; physical bus rate needs measurement.
+/// HW: the DesignWare `ic_clk` runs at 50 MHz although `Clocks::sys_hz` reports 200 MHz.
+/// With the old 200 MHz counts SCL measured high = HCNT + SPKLEN + 7 = 810 and
+/// low = LCNT + 1 (+~5 rise) cycles of 20 ns, i.e. 25 kHz for "100 kHz".
+const IC_CLK_HZ: u32 = 50_000_000;
+/// 3 cycles = 60 ns >= the 50 ns spike filter of Fm/Fm+; small enough for 1 MHz.
+const SPIKE_CYCLES: u32 = 3;
+/// Cycles the pull-up rise adds to the measured low period (HW, 100 kHz capture).
+const RISE_CYCLES: u32 = 5;
+
+/// `(speed mode, HCNT, LCNT)` for the SCL high/low targets below at `IC_CLK_HZ`.
+/// Targets keep the I2C minimums (Sm 4.0/4.7 us, Fm 0.6/1.3 us, Fm+ 0.26/0.5 us).
 fn timing(speed: Speed) -> (u32, u32, u32) {
-    match speed {
-        Speed::Standard => (1, 788, 1179),
-        Speed::Fast => (2, 108, 359),
-        Speed::FastPlus => (2, 40, 127),
-    }
+    let (mode, high_ns, low_ns) = match speed {
+        Speed::Standard => (1, 4_600, 5_400),
+        Speed::Fast => (2, 900, 1_600),
+        Speed::FastPlus => (2, 400, 600),
+    };
+    let cycles = |ns: u32| ns * (IC_CLK_HZ / 1_000_000) / 1_000;
+    (
+        mode,
+        cycles(high_ns) - SPIKE_CYCLES - 7,
+        cycles(low_ns) - 1 - RISE_CYCLES,
+    )
 }
 fn configure(io: &mut impl Io, speed: Speed) {
     let (mode, high, low) = timing(speed);
@@ -162,6 +178,7 @@ fn configure(io: &mut impl Io, speed: Speed) {
     } else {
         (FS_HCNT, FS_LCNT)
     };
+    io.write(SPKLEN, SPIKE_CYCLES);
     io.write(h, high);
     io.write(l, low);
     io.write(HOLD, low / 2);
@@ -484,9 +501,20 @@ mod tests {
         assert_eq!(RESETS_CLR0, 0x4001_7000);
         assert_eq!(RESETS_DONE0, 0x4001_4018);
         assert_eq!(reset_bit(6), 1 << 13);
-        assert_eq!(timing(Speed::Standard), (1, 788, 1179));
-        assert_eq!(timing(Speed::Fast), (2, 108, 359));
-        assert_eq!(timing(Speed::FastPlus), (2, 40, 127));
+        assert_eq!(timing(Speed::Standard), (1, 220, 264));
+        assert_eq!(timing(Speed::Fast), (2, 35, 74));
+        assert_eq!(timing(Speed::FastPlus), (2, 10, 24));
+        // Period = (HCNT + SPKLEN + 7) + (LCNT + 1 + rise) cycles; DesignWare minimums hold.
+        for (speed, hz) in [
+            (Speed::Standard, 100_000),
+            (Speed::Fast, 400_000),
+            (Speed::FastPlus, 1_000_000),
+        ] {
+            let (_, h, l) = timing(speed);
+            let cycles = h + SPIKE_CYCLES + 7 + l + 1 + RISE_CYCLES;
+            assert_eq!(IC_CLK_HZ / cycles, hz);
+            assert!(h >= SPIKE_CYCLES + 5 && l >= SPIKE_CYCLES + 7);
+        }
         assert_eq!(
             Error::AddressNack.kind(),
             ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address)
