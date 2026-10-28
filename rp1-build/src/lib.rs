@@ -112,17 +112,9 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
         manifest_dir.join("../../rp1-rt/link.x").display()
     );
     println!("cargo:rerun-if-env-changed=RP1_DTC");
-    // HEAD changes the provenance record even when Cargo.toml stays identical.
-    if let Ok(git_path) = Command::new("git")
-        .args(["rev-parse", "--git-path", "HEAD"])
-        .current_dir(&manifest_dir)
-        .output()
-    {
-        let p = String::from_utf8_lossy(&git_path.stdout);
-        println!(
-            "cargo:rerun-if-changed={}",
-            manifest_dir.join(p.trim()).display()
-        );
+    // A new commit changes the provenance record even when Cargo.toml stays identical.
+    for p in git_watch_paths(&manifest_dir) {
+        println!("cargo:rerun-if-changed={}", p.display());
     }
     println!("cargo:rustc-check-cfg=cfg(rp1_log)");
     if d.log.is_some() {
@@ -134,6 +126,39 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
         println!("cargo:rustc-link-arg=--nmagic");
     }
     Ok(())
+}
+
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Files whose change means `git rev-parse HEAD` may have changed: `HEAD` itself and, on a
+/// branch, the ref it points to. A commit on a branch rewrites only that ref (loose file, or
+/// `packed-refs` after `git pack-refs`), never `HEAD`. A loose ref that does not exist yet is
+/// watched through its nearest existing directory so its creation is noticed. Dirty working
+/// trees are not part of the record (it names the commit only).
+pub fn git_watch_paths(dir: &Path) -> Vec<PathBuf> {
+    let git_path = |p: &str| git(dir, &["rev-parse", "--git-path", p]).map(|p| dir.join(p));
+    let mut paths: Vec<PathBuf> = git_path("HEAD").into_iter().collect();
+    if let Some(r) = git(dir, &["symbolic-ref", "-q", "HEAD"]) {
+        if let Some(loose) = git_path(&r) {
+            paths.extend(
+                loose
+                    .ancestors()
+                    .find(|p| p.exists())
+                    .map(Path::to_path_buf),
+            );
+        }
+        paths.extend(git_path("packed-refs").filter(|p| p.exists()));
+    }
+    paths
 }
 
 pub struct Artifacts {

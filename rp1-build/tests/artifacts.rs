@@ -257,3 +257,72 @@ fn overlay_applies_to_a_copy_of_scmi_linux() {
     );
     assert_eq!(before, fs::read(&base).unwrap());
 }
+
+/// Contents of every watched file (directories recursively), as Cargo's
+/// `rerun-if-changed` would see them.
+fn snapshot(paths: &[std::path::PathBuf]) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    fn walk(p: &Path, out: &mut Vec<(std::path::PathBuf, Vec<u8>)>) {
+        if p.is_dir() {
+            let mut entries: Vec<_> = fs::read_dir(p)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            entries.sort();
+            for e in entries {
+                walk(&e, out);
+            }
+        } else if let Ok(b) = fs::read(p) {
+            out.push((p.to_path_buf(), b));
+        }
+    }
+    let mut out = Vec::new();
+    for p in paths {
+        walk(p, &mut out);
+    }
+    out
+}
+
+#[test]
+fn branch_commits_change_watched_git_paths() {
+    // REVIEW2 #6: on a branch a commit rewrites the ref, not HEAD.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let git = |args: &[&str]| {
+        let st = Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            st.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&st.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "feature/x"]);
+    let mut n = 0;
+    let mut commit = || {
+        n += 1;
+        fs::write(dir.join("main.rs"), format!("// {n}\n")).unwrap();
+        git(&["add", "main.rs"]);
+        git(&["commit", "-q", "-m", "c"]);
+    };
+    commit();
+    for pack in [false, true] {
+        if pack {
+            git(&["pack-refs", "--all"]);
+        }
+        let paths = rp1_build::git_watch_paths(dir);
+        let before = snapshot(&paths);
+        commit();
+        assert_ne!(before, snapshot(&paths), "pack={pack} paths={paths:?}");
+    }
+}
