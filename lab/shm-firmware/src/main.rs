@@ -45,15 +45,14 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     .unwrap();
     log!("proc0 ready shm bss=0x{:x}\n", bss_check(0xb55_0000)).unwrap();
     p.proc1.launch(&mut core).unwrap();
-    let mut i2c = p
-        .I2C1
-        .init(
-            p.pins.gpio2,
-            p.pins.gpio3,
-            &clocks,
-            rp1_hal::i2c::Speed::Standard,
-        )
-        .unwrap();
+    let i2c = p.I2C1.init(
+        p.pins.gpio2,
+        p.pins.gpio3,
+        &clocks,
+        rp1_hal::i2c::Speed::Standard,
+    );
+    log!("proc0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
+    let mut i2c = i2c.ok();
     let mut rx = VALUES.consumer(&mut core);
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     let mut attempted = false;
@@ -61,7 +60,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     loop {
         let request = i2c_proof::pending();
         if request != 0 {
-            i2c_proof::run(&mut i2c, request);
+            i2c_proof::run(i2c.as_mut(), request);
         }
         let (value, perst, scmi_event) =
             idle0(&mut rx, &mut endpoint, &mut scmi, probed, attempted);

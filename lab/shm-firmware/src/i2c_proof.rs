@@ -14,11 +14,11 @@ const REPLY: usize = REQUEST + 4;
 pub fn pending() -> u32 {
     unsafe { (REQUEST as *const u32).read_volatile() }
 }
-pub fn run(bus: &mut Bus, request: u32) {
-    let result = if request == 1 {
-        prove(bus)
-    } else {
-        measure(bus, request)
+pub fn run(bus: Option<&mut Bus>, request: u32) {
+    let result = match bus {
+        None => Err(Error::Precondition),
+        Some(bus) if request == 1 => prove(bus),
+        Some(bus) => measure(bus, request),
     };
     log!("I2C_RESULT request={} {:?}\n", request, result).unwrap();
     unsafe {
