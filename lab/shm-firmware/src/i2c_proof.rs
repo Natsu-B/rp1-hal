@@ -51,6 +51,9 @@ fn prove(bus: &mut Bus) -> Result<(), Failure> {
     let mut frame = core::array::from_fn::<_, 16, _>(|i| i as u8);
     frame[..4].copy_from_slice(&0x5244_3144u32.to_le_bytes());
     let gap = || timer.delay_us(2000);
+    // Resync the peer: a STOP-terminated read makes it reload its reply (data unchecked).
+    let _ = bus.read(PEER, &mut [0; 64]);
+    gap();
     for (speed, hz) in [(Speed::Standard, 100_000), (Speed::Fast, 400_000)] {
         let at = |step| move |e| Failure::Bus(step, e);
         bus.set_speed(speed).map_err(at("set_speed"))?;
@@ -97,7 +100,7 @@ fn prove(bus: &mut Bus) -> Result<(), Failure> {
         log!("I2C_PASS hz={} write16_us={} read64_us={} write_read16_64_us={} nack={:?} recovery=ok\n",
             hz, write_us, read_us, combined_us, nack).unwrap();
     }
-    // Last: the peer refills its reply only after a read that ends in STOP (HW, 19-boot-diag),
+    // Last: the peer refills its reply only after a read that ends in STOP (HW),
     // so a read ended by repeated START leaves stale TX data for the next read.
     let mut bytes = [0; 64];
     bus.transaction(
