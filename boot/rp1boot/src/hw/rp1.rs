@@ -25,7 +25,6 @@ const C_CLEAR: u32 = 0b11 << 4;
 const C_READ: u32 = 1;
 const S_CLKT: u32 = 1 << 9;
 const S_ERR: u32 = 1 << 8;
-const S_RXD: u32 = 1 << 5;
 const S_TXD: u32 = 1 << 4;
 const S_DONE: u32 = 1 << 1;
 const S_TA: u32 = 1;
@@ -99,15 +98,7 @@ fn i2c_read(buf: &mut [u8]) -> Result<()> {
     wr(I2C3 + DLEN, buf.len() as u32);
     wr(I2C3 + S, u32::MAX);
     wr(I2C3 + C, C_I2CEN | C_CLEAR | C_READ | C_ST);
-    let mut pos = 0;
-    while pos < buf.len() {
-        wait(S_RXD | S_DONE | S_ERR | S_CLKT)?;
-        check()?;
-        while pos < buf.len() && rd(I2C3 + S) & S_RXD != 0 {
-            buf[pos] = rd(I2C3 + FIFO) as u8;
-            pos += 1;
-        }
-    }
+    rp1boot::i2c_receive(buf, || rd(I2C3 + S), || rd(I2C3 + FIFO) as u8, POLL)?;
     done()
 }
 

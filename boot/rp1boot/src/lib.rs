@@ -187,6 +187,50 @@ impl<'a> Elf<'a> {
     }
 }
 
+/// BSC (BCM2712 I2C) status bits used by [`i2c_receive`].
+pub mod bsc {
+    pub const S_CLKT: u32 = 1 << 9;
+    pub const S_ERR: u32 = 1 << 8;
+    pub const S_RXD: u32 = 1 << 5;
+    pub const S_DONE: u32 = 1 << 1;
+}
+
+/// Receive `buf.len()` bytes of a started BSC read. `status` reads S, `fifo` pops one byte.
+///
+/// Bounded by progress: at most `poll` status reads without a new byte. A transfer that
+/// reports DONE with an empty FIFO before the buffer is full is a short read (error) rather
+/// than a reason to wait forever: a DONE status no longer changes, so the old
+/// "wait for RXD|DONE, drain RXD" loop could spin without progress (REVIEW2 #10).
+pub fn i2c_receive(
+    buf: &mut [u8],
+    mut status: impl FnMut() -> u32,
+    mut fifo: impl FnMut() -> u8,
+    poll: usize,
+) -> Result<()> {
+    use bsc::*;
+    let mut pos = 0;
+    let mut idle = 0;
+    while pos < buf.len() {
+        let s = status();
+        if s & (S_ERR | S_CLKT) != 0 {
+            return Err(format!("I2C NACK/clock stretch S={s:#x}"));
+        }
+        if s & S_RXD != 0 {
+            buf[pos] = fifo();
+            pos += 1;
+            idle = 0;
+        } else if s & S_DONE != 0 {
+            return Err(format!("I2C short read {pos}/{} S={s:#x}", buf.len()));
+        } else {
+            idle += 1;
+            if idle >= poll {
+                return Err(format!("I2C read timeout {pos}/{} S={s:#x}", buf.len()));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Fixed 2 MiB-aligned kernel base and the end of the loader's normal-RAM mapping.
 pub const KERNEL_BASE: u64 = 0x0600_0000;
 pub const RAM_MAP_END: u64 = 0x4000_0000;
@@ -360,6 +404,62 @@ mod tests {
                 .check_ram(&[(0, u64::MAX)])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn i2c_read_stops_on_done_without_data() {
+        use bsc::*;
+        // DONE stays set with an empty FIFO: a short read, not an endless loop.
+        let mut buf = [0u8; 4];
+        let mut fifo_reads = 0;
+        let r = i2c_receive(
+            &mut buf,
+            || S_DONE,
+            || {
+                fifo_reads += 1;
+                0
+            },
+            1000,
+        );
+        assert!(r.unwrap_err().contains("short read 0/4"));
+        assert_eq!(fifo_reads, 0);
+        // Two bytes, then DONE with nothing left.
+        let mut q = [S_RXD, S_RXD, S_DONE].into_iter();
+        let mut bytes = [0xaa, 0xbb].into_iter();
+        let r = i2c_receive(
+            &mut buf,
+            || q.next().unwrap_or(S_DONE),
+            || bytes.next().unwrap(),
+            1000,
+        );
+        assert!(r.unwrap_err().contains("short read 2/4"));
+        // No status bit at all: bounded by `poll` reads.
+        let mut reads = 0;
+        let r = i2c_receive(
+            &mut buf,
+            || {
+                reads += 1;
+                0
+            },
+            || 0,
+            1000,
+        );
+        assert!(r.unwrap_err().contains("timeout"));
+        assert_eq!(reads, 1000);
+        // Errors win; data before DONE in the same status word is still drained.
+        assert!(i2c_receive(&mut buf, || S_ERR | S_RXD, || 0, 10).is_err());
+        let mut q = [S_RXD | S_DONE; 4].into_iter();
+        let mut n = 0u8;
+        let r = i2c_receive(
+            &mut buf,
+            || q.next().unwrap(),
+            || {
+                n += 1;
+                n
+            },
+            10,
+        );
+        assert_eq!((r, buf), (Ok(()), [1, 2, 3, 4]));
     }
 
     /// The lab firmware ELF, when present (not committed).
