@@ -59,8 +59,6 @@ pub enum ColdError {
     CoreAlive(u32),
     LinkTimeout(u32),
     Syscfg(u32),
-    /// PERSTn re-configuration precondition or readback failed.
-    Reconfig(u32),
 }
 
 /// What [`bring_up`] did.
@@ -384,110 +382,122 @@ impl From<ColdError> for Error {
     }
 }
 
+pub mod reconfig;
+pub use reconfig::{Cleanup as ReconfigCleanup, Receipt, Status as ReconfigStatus};
+
 /// Re-applies the endpoint DBI configuration after the host resets the endpoint with PERSTn.
 ///
 /// Linux's brcm-pcie probe asserts PERSTn, which resets the RP1 endpoint core to defaults
 /// (class 0, BAR1 256 KiB, BAR2 8 MiB, no inbound ATU); the rp1 driver then fails with
-/// "BAR 0 not claimed" (HW hwrun1 04). The PoC firmware rewrites the configuration in the window
-/// between PERSTn deassertion + CORE_ALIVE and the host's enumeration
-/// (`endpoint_config::Transaction`, 5 ms budget). Same recipe, values and readback here.
+/// "BAR 0 not claimed" (HW hwrun1 04). The configuration must be rewritten in the window between
+/// PERSTn deassertion + CORE_ALIVE and the host's enumeration. This runs the PoC's guarded
+/// transaction ([`reconfig`]): every access re-checks READY, the selector and the 5 ms deadline
+/// from the PERSTn-low sample, so a late CORE_ALIVE or a reset in the middle stops it.
 /// Call [`EndpointService::poll`] in a tight loop on proc0; never block between calls.
 pub struct EndpointService {
     low_at: Option<u32>,
+    /// A transaction stopped after writing: the endpoint state is unknown until a cold boot.
+    poisoned: bool,
 }
 
-/// Outcome of one re-configuration.
+/// Outcome of one completed re-configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reconfigured {
-    /// Time from the last PERSTn-low sample to the end of the writes.
+    /// Time from the last PERSTn-low sample to the last guarded access.
     pub elapsed_us: u32,
 }
 
-const RECONFIG_BUDGET_US: u32 = 5_000;
+/// Why a re-configuration did not complete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReconfigError {
+    /// CORE_ALIVE did not follow PERSTn deassertion within the budget; nothing was written.
+    CoreAlive(u32),
+    /// The guarded transaction stopped. If `receipt.needs_external_recovery()`, the service
+    /// refuses further transactions: only a cold boot (RP1 reload) recovers.
+    Transaction(Receipt),
+    /// An earlier transaction left a partial configuration; this PERSTn epoch was not handled.
+    Poisoned,
+}
+
+pub const RECONFIG_BUDGET_US: u32 = 5_000;
 
 impl EndpointService {
     /// # Safety
     /// proc0 only, one instance, after [`endpoint_and_syscfg`].
+    ///
+    /// Exclusion contract (replaces the PoC's "proc1 held in reset" check): while this service
+    /// is in use, no other code may access the PCIe DBI selector (0x4010_8000), DBI
+    /// (0x4010_9000..) or the outbound PCIe window. In this crate only proc0 code
+    /// ([`crate::shm::configure_window`] / [`crate::shm::enable`]) touches the selector/DBI, and
+    /// it runs in the same proc0 loop, so it cannot interleave with [`Self::poll`]. proc1 must
+    /// not use the outbound window until Linux has published shm (`SHM_STATUS == 1`), which is
+    /// after the final PERSTn of a cold boot. A PERSTn after that (live host reset) is unsupported.
     pub const unsafe fn new() -> Self {
-        Self { low_at: None }
+        Self {
+            low_at: None,
+            poisoned: false,
+        }
     }
 
-    pub fn poll(&mut self) -> Option<Result<Reconfigured, ColdError>> {
-        let t = read(0x400a_c028);
-        let mon = read(PCIE_MONITOR2);
+    pub fn poll(&mut self) -> Option<Result<Reconfigured, ReconfigError>> {
+        let mut io = |op| Ok(mmio(op));
+        self.poll_with(&mut io)
+    }
+
+    fn poll_with(
+        &mut self,
+        io: &mut dyn FnMut(reconfig::Op) -> Result<u32, ()>,
+    ) -> Option<Result<Reconfigured, ReconfigError>> {
+        use reconfig::{MONITOR2, Op, READY};
+        let t = io(Op::Clock).ok()?;
+        let mon = io(Op::Read(MONITOR2)).ok()?;
         if mon & (1 << 17) == 0 {
             self.low_at = Some(t);
             return None;
         }
         let low = self.low_at?;
-        if mon & (1 << 16) == 0 {
-            if read(0x400a_c028).wrapping_sub(low) > RECONFIG_BUDGET_US {
+        if self.poisoned {
+            self.low_at = None;
+            return Some(Err(ReconfigError::Poisoned));
+        }
+        if mon & READY != READY {
+            if io(Op::Clock).ok()?.wrapping_sub(low) >= RECONFIG_BUDGET_US {
                 self.low_at = None;
-                return Some(Err(ColdError::CoreAlive(mon)));
+                return Some(Err(ReconfigError::CoreAlive(mon)));
             }
             return None;
         }
         self.low_at = None;
-        let mask = mask_interrupts();
-        let result = reconfigure(low);
-        restore_interrupts(mask);
-        Some(result)
+        let window = reconfig::Window {
+            low_us: low,
+            budget_us: RECONFIG_BUDGET_US,
+        };
+        let r = reconfig::run(&window, io);
+        if r.status == reconfig::Status::Complete && r.mask_restored {
+            let last = r.last_us.unwrap_or(low);
+            return Some(Ok(Reconfigured {
+                elapsed_us: last.wrapping_sub(low),
+            }));
+        }
+        if r.needs_external_recovery() {
+            self.poisoned = true;
+        }
+        Some(Err(ReconfigError::Transaction(r)))
     }
 }
 
-fn reconfigure(low: u32) -> Result<Reconfigured, ColdError> {
-    const RO: usize = DBI + 0x8bc;
-    if read(PCIE_SEL) != 0 || read(DBI) != 0x0001_1de4 || read(DBI + 4) & 6 != 0 {
-        return Err(ColdError::Reconfig(read(DBI + 4)));
-    }
-    let ro = read(RO);
-    write(RO, ro | 1);
-    write(DBI + 8, 0x0200_0000);
-    write(PCIE_SEL, 1);
-    write(DBI + 0x10, 0x3fff);
-    write(DBI + 0x14, 0x3f_ffff);
-    write(DBI + 0x18, 0xffff);
-    write(PCIE_SEL, 0);
-    write(DBI + 0x10, 0xffff_fff0);
-    write(DBI + 0x14, 0xffff_fff0);
-    write(DBI + 0x18, 0xffff_fff0);
-    for (sel, target, control) in [
-        (0x23, 0x4000_0000, 0xc000_0100),
-        (0x63, 0x2000_0000, 0xc000_0200),
-    ] {
-        write(PCIE_SEL, sel);
-        write(DBI + 0x114, target);
-        write(DBI + 0x118, 0xc0);
-        write(DBI + 0x100, 0);
-        write(DBI + 0x104, control);
-        if [
-            read(DBI + 0x114),
-            read(DBI + 0x118),
-            read(DBI + 0x100),
-            read(DBI + 0x104),
-        ] != [target, 0xc0, 0, control]
-        {
-            write(PCIE_SEL, 0);
-            write(RO, ro);
-            return Err(ColdError::Reconfig(sel));
+fn mmio(op: reconfig::Op) -> u32 {
+    use reconfig::Op;
+    match op {
+        Op::Mask => mask_interrupts(),
+        Op::Restore(mask) => restore_interrupts(mask),
+        Op::Clock => read(0x400a_c028),
+        Op::Read(address) => read(address),
+        Op::Write(address, value) => {
+            write(address, value);
+            0
         }
     }
-    write(PCIE_SEL, 0);
-    write(RO, ro);
-    dsb();
-    let elapsed_us = read(0x400a_c028).wrapping_sub(low);
-    let after = [
-        read(DBI + 8),
-        read(DBI + 0x10),
-        read(DBI + 0x14),
-        read(DBI + 0x18),
-        read(PCIE_SEL),
-        read(RO),
-    ];
-    if after != [0x0200_0000, 0xffff_c000, 0xffc0_0000, 0xffff_0000, 0, ro] {
-        return Err(ColdError::Reconfig(after[0]));
-    }
-    Ok(Reconfigured { elapsed_us })
 }
 
 #[cfg(target_arch = "arm")]
@@ -499,14 +509,19 @@ fn mask_interrupts() -> u32 {
     mask
 }
 #[cfg(target_arch = "arm")]
-fn restore_interrupts(mask: u32) {
+fn restore_interrupts(mask: u32) -> u32 {
+    let restored: u32;
     unsafe {
-        core::arch::asm!("dsb sy", "msr PRIMASK, {0}", "isb", in(reg) mask, options(nostack))
-    };
+        core::arch::asm!("dsb sy", "msr PRIMASK, {0}", "isb", in(reg) mask, options(nostack));
+        core::arch::asm!("mrs {0}, PRIMASK", out(reg) restored, options(nomem, nostack, preserves_flags));
+    }
+    restored
 }
 #[cfg(not(target_arch = "arm"))]
 fn mask_interrupts() -> u32 {
     0
 }
 #[cfg(not(target_arch = "arm"))]
-fn restore_interrupts(_: u32) {}
+fn restore_interrupts(mask: u32) -> u32 {
+    mask
+}
