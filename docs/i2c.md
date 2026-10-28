@@ -72,5 +72,11 @@ checks. `lab/measure-i2c.py` uses passive ESP32 RMT capture for SCL periods. Its
 general ESP32 trace firmware, retaining CM5 boot controls and leaving other pins as
 inputs; the previous flash must be backed up before deployment.
 
+DOC: Espressif's [ESP32 I2C guide](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/i2c.html)
+documents standard/fast operation up to 400 kHz. Payload proofs therefore use
+100/400 kHz; the 1 MHz mode is exercised only by read-only NACK probes with the
+ESP32 slave stopped and its RMT input measuring SCL. A 1 MHz-capable data peer is
+still needed to qualify payload transfers at that speed.
+
 Hardware results and limits are recorded separately after each run, under
 `<lab>`.

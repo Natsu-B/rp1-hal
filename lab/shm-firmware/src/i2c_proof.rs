@@ -42,11 +42,7 @@ fn prove(bus: &mut Bus) -> Result<(), Error> {
     let timer = Timer::new();
     let mut frame = core::array::from_fn::<_, 16, _>(|i| i as u8);
     frame[..4].copy_from_slice(&0x5244_3144u32.to_le_bytes());
-    for (speed, hz) in [
-        (Speed::Standard, 100_000),
-        (Speed::Fast, 400_000),
-        (Speed::FastPlus, 1_000_000),
-    ] {
+    for (speed, hz) in [(Speed::Standard, 100_000), (Speed::Fast, 400_000)] {
         bus.set_speed(speed)?;
         let start = timer.now();
         bus.write(PEER, &frame)?;
@@ -91,6 +87,8 @@ fn prove(bus: &mut Bus) -> Result<(), Error> {
         log!("I2C_PASS hz={} write16_us={} read64_us={} write_read16_64_us={} nack={:?} recovery=ok\n",
             hz, write_us, read_us, combined_us, nack).unwrap();
     }
+    log!("I2C_LIMIT hz=1000000 payload=unverified esp32_documented_max=400000 use_RMT_probe\n")
+        .unwrap();
     Ok(())
 }
 fn measure(bus: &mut Bus, request: u32) -> Result<(), Error> {
