@@ -5,6 +5,7 @@ use std::{
     path::Path,
     process::Command,
 };
+pub mod boot;
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Debug)]
 pub struct Report {
@@ -24,19 +25,7 @@ fn within(base: u64, len: u64, start: u64, end: u64) -> bool {
 }
 
 pub fn descriptor(bytes: &[u8]) -> Result<&[u8]> {
-    if word(bytes, 0)? != 4
-        || word(bytes, 8)? != note::ELF_TYPE
-        || bytes.get(12..16) != Some(b"RP1\0")
-    {
-        return Err("invalid ELF note envelope".into());
-    }
-    let len = word(bytes, 4)? as usize;
-    let end = 16usize.checked_add(len).ok_or("note length overflow")?;
-    if bytes.len() != ((end + 3) & !3) || bytes.get(end..).is_none_or(|b| b.iter().any(|b| *b != 0))
-    {
-        return Err("invalid ELF note length/padding".into());
-    }
-    let desc = bytes.get(16..end).ok_or("truncated note")?;
+    let desc = note::descriptor(bytes).map_err(|_| "invalid ELF note envelope/length/padding")?;
     Note::parse(desc).map_err(|e| format!("invalid note: {e:?}"))?;
     Ok(desc)
 }

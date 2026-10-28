@@ -48,6 +48,7 @@ dependencies = [
 name = "cargo-rp1"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "object",
  "rp1-build",
  "rp1-dt",

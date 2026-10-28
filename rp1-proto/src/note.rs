@@ -408,6 +408,26 @@ impl<'a> Iterator for Records<'a> {
     }
 }
 
+/// The descriptor (note v2 bytes) inside the ELF `.note.rp1` section: namesz 4, type
+/// [`ELF_TYPE`], name `RP1\0`, zero padding to 4 bytes. Not parsed; see [`Note::parse`].
+pub fn descriptor(section: &[u8]) -> Result<&[u8], Error> {
+    if u32_at(section, 0)? != 4
+        || u32_at(section, 8)? != ELF_TYPE
+        || section.get(12..16) != Some(b"RP1\0")
+    {
+        return Err(Error::Invalid);
+    }
+    let end = 16usize
+        .checked_add(u32_at(section, 4)? as usize)
+        .ok_or(Error::Invalid)?;
+    if section.len() != ((end + 3) & !3)
+        || section[end.min(section.len())..].iter().any(|b| *b != 0)
+    {
+        return Err(Error::Invalid);
+    }
+    section.get(16..end).ok_or(Error::Invalid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

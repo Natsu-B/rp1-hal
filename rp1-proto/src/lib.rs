@@ -1,6 +1,7 @@
 #![no_std]
 //! Wire formats shared by RP1 firmware and Linux. All integers are little endian.
 
+pub mod bundle;
 pub mod note;
 pub mod shm;
 pub use rp1_macros::Message;
