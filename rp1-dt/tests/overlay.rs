@@ -136,6 +136,25 @@ fn existing_phandles_keep_old_and_new_consumers() {
 }
 
 #[test]
+fn later_fragments_can_target_added_nodes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dtc(tmp.path(), "base", "/dts-v1/; / {};");
+    for target in ["target = <&local>", "target-path = \"/added\""] {
+        let ov = dtc(
+            tmp.path(),
+            "ov",
+            &format!(
+                r#"/dts-v1/; /plugin/; / {{
+            fragment@0 {{ target-path = "/"; __overlay__ {{ local: added {{ x = <1>; }}; }}; }};
+            fragment@1 {{ {target}; __overlay__ {{ x = <2>; }}; }};
+        }};"#
+            ),
+        );
+        same_as_libfdt(&base, &ov);
+    }
+}
+
+#[test]
 fn round_trip_is_lossless() {
     let tmp = tempfile::tempdir().unwrap();
     let base = dtc(tmp.path(), "base", BASE);

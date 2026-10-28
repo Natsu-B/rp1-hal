@@ -3,6 +3,7 @@
 use crate::Result;
 use alloc::{format, string::String, string::ToString, vec::Vec};
 
+#[derive(Clone)]
 pub struct Node {
     pub name: String,
     pub parent: Option<usize>,
@@ -10,6 +11,7 @@ pub struct Node {
     pub props: Vec<(String, Vec<u8>)>,
 }
 
+#[derive(Clone)]
 pub struct Fdt {
     pub nodes: Vec<Node>,
     /// `/memreserve/` entries as (address, size).

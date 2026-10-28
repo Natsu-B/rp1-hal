@@ -156,22 +156,25 @@ fn fragment_target(base: &Fdt, ov: &Fdt, frag: usize) -> Result<usize> {
 
 /// Apply `overlay` (a compiled `/plugin/` DTB with `-@` symbols) to `base` in place.
 pub fn apply(base: &mut Fdt, overlay: &[u8]) -> Result<()> {
+    let mut next = base.clone();
+    apply_inner(&mut next, overlay)?;
+    *base = next;
+    Ok(())
+}
+
+fn apply_inner(base: &mut Fdt, overlay: &[u8]) -> Result<()> {
     let mut ov = Fdt::parse(overlay)?;
     renumber(&mut ov, base.max_phandle())?;
     resolve(base, &mut ov)?;
-    // Resolve every target before touching the base (no partial application).
-    let mut fragments = Vec::new();
-    for &frag in &ov.nodes[0].children {
+    let mut targets: Vec<(String, String)> = Vec::new();
+    for frag in ov.nodes[0].children.clone() {
         if special(&ov.nodes[frag].name) {
             continue;
         }
         let Some(body) = ov.child(frag, "__overlay__") else {
             continue;
         };
-        fragments.push((frag, fragment_target(base, &ov, frag)?, body));
-    }
-    let mut targets: Vec<(String, String)> = Vec::new();
-    for (frag, target, body) in fragments {
+        let target = fragment_target(base, &ov, frag)?;
         preserve_phandles(base, target, &mut ov, body)?;
         merge(base, target, &ov, body);
         targets.push((ov.path(frag), base.path(target)));
