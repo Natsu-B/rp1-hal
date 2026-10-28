@@ -7,6 +7,9 @@ use std::{fmt::Write as _, io::Read, path::Path};
 
 pub const BUNDLE: &str = "rp1-bundle.img";
 pub const LOADER: &str = "rp1boot.img";
+/// HW 2026-10-29 (hwrun5 07-boot6): the firmware prepended 1034 B and cut /chosen/bootargs
+/// at 1966 B, so cmdline.txt must stay well under ~930 B including the 28 B token.
+pub const CMDLINE_MAX: usize = 880;
 
 /// Lines every generated config.txt starts with (the firmware loads the loader as the
 /// kernel and the bundle as the initramfs; loader.md §1).
@@ -60,6 +63,14 @@ pub fn kernel_image(kernel: &[u8]) -> Result<Vec<u8>> {
 pub fn assemble(input: &Input<'_>) -> Result<BootSet> {
     if input.cmdline.contains(bundle::TOKEN) || input.cmdline.contains('\n') {
         return Err("cmdline must be one line without rp1.bundle=".into());
+    }
+    if input.cmdline.len() > CMDLINE_MAX {
+        return Err(format!(
+            "cmdline is {} B (> {CMDLINE_MAX}): the firmware prepends ~1 KiB and truncates \
+             /chosen/bootargs, which would drop the rp1.bundle= token",
+            input.cmdline.len()
+        )
+        .into());
     }
     for line in input.config_extra {
         let key = line.split(['=', ' ']).next().unwrap_or("").trim();
