@@ -133,7 +133,7 @@ T   payload 8 バイト境界に 0 埋め
 |---|---|---|
 | Linux → proc1 | GPIO INTF の SET 別名（`IO_BANK0 + 0x2114`、BAR1 経由）に書く。proc1 の ISRAM 上の ISR が受ける | 往復 p50 4.1 µs（HW、ポーリング側） |
 | Linux → proc0 | mailbox（SYSCFG PROC_EVENTS）。ch0 は SCMI が使うので ch1 以降 | 配送は HW。遅延は未測定 |
-| RP1 → Linux | HOST_EVENTS → hwirq58 → UIO の IRQ（`rp1:link` に付ける）。hwirq58 は rp1-mailbox が専有するので、overlay で rp1-mailbox と依存ノードを disabled にする（design.md §6.2、SCMI との衝突あり） | 共有は不可（HW 2026-10-28、-EBUSY）。UIO 専有時は codexA2 で確認 |
+| RP1 → Linux | HOST_EVENTS → hwirq58 → UIO の IRQ（`rp1:link` に付ける）。hwirq58 は rp1-mailbox が専有する。v0.1 は mailbox/SCMI を残し、Linux はポーリング（design.md §6.2） | 共有は不可（HW、-EBUSY）。mailbox/SCMI を外せば UIO で受けられ、往復 p50 71 µs（M3 の SCMI 処理込み）、通知ごとに空振り起床 1 回（HW 2026-10-28） |
 | どちらでも | 通知なし（`notify = "poll"`）。受け手がポーリング | — |
 
 - 通知は「相手の `waiting` が 1 のときだけ」送る（毎回は送らない）。
