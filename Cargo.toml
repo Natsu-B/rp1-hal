@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["rp1-regdb", "rp1-pac", "rp1-macros", "rp1-proto", "rp1-rt"]
-default-members = ["rp1-regdb", "rp1-pac", "rp1-macros", "rp1-proto", "rp1-rt"]
+members = ["rp1-regdb", "rp1-pac", "rp1-macros", "rp1-proto", "rp1-rt", "rp1-hal"]
+default-members = ["rp1-regdb", "rp1-pac", "rp1-macros", "rp1-proto", "rp1-rt", "rp1-hal"]
 
 [workspace.package]
 version = "0.1.0"

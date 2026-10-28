@@ -1,0 +1,12 @@
+[package]
+name = "rp1-hal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rp1-pac = { path = "../rp1-pac" }
+rp1-rt = { path = "../rp1-rt" }
+rp1-proto = { path = "../rp1-proto" }
+embedded-hal = "1"
+embedded-io = "0.6"
