@@ -65,8 +65,8 @@ def main():
                         if len(sample) < 7: raise RuntimeError(f"incomplete RMT capture: {sample}")
                         mean = sum(sample) / len(sample)
                         expected = {101: 100_000, 102: 400_000, 103: 1_000_000}[request]
-                        assert abs(10_000_000 / mean - expected) < expected * 0.1
                         print(f"request={request} periods={len(sample)} ticks={sample} SCL_hz={10_000_000/mean:.1f}", flush=True)
+                        assert abs(10_000_000 / mean - expected) < expected * 0.1, f"{request}: off by >10%"
                         ctl("wiring-disarm")
                 finally:
                     ctl("wiring-disarm"); ctl("debug-disarm"); ctl("status")
