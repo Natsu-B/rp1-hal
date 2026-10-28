@@ -276,6 +276,13 @@ impl<T: Message> RingRx<T> {
         self.session.check()?;
         Ok(r)
     }
+    /// Batch form of [`RingRx::pop`]: one `tail` store per call (`rp1_proto::shm::RingRx::pop_into`).
+    pub fn pop_into(&mut self, out: &mut [T]) -> std::result::Result<usize, Error> {
+        self.session.check()?;
+        let n = self.inner.pop_into(out)?;
+        self.session.check()?;
+        Ok(n)
+    }
     pub fn dropped(&self) -> u32 {
         self.inner.dropped()
     }
@@ -289,6 +296,11 @@ impl<T: Message> RingTx<T> {
     pub fn push(&mut self, value: &T) -> std::result::Result<(), Error> {
         self.session.check()?;
         self.inner.push(value)
+    }
+    /// Batch form of [`RingTx::push`]: one `head` store per call (`rp1_proto::shm::RingTx::push_slice`).
+    pub fn push_slice(&mut self, values: &[T]) -> std::result::Result<usize, Error> {
+        self.session.check()?;
+        Ok(self.inner.push_slice(values))
     }
     pub fn dropped(&self) -> u32 {
         self.inner.dropped()
