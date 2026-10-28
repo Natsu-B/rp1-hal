@@ -11,6 +11,7 @@ const PEER: u8 = 0x2d;
 const REQUEST: usize = rp1_proto::LINK_START as usize + 0x28;
 const REPLY: usize = REQUEST + 4;
 
+#[inline(always)]
 pub fn pending() -> u32 {
     unsafe { (REQUEST as *const u32).read_volatile() }
 }

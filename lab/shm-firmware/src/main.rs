@@ -302,6 +302,7 @@ fn idle0(
             || event.is_some()
             || (!probed && request == 2)
             || (!attempted && request == 1)
+            || i2c_proof::pending() != 0
         {
             return (value, perst, event);
         }
