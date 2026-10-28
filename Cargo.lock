@@ -426,6 +426,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp1boot"
+version = "0.1.0"
+dependencies = [
+ "rp1-dt",
+ "rp1-proto",
+ "sha2",
+]
+
+[[package]]
 name = "rustc_version"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
