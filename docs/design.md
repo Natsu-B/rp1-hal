@@ -286,3 +286,6 @@ shm ごとの `generic-uio` ノードに焼き込む。ローダーはそのア�
 | 2026-10-23 | config.txt と cmdline.txt を成果物（起動一式）にし、必ずそれを使う。ローダーがハッシュを照合する | ユーザー提案 |
 | 2026-10-23 | v0.1 の範囲を絞る（§8.1） | ユーザー許可 |
 | 2026-10-23 | ローダー: 大きなファイルは VPU ファームに束として読ませる。config.txt の使用は束と cmdline のハッシュで確かめる。失敗時は公式ブートローダーの BOOT_ORDER の規則に従う（loader.md） | ユーザー判断 |
+| 2026-10-28 | v0.1 の `clocks::Authority` は PLL / clk_sys を書かず、EEPROM 段の RP1 ファームが残した状態（PLL_SYS 1 GHz・PRIM 5×1、CLK_UART = XOSC/1）を読んで照合する（`adopt`）。違えばエラー | 冷起動から 200 MHz にする手順は PoC でも実機未確認（PoC は同じ組を読み取りで受け入れていただけ、HW）。未確認の書き込みを既定経路にしない |
+| 2026-10-28 | rp1-build の overlay は `rp1_mbox` ノードを `generic-uio`（`rp1:events`）に付け替え、remoteproc（`/openamp-address-space`）と SCMI agent を無効にする。§6 の SCMI クロックは mailbox 以外のドアベルが決まるまで保留 | HOST_EVENTS（hwirq58）は rp1-mailbox が専有し UIO は -EBUSY（HW、2026-10-28 Codex A）。IRQ を共有できない |
+| 2026-10-28 | `.bss` は PT_LOAD に含めない（`:NONE`）。各コアが起動時に自分の DSRAM で 0 にする | ローダーは p_paddr から p_memsz を展開し重なりを拒否するため、DSRAM に再配置した `.bss` の memsz が共有 SRAM の LMA に被る（STATIC、PoC ローダーのコード） |
