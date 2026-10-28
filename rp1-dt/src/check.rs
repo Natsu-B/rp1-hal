@@ -121,6 +121,25 @@ pub fn final_conflicts(fdt: &Fdt, note: &[u8]) -> Result<Vec<String>> {
         }
     }
 
+    // An enabled gpio-hog on a line withheld from Linux fails the RP1 gpiochip (HYP, gpiolib).
+    if let Some(gpio) = fdt.label("rp1_gpio") {
+        let reserved = reserved_gpios(fdt)?;
+        for &c in &fdt.nodes[gpio].children {
+            if !fdt.enabled(c) || fdt.prop(c, "gpio-hog").is_none() {
+                continue;
+            }
+            for line in fdt.cells(c, "gpios").unwrap_or_default().chunks(2) {
+                if reserved.contains(&line[0]) {
+                    bad.push(format!(
+                        "{} hogs GPIO{} that gpio-reserved-ranges withholds from Linux",
+                        fdt.path(c),
+                        line[0]
+                    ));
+                }
+            }
+        }
+    }
+
     // pinctrl: an enabled node selecting an RP1 pin group that touches an RP1-owned pin.
     if !pins.is_empty() {
         let gpio = fdt
