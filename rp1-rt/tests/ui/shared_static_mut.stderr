@@ -1,0 +1,7 @@
+error: shared static mut is forbidden; use a SharedSafe type
+ --> tests/ui/shared_static_mut.rs:1:1
+  |
+1 | #[rp1_rt::shared]
+  | ^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `rp1_rt::shared` (in Nightly builds, run with -Z macro-backtrace for more info)

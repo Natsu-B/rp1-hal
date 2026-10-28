@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 rp1-proto = { path = "../rp1-proto" }
 rp1-macros = { path = "../rp1-macros" }
+
+[dev-dependencies]
+trybuild = "1"

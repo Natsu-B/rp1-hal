@@ -410,6 +410,7 @@ version = "0.1.0"
 dependencies = [
  "rp1-macros",
  "rp1-proto",
+ "trybuild",
 ]
 
 [[package]]

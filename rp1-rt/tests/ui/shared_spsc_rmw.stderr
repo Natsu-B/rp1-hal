@@ -1,0 +1,5 @@
+error[E0616]: field `head` of struct `Spsc` is private
+ --> tests/ui/shared_spsc_rmw.rs:8:11
+  |
+8 |     QUEUE.head.fetch_add(1, Ordering::Relaxed);
+  |           ^^^^ private field
