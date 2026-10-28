@@ -211,12 +211,23 @@ RMW atomic のメソッドは持たない。
   必要なら cacheable に mmap し、ユーザー空間から DC CIVAC で保守する（arm64 Linux は EL0 からの DC 命令を許可、DOC）。測定して決める。
 - 多重化、流量制御、名前解決、標準ツール（rpmsg_char、tty）は自前で用意する必要がある。
 
-### 6.2 未検証（最初の縦 1 本で確認する）
+### 6.2 検証の状況（2026-10-28、`<lab-log>`）
 
-- `uio_pdrv_genirq` は標準カーネル設定にある（`CONFIG_UIO_PDRV_GENIRQ=m`、確認済み）。`of_id=generic-uio` を cmdline か modprobe 設定で渡して実際に bind できるか。
-- proc1 → Linux の割り込み（HOST_EVENTS → hwirq58）を UIO ノードで受けられるか、rp1-mailbox と衝突しないか。
-- GPIO INTF のドアベルは pinctrl と同じページ。UIO で重ねてマップできるか。
-- UIO の IRQ 待ちの往復遅延。
+- **済（HW）**: `uio_pdrv_genirq` に `of_id=generic-uio` で bind できる。BAR2 末尾 16 KiB（0x1f0040c000）と GPIO INTF ページ
+  （0x1f000d0000、pinctrl と同じページ）を RW で mmap でき、読んだ値は /dev/mem と一致。書き込みは未試験。
+- **否定（HW）**: HOST_EVENTS → hwirq58（Linux の IRQ159）は `rp1-mailbox` が専有していて、同じ hwirq の UIO ノードは
+  `Flags mismatch` / -EBUSY で probe に失敗する。両ドライバとも IRQ 共有を許さない（STATIC）ので、イベント bit を分けても共有できない。
+- **方針（2026-10-28）**: hwirq58 は UIO が専有する。rp1-build の overlay で `rp1-mailbox` ノードと、それに依存するノード
+  （`remoteproc`、mailbox を使う `/firmware/scmi`）を `status = "disabled"` にし、`rp1:link` の UIO ノードに hwirq58 を付ける。
+  Linux → proc0 の PROC_EVENTS も UIO（SYSCFG ページ）から直接書く。
+  - **衝突（STATIC）**: 今の DT では SCMI（`/firmware/scmi`、`mboxes = <&rp1_mbox 0>`）が rp1-mailbox の ch0 を使い、
+    UART（serial@34000）などが SCMI のクロックを参照する。`clock.authority = "rp1"`（既定、§9）とこの方針はそのままでは両立しない。
+    両立させる案（HYP、未検証）: (a) hwirq58 は SCMI 用に残し、link 通知は RP1 内の未使用周辺の割り込み線（DT で disabled の
+    ブロックの hwirq）を M3 から立てて UIO で受ける、(b) `clock.authority = "linux"` の構成でだけ mailbox を外す。
+    実機での確認結果は codexA2 の RESULT.md を参照し、ここに反映する。
+- **配置（STATIC）**: 今の SCMI shmem（`scmi@d7c0`、0x100 byte）は BAR2 末尾 16 KiB の中にある。link ページ全体を使う前に
+  SCMI shmem を移すか、link の配置でその範囲を予約する。
+- 未測定: UIO の IRQ 待ちの往復遅延、UIO mmap への書き込みが M3 から見えるか。
 
 ## 7. BCM2712 third stage loader（`boot/rp1boot`）
 
@@ -300,3 +311,5 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | 2026-10-28 | `.bss` は PT_LOAD に含めない（`:NONE`）。各コアが起動時に自分の DSRAM で 0 にする | ローダーは p_paddr から p_memsz を展開し重なりを拒否するため、DSRAM に再配置した `.bss` の memsz が共有 SRAM の LMA に被る（STATIC、PoC ローダーのコード） |
 | 2026-10-28 | SCMI クロックサーバー（`rp1_hal::scmi`）: Base + Clock 2.0、mailbox ch0 + shmem `0x2000_d7c0`、proc0 のループでポーリング。`Authority::adopt` が `scmi::Service` を返す。公開クロックは uart_apb(0)・uart(1) で、どちらも RP1 所有（固定レート・常時オン）。RATE_SET の別レートは DENIED、CONFIG_SET は Linux の投票だけ記録しレジスタを書かない | HW（hwrun2 2026-10-28、cold boot 2 回）: arm-scmi が probe、serial@34000（ttyAMA1）が probe。`clk_ignore_unused` を外した cmdline で `clk_disable_unused` が uart/uart_apb に CONFIG_SET disable を送っても UART0（clk_uart）は出力を続けた。RATE_SET の拒否は STATIC（単体テスト）のみ、Linux の pl011 は rate を変えに来ない（HW） |
 | 2026-10-29 | PERSTn 後のエンドポイント再設定は PoC の transaction 契約ごと移す（`rp1_hal::cold::reconfig`）。各アクセスの前に READY・selector・PERSTn-low からの 5 ms 期限を確認し、書き込み後に失敗したら以後の PERSTn では書かない（Poisoned、冷起動でのみ回復）。PoC の「proc1 はリセット中」の確認は、proc1 が動く前提のため `EndpointService::new` の排他条件（selector/DBI/outbound window に他のコードが触れない）に置き換える。あわせて ELF 検査は pc 相対のリテラルを非書き込みセクションからだけ畳み込み、`cargo rp1 check --dtb` は最終 DTB を note と照合する。`clock.authority = "linux"` はビルドエラー | review（codexReview #1〜#4/#6/#7/#9/#10）。HW（hwrun4）: 再設定 597 µs（旧 104〜110 µs、期限 5 ms 内）で Linux の rp1 が probe、SCMI・ttyAMA1・ドアベル・shm 一式が成立。故障注入はホスト試験（STATIC） |
+| 2026-10-28 | 束案は成立（HW: ≥32 MiB、約 2.9 MiB/s、配置は /chosen から読む、bootargs はトークン照合）。DTB に残りの BOOT_ORDER は無いので、失敗時の次の方法は set_reboot_order か EEPROM の BOOT_ORDER で決める（loader.md §3） | 実機検証 codexA |
+| 2026-10-28 | PoC ローダーの遅さの主因は TFTP ではなくソフトウェアの gzip 展開（約 18 s）と SHA-256（約 15 s）。I2C 約 3.4 s。旧記録の「initramfs に 36 秒」は誤帰属（loader.md §0） | 実機ログ + コード |
