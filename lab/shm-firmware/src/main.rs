@@ -4,6 +4,7 @@ use rp1_hal::{gpio::Doorbell, log};
 use rp1_proto::{Error, link};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
+mod i2c_proof;
 mod prof;
 #[shared]
 static VALUES: Spsc<u32, 8> = Spsc::new();
@@ -35,7 +36,7 @@ fn sample(i: u32) -> Sample {
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
-    let (_clocks, mut scmi) = p.clock_authority.adopt(200_000_000).unwrap();
+    let (clocks, mut scmi) = p.clock_authority.adopt(200_000_000).unwrap();
     rp1::log::init(&mut core).unwrap();
     log!("proc0 clocks programmed={}\n", programmed).unwrap();
     log!("proc0 pcie {:?}\n", unsafe {
@@ -44,11 +45,24 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     .unwrap();
     log!("proc0 ready shm bss=0x{:x}\n", bss_check(0xb55_0000)).unwrap();
     p.proc1.launch(&mut core).unwrap();
+    let mut i2c = p
+        .I2C1
+        .init(
+            p.pins.gpio2,
+            p.pins.gpio3,
+            &clocks,
+            rp1_hal::i2c::Speed::Standard,
+        )
+        .unwrap();
     let mut rx = VALUES.consumer(&mut core);
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     let mut attempted = false;
     let mut probed = false;
     loop {
+        let request = i2c_proof::pending();
+        if request != 0 {
+            i2c_proof::run(&mut i2c, request);
+        }
         let (value, perst, scmi_event) =
             idle0(&mut rx, &mut endpoint, &mut scmi, probed, attempted);
         if let Some(v) = value {

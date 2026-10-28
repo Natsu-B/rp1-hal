@@ -26,4 +26,14 @@ mount -t debugfs none /sys/kernel/debug 2>/dev/null
 grep -E 'uart|apb' /sys/kernel/debug/clk/clk_summary
 dmesg | grep -E 'scmi|clk:|34000|SError|abort|fault|WARN|error'
 echo HWRUN3_DONE
+echo I2C_LINUX_BEGIN
+for path in $(find /sys/firmware/devicetree/base -name i2c@74000); do
+    echo I2C_DT="$path"
+    cat "$path/status"
+done
+busybox devmem 0x1f0040c02c 32 0
+busybox devmem 0x1f0040c028 32 1
+sleep 2
+echo I2C_REPLY=$(busybox devmem 0x1f0040c02c 32)
+echo I2C_LINUX_DONE
 echo DDR_INSPECT_END
