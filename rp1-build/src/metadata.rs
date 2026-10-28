@@ -186,6 +186,13 @@ impl Declaration {
         if !matches!(self.clock.authority.as_str(), "rp1" | "linux") {
             return Err("invalid clock authority".into());
         }
+        // The rpi-cm5 board DTB routes RP1 clocks through SCMI (clk-rp1 disabled); the overlay
+        // cannot hand them back to Linux, so nothing would answer its SCMI requests (review #7).
+        if self.clock.authority == "linux" {
+            return Err(
+                "clock.authority = linux is unsupported on the v0.1 rpi-cm5 board; use rp1".into(),
+            );
+        }
         if self.clock.authority == "linux" && self.clock.clk_sys_hz.is_some() {
             return Err("clk_sys_hz requires clock.authority = rp1".into());
         }

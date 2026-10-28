@@ -39,6 +39,42 @@ fn rejects_mistakes_before_building() {
     assert!(d.validate().is_err());
     assert!(toml::from_str::<Declaration>("typo=1").is_err());
 }
+/// Review #7/#9: declarations v0.1 cannot deliver are build errors, not silent no-ops.
+#[test]
+fn rejects_unsupported_clock_authority_and_notify() {
+    let mut d: Declaration = toml::from_str(
+        r#"
+[clock]
+authority="linux"
+[proc0]
+pins=[22]
+"#,
+    )
+    .unwrap();
+    assert!(d.log.is_none() && d.proc0.peripherals.is_empty());
+    assert!(
+        d.validate().is_err(),
+        "GPIO-only firmware must not take authority=linux"
+    );
+    d.clock.authority = "rp1".into();
+    d.validate().unwrap();
+    for (notify, ok) in [("poll", true), ("irq", false), ("doorbell", false)] {
+        let d: Declaration = toml::from_str(&format!(
+            r#"
+[[shm]]
+name="up"
+kind="ring"
+core="proc1"
+message="u32"
+direction="rp1-to-linux"
+depth=16
+notify="{notify}"
+"#
+        ))
+        .unwrap();
+        assert_eq!(d.validate().is_ok(), ok, "notify={notify}");
+    }
+}
 #[test]
 fn typed_regions_and_sram_budget() {
     let mut d: Declaration = toml::from_str(
