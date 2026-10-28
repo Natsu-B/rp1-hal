@@ -40,8 +40,16 @@ pub fn reserved_gpios(dtb: &Path) -> Result<std::collections::BTreeSet<u32>> {
     )?)?)
 }
 
-/// rpi-cm5 lab profile (scmi_linux.dtb): Linux keeps only GPIO 0..1 on the RP1 bank.
+/// rpi-cm5 profile: Linux keeps only GPIO 0..1 on the RP1 bank (UART1 TX/RX, e.g.
+/// `dtoverlay=uart1-pi5`).
 pub const BOARD_GPIO_RESERVED: std::ops::RangeInclusive<u8> = 2..=53;
+/// Unlabelled RP1 GPIO hogs of the stock bcm2712-rpi-cm5*.dtb (lines 46 and 48).
+pub const BOARD_GPIO_HOGS: &[&str] = &["micclk1_hog", "micdat1_hog"];
+/// Stock-enabled RP1 nodes that need clk-rp1 or the stock RP1 firmware (disabled when RP1
+/// is the clock authority).
+pub const BOARD_NO_SCMI_CLOCK: &[&str] = &[
+    "rp1_adc", "rp1_eth", "rp1_dma", "rp1_pio", "rp1_usb0", "rp1_usb1",
+];
 
 pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
     let regions = d.regions()?;
@@ -126,7 +134,7 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
     "#
         ),
     );
-    // Keep the PoC scratch/openamp reservations intact; use the independent board-table range.
+    // Independent of any other reservation (`final_conflicts` rejects overlaps).
     fragment(
         "target-path = \"/reserved-memory\"",
         &format!("rp1-shm@{phys:x} {{ no-map; reg = <0 0x{phys:x} 0x{ddr_end:x}>; }};"),
@@ -143,17 +151,70 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
     }
     // rp1-mailbox keeps HOST_EVENTS (hwirq 58) and stays SCMI's transport; UIO cannot share that
     // IRQ (HW 2026-10-28: -EBUSY). v0.1 has no proc1 -> Linux interrupt: the UIO nodes above carry
-    // no interrupts and Linux polls the link page. Only the OpenAMP remoteproc (mailbox channels
-    // 1..3, not SCMI's channel 0) is disabled; it has no label in the lab profile, so by path.
+    // no interrupts and Linux polls the link page. The PoC OpenAMP remoteproc (mailbox channels
+    // 1..3) has no label; the stock DTB has no such node, so this leaves an empty disabled
+    // `/openamp-address-space` there (inert: no compatible) and disables it in a PoC DT.
     fragment(
-        "target-path = \"/openamp-address-space\"",
-        "status = \"disabled\";",
+        "target-path = \"/\"",
+        "openamp-address-space { status = \"disabled\"; };",
+    );
+    // The stock board DT gives Linux the RP1 GPIO hogs below; their lines are in the board
+    // reservation, and a hog on a reserved line fails the whole RP1 gpiochip (HYP, gpiolib).
+    // A board without them gets an empty disabled child (no gpio-hog: ignored).
+    fragment(
+        "target = <&rp1_gpio>",
+        &BOARD_GPIO_HOGS
+            .iter()
+            .map(|h| format!("{h} {{ status = \"disabled\"; }};"))
+            .collect::<Vec<_>>()
+            .join(" "),
     );
     if d.clock.authority == "rp1" {
-        // scmi_linux profiles already supply the clock-consumer rewrites and mailbox/shmem wiring.
+        // design §6/§9: RP1 owns its clocks. Linux's clk-rp1 is disabled (otherwise
+        // clk_disable_unused stops clocks of RP1-only blocks) and the stock DT gets the SCMI
+        // transport rp1_hal::scmi serves: mailbox channel 0 + shmem in shared SRAM.
+        let shmem = rp1_proto::LINK_START as usize - 0x2000_0000 + crate::metadata::SCMI_OFFSET;
         fragment("target = <&rp1_clocks>", "status = \"disabled\";");
-        fragment("target = <&rp1_scmi>", "status = \"okay\";");
-        fragment("target = <&rp1_scmi_clocks>", "status = \"okay\";");
+        // The stock RP1 firmware client uses the same mailbox channel 0 (and the shmem@ff00
+        // page); rp1-hal does not implement that protocol.
+        fragment("target = <&rp1_firmware>", "status = \"disabled\";");
+        fragment("target = <&rp1_fw_shmem>", "status = \"disabled\";");
+        fragment(
+            "target = <&sram>",
+            &format!(
+                "rp1_scmi_shmem: scmi@{shmem:x} {{ compatible = \"arm,scmi-shmem\"; reg = <0x{shmem:x} 0x100>; }};"
+            ),
+        );
+        // /firmware is populated by Linux (of_platform_default_populate_init).
+        fragment(
+            "target-path = \"/\"",
+            r#"
+        firmware {
+            rp1_scmi: scmi { compatible = "arm,scmi"; mboxes = <&rp1_mbox 0>; shmem = <&rp1_scmi_shmem>;
+                #address-cells = <1>; #size-cells = <0>;
+                rp1_scmi_clocks: protocol@14 { reg = <0x14>; #clock-cells = <1>; };
+            };
+        };
+    "#,
+        );
+        // Clock consumers: the SCMI table (rp1_hal::scmi) serves uart_apb (0) and uart (1),
+        // so every RP1 UART is switched (Linux may enable any of them, e.g. dtoverlay=uart1-pi5).
+        for uart in 0..=5 {
+            fragment(
+                &format!("target = <&rp1_uart{uart}>"),
+                "clocks = <&rp1_scmi_clocks 1>, <&rp1_scmi_clocks 0>; clock-names = \"uartclk\", \"apb_pclk\";",
+            );
+        }
+        // Enabled stock nodes whose clocks (or firmware) only clk-rp1 / the stock RP1 firmware
+        // provide: rp1-hal serves neither, so Linux must not probe them (the PoC lab DT did the
+        // same). USB has no clocks property but its clocks are set up by the stock RP1 firmware
+        // (HYP), so it is left off as well.
+        for label in BOARD_NO_SCMI_CLOCK {
+            fragment(&format!("target = <&{label}>"), "status = \"disabled\";");
+        }
+        // PoC lab DT (reports/amp-pcie-handoff-20261008.md): hold PERST 20 ms with the refclk
+        // running so the RP1 endpoint reconfiguration (rp1_hal::cold) is reliable.
+        fragment("target = <&pcie2>", "brcm,tperst-clk-ms = <20>;");
     }
     s.push_str("};\n");
     Ok(s)

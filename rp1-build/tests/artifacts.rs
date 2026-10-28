@@ -195,42 +195,61 @@ writer="both"
     a.note[20..24].copy_from_slice(&crc.to_le_bytes());
     assert!(Note::parse(&a.note).is_err());
 }
-#[test]
-fn overlay_applies_to_a_copy_of_scmi_linux() {
+/// The stock board DTB as the firmware hands it over: `bcm2712-rpi-cm5l-cm5io.dtb` (what the
+/// lab's firmware loads for this CM5 Lite on the CM5 IO board) plus `overlays/bcm2712d0.dtbo`.
+fn stock_board_dtb(dir: &Path) -> Option<std::path::PathBuf> {
+    let root = Path::new("<lab>");
     let base = std::env::var_os("RP1_TEST_DTB")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| Path::new("<lab>").to_owned());
+        .unwrap_or_else(|| root.join("bcm2712-rpi-cm5l-cm5io.dtb"));
     if !base.is_file() {
         eprintln!("STATIC fixture unavailable: set RP1_TEST_DTB for integration check");
-        return;
+        return None;
     }
-    let before = fs::read(&base).unwrap();
+    let copy = dir.join("stock.dtb");
+    fs::write(&copy, fs::read(&base).unwrap()).unwrap();
+    let d0 = root.join("overlays/bcm2712d0.dtbo");
+    if std::env::var_os("RP1_TEST_DTB").is_none() && d0.is_file() {
+        let out = dir.join("stock-d0.dtb");
+        rp1_build::overlay::apply(&copy, &d0, &out).unwrap();
+        return Some(out);
+    }
+    Some(copy)
+}
+
+#[test]
+fn overlay_applies_to_a_copy_of_the_stock_board_dtb() {
     let tmp = tempfile::tempdir().unwrap();
-    let copy = tmp.path().join("base.dtb");
-    fs::write(&copy, &before).unwrap();
+    let Some(copy) = stock_board_dtb(tmp.path()) else {
+        return;
+    };
+    let before = fs::read(&copy).unwrap();
     let source = tmp.path().join("app.dts");
     let overlay = tmp.path().join("app.dtbo");
     let merged = tmp.path().join("merged.dtb");
     let a = generate("test", "0.1.0", &declaration(), [0; 32], [0; 20]).unwrap();
-    fs::write(&source, a.dts).unwrap();
+    fs::write(&source, &a.dts).unwrap();
     rp1_build::overlay::compile(&source, &overlay).unwrap();
     rp1_build::overlay::apply(&copy, &overlay, &merged).unwrap();
-    let out = Command::new("dtc")
-        .args(["-I", "dtb", "-O", "dts"])
-        .arg(&merged)
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let dts = String::from_utf8(out.stdout).unwrap();
+    let decompile = |p: &Path| {
+        let out = Command::new("dtc")
+            .args(["-q", "-s", "-I", "dtb", "-O", "dts"])
+            .arg(p)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    // The loader's pure-Rust apply gives the same tree as libfdt's fdtoverlay.
+    let mut fdt = rp1_build::fdt::Fdt::parse(&before).unwrap();
+    rp1_dt::overlay::apply(&mut fdt, &fs::read(&overlay).unwrap()).unwrap();
+    let ours = tmp.path().join("ours.dtb");
+    fs::write(&ours, fdt.to_bytes()).unwrap();
+    let dts = decompile(&merged);
+    assert_eq!(decompile(&ours), dts, "rp1-dt differs from fdtoverlay");
     assert!(dts.contains("rp1:link"));
-    assert!(dts.contains("gpio-reserved-ranges"));
     // rp1-mailbox stays bound (SCMI transport); no UIO node takes an interrupt.
-    let base_dts = Command::new("dtc")
-        .args(["-I", "dtb", "-O", "dts"])
-        .arg(&copy)
-        .output()
-        .unwrap();
-    let base_dts = String::from_utf8(base_dts.stdout).unwrap();
+    let base_dts = decompile(&copy);
     let mbox = |dts: &str| {
         dts.split("mailbox@8000 {")
             .nth(1)
@@ -258,23 +277,61 @@ fn overlay_applies_to_a_copy_of_scmi_linux() {
     let merged_pins = rp1_build::overlay::reserved_gpios(&merged).unwrap();
     assert!(merged_pins.is_superset(&base_pins));
     assert!([14, 15, 22, 27].iter().all(|p| merged_pins.contains(p)));
-    // Root and /reserved-memory are <2 1>: regs must be 3 cells.
-    assert!(
-        dts.contains("reg = <0x1f 0x40c000 0x4000>;"),
-        "link reg cells"
+    assert!(!merged_pins.contains(&0) && !merged_pins.contains(&1));
+
+    let m = rp1_build::fdt::Fdt::parse(&fs::read(&merged).unwrap()).unwrap();
+    let label = |l: &str| m.label(l).unwrap_or_else(|| panic!("no label {l}"));
+    // Root and /reserved-memory are <2 1>: regs are 3 cells.
+    assert_eq!(
+        m.reg(m.find("/rp1-link@1f0040c000").unwrap()).unwrap(),
+        [(0x1f_0040_c000, 0x4000)]
     );
-    assert!(
-        dts.contains("reg = <0x00 0x21000000 0x10000>;"),
-        "scratch reg cells"
+    assert_eq!(
+        m.reg(m.find("/reserved-memory/rp1-shm@22000000").unwrap())
+            .unwrap(),
+        [(0x2200_0000, 0x10_0000)]
     );
-    assert!(dts.contains("rp1-shm@22000000"));
-    assert!(dts.contains("reg = <0x00 0x22000000 0x100000>;"));
-    let status = |node: &str| {
-        let body = dts.split(node).nth(1).unwrap();
-        body[..body.find("};").unwrap()].contains("status = \"disabled\"")
-    };
-    assert!(status("openamp-address-space {"), "remoteproc not disabled");
-    assert!(!status("scmi {"), "SCMI must stay enabled");
+    // SCMI over rp1-mailbox channel 0 + shmem in shared SRAM, added by the overlay itself.
+    let scmi = m.find("/firmware/scmi").expect("no /firmware/scmi");
+    assert!(m.enabled(scmi));
+    assert_eq!(m.strings(scmi, "compatible"), ["arm,scmi"]);
+    assert_eq!(
+        m.cells(scmi, "mboxes").unwrap(),
+        [m.phandle_of(label("rp1_mbox")).unwrap(), 0]
+    );
+    let shmem = m.phandle(m.cells(scmi, "shmem").unwrap()[0]).unwrap();
+    assert_eq!(m.strings(shmem, "compatible"), ["arm,scmi-shmem"]);
+    assert_eq!(
+        m.path(shmem),
+        "/axi/pcie@1000120000/rp1/sram@400000/scmi@d7c0"
+    );
+    assert_eq!(m.cells(shmem, "reg").unwrap(), [0xd7c0, 0x100]);
+    let clocks = m.find("/firmware/scmi/protocol@14").unwrap();
+    assert_eq!(label("rp1_scmi_clocks"), clocks);
+    // Every RP1 UART takes uartclk/apb_pclk from SCMI (ids 1 and 0), none from clk-rp1.
+    let scmi_clk = m.phandle_of(clocks).unwrap();
+    for uart in 0..=5 {
+        let n = label(&format!("rp1_uart{uart}"));
+        assert_eq!(m.cells(n, "clocks").unwrap(), [scmi_clk, 1, scmi_clk, 0]);
+        assert_eq!(m.strings(n, "clock-names"), ["uartclk", "apb_pclk"]);
+    }
+    // clk-rp1, the stock RP1 firmware client (same mailbox channel) and the nodes that only
+    // clk-rp1 / the stock firmware can serve are off; so are the hogs on reserved lines.
+    for l in ["rp1_clocks", "rp1_firmware", "rp1_fw_shmem"]
+        .into_iter()
+        .chain(rp1_build::overlay::BOARD_NO_SCMI_CLOCK.iter().copied())
+    {
+        assert!(!m.enabled(label(l)), "{l} still enabled");
+    }
+    let gpio = label("rp1_gpio");
+    for hog in rp1_build::overlay::BOARD_GPIO_HOGS {
+        assert!(!m.enabled(m.child(gpio, hog).unwrap()), "{hog} enabled");
+    }
+    assert_eq!(m.cells(label("pcie2"), "brcm,tperst-clk-ms").unwrap(), [20]);
+    // No OpenAMP in the stock DT: the overlay leaves only an inert disabled stub.
+    let oa = m.find("/openamp-address-space").unwrap();
+    assert!(!m.enabled(oa) && m.prop(oa, "compatible").is_none());
+    assert!(m.nodes[oa].children.is_empty());
     let out = Command::new("dtc")
         .args(["-I", "dtb", "-O", "dts"])
         .arg(&overlay)
@@ -285,12 +342,17 @@ fn overlay_applies_to_a_copy_of_scmi_linux() {
             .unwrap()
             .contains("__fixups__")
     );
-    // The real lab profile has no ownership/pinctrl/reservation conflict (review #3).
+    // The stock board DT has no ownership/pinctrl/reservation conflict (review #3), and the
+    // loader's check (pins handed back + final conflicts) passes too.
     assert_eq!(
         rp1_build::overlay::final_conflicts(&fs::read(&merged).unwrap(), &a.note).unwrap(),
         Vec::<String>::new()
     );
-    assert_eq!(before, fs::read(&base).unwrap());
+    assert_eq!(
+        rp1_dt::check::check(&rp1_build::fdt::Fdt::parse(&before).unwrap(), &m, &a.note).unwrap(),
+        Vec::<String>::new()
+    );
+    assert_eq!(before, fs::read(&copy).unwrap());
 }
 
 /// Contents of every watched file (directories recursively), as Cargo's

@@ -10,12 +10,25 @@ const BASE: &str = r#"/dts-v1/;
         @EXTRA_RESERVED@
     };
     openamp-address-space { status = "okay"; };
+    rp1_firmware: rp1_firmware { mboxes = <&rp1_mbox 0>; };
+    pcie2: pcie { };
     soc-gpio { soc22: grp22 { pins = "gpio22"; }; };
     soc-user { pinctrl-0 = <&soc22>; };
     rp1 { #address-cells = <1>; #size-cells = <1>;
         rp1_clocks: clocks { status = "okay"; };
-        rp1_scmi: scmi { status = "disabled"; rp1_scmi_clocks: protocol@14 { status = "disabled"; }; };
-        rp1_gpio: gpio@d0000 { gpio-reserved-ranges = <2 52>;
+        rp1_mbox: mailbox@8000 { #mbox-cells = <1>; };
+        sram: sram@400000 { #address-cells = <1>; #size-cells = <1>;
+            rp1_fw_shmem: shmem@ff00 { reg = <0xff00 0x100>; };
+        };
+        rp1_uart1: serial@34000 { status = "disabled"; };
+        rp1_uart2: serial@38000 { status = "disabled"; };
+        rp1_uart3: serial@3c000 { status = "disabled"; };
+        rp1_uart4: serial@40000 { status = "disabled"; };
+        rp1_uart5: serial@44000 { status = "disabled"; };
+        rp1_adc: adc { }; rp1_eth: ethernet { }; rp1_dma: dma { }; rp1_pio: pio { };
+        rp1_usb0: usb0 { }; rp1_usb1: usb1 { };
+        rp1_gpio: gpio@d0000 { gpio-reserved-ranges = <2 52>; #gpio-cells = <2>;
+            micclk1_hog { gpio-hog; gpios = <46 0>; output-high; };
             uart0_14_15: rp1_uart0_14_15 {
                 tx { function = "uart0"; pins = "gpio14"; };
                 rx { function = "uart0"; pins = "gpio15"; };
@@ -95,6 +108,17 @@ fn clean_lab_profile_passes() {
         ),
         Vec::<String>::new()
     );
+}
+
+#[test]
+fn gpio_hog_on_reserved_line_is_rejected() {
+    // The generated overlay disables the stock hog; a later overlay re-enabling it is caught.
+    let c = conflicts(
+        "",
+        "",
+        &[r#"&rp1_gpio { micclk1_hog { status = "okay"; }; };"#],
+    );
+    assert!(c.iter().any(|c| c.contains("GPIO46")), "{c:?}");
 }
 
 #[test]
@@ -185,4 +209,27 @@ fn reservation_overlap_is_rejected() {
         ],
     );
     assert!(c.iter().any(|c| c.contains("rp1-shm")), "{c:?}");
+}
+
+#[test]
+fn present_openamp_and_hogs_are_disabled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = BASE
+        .replace("@EXTRA_RESERVED@", "")
+        .replace("@EXTRA_RP1@", "");
+    let base = dtc(tmp.path(), "base", &base);
+    let a = generate("test", "0.1.0", &declaration(), [0; 32], [0; 20]).unwrap();
+    let app = dtc(tmp.path(), "app", &a.dts);
+    let merged = tmp.path().join("merged.dtb");
+    overlay::apply(&base, &app, &merged).unwrap();
+    let fdt = rp1_build::fdt::Fdt::parse(&fs::read(&merged).unwrap()).unwrap();
+    assert!(!fdt.enabled(fdt.find("/openamp-address-space").unwrap()));
+    let hog = fdt
+        .child(fdt.label("rp1_gpio").unwrap(), "micclk1_hog")
+        .unwrap();
+    assert!(!fdt.enabled(hog));
+    assert!(
+        fdt.prop(hog, "gpio-hog").is_some(),
+        "existing hog is kept, only disabled"
+    );
 }
