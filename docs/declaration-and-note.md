@@ -109,6 +109,8 @@ PCIe、mailbox ch0（SCMI 用）、共有 SRAM の予約域は、ボード表が
 | クロックを共有する相手を Linux が持ち、`clock.authority = "linux"`（例: UART0 を RP1、UART1 を Linux） | `UART0 shares clk_uart with UART1 (linux); set clock.authority = "rp1"` |
 | `gpio_irq` が `pins` に無い | `gpio_irq 27 is not in proc1.pins` |
 | `clock.authority = "linux"` なのに `clk_sys_hz` がある | `clk_sys_hz requires clock.authority = "rp1"` |
+| v0.1 の rpi-cm5 で `clock.authority = "linux"`（ボード DTB が RP1 のクロックを SCMI 経由にしており、overlay で Linux に戻せない。2026-10-29 review #7） | `clock.authority = linux is unsupported on the v0.1 rpi-cm5 board; use rp1` |
+| ring の `notify` が `poll` 以外（hwirq58 は SCMI の mailbox が持つ。review #9） | `v0.1 supports only notify=poll (SCMI owns hwirq58)` |
 | shm の名前が重複・形式違反、depth が 2 の冪でない、kind と項目が合わない | `shm 'ctl': 'direction' is only valid for kind = "ring"` |
 | Linux → RP1 のリングが共有 SRAM の予算を超える | `shm 'cmds': linux-to-rp1 ring needs 8.0 KiB of shared SRAM, 2.5 KiB left` |
 | 型が存在しない、`Message` を実装していない | rustc のエラー（生成コードがその型を参照するため） |
@@ -188,7 +190,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 |---|---|---|
 | ローダー | ENTRY、SHM_AREA（ハンドオフ）、OWNERSHIP（当てた後の DTB の検査、§3.2）。overlay 本体は `.rp1.dtbo` | 知らない critical レコード・CRC 不一致・DTB の印（§3.2）と不一致 → RP1 を起動せず停止（ログに理由） |
 | Linux 側 `rp1-linux` | overlay が載せたコピー（`/rp1-firmware` ノードの `rp1,note` プロパティ）の SHM_*、FIRMWARE | 型 ID 不一致・名前が無い → `Err` |
-| `cargo rp1 check --dtb` | OWNERSHIP、LOG | Linux DT との衝突を一覧にして失敗 |
+| `cargo rp1 check --dtb` | OWNERSHIP、LOG、SHM_AREA/SHM_REGION、note 全体 | Linux DT との衝突を一覧にして失敗（`rp1_build::overlay::final_conflicts`、STATIC）: 有効なノードの `pinctrl-N` が `rp1_gpio` 配下のグループで RP1 所有ピンを設定、所有ブロックのノード（`rp1_uartN` 等）が有効・ラベルが無い、authority=rp1 なのに `rp1_clocks` が有効、`rp1-shm` 予約が SHM_AREA と違う・他の予約や `/memreserve/` と重なる、`rp1:<name>` の UIO が領域と違う、`/rp1-firmware rp1,note` が ELF の note と違う |
 
 ## 3. Linux 用 DT overlay（`rp1-app.dtbo`）
 
