@@ -86,6 +86,17 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
     fs::write(out.join("rp1-app.dts"), &artifacts.dts)?;
     overlay::compile(&out.join("rp1-app.dts"), &out.join("rp1-app.dtbo"))?;
     fs::write(out.join("rp1-layout.x"), &artifacts.layout)?;
+    // Automatic ISRAM placement (`cargo rp1 build`, second link): the plan is a list of
+    // input-section rules included inside `.isram`. Without a plan the include is empty.
+    println!("cargo:rerun-if-env-changed=RP1_ISRAM_PLAN");
+    let plan = match env::var_os("RP1_ISRAM_PLAN") {
+        Some(p) if !p.is_empty() => {
+            println!("cargo:rerun-if-changed={}", PathBuf::from(&p).display());
+            fs::read_to_string(&p)?
+        }
+        _ => String::from("/* no automatic ISRAM plan */\n"),
+    };
+    fs::write(out.join("rp1-isram-auto.x"), plan)?;
     fs::write(out.join("rp1-note-desc.bin"), &artifacts.note)?;
     fs::write(
         out.join("70-rp1.rules"),
