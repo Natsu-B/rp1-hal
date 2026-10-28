@@ -1,0 +1,10 @@
+[package]
+name = "shm-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rp1-linux = { path = "../../rp1-linux" }
+rp1-proto = { path = "../../rp1-proto" }
+libc = "0.2"

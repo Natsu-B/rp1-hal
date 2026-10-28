@@ -531,6 +531,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "shm-firmware"
+version = "0.1.0"
+dependencies = [
+ "rp1-build",
+ "rp1-hal",
+ "rp1-proto",
+ "rp1-rt",
+]
+
+[[package]]
+name = "shm-linux"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rp1-linux",
+ "rp1-proto",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"

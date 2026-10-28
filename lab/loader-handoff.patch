@@ -1,0 +1,26 @@
+diff --git a/rp1_chainboot_poc/src/rp1_bootstrap.rs b/rp1_chainboot_poc/src/rp1_bootstrap.rs
+index 7d8dd9e..d76ae4b 100644
+--- a/rp1_chainboot_poc/src/rp1_bootstrap.rs
++++ b/rp1_chainboot_poc/src/rp1_bootstrap.rs
+@@ -146,6 +146,21 @@ where
+     }
+ 
+     pub fn program_scratch(&mut self, entry: u32, stack: u32) -> Result<(), BootError> {
++        #[cfg(feature = "rp1-hal-dev")]
++        {
++            // Hash-pinned dev tuple: size comes from the generated overlay, never guessed at boot.
++            let size = u32::from_str_radix(env!("RP1_HAL_DEV_SHM_SIZE"), 16)
++                .map_err(|_| BootError::Rp1ImageInvalid)?;
++            if size < 0x10_0000 || size > 0x100_0000 || size % 0x10_0000 != 0 {
++                return Err(BootError::Rp1ImageInvalid);
++            }
++            for offset in (0..64).step_by(4) { self.write32(0x2000_c000 + offset, 0)?; }
++            self.write32(0x2000_c004, 0x2200_0000)?;
++            self.write32(0x2000_c008, 0)?;
++            self.write32(0x2000_c00c, size)?;
++            self.write32(0x2000_c000, u32::from_le_bytes(*b"RP1H"))?;
++            crate::logln!("[RP1HALDEV] shm handoff phys=0x22000000 size=0x{:x}", size);
++        }
+         let entry = entry | 1;
+         crate::logln!("[RP1BOOT] scratch[0x4015400c]=0x{:08x}", RP1_BOOT_MAGIC);
+         crate::logln!(
