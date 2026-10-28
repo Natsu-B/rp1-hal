@@ -229,6 +229,9 @@ impl Declaration {
             return Err("UARTs share clk_uart with Linux; set clock.authority = rp1".into());
         }
         let mut names = BTreeSet::new();
+        if self.shm.len() > 64 {
+            return Err("v0.1 supports at most 64 shm regions".into());
+        }
         for r in &self.shm {
             let b = r.name.as_bytes();
             if b.is_empty()
@@ -274,11 +277,8 @@ impl Declaration {
                     if r.placement.as_deref().is_some_and(|s| s != "reader-local") {
                         return Err("placement=linux is unimplemented".into());
                     }
-                    if r.notify
-                        .as_deref()
-                        .is_some_and(|s| !matches!(s, "poll" | "irq"))
-                    {
-                        return Err("invalid notify".into());
+                    if r.notify.as_deref().is_some_and(|s| s != "poll") {
+                        return Err("v0.1 supports only notify=poll (SCMI owns hwirq58)".into());
                     }
                 }
                 "block" => {
@@ -317,8 +317,11 @@ impl Declaration {
         for r in &self.shm {
             let name = r.message.as_ref().or(r.block_type.as_ref()).unwrap();
             let ty=*self.types.get(name).ok_or_else(||format!("type {name} missing: use configure_with_types and register TypeInfo::of::<T>() in build.rs"))?;
-            if ty.size == 0 || ty.size > 65535 {
-                return Err("message size must be 1..65535".into());
+            if ty.size == 0
+                || ty.size > rp1_proto::SHM_MAX as usize - 8
+                || (r.kind == "ring" && ty.size > 65535)
+            {
+                return Err("invalid message size (ring <= 65535, block < 16 MiB)".into());
             }
             let slot = 8usize
                 .checked_add(align(ty.size, 8))
@@ -365,5 +368,10 @@ impl Declaration {
             sram += sram_len;
         }
         Ok(result)
+    }
+    pub fn ddr_size(&self) -> Result<u32> {
+        let regions = self.regions()?;
+        let end = regions.last().map_or(65536, |r| r.ddr_offset + r.ddr_len);
+        Ok(align(end as usize, 0x10_0000) as u32)
     }
 }

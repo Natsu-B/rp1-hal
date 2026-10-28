@@ -62,7 +62,8 @@ pub const BOARD_GPIO_RESERVED: std::ops::RangeInclusive<u8> = 2..=53;
 
 pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
     let regions = d.regions()?;
-    let ddr_end = regions.last().map_or(65536, |r| r.ddr_offset + r.ddr_len);
+    let ddr_end = d.ddr_size()?;
+    let phys = rp1_proto::SHM_PHYS;
     let bytes = note
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -125,18 +126,18 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
             reg = <0x1f 0x0040c000 0x4000>; status = "okay"; }};
         rp1-doorbell@1f000d0000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:doorbell";
             reg = <0x1f 0x000d0000 0x4000>; status = "okay"; }};
-        rp1-header@21000000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:header";
-            reg = <0 0x21000000 0x10000>; status = "okay"; }};
+        rp1-header@{phys:x} {{ compatible = "generic-uio"; linux,uio-name = "rp1:header";
+            reg = <0 0x{phys:x} 0x10000>; status = "okay"; }};
     "#
         ),
     );
-    // Merge the existing scratch node rather than overlapping it with a second reservation.
+    // Keep the PoC scratch/openamp reservations intact; use the independent board-table range.
     fragment(
         "target-path = \"/reserved-memory\"",
-        &format!("rp1-ddr-scratch@21000000 {{ no-map; reg = <0 0x21000000 0x{ddr_end:x}>; }};"),
+        &format!("rp1-shm@{phys:x} {{ no-map; reg = <0 0x{phys:x} 0x{ddr_end:x}>; }};"),
     );
     for r in regions {
-        let addr = rp1_proto::DDR_PHYS + u64::from(r.ddr_offset);
+        let addr = phys + u64::from(r.ddr_offset);
         fragment(
             "target-path = \"/\"",
             &format!(

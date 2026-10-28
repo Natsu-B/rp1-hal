@@ -97,15 +97,19 @@ pub fn descriptor(
     string(&mut v, "linux_2712.img")?;
     tlv(&mut out, BOOT, true, &v);
     let regions = d.regions()?;
-    let ddr_end = regions.last().map_or(65536, |r| r.ddr_offset + r.ddr_len);
     let sram_end = regions
         .last()
         .map_or(64, |r| u32::from(r.sram_offset) + u32::from(r.sram_len));
     v.clear();
-    word(&mut v, ddr_end);
-    word(&mut v, 65536);
-    word(&mut v, rp1_proto::HANDOFF);
-    short(&mut v, sram_end as u16);
+    v.extend(
+        ShmArea {
+            size: d.ddr_size()?,
+            handoff: rp1_proto::HANDOFF,
+            sram_end: sram_end as u16,
+            phys: rp1_proto::SHM_PHYS,
+        }
+        .encode(),
+    );
     tlv(&mut out, SHM_AREA, true, &v);
     for r in regions {
         let spec = r.spec;

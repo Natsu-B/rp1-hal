@@ -218,7 +218,11 @@ fn validate_regions(note: &Note<'_>) -> Result<()> {
         let elem = u64::from(word(v, 20)?);
         let depth = u64::from(word(v, 24)?);
         let body = 128 + depth * (8 + ((elem + 7) & !7));
-        if elem == 0 || elem > 65535 || doff % 65536 != 0 || !within(doff, dlen, 65536, ddr) {
+        if elem == 0
+            || (v[0] != 3 && elem > 65535)
+            || doff % 65536 != 0
+            || !within(doff, dlen, 65536, ddr)
+        {
             return Err("SHM DDR layout is invalid".into());
         }
         if v[0] == 1

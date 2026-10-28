@@ -61,6 +61,15 @@ depth=16
     assert_eq!(r[0].ddr_offset, 65536);
     let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
     assert!(Note::parse(&a.note).is_ok());
+    let area = rp1_proto::note::ShmArea::parse(
+        Note::parse(&a.note)
+            .unwrap()
+            .get(rp1_proto::note::SHM_AREA)
+            .unwrap()
+            .value,
+    )
+    .unwrap();
+    assert_eq!((area.phys, area.size), (0x2200_0000, 0x10_0000));
     d.shm[0].depth = Some(4096);
     assert!(d.regions().is_err());
     d.shm[0].placement = Some("linux".into());
@@ -84,6 +93,32 @@ fn note_is_deterministic_and_rejects_corruption() {
     let mut bad = a.note;
     bad[40] ^= 1;
     assert!(Note::parse(&bad).is_err());
+}
+#[test]
+fn large_block_and_malformed_region() {
+    let mut d: Declaration = toml::from_str(
+        r#"
+[[shm]]
+name="bulk"
+kind="block"
+core="proc1"
+type="Bulk"
+writer="both"
+"#,
+    )
+    .unwrap();
+    d.types
+        .insert("Bulk".into(), TypeInfo::of::<[u32; 262144]>());
+    let mut a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    let n = Note::parse(&a.note).unwrap();
+    let region = n.get(rp1_proto::note::SHM_REGION).unwrap().value;
+    let at = region.as_ptr() as usize - a.note.as_ptr() as usize;
+    assert_eq!(d.ddr_size().unwrap(), 0x20_0000);
+    // A valid CRC cannot hide an allocation that overlaps the area header.
+    a.note[at + 8..at + 12].copy_from_slice(&0u32.to_le_bytes());
+    let crc = rp1_proto::note::crc32(&a.note[32..]);
+    a.note[20..24].copy_from_slice(&crc.to_le_bytes());
+    assert!(Note::parse(&a.note).is_err());
 }
 #[test]
 fn overlay_applies_to_a_copy_of_scmi_linux() {
@@ -157,6 +192,8 @@ fn overlay_applies_to_a_copy_of_scmi_linux() {
         dts.contains("reg = <0x00 0x21000000 0x10000>;"),
         "scratch reg cells"
     );
+    assert!(dts.contains("rp1-shm@22000000"));
+    assert!(dts.contains("reg = <0x00 0x22000000 0x100000>;"));
     let status = |node: &str| {
         let body = dts.split(node).nth(1).unwrap();
         body[..body.find("};").unwrap()].contains("status = \"disabled\"")

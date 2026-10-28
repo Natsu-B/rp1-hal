@@ -155,6 +155,11 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         elf_note.len(),
         elf_note
     );
+    let digest: [u8; 32] = Sha256::digest(note).into();
+    s.push_str(&format!(
+        "pub const SHM_NOTE: &[u8] = &{:?};\npub const SHM_NOTE_SHA256: [u8;32] = {:?};\n",
+        note, digest
+    ));
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
         let ty = format!("Proc{index}Resources");
         s.push_str(&format!("pub struct Proc{index}Pins {{\n"));

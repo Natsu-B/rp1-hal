@@ -99,6 +99,53 @@ impl<'a> Note<'a> {
         if seen & 0x2f != 0x2f {
             return Err(Error::Invalid);
         }
+        if let Some(area) = note.get(SHM_AREA) {
+            let area = ShmArea::parse(area.value)?;
+            let mut count = 0;
+            for record in note
+                .records()
+                .filter_map(Result::ok)
+                .filter(|r| r.kind == SHM_REGION)
+            {
+                count += 1;
+                if count > 64 {
+                    return Err(Error::Invalid);
+                }
+                let r = ShmRegion::parse(record.value)?;
+                if r.ddr_offset
+                    .checked_add(r.ddr_len)
+                    .is_none_or(|end| end > area.size)
+                    || u32::from(r.sram_offset) + u32::from(r.sram_len) > u32::from(area.sram_end)
+                {
+                    return Err(Error::Invalid);
+                }
+                for other in note
+                    .records()
+                    .filter_map(Result::ok)
+                    .filter(|o| o.kind == SHM_REGION)
+                {
+                    if other.value.as_ptr() == record.value.as_ptr() {
+                        break;
+                    }
+                    let o = ShmRegion::parse(other.value)?;
+                    let overlap =
+                        |a: u32, n: u32, b: u32, m: u32| n != 0 && m != 0 && a < b + m && b < a + n;
+                    if r.name == o.name
+                        || overlap(r.ddr_offset, r.ddr_len, o.ddr_offset, o.ddr_len)
+                        || overlap(
+                            r.sram_offset.into(),
+                            r.sram_len.into(),
+                            o.sram_offset.into(),
+                            o.sram_len.into(),
+                        )
+                    {
+                        return Err(Error::Invalid);
+                    }
+                }
+            }
+        } else if note.get(SHM_REGION).is_some() {
+            return Err(Error::Invalid);
+        }
         Ok(note)
     }
     pub fn records(&self) -> Records<'a> {
@@ -155,30 +202,172 @@ fn validate_record(r: &Record<'_>) -> Result<(), Error> {
             take_string(&mut b)?;
             b.is_empty()
         }
-        SHM_AREA => {
-            v.len() == 14 && u32_at(v, 4)? == 65536 && u16_at(v, 12)? as usize <= crate::LINK_LEN
-        }
-        SHM_REGION => {
-            let mut b = v.get(44..).ok_or(Error::Invalid)?;
-            let name = take_string(&mut b)?;
-            take_string(&mut b)?;
-            b.is_empty()
-                && !name.is_empty()
-                && matches!(v[0], 1 | 3)
-                && matches!(v[2], 1 | 2)
-                && v[3] <= 1
-                && v[4] == 1
-                && (1..=2).contains(&v[6])
-                && v[7] == 1
-                && ((v[0] == 1
-                    && matches!(v[1], 1 | 2)
-                    && v[5] == 0
-                    && u32_at(v, 24)?.is_power_of_two())
-                    || (v[0] == 3 && v[1] == 0 && (1..=3).contains(&v[5]) && u32_at(v, 24)? == 0))
-        }
+        SHM_AREA => ShmArea::parse(v).is_ok(),
+        SHM_REGION => ShmRegion::parse(v).is_ok(),
         _ => true,
     };
     if valid { Ok(()) } else { Err(Error::Invalid) }
+}
+
+/// SHM_AREA: the whole Linux DDR reservation (one per note).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShmArea {
+    /// Bytes of the reservation (multiple of 1 MiB, at least 1 MiB).
+    pub size: u32,
+    /// SRAM handoff/link-page base the loader writes (`crate::HANDOFF`).
+    pub handoff: u32,
+    /// End of the link-page bytes used by rings (offset from the link page).
+    pub sram_end: u16,
+    /// Physical (CPU) address of the reservation.
+    pub phys: u64,
+}
+pub const SHM_AREA_LEN: usize = 24;
+impl ShmArea {
+    pub fn parse(v: &[u8]) -> Result<Self, Error> {
+        let a = Self {
+            size: u32_at(v, 0)?,
+            handoff: u32_at(v, 8)?,
+            sram_end: u16_at(v, 12)?,
+            phys: u64::from(u32_at(v, 16)?) | (u64::from(u32_at(v, 20)?) << 32),
+        };
+        let valid = v.len() == SHM_AREA_LEN
+            && u32_at(v, 4)? == 65536
+            && u16_at(v, 14)? == 0
+            && a.size >= 0x10_0000
+            && a.size.is_multiple_of(0x10_0000)
+            && a.size <= crate::SHM_MAX
+            && a.phys.is_multiple_of(0x20_0000)
+            && a.phys == crate::SHM_PHYS
+            && a.handoff == crate::HANDOFF
+            && a.sram_end as usize <= crate::LINK_LEN;
+        if valid { Ok(a) } else { Err(Error::Invalid) }
+    }
+    pub fn encode(&self) -> [u8; SHM_AREA_LEN] {
+        let mut v = [0; SHM_AREA_LEN];
+        v[0..4].copy_from_slice(&self.size.to_le_bytes());
+        v[4..8].copy_from_slice(&65536u32.to_le_bytes());
+        v[8..12].copy_from_slice(&self.handoff.to_le_bytes());
+        v[12..14].copy_from_slice(&self.sram_end.to_le_bytes());
+        v[16..24].copy_from_slice(&self.phys.to_le_bytes());
+        v
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShmKind {
+    /// Ring from RP1 to Linux: slots and head in DDR, tail in the link page.
+    RingToLinux,
+    /// Ring from Linux to RP1: slots and head in the link page, tail in DDR.
+    RingToRp1,
+    Block {
+        writer: Writer,
+    },
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Writer {
+    Rp1,
+    Linux,
+    Both,
+}
+
+/// SHM_REGION: one declared `shm`. Offsets are relative to the DDR reservation and the link page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShmRegion<'a> {
+    pub kind: ShmKind,
+    /// 1 = proc0, 2 = proc1.
+    pub core: u8,
+    pub notify_irq: bool,
+    pub overwrite: bool,
+    pub ddr_offset: u32,
+    pub ddr_len: u32,
+    pub sram_offset: u16,
+    pub sram_len: u16,
+    pub elem_size: u32,
+    pub depth: u32,
+    pub type_id: u64,
+    pub name: &'a str,
+    pub type_name: &'a str,
+}
+impl<'a> ShmRegion<'a> {
+    pub fn parse(v: &'a [u8]) -> Result<Self, Error> {
+        let mut b = v.get(44..).ok_or(Error::Invalid)?;
+        let name = take_string(&mut b)?;
+        let type_name = take_string(&mut b)?;
+        let depth = u32_at(v, 24)?;
+        let elem_size = u32_at(v, 20)?;
+        let kind = match (v[0], v[1], v[5]) {
+            (1, 1, 0) => ShmKind::RingToLinux,
+            (1, 2, 0) => ShmKind::RingToRp1,
+            (3, 0, w @ 1..=3) => ShmKind::Block {
+                writer: [Writer::Rp1, Writer::Linux, Writer::Both][w as usize - 1],
+            },
+            _ => return Err(Error::Invalid),
+        };
+        let ring = !matches!(kind, ShmKind::Block { .. });
+        let r = Self {
+            kind,
+            core: v[2],
+            notify_irq: v[3] == 1,
+            overwrite: v[6] == 2,
+            ddr_offset: u32_at(v, 8)?,
+            ddr_len: u32_at(v, 12)?,
+            sram_offset: u16_at(v, 16)?,
+            sram_len: u16_at(v, 18)?,
+            elem_size,
+            depth,
+            type_id: u64::from(u32_at(v, 28)?) | (u64::from(u32_at(v, 32)?) << 32),
+            name,
+            type_name,
+        };
+        let valid = b.is_empty()
+            && !name.is_empty()
+            && matches!(v[2], 1 | 2)
+            && v[3] <= 1
+            && v[4] == 1
+            && (1..=2).contains(&v[6])
+            && v[7] == 1
+            && elem_size != 0
+            && elem_size <= crate::SHM_MAX - 8
+            && (!ring || (depth.is_power_of_two() && depth <= 1 << 30 && elem_size <= 0xffff))
+            && (ring || (depth == 0 && v[6] == 1))
+            && r.ddr_offset.is_multiple_of(65536)
+            && r.ddr_len.is_multiple_of(65536)
+            && r.ddr_len != 0;
+        if !valid {
+            return Err(Error::Invalid);
+        }
+        let (ddr, sram) = r.storage()?;
+        let start = usize::from(r.sram_offset);
+        let end = start.checked_add(sram).ok_or(Error::Invalid)?;
+        if ddr > r.ddr_len as usize
+            || sram != usize::from(r.sram_len)
+            || r.ddr_offset < 65536
+            || r.ddr_offset
+                .checked_add(r.ddr_len)
+                .is_none_or(|e| e > crate::SHM_MAX)
+            || (sram != 0
+                && (start < 64
+                    || !start.is_multiple_of(64)
+                    || end > crate::LINK_LEN
+                    || (start < 0x18c0 && end > 0x17c0)))
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(r)
+    }
+    /// Bytes this region needs in DDR and in the link page; `Err(Invalid)` if a ring body
+    /// does not fit 32 bits (checked arithmetic, identical on RP1 and the host).
+    pub fn storage(&self) -> Result<(usize, usize), Error> {
+        let body = || {
+            crate::shm::ring_body_size(self.elem_size as usize, self.depth as usize)
+                .ok_or(Error::Invalid)
+        };
+        Ok(match self.kind {
+            ShmKind::RingToLinux => (body()?, crate::shm::CONTROL_SIZE),
+            ShmKind::RingToRp1 => (crate::shm::CONTROL_SIZE, body()?),
+            ShmKind::Block { .. } => (crate::shm::block_size(self.elem_size as usize), 0),
+        })
+    }
 }
 
 pub struct Records<'a> {
@@ -222,6 +411,7 @@ impl<'a> Iterator for Records<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    extern crate std;
     #[test]
     fn crc_and_truncated_records() {
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
@@ -230,5 +420,34 @@ mod tests {
             assert!(Records { bytes: &b[..len] }.next().unwrap().is_err());
         }
         assert!(Note::parse(&[0; 32]).is_err());
+    }
+
+    fn region(depth: u32, ddr_len: u32) -> std::vec::Vec<u8> {
+        let mut v = std::vec![1, 1, 1, 0, 1, 0, 1, 1];
+        v.extend(65536u32.to_le_bytes());
+        v.extend(ddr_len.to_le_bytes());
+        v.extend(64u16.to_le_bytes());
+        v.extend(128u16.to_le_bytes());
+        v.extend(4u32.to_le_bytes());
+        v.extend(depth.to_le_bytes());
+        v.extend([0; 16]);
+        v.extend([2, b'u', b'p', 3, b'u', b'3', b'2']);
+        v
+    }
+
+    #[test]
+    fn ring_size_overflow_is_rejected_not_wrapped() {
+        // REVIEW #14: 128 + 2^30 * 16 wraps to 128 in 32-bit usize arithmetic.
+        assert_eq!(crate::shm::ring_body_size(4, 1 << 30), None);
+        assert_eq!(
+            ShmRegion::parse(&region(1 << 30, 65536)).err(),
+            Some(Error::Invalid)
+        );
+        assert_eq!(crate::shm::ring_body_size(4, 4), Some(128 + 4 * 16));
+        let ok = region(16, 65536);
+        assert_eq!(
+            ShmRegion::parse(&ok).unwrap().storage(),
+            Ok((128 + 16 * 16, 128))
+        );
     }
 }

@@ -1,4 +1,16 @@
-//! Uncached device-memory access. No Rust references to mapped payloads escape.
+//! Linux shared memory: SPSC rings and blocks over uncached mappings (protocol.md §1–§5).
+//!
+//! Both peers use these types on raw pointers into mappings that are *not* ordinary memory:
+//! on Linux a UIO mapping (arm64 Device attributes: unaligned access and `DC ZVA` fault), on
+//! RP1 the outbound PCIe window (every read is a non-posted PCIe round trip). Therefore:
+//!
+//! - every access is an aligned volatile 32-bit (or, on 64-bit hosts, 64-bit) load/store;
+//!   no `memcpy`/`memset` and no Rust reference into a mapping ever exists;
+//! - "reader-local" placement: each side only *writes* the peer's memory and only *reads*
+//!   its own. A ring is split into `data` (slots, `head`, `dropped`; local to the reader)
+//!   and `ctrl` (`tail`, `waiting`; local to the writer). Each endpoint keeps a private
+//!   shadow of the index it owns and reads the remote copy only once, in `attach`;
+//! - no exclusive (LDREX/STREX) or RMW access; every shared word has a single writer.
 use crate::{Error, Message, barrier};
 use core::{
     marker::PhantomData,
@@ -6,521 +18,868 @@ use core::{
     ptr,
 };
 
+/// DDR region header (one per reservation, at offset 0).
 pub const HEADER_SIZE: usize = 64;
+/// `data` and `ctrl` start with this many bytes of control words (two 64-byte lines).
 pub const CONTROL_SIZE: usize = 128;
-/// First link cache line. The loader writes DDR physical address (low/high) before boot.
-#[repr(C, align(64))]
-pub struct LinkHeader {
-    pub ddr_address_low: core::sync::atomic::AtomicU32,
-    pub ddr_address_high: core::sync::atomic::AtomicU32,
-    pub status: core::sync::atomic::AtomicU32,
-    pub generation: core::sync::atomic::AtomicU32,
-    pub request: core::sync::atomic::AtomicU32,
-    pub reply: core::sync::atomic::AtomicU32,
-    reserved: [u32; 10],
+/// `data`: next slot index the writer will fill.
+pub const HEAD: usize = 0;
+/// `data`: rejected pushes (`overflow = reject`), observational only.
+pub const DROPPED: usize = 64;
+/// `ctrl`: next slot index the reader will consume.
+pub const TAIL: usize = 0;
+/// `ctrl`: the reader is about to sleep and wants a notification.
+pub const WAITING: usize = 64;
+/// Slot word 1 bit: the writer is rewriting this slot (`overflow = overwrite`).
+const BUSY: u32 = 1 << 16;
+const MAGIC: [u8; 8] = *b"RP1SHM\0\0";
+const VERSION: u32 = 1;
+
+pub const fn slot_size(elem: usize) -> usize {
+    8 + ((elem + 7) & !7)
 }
-unsafe impl crate::SharedSafe for LinkHeader {}
-impl Default for LinkHeader {
-    fn default() -> Self {
-        Self::new()
+/// Bytes of the reader-local ring part; `None` if it does not fit `usize` (same verdict on
+/// 32-bit RP1 and 64-bit hosts once compared against a `u32` region length).
+pub const fn ring_body_size(elem: usize, depth: usize) -> Option<usize> {
+    let Some(slot) = (elem as u64).checked_add(7) else {
+        return None;
+    };
+    let Some(slots) = (depth as u64).checked_mul(8 + (slot & !7)) else {
+        return None;
+    };
+    let Some(total) = slots.checked_add(CONTROL_SIZE as u64) else {
+        return None;
+    };
+    // Computed in u64 so a 32-bit target cannot wrap; regions are u32-sized anyway.
+    if total > u32::MAX as u64 {
+        None
+    } else {
+        Some(total as usize)
     }
 }
-impl LinkHeader {
-    pub const fn new() -> Self {
-        use core::sync::atomic::AtomicU32;
-        Self {
-            ddr_address_low: AtomicU32::new(0),
-            ddr_address_high: AtomicU32::new(0),
-            status: AtomicU32::new(0),
-            generation: AtomicU32::new(0),
-            request: AtomicU32::new(0),
-            reply: AtomicU32::new(0),
-            reserved: [0; 10],
-        }
-    }
-}
-const _: () = assert!(size_of::<LinkHeader>() == 64);
-pub const fn slot_size<T>() -> usize {
-    8 + ((size_of::<T>() + 7) & !7)
-}
-pub const fn ring_body_size<T>(depth: usize) -> usize {
-    CONTROL_SIZE + depth * slot_size::<T>()
+pub const fn block_size(elem: usize) -> usize {
+    8 + ((elem + 7) & !7)
 }
 
-#[inline]
-unsafe fn load(base: *const u8, offset: usize) -> u32 {
+#[inline(always)]
+unsafe fn ld(base: *const u8, offset: usize) -> u32 {
     unsafe { ptr::read_volatile(base.add(offset).cast()) }
 }
-#[inline]
-unsafe fn store(base: *mut u8, offset: usize, value: u32) {
-    unsafe {
-        ptr::write_volatile(base.add(offset).cast(), value);
-    }
+#[inline(always)]
+unsafe fn st(base: *mut u8, offset: usize, value: u32) {
+    unsafe { ptr::write_volatile(base.add(offset).cast(), value) }
 }
 
-unsafe fn write_value<T: Message>(dst: *mut u8, value: &T) {
-    let src = ptr::from_ref(value).cast::<u8>();
-    for offset in (0..size_of::<T>()).step_by(4) {
-        let mut word = [0u8; 4];
-        for (i, b) in word.iter_mut().enumerate() {
-            if offset + i < size_of::<T>() {
-                *b = unsafe { src.add(offset + i).read() };
-            }
+/// Copy `bytes` bytes (padded up to 4/8) from a mapping into ordinary memory.
+///
+/// # Safety
+/// `src` is 8-byte aligned (4 on 32-bit targets) and readable for `bytes` rounded up to 8.
+/// `dst` is writable ordinary memory for `bytes`.
+#[inline(always)]
+pub unsafe fn copy_from_mapping(dst: *mut u8, src: *const u8, bytes: usize) {
+    #[cfg(target_pointer_width = "64")]
+    {
+        let mut i = 0;
+        while i < bytes {
+            let w = unsafe { ptr::read_volatile(src.add(i).cast::<u64>()) }.to_le_bytes();
+            let n = if bytes - i < 8 { bytes - i } else { 8 };
+            unsafe { ptr::copy_nonoverlapping(w.as_ptr(), dst.add(i), n) };
+            i += 8;
         }
-        unsafe {
-            store(dst, offset, u32::from_le_bytes(word));
+    }
+    #[cfg(not(target_pointer_width = "64"))]
+    {
+        let mut i = 0;
+        while i < bytes {
+            let w = unsafe { ld(src, i) }.to_le_bytes();
+            let n = if bytes - i < 4 { bytes - i } else { 4 };
+            unsafe { ptr::copy_nonoverlapping(w.as_ptr(), dst.add(i), n) };
+            i += 4;
+        }
+    }
+}
+/// Copy `bytes` bytes into a mapping; the tail of the last word is zero-filled.
+///
+/// # Safety
+/// As [`copy_from_mapping`] with the roles swapped; `dst` is writable up to `bytes` rounded to 8.
+#[inline(always)]
+pub unsafe fn copy_to_mapping(dst: *mut u8, src: *const u8, bytes: usize) {
+    #[cfg(target_pointer_width = "64")]
+    {
+        let mut i = 0;
+        while i < bytes {
+            let mut w = [0u8; 8];
+            let n = if bytes - i < 8 { bytes - i } else { 8 };
+            unsafe { ptr::copy_nonoverlapping(src.add(i), w.as_mut_ptr(), n) };
+            unsafe { ptr::write_volatile(dst.add(i).cast::<u64>(), u64::from_le_bytes(w)) };
+            i += 8;
+        }
+    }
+    #[cfg(not(target_pointer_width = "64"))]
+    {
+        let mut i = 0;
+        while i < bytes {
+            let mut w = [0u8; 4];
+            let n = if bytes - i < 4 { bytes - i } else { 4 };
+            unsafe { ptr::copy_nonoverlapping(src.add(i), w.as_mut_ptr(), n) };
+            unsafe { st(dst, i, u32::from_le_bytes(w)) };
+            i += 4;
         }
     }
 }
 unsafe fn read_value<T: Message>(src: *const u8) -> T {
-    let mut value = MaybeUninit::<T>::uninit();
-    let dst = value.as_mut_ptr().cast::<u8>();
-    for offset in (0..size_of::<T>()).step_by(4) {
-        let word = unsafe { load(src, offset) }.to_le_bytes();
-        for (i, b) in word.iter().enumerate() {
-            if offset + i < size_of::<T>() {
-                unsafe {
-                    dst.add(offset + i).write(*b);
-                }
-            }
-        }
+    let mut v = MaybeUninit::<T>::uninit();
+    unsafe {
+        copy_from_mapping(v.as_mut_ptr().cast(), src, size_of::<T>());
+        // Message: every bit pattern is valid and there is no padding.
+        v.assume_init()
     }
-    unsafe { value.assume_init() }
 }
 
-#[derive(Clone, Copy)]
-pub struct Generation {
-    header: *mut u8,
-    value: u32,
+fn aligned(p: *const u8) -> bool {
+    !p.is_null() && p as usize & 7 == 0
 }
-impl Generation {
-    /// Initialize the DDR header while both peers are quiescent. Returns the new even generation.
+
+/// RP1's initializing handle for the DDR region header (protocol.md §1.3).
+///
+/// Only [`HeaderInit::begin`] creates it, under a writable-mapping contract; Linux's
+/// read-only [`Header`] has no write path, so a `PROT_READ` mapping stays sound.
+pub struct HeaderInit {
+    base: *mut u8,
+    generation: u32,
+}
+unsafe impl Send for HeaderInit {}
+impl HeaderInit {
+    /// RP1: mark the region as being initialized (odd generation). Returns the handle whose
+    /// [`HeaderInit::publish`] writes the next even generation. `previous` is the old header
+    /// generation (read once).
     ///
     /// # Safety
-    /// `header` is an aligned, uncached, writable 64-byte device mapping. No peer may
-    /// access the data until initialization of all rings/blocks is complete.
-    pub unsafe fn initialize(
-        header: *mut u8,
-        note_hash: [u8; 32],
-        regions: u32,
-    ) -> Result<Self, Error> {
-        if header.is_null() || header as usize & 3 != 0 {
-            return Err(Error::Invalid);
-        }
-        let old = unsafe { load(header, 12) };
-        let value = (old & !1).wrapping_add(2);
-        unsafe {
-            store(header, 12, value.wrapping_sub(1));
-        }
+    /// `base` is the aligned, writable 64-byte header mapping, it stays valid while the handle
+    /// lives, and the caller is its only writer.
+    pub unsafe fn begin(base: *mut u8, previous: u32) -> Self {
+        let generation = (previous | 1).wrapping_add(1).max(2);
+        unsafe { st(base, 12, generation.wrapping_sub(1)) };
         barrier();
-        for (i, word) in b"RP1SHM\0\0".as_chunks::<4>().0.iter().enumerate() {
-            unsafe {
-                store(header, i * 4, u32::from_le_bytes(*word));
-            }
-        }
-        unsafe {
-            store(header, 8, (64 << 16) | 1);
-        }
-        for (i, word) in note_hash.as_chunks::<4>().0.iter().enumerate() {
-            unsafe {
-                store(header, 16 + i * 4, u32::from_le_bytes(*word));
-            }
-        }
-        unsafe {
-            store(header, 48, regions);
-            store(header, 52, 0);
-            store(header, 56, 0);
-            store(header, 60, 0);
-        }
-        // Publication is separate so ring initialization cannot race Linux open.
-        Ok(Self { header, value })
+        Self { base, generation }
     }
-    /// # Safety
-    /// All ring/block state for this generation has been initialized, and this is the only initializer.
-    pub unsafe fn publish(&self) {
-        barrier();
+    /// The generation [`HeaderInit::publish`] will write.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+    /// RP1: write the header fields (generation stays odd).
+    pub fn write(&mut self, note_sha256: &[u8; 32], regions: u32, uptime_us: u32) {
+        let b = self.base;
         unsafe {
-            store(self.header, 12, self.value);
+            st(
+                b,
+                0,
+                u32::from_le_bytes([MAGIC[0], MAGIC[1], MAGIC[2], MAGIC[3]]),
+            );
+            st(
+                b,
+                4,
+                u32::from_le_bytes([MAGIC[4], MAGIC[5], MAGIC[6], MAGIC[7]]),
+            );
+            st(b, 8, ((HEADER_SIZE as u32) << 16) | VERSION);
+            for (i, w) in note_sha256.as_chunks::<4>().0.iter().enumerate() {
+                st(b, 16 + i * 4, u32::from_le_bytes(*w));
+            }
+            st(b, 48, regions);
+            st(b, 52, uptime_us);
+            st(b, 56, 0);
+            st(b, 60, 0);
         }
     }
+    /// RP1: publish (even generation) and give up write access. Call after all rings/blocks
+    /// are initialized; the caller drains posted writes (same-window readback) before it
+    /// tells the peer.
+    pub fn publish(self) -> u32 {
+        barrier();
+        unsafe { st(self.base, 12, self.generation) };
+        barrier();
+        self.generation
+    }
+}
 
+/// Linux's read-only view of a published DDR region header.
+#[derive(Clone, Copy)]
+pub struct Header {
+    base: *const u8,
+    generation: u32,
+}
+unsafe impl Send for Header {}
+impl Header {
+    /// Linux: open a published header and check the note hash.
+    ///
     /// # Safety
-    /// `header` remains a readable aligned 64-byte uncached device mapping for this handle's lifetime.
-    pub unsafe fn open(header: *mut u8, note_hash: &[u8; 32]) -> Result<Self, Error> {
-        if header.is_null() || header as usize & 3 != 0 {
+    /// `base` stays a readable aligned 64-byte mapping for the lifetime of the handle.
+    pub unsafe fn open(base: *const u8, note_sha256: &[u8; 32]) -> Result<Self, Error> {
+        if !aligned(base) {
             return Err(Error::Invalid);
         }
-        let value = unsafe { load(header, 12) };
-        if value & 1 != 0 {
-            return Err(Error::NotReady);
+        let generation = unsafe { ld(base, 12) };
+        barrier();
+        let mut magic = [0u8; 8];
+        unsafe {
+            magic[..4].copy_from_slice(&ld(base, 0).to_le_bytes());
+            magic[4..].copy_from_slice(&ld(base, 4).to_le_bytes());
         }
-        if unsafe { load(header, 0) } != u32::from_le_bytes(*b"RP1S")
-            || unsafe { load(header, 4) } != u32::from_le_bytes(*b"HM\0\0")
-            || unsafe { load(header, 8) } != (64 << 16) | 1
+        if generation & 1 != 0
+            || generation == 0
+            || magic != MAGIC
+            || unsafe { ld(base, 8) } != ((HEADER_SIZE as u32) << 16) | VERSION
         {
             return Err(Error::NotReady);
         }
-        for (i, word) in note_hash.as_chunks::<4>().0.iter().enumerate() {
-            if unsafe { load(header, 16 + i * 4) }.to_le_bytes() != *word {
+        for (i, w) in note_sha256.as_chunks::<4>().0.iter().enumerate() {
+            if unsafe { ld(base, 16 + i * 4) }.to_le_bytes() != *w {
                 return Err(Error::Mismatch);
             }
         }
+        let h = Self { base, generation };
         barrier();
-        let this = Self { header, value };
-        this.check()?;
-        Ok(this)
+        h.check()?;
+        Ok(h)
     }
+    /// Linux: `Err(Reset)` once RP1 re-initialized the region.
+    #[inline]
     pub fn check(&self) -> Result<(), Error> {
-        barrier();
-        if unsafe { load(self.header, 12) } != self.value {
-            Err(Error::Reset)
-        } else {
+        if unsafe { ld(self.base, 12) } == self.generation {
             Ok(())
+        } else {
+            Err(Error::Reset)
         }
     }
-    pub fn number(&self) -> u32 {
-        self.value
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+    pub fn regions(&self) -> u32 {
+        unsafe { ld(self.base, 48) }
     }
 }
 
+/// Behaviour of a full ring (declaration `overflow`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Overflow {
+    /// `push` returns `Err(Full)`; nothing is lost.
     Reject,
+    /// `push` overwrites the oldest slot; the reader reports `Err(Lost(n))`.
     Overwrite,
 }
 
-struct Ring<T> {
-    body: *mut u8,
-    credits: *mut u8,
+fn check_ring<T>(
+    data: *const u8,
+    data_len: usize,
+    ctrl: *const u8,
+    ctrl_len: usize,
     depth: u32,
-    generation: Generation,
-    mode: Overflow,
-    _type: PhantomData<T>,
-}
-pub struct RingTx<T> {
-    ring: Ring<T>,
-    head: u32,
-}
-pub struct RingRx<T> {
-    ring: Ring<T>,
-    tail: u32,
-}
-
-/// Attach exactly one writer and one reader, preserving shared tail on process restart.
-///
-/// # Safety
-/// Mappings must remain valid, uncached and aligned to 4 bytes. `body` and `credits`
-/// must be disjoint from each other and the header. Only these two endpoints may
-/// access the ring; initialize the controls to zero before publishing the generation.
-pub unsafe fn ring<T: Message>(
-    body: *mut u8,
-    body_len: usize,
-    credits: *mut u8,
-    credits_len: usize,
-    depth: u32,
-    mode: Overflow,
-    generation: Generation,
-) -> Result<(RingTx<T>, RingRx<T>), Error> {
-    if body.is_null()
-        || credits.is_null()
-        || (body as usize | credits as usize) & 3 != 0
-        || !depth.is_power_of_two()
-        || depth > (1 << 30)
-        || size_of::<T>() == 0
-        || size_of::<T>() > u16::MAX as usize
-        || credits_len < CONTROL_SIZE
-        || (depth as usize)
-            .checked_mul(slot_size::<T>())
+) -> Result<(), Error> {
+    let ok = aligned(data)
+        && aligned(ctrl)
+        && depth.is_power_of_two()
+        && depth <= 1 << 30
+        && size_of::<T>() != 0
+        && size_of::<T>() <= 0xffff
+        && ctrl_len >= CONTROL_SIZE
+        && (depth as usize)
+            .checked_mul(slot_size(size_of::<T>()))
             .and_then(|n| n.checked_add(CONTROL_SIZE))
-            .is_none_or(|n| n > body_len)
-    {
-        return Err(Error::Invalid);
-    }
-    generation.check()?;
-    let make = || Ring {
-        body,
-        credits,
-        depth,
-        generation,
-        mode,
-        _type: PhantomData,
-    };
-    let head = unsafe { load(body, 0) };
-    let tail = unsafe { load(credits, 0) };
-    Ok((RingTx { ring: make(), head }, RingRx { ring: make(), tail }))
+            .is_some_and(|n| n <= data_len);
+    if ok { Ok(()) } else { Err(Error::Invalid) }
 }
 
+/// Writer end of a ring. Writes `data` (remote), reads `ctrl` (local).
+pub struct RingTx<T> {
+    data: *mut u8,
+    ctrl: *const u8,
+    mask: u32,
+    overflow: Overflow,
+    head: u32,
+    dropped: u32,
+    /// `dropped` changed since it was last stored remotely.
+    dropped_dirty: bool,
+    _t: PhantomData<fn(T)>,
+}
+unsafe impl<T> Send for RingTx<T> {}
 impl<T: Message> RingTx<T> {
-    /// Returns whether the reader requested a doorbell. Flush the same outbound window before notifying.
-    pub fn push(&mut self, value: T) -> Result<bool, Error> {
-        let r = &self.ring;
-        r.generation.check()?;
-        let tail = unsafe { load(r.credits, 0) };
-        if r.mode == Overflow::Reject && self.head.wrapping_sub(tail) >= r.depth {
-            let dropped = unsafe { load(r.body, 64) };
-            unsafe {
-                store(r.body, 64, dropped.wrapping_add(1));
+    /// Attach the single writer. Reads the current `head`/`dropped` once (resume after restart).
+    ///
+    /// # Safety
+    /// `data`/`ctrl` are 8-byte aligned mappings of the given lengths that stay valid, use only
+    /// volatile access, and no other writer exists for this ring.
+    pub unsafe fn attach(
+        data: *mut u8,
+        data_len: usize,
+        ctrl: *const u8,
+        ctrl_len: usize,
+        depth: u32,
+        overflow: Overflow,
+    ) -> Result<Self, Error> {
+        check_ring::<T>(data, data_len, ctrl, ctrl_len, depth)?;
+        Ok(Self {
+            data,
+            ctrl,
+            mask: depth - 1,
+            overflow,
+            head: unsafe { ld(data, HEAD) },
+            dropped: unsafe { ld(data, DROPPED) },
+            dropped_dirty: false,
+            _t: PhantomData,
+        })
+    }
+    #[inline]
+    fn slot(&self, index: u32) -> *mut u8 {
+        unsafe {
+            self.data
+                .add(CONTROL_SIZE + (index & self.mask) as usize * slot_size(size_of::<T>()))
+        }
+    }
+    /// Free slots as last seen (reads the local `tail`).
+    pub fn free(&self) -> u32 {
+        let tail = unsafe { ld(self.ctrl, TAIL) };
+        (self.mask + 1).saturating_sub(self.head.wrapping_sub(tail))
+    }
+    /// Publish one message. Order: payload, seq, length → barrier → head (protocol.md §2.3).
+    pub fn push(&mut self, value: &T) -> Result<(), Error> {
+        let len = size_of::<T>() as u32;
+        let slot = self.slot(self.head);
+        match self.overflow {
+            Overflow::Reject => {
+                let tail = unsafe { ld(self.ctrl, TAIL) };
+                if self.head.wrapping_sub(tail) > self.mask {
+                    // Counted locally; stored with the next successful push, so a writer
+                    // spinning on `Full` issues no remote stores into the reader's memory.
+                    self.dropped = self.dropped.wrapping_add(1);
+                    self.dropped_dirty = true;
+                    return Err(Error::Full);
+                }
+                if self.dropped_dirty {
+                    self.dropped_dirty = false;
+                    unsafe { st(self.data, DROPPED, self.dropped) };
+                }
+                barrier();
+                unsafe {
+                    copy_to_mapping(slot.add(8), ptr::from_ref(value).cast(), size_of::<T>());
+                    st(slot, 0, self.head);
+                    st(slot, 4, len);
+                }
             }
-            r.generation.check()?;
-            return Err(Error::Full);
-        }
-        let slot = unsafe {
-            r.body
-                .add(CONTROL_SIZE + (self.head & (r.depth - 1)) as usize * slot_size::<T>())
-        };
-        // flags bit 0 marks a write in progress, avoiding a reserved sequence number at wrap.
-        unsafe {
-            store(slot, 4, 1 << 16);
-        }
-        barrier();
-        unsafe {
-            write_value(slot.add(8), &value);
-            store(slot, 0, self.head);
-        }
-        barrier();
-        unsafe {
-            store(slot, 4, size_of::<T>() as u32);
+            Overflow::Overwrite => unsafe {
+                st(slot, 4, BUSY | len);
+                barrier();
+                copy_to_mapping(slot.add(8), ptr::from_ref(value).cast(), size_of::<T>());
+                st(slot, 0, self.head);
+                barrier();
+                st(slot, 4, len);
+            },
         }
         barrier();
         self.head = self.head.wrapping_add(1);
-        unsafe {
-            store(r.body, 0, self.head);
-        }
-        barrier();
-        let notify = unsafe { load(r.credits, 64) } != 0;
-        r.generation.check()?;
-        Ok(notify)
+        unsafe { st(self.data, HEAD, self.head) };
+        Ok(())
     }
-}
-impl<T: Message> RingRx<T> {
-    pub fn pop(&mut self) -> Result<Option<T>, Error> {
-        let r = &self.ring;
-        r.generation.check()?;
-        let head = unsafe { load(r.body, 0) };
-        let available = head.wrapping_sub(self.tail);
-        if available == 0 {
-            r.generation.check()?;
-            return Ok(None);
-        }
-        if available > r.depth {
-            if r.mode == Overflow::Reject {
-                return Err(Error::Corrupt);
-            }
-            let lost = available - r.depth;
-            self.tail = head.wrapping_sub(r.depth);
-            unsafe {
-                store(r.credits, 0, self.tail);
-            }
-            r.generation.check()?;
-            return Err(Error::Lost(lost));
-        }
-        let slot = unsafe {
-            r.body
-                .add(CONTROL_SIZE + (self.tail & (r.depth - 1)) as usize * slot_size::<T>())
-        };
-        let seq = unsafe { load(slot, 0) };
-        let flags = unsafe { load(slot, 4) };
-        if flags >> 16 != 0 {
-            return Err(Error::NotReady);
-        }
-        if seq != self.tail {
-            return Err(if r.mode == Overflow::Overwrite {
-                Error::NotReady
-            } else {
-                Error::Corrupt
-            });
-        }
-        if flags as usize != size_of::<T>() {
-            return Err(Error::Invalid);
-        }
+    /// The reader armed a notification (`waiting`); the caller decides how to notify.
+    ///
+    /// `head` was a posted write into the reader's memory. A `dsb` only completes it at the
+    /// local bridge, so first read `head` back through the same window: the non-posted read
+    /// cannot pass the posted write, hence when it returns the reader can see `head`. Only then
+    /// is `waiting` sampled. Paired with [`RingRx::prepare_wait`] this closes the race in which
+    /// both peers see stale values and the reader sleeps on a non-empty ring. Costs one
+    /// round trip per call; pure polling users need not call it.
+    pub fn reader_waiting(&self) -> bool {
         barrier();
-        let value = unsafe { read_value(slot.add(8)) };
+        let _ = unsafe { ld(self.data, HEAD) };
         barrier();
-        if unsafe { load(slot, 0) } != seq || unsafe { load(slot, 4) } != flags {
-            return Err(Error::NotReady);
-        }
-        self.tail = self.tail.wrapping_add(1);
-        unsafe {
-            store(r.credits, 0, self.tail);
-        }
-        r.generation.check()?;
-        Ok(Some(value))
+        unsafe { ld(self.ctrl, WAITING) != 0 }
     }
-    /// Arm notification, then recheck head to avoid sleeping past a posted write.
-    pub fn prepare_wait(&mut self) -> Result<bool, Error> {
-        let r = &self.ring;
-        r.generation.check()?;
-        unsafe {
-            store(r.credits, 64, 1);
-        }
-        barrier();
-        let empty = unsafe { load(r.body, 0) } == self.tail;
-        if !empty {
-            unsafe {
-                store(r.credits, 64, 0);
-            }
-        }
-        r.generation.check()?;
-        Ok(empty)
+    pub fn head(&self) -> u32 {
+        self.head
     }
-    pub fn finish_wait(&mut self) -> Result<(), Error> {
-        unsafe {
-            store(self.ring.credits, 64, 0);
-        }
-        self.ring.generation.check()
+    pub fn dropped(&self) -> u32 {
+        self.dropped
     }
 }
 
+/// Reader end of a ring. Reads `data` (local), writes `ctrl` (remote).
+pub struct RingRx<T> {
+    data: *const u8,
+    ctrl: *mut u8,
+    mask: u32,
+    overflow: Overflow,
+    tail: u32,
+    _t: PhantomData<fn() -> T>,
+}
+unsafe impl<T> Send for RingRx<T> {}
+impl<T: Message> RingRx<T> {
+    /// Attach the single reader. Reads the current `tail` once (resume after restart).
+    ///
+    /// # Safety
+    /// As [`RingTx::attach`], for the reader.
+    pub unsafe fn attach(
+        data: *const u8,
+        data_len: usize,
+        ctrl: *mut u8,
+        ctrl_len: usize,
+        depth: u32,
+        overflow: Overflow,
+    ) -> Result<Self, Error> {
+        check_ring::<T>(data, data_len, ctrl, ctrl_len, depth)?;
+        Ok(Self {
+            data,
+            ctrl,
+            mask: depth - 1,
+            overflow,
+            tail: unsafe { ld(ctrl, TAIL) },
+            _t: PhantomData,
+        })
+    }
+    #[inline]
+    fn slot(&self, index: u32) -> *const u8 {
+        unsafe {
+            self.data
+                .add(CONTROL_SIZE + (index & self.mask) as usize * slot_size(size_of::<T>()))
+        }
+    }
+    /// Messages available as seen now (reads the local `head`).
+    pub fn available(&self) -> u32 {
+        unsafe { ld(self.data, HEAD) }.wrapping_sub(self.tail)
+    }
+    fn consume(&mut self) {
+        barrier();
+        self.tail = self.tail.wrapping_add(1);
+        unsafe { st(self.ctrl, TAIL, self.tail) };
+    }
+    /// `Ok(None)` when empty. `Err(Lost(n))` (overwrite only) reports skipped messages; the
+    /// reader has already moved to the oldest surviving slot, so just call `pop` again.
+    pub fn pop(&mut self) -> Result<Option<T>, Error> {
+        let len = size_of::<T>() as u32;
+        match self.overflow {
+            Overflow::Reject => {
+                let available = self.available();
+                if available == 0 {
+                    return Ok(None);
+                }
+                if available > self.mask + 1 {
+                    return Err(Error::Corrupt);
+                }
+                barrier();
+                let slot = self.slot(self.tail);
+                let (seq, word) = unsafe { (ld(slot, 0), ld(slot, 4)) };
+                if seq != self.tail {
+                    return Err(Error::Corrupt);
+                }
+                if word != len {
+                    return Err(Error::Invalid);
+                }
+                let value = unsafe { read_value::<T>(slot.add(8)) };
+                self.consume();
+                Ok(Some(value))
+            }
+            Overflow::Overwrite => {
+                for _ in 0..1024 {
+                    let available = self.available();
+                    if available == 0 {
+                        return Ok(None);
+                    }
+                    if available > self.mask + 1 {
+                        let lost = available - (self.mask + 1);
+                        self.tail = self.tail.wrapping_add(lost);
+                        unsafe { st(self.ctrl, TAIL, self.tail) };
+                        return Err(Error::Lost(lost));
+                    }
+                    let slot = self.slot(self.tail);
+                    barrier();
+                    let (seq, word) = unsafe { (ld(slot, 0), ld(slot, 4)) };
+                    if word & BUSY != 0 || seq != self.tail {
+                        // Being (or already) overwritten by a newer lap; head catches up.
+                        core::hint::spin_loop();
+                        continue;
+                    }
+                    barrier();
+                    let value = unsafe { read_value::<T>(slot.add(8)) };
+                    barrier();
+                    let (word2, seq2) = unsafe { (ld(slot, 4), ld(slot, 0)) };
+                    if word2 != word || seq2 != seq {
+                        continue;
+                    }
+                    if word != len {
+                        return Err(Error::Invalid);
+                    }
+                    self.consume();
+                    return Ok(Some(value));
+                }
+                Err(Error::NotReady)
+            }
+        }
+    }
+    /// Arm `waiting`, then re-check `head` so a push racing with the arm is not missed.
+    /// Returns `true` if the ring is still empty and the caller may sleep.
+    ///
+    /// `waiting` is read back through the same window before `head` is re-checked, so the
+    /// arm has reached the writer's memory (see [`RingTx::reader_waiting`] for the pairing).
+    /// The notification itself must not overtake `head`: the writer calls
+    /// [`RingTx::reader_waiting`] (which drains `head`) before it rings the doorbell.
+    pub fn prepare_wait(&mut self) -> bool {
+        unsafe { st(self.ctrl, WAITING, 1) };
+        barrier();
+        let _ = unsafe { ld(self.ctrl, WAITING) };
+        barrier();
+        let empty = self.available() == 0;
+        if !empty {
+            self.finish_wait();
+        }
+        empty
+    }
+    pub fn finish_wait(&mut self) {
+        unsafe { st(self.ctrl, WAITING, 0) };
+    }
+    pub fn tail(&self) -> u32 {
+        self.tail
+    }
+    /// Rejected pushes counted by the writer (observational).
+    pub fn dropped(&self) -> u32 {
+        unsafe { ld(self.data, DROPPED) }
+    }
+}
+
+/// A SeqLock-protected block (protocol.md §5): `seq` u32, `flags` u32, then `T`.
+///
+/// Large `T` (tables, bulk buffers) are accessed word by word through [`BlockWriter`] and
+/// [`BlockReader`] so that no copy of `T` is needed in RP1 memory.
 pub struct Block<T> {
     base: *mut u8,
-    generation: Generation,
-    _type: PhantomData<T>,
+    seq: u32,
+    _t: PhantomData<T>,
 }
+unsafe impl<T> Send for Block<T> {}
 impl<T: Message> Block<T> {
     /// # Safety
-    /// `base` is an aligned uncached mapping of at least `8 + round_up(size_of::<T>(), 8)`
-    /// bytes. Exactly one writer may use `write`; readers use separate attached handles.
-    pub unsafe fn attach(base: *mut u8, len: usize, generation: Generation) -> Result<Self, Error> {
-        if base.is_null() || base as usize & 3 != 0 || len < slot_size::<T>() {
+    /// `base` is an 8-byte aligned mapping of `len >= block_size(size_of::<T>())` bytes that
+    /// stays valid and is accessed only through volatile operations.
+    pub unsafe fn attach(base: *mut u8, len: usize) -> Result<Self, Error> {
+        if !aligned(base) || len < block_size(size_of::<T>()) {
             return Err(Error::Invalid);
         }
         Ok(Self {
             base,
-            generation,
-            _type: PhantomData,
+            seq: unsafe { ld(base, 0) } & !1,
+            _t: PhantomData,
         })
     }
+    /// Words of `T` (rounded up).
+    pub const WORDS: usize = size_of::<T>().div_ceil(4);
+    /// Writer: replace the whole value.
+    ///
     /// # Safety
-    /// This handle is the declared sole writer. For writer=both, synchronize externally.
-    pub unsafe fn write(&mut self, value: T) -> Result<(), Error> {
-        self.generation.check()?;
-        let seq = unsafe { load(self.base, 0) } & !1;
-        unsafe {
-            store(self.base, 0, seq.wrapping_add(1));
-        }
-        barrier();
-        unsafe {
-            write_value(self.base.add(8), &value);
-        }
-        barrier();
-        unsafe {
-            store(self.base, 0, seq.wrapping_add(2));
-        }
-        self.generation.check()
+    /// This handle is the declared sole writer (`writer = "rp1"` / `"linux"`).
+    pub unsafe fn write(&mut self, value: &T) {
+        let mut w = unsafe { self.begin_write() };
+        unsafe { copy_to_mapping(w.data(), ptr::from_ref(value).cast(), size_of::<T>()) };
+        w.commit();
     }
+    /// Writer: open a write section (odd `seq`). Readers retry until [`BlockWriter::commit`].
+    ///
+    /// # Safety
+    /// As [`Block::write`].
+    pub unsafe fn begin_write(&mut self) -> BlockWriter<'_, T> {
+        // writer=both transfers ownership between peers; the previous writer advanced seq.
+        self.seq = unsafe { ld(self.base, 0) }.wrapping_add(1) | 1;
+        unsafe { st(self.base, 0, self.seq) };
+        barrier();
+        BlockWriter { block: self }
+    }
+    /// Current SeqLock sequence (one aligned load). Cheap change detection for pollers: an
+    /// unchanged even value means no write section ran since it was last seen. Over the RP1
+    /// outbound window this is one PCIe round trip instead of a whole-value read.
+    pub fn sequence(&self) -> u32 {
+        unsafe { ld(self.base, 0) }
+    }
+    /// Reader: copy the whole value; `Err(NotReady)` if a write was in progress or overlapped.
     pub fn read(&self) -> Result<T, Error> {
-        self.generation.check()?;
-        let seq = unsafe { load(self.base, 0) };
+        self.read_with(|r| unsafe { read_value::<T>(r.block.base.add(8)) })
+    }
+    /// Reader: run `f` inside one SeqLock read section.
+    pub fn read_with<R>(&self, f: impl FnOnce(&BlockReader<'_, T>) -> R) -> Result<R, Error> {
+        let seq = unsafe { ld(self.base, 0) };
         if seq & 1 != 0 {
             return Err(Error::NotReady);
         }
         barrier();
-        let value = unsafe { read_value(self.base.add(8)) };
+        let r = f(&BlockReader { block: self });
         barrier();
-        if unsafe { load(self.base, 0) } != seq {
+        if unsafe { ld(self.base, 0) } != seq {
             return Err(Error::NotReady);
         }
-        self.generation.check()?;
-        Ok(value)
+        Ok(r)
     }
+    /// Raw word access without SeqLock (`writer = "both"`: caller synchronizes).
+    ///
     /// # Safety
-    /// Caller implements synchronization for writer=both and uses only volatile access.
-    pub unsafe fn raw(&self) -> *mut u8 {
-        self.base
+    /// The caller provides the synchronization the SeqLock would.
+    pub unsafe fn raw(&self) -> BlockReader<'_, T> {
+        BlockReader { block: self }
+    }
+}
+pub struct BlockWriter<'a, T> {
+    block: &'a mut Block<T>,
+}
+impl<T: Message> BlockWriter<'_, T> {
+    fn data(&mut self) -> *mut u8 {
+        unsafe { self.block.base.add(8) }
+    }
+    /// Store `words` at word index `at` of `T`.
+    pub fn write_words(&mut self, at: usize, words: &[u32]) -> Result<(), Error> {
+        if at
+            .checked_add(words.len())
+            .is_none_or(|end| end > Block::<T>::WORDS)
+        {
+            return Err(Error::Invalid);
+        }
+        let d = self.data();
+        for (i, w) in words.iter().enumerate() {
+            unsafe { st(d, (at + i) * 4, *w) };
+        }
+        Ok(())
+    }
+    /// Fill words `at..at+count` with `f(index)` without a staging buffer.
+    pub fn fill(
+        &mut self,
+        at: usize,
+        count: usize,
+        mut f: impl FnMut(usize) -> u32,
+    ) -> Result<(), Error> {
+        if at
+            .checked_add(count)
+            .is_none_or(|end| end > Block::<T>::WORDS)
+        {
+            return Err(Error::Invalid);
+        }
+        let d = self.data();
+        for i in at..at + count {
+            unsafe { st(d, i * 4, f(i)) };
+        }
+        Ok(())
+    }
+    /// Base of `T` in the mapping, for specialised (e.g. burst) writers.
+    ///
+    /// # Safety
+    /// Stay within `Block::<T>::WORDS` words and use only aligned volatile stores.
+    pub unsafe fn as_ptr(&mut self) -> *mut u32 {
+        self.data().cast()
+    }
+    /// End the write section (even `seq`).
+    pub fn commit(self) {}
+}
+impl<T> Drop for BlockWriter<'_, T> {
+    fn drop(&mut self) {
+        barrier();
+        self.block.seq = self.block.seq.wrapping_add(1);
+        unsafe { st(self.block.base, 0, self.block.seq) };
+        barrier();
+    }
+}
+pub struct BlockReader<'a, T> {
+    block: &'a Block<T>,
+}
+impl<T: Message> BlockReader<'_, T> {
+    pub fn read_word(&self, at: usize) -> Result<u32, Error> {
+        if at >= Block::<T>::WORDS {
+            return Err(Error::Invalid);
+        }
+        Ok(unsafe { ld(self.block.base, 8 + at * 4) })
+    }
+    /// Load words `at..at+out.len()` of `T`.
+    pub fn read_words(&self, at: usize, out: &mut [u32]) -> Result<(), Error> {
+        if at
+            .checked_add(out.len())
+            .is_none_or(|end| end > Block::<T>::WORDS)
+        {
+            return Err(Error::Invalid);
+        }
+        for (i, word) in out.iter_mut().enumerate() {
+            *word = unsafe { ld(self.block.base, 8 + (at + i) * 4) };
+        }
+        Ok(())
+    }
+    /// Base of `T` in the mapping, for specialised (e.g. burst) readers.
+    ///
+    /// # Safety
+    /// Stay within `Block::<T>::WORDS` words and use only aligned volatile loads.
+    pub unsafe fn as_ptr(&self) -> *const u32 {
+        unsafe { self.block.base.add(8).cast() }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    extern crate std;
+    use std::vec;
+
+    #[repr(C, align(8))]
+    struct Mem<const N: usize>([u8; N]);
+    fn mem<const N: usize>() -> std::boxed::Box<Mem<N>> {
+        std::boxed::Box::new(Mem([0; N]))
+    }
+
     #[test]
-    fn reject_overwrite_wrap_wait_and_restart() {
-        for mode in [Overflow::Reject, Overflow::Overwrite] {
-            let mut header = [0u32; 16];
-            let mut body = [0u32; 48];
-            let mut credits = [0u32; 32];
-            let g =
-                unsafe { Generation::initialize(header.as_mut_ptr().cast(), [7; 32], 1).unwrap() };
-            unsafe {
-                g.publish();
-            }
-            let (mut tx, mut rx) = unsafe {
-                ring::<u32>(
-                    body.as_mut_ptr().cast(),
-                    192,
-                    credits.as_mut_ptr().cast(),
-                    128,
-                    2,
-                    mode,
-                    g,
-                )
-                .unwrap()
-            };
-            assert!(rx.prepare_wait().unwrap());
-            assert!(tx.push(10).unwrap());
-            rx.finish_wait().unwrap();
-            tx.push(11).unwrap();
-            if mode == Overflow::Reject {
-                assert_eq!(tx.push(12), Err(Error::Full));
-                assert_eq!(rx.pop(), Ok(Some(10)));
-            } else {
-                tx.push(12).unwrap();
-                assert_eq!(rx.pop(), Err(Error::Lost(1)));
-                assert_eq!(rx.pop(), Ok(Some(11)));
-            }
-            while rx.pop().unwrap().is_some() {}
-            tx.head = u32::MAX;
-            rx.tail = u32::MAX;
-            unsafe {
-                store(tx.ring.body, 0, u32::MAX);
-                store(tx.ring.credits, 0, u32::MAX);
-            }
-            tx.push(99).unwrap();
-            assert_eq!(rx.pop(), Ok(Some(99)));
-            let (_, mut reopened) = unsafe {
-                ring::<u32>(
-                    body.as_mut_ptr().cast(),
-                    192,
-                    credits.as_mut_ptr().cast(),
-                    128,
-                    2,
-                    mode,
-                    g,
-                )
-                .unwrap()
-            };
-            assert_eq!(reopened.pop(), Ok(None));
-            unsafe {
-                store(g.header, 12, g.value + 1);
-            }
-            assert_eq!(rx.pop(), Err(Error::Reset));
+    fn reject_ring_full_wrap_and_resume() {
+        let mut data = mem::<{ CONTROL_SIZE + 4 * 16 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let mut tx =
+            unsafe { RingTx::<[u32; 2]>::attach(d, 192, c, 128, 4, Overflow::Reject) }.unwrap();
+        let mut rx =
+            unsafe { RingRx::<[u32; 2]>::attach(d, 192, c, 128, 4, Overflow::Reject) }.unwrap();
+        assert_eq!(rx.pop(), Ok(None));
+        for i in 0..4 {
+            tx.push(&[i, !i]).unwrap();
+        }
+        assert_eq!(tx.push(&[9, 9]), Err(Error::Full));
+        assert_eq!(tx.push(&[9, 9]), Err(Error::Full));
+        // Spinning on Full stores nothing remotely; the count travels with the next push.
+        assert_eq!((tx.dropped(), rx.dropped()), (2, 0));
+        for round in 0..1000u32 {
+            assert_eq!(rx.pop(), Ok(Some([round, !round])));
+            tx.push(&[round + 4, !(round + 4)]).unwrap();
+            assert_eq!(rx.dropped(), 2);
+        }
+        // A restarted reader resumes from the shared tail.
+        let mut again =
+            unsafe { RingRx::<[u32; 2]>::attach(d, 192, c, 128, 4, Overflow::Reject) }.unwrap();
+        assert_eq!(again.pop(), Ok(Some([1000, !1000])));
+        // Corruption of a slot sequence is detected.
+        unsafe { st(d, CONTROL_SIZE + 16, 7) };
+        assert_eq!(again.pop(), Err(Error::Corrupt));
+    }
+
+    #[test]
+    fn reject_ring_index_wraps_u32() {
+        let mut data = mem::<{ CONTROL_SIZE + 2 * 16 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        unsafe {
+            st(d, HEAD, u32::MAX - 1);
+            st(c, TAIL, u32::MAX - 1);
+        }
+        let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        for i in 0..10 {
+            tx.push(&i).unwrap();
+            assert_eq!(rx.pop(), Ok(Some(i)));
         }
     }
+
     #[test]
-    fn generation_and_block() {
-        let mut header = [0u32; 16];
-        let mut data = [0u32; 8];
-        let g = unsafe { Generation::initialize(header.as_mut_ptr().cast(), [3; 32], 1).unwrap() };
-        assert!(matches!(
-            unsafe { Generation::open(g.header, &[3; 32]) },
-            Err(Error::NotReady)
-        ));
-        unsafe {
-            g.publish();
+    fn overwrite_ring_reports_lost_and_follows() {
+        let mut data = mem::<{ CONTROL_SIZE + 4 * 16 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let mut tx =
+            unsafe { RingTx::<u64>::attach(d, 192, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        let mut rx =
+            unsafe { RingRx::<u64>::attach(d, 192, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        for i in 0..10u64 {
+            tx.push(&i).unwrap();
         }
-        assert!(unsafe { Generation::open(g.header, &[3; 32]) }.is_ok());
-        assert!(matches!(
-            unsafe { Generation::open(g.header, &[4; 32]) },
-            Err(Error::Mismatch)
-        ));
-        let mut b = unsafe { Block::<[u32; 2]>::attach(data.as_mut_ptr().cast(), 32, g).unwrap() };
-        unsafe {
-            b.write([11, 12]).unwrap();
+        assert_eq!(rx.pop(), Err(Error::Lost(6)));
+        let got: vec::Vec<_> = core::iter::from_fn(|| rx.pop().unwrap()).collect();
+        assert_eq!(got, [6, 7, 8, 9]);
+        // A slot marked busy is not returned.
+        tx.push(&10).unwrap();
+        unsafe { st(d, CONTROL_SIZE + (10 & 3) * 16 + 4, BUSY | 8) };
+        assert_eq!(rx.pop(), Err(Error::NotReady));
+    }
+
+    #[test]
+    fn wait_handshake() {
+        let mut data = mem::<{ CONTROL_SIZE + 2 * 16 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        assert!(rx.prepare_wait());
+        assert!(tx.reader_waiting());
+        tx.push(&1).unwrap();
+        rx.finish_wait();
+        assert!(!tx.reader_waiting());
+        assert!(!rx.prepare_wait());
+        assert!(!tx.reader_waiting());
+    }
+
+    #[test]
+    fn header_and_block() {
+        let mut h = mem::<64>();
+        let hp = h.0.as_mut_ptr();
+        let mut hdr = unsafe { HeaderInit::begin(hp, 0) };
+        hdr.write(&[5; 32], 3, 0);
+        assert_eq!(
+            unsafe { Header::open(hp, &[5; 32]) }.err(),
+            Some(Error::NotReady)
+        );
+        hdr.publish();
+        let l = unsafe { Header::open(hp, &[5; 32]) }.unwrap();
+        assert_eq!((l.generation(), l.regions()), (2, 3));
+        assert_eq!(
+            unsafe { Header::open(hp, &[6; 32]) }.err(),
+            Some(Error::Mismatch)
+        );
+        let again = unsafe { HeaderInit::begin(hp, 2) };
+        assert_eq!(l.check(), Err(Error::Reset));
+        again.publish();
+        assert_eq!(
+            unsafe { Header::open(hp, &[5; 32]) }.unwrap().generation(),
+            4
+        );
+
+        let mut b = mem::<{ 8 + 24 }>();
+        let bp = b.0.as_mut_ptr();
+        let mut w = unsafe { Block::<[u32; 5]>::attach(bp, 32) }.unwrap();
+        let r = unsafe { Block::<[u32; 5]>::attach(bp, 32) }.unwrap();
+        unsafe { w.write(&[1, 2, 3, 4, 5]) };
+        assert_eq!(r.read(), Ok([1, 2, 3, 4, 5]));
+        {
+            let mut s = unsafe { w.begin_write() };
+            s.fill(0, 5, |i| i as u32 * 10).unwrap();
+            assert!(s.write_words(4, &[1, 2]).is_err());
+            assert_eq!(r.read(), Err(Error::NotReady));
         }
-        assert_eq!(b.read(), Ok([11, 12]));
+        let mut out = [0; 3];
+        r.read_with(|x| x.read_words(2, &mut out)).unwrap().unwrap();
+        assert_eq!(out, [20, 30, 40]);
+        r.read_with(|x| x.read_words(1, &mut out)).unwrap().unwrap();
+        assert_eq!(out, [10, 20, 30]);
+        assert_eq!(unsafe { ld(bp, 0) }, 4);
+        let seen = r.sequence();
+        assert_eq!(seen & 1, 0);
+        let mut other = unsafe { Block::<[u32; 5]>::attach(bp, 32) }.unwrap();
         unsafe {
-            store(b.base, 0, 3);
+            other.write(&[5; 5]);
+            w.write(&[6; 5]);
         }
-        assert_eq!(b.read(), Err(Error::NotReady));
+        assert_eq!(unsafe { ld(bp, 0) }, 8);
+        assert_ne!(r.sequence(), seen);
+    }
+
+    #[test]
+    fn invalid_mapping_and_odd_message_size() {
+        let mut data = mem::<160>();
+        let mut ctrl = mem::<128>();
+        let d = data.0.as_mut_ptr();
+        let c = ctrl.0.as_mut_ptr();
+        assert!(
+            unsafe { RingTx::<u32>::attach(d.add(4), 156, c, 128, 2, Overflow::Reject) }.is_err()
+        );
+        assert!(unsafe { RingTx::<u32>::attach(d, 160, c, 128, 3, Overflow::Reject) }.is_err());
+        assert!(unsafe { RingTx::<u32>::attach(d, 159, c, 128, 2, Overflow::Reject) }.is_err());
+        let mut tx =
+            unsafe { RingTx::<[u8; 3]>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        let mut rx =
+            unsafe { RingRx::<[u8; 3]>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        tx.push(&[11, 22, 33]).unwrap();
+        assert_eq!(rx.pop(), Ok(Some([11, 22, 33])));
+        let header = unsafe { HeaderInit::begin(d, u32::MAX) };
+        assert_eq!(header.generation(), 2);
     }
 }
