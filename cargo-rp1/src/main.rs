@@ -51,6 +51,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !freed.is_empty() {
                 return Err(format!("overlay would hand RP1 GPIOs {freed:?} back to Linux").into());
             }
+            // Ownership/pinctrl/reservation conflicts in the DTB Linux will actually get.
+            let note = cargo_rp1::descriptor(
+                file.section_by_name(".note.rp1")
+                    .ok_or("missing .note.rp1")?
+                    .data()?,
+            )?;
+            let conflicts = rp1_build::overlay::final_conflicts(&std::fs::read(&merged)?, note)?;
+            if !conflicts.is_empty() {
+                return Err(format!(
+                    "final DTB conflicts with the RP1 note:\n  {}",
+                    conflicts.join("\n  ")
+                )
+                .into());
+            }
             Ok(())
         });
         let _ = std::fs::remove_file(&overlay);

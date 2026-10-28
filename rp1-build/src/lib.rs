@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+pub mod fdt;
 pub mod metadata;
 pub mod overlay;
 pub mod wire;

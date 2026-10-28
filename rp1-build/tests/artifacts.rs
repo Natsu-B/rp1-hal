@@ -210,5 +210,10 @@ fn overlay_applies_to_a_copy_of_scmi_linux() {
             .unwrap()
             .contains("__fixups__")
     );
+    // The real lab profile has no ownership/pinctrl/reservation conflict (review #3).
+    assert_eq!(
+        rp1_build::overlay::final_conflicts(&fs::read(&merged).unwrap(), &a.note).unwrap(),
+        Vec::<String>::new()
+    );
     assert_eq!(before, fs::read(&base).unwrap());
 }
