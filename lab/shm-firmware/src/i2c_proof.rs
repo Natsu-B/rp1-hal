@@ -85,14 +85,6 @@ fn prove(bus: &mut Bus) -> Result<(), Failure> {
         .map_err(at("w8_w8_r32_r32"))?;
         check("w8_w8_r32_r32", &bytes)?;
         gap();
-        bytes.fill(0);
-        bus.transaction(
-            PEER,
-            &mut [Operation::Read(&mut bytes), Operation::Write(&frame)],
-        )
-        .map_err(at("r64_w16"))?;
-        check("r64_w16", &bytes)?;
-        gap();
         // Read-only probe; never write any other address.
         let nack = bus.read(0x2e, &mut [0]);
         if nack != Err(Error::AddressNack) {
@@ -105,6 +97,16 @@ fn prove(bus: &mut Bus) -> Result<(), Failure> {
         log!("I2C_PASS hz={} write16_us={} read64_us={} write_read16_64_us={} nack={:?} recovery=ok\n",
             hz, write_us, read_us, combined_us, nack).unwrap();
     }
+    // Last: the peer refills its reply only after a read that ends in STOP (HW, 19-boot-diag),
+    // so a read ended by repeated START leaves stale TX data for the next read.
+    let mut bytes = [0; 64];
+    bus.transaction(
+        PEER,
+        &mut [Operation::Read(&mut bytes), Operation::Write(&frame)],
+    )
+    .map_err(|e| Failure::Bus("r64_w16", e))?;
+    check("r64_w16", &bytes)?;
+    log!("I2C_PASS r64_w16 hz=400000\n").unwrap();
     log!("I2C_LIMIT hz=1000000 payload=unverified esp32_documented_max=400000 use_RMT_probe\n")
         .unwrap();
     Ok(())
