@@ -23,6 +23,13 @@ const RESTART: u32 = 1 << 10;
 const READ: u32 = 1 << 8;
 const STOP_DET: u32 = 1 << 9;
 const TIMEOUT_US: u32 = 100_000;
+// RESETS CTRL0 bits 7..13 are I2C0..6 (rp1-regdb resets.toml); CTRL1 bit 8 is SDIO0.
+const RESETS: usize = 0x4001_4000;
+const RESETS_CLR0: usize = RESETS + 0x3000; // atomic clear alias of CTRL0
+const RESETS_DONE0: usize = RESETS + 0x18;
+const fn reset_bit(n: u8) -> u32 {
+    1 << (7 + n)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Speed {
@@ -115,8 +122,8 @@ impl<const N: u8> Token<N> {
         if clocks.sys_hz != 200_000_000 || !crate::clocks::running_tuple_admitted() {
             return Err(Error::Precondition);
         }
-        write(0x4001_7004, 1 << (7 + N));
-        crate::poll(0x4001_401c, 1 << (7 + N), 1 << (7 + N)).map_err(|_| Error::Timeout)?;
+        write(RESETS_CLR0, reset_bit(N));
+        crate::poll(RESETS_DONE0, reset_bit(N), reset_bit(N)).map_err(|_| Error::Timeout)?;
         let mut io = Mmio {
             base: 0x4007_0000 + N as usize * 0x4000,
         };
@@ -472,6 +479,11 @@ mod tests {
     #[test]
     fn timings_and_error_kinds() {
         use embedded_hal::i2c::Error as _;
+        assert_eq!(reset_bit(1), 1 << 8);
+        // CTRL1's clear alias 0x4001_7004 is used by cold bring-up; CTRL0's is one word below.
+        assert_eq!(RESETS_CLR0, 0x4001_7000);
+        assert_eq!(RESETS_DONE0, 0x4001_4018);
+        assert_eq!(reset_bit(6), 1 << 13);
         assert_eq!(timing(Speed::Standard), (1, 788, 1179));
         assert_eq!(timing(Speed::Fast), (2, 108, 359));
         assert_eq!(timing(Speed::FastPlus), (2, 40, 127));
