@@ -13,19 +13,32 @@ static ZERO: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(
 
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
+    // After a loader reset RP1 is at cold defaults: program clocks, then adopt them.
+    let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
     let _clocks = p.clock_authority.adopt(200_000_000).unwrap();
     rp1::log::init(&mut core).unwrap();
+    log!("proc0 clocks programmed={}\n", programmed).unwrap();
+    // The host is waiting for the PCIe link; bring the endpoint up before anything slow.
+    match unsafe { rp1_hal::cold::endpoint_and_syscfg(programmed) } {
+        Ok(r) => log!("proc0 pcie {:?}\n", r).unwrap(),
+        Err(e) => log!("proc0 pcie failed {:?}\n", e).unwrap(),
+    }
     let private = PRIVATE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     ZERO.store(private, core::sync::atomic::Ordering::Relaxed);
     log!("proc0 ready private={}\n", private).unwrap();
     LOCAL.get(&core).set(1);
     p.proc1.launch(&mut core).unwrap();
     let mut rx = VALUES.consumer(&mut core);
+    // Linux resets the endpoint (PERSTn) when it probes PCIe; re-apply the endpoint config in
+    // time. This must be polled without sleeping.
+    let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     loop {
         if let Some(value) = rx.pop() {
             log!("proc0 received {}\n", value).unwrap();
         }
-        rp1_rt::wait_for_event();
+        if let Some(r) = endpoint.poll() {
+            log!("proc0 pcie perst {:?}\n", r).unwrap();
+        }
     }
 }
 
