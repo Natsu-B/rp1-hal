@@ -140,6 +140,42 @@ pub fn final_conflicts(fdt: &Fdt, note: &[u8]) -> Result<Vec<String>> {
         }
     }
 
+    // An enabled consumer (`gpio(s)`, `*-gpio(s)`) of a withheld RP1 line fails to probe.
+    if let Some(gpio) = fdt.label("rp1_gpio") {
+        let reserved = reserved_gpios(fdt)?;
+        for n in (0..fdt.nodes.len()).filter(|n| fdt.enabled(*n)) {
+            for (name, _) in &fdt.nodes[n].props {
+                let consumer = name == "gpio"
+                    || name == "gpios"
+                    || name.ends_with("-gpio")
+                    || name.ends_with("-gpios");
+                if !consumer || fdt.prop(n, "gpio-hog").is_some() {
+                    continue;
+                }
+                let cells = fdt.cells(n, name).unwrap_or_default();
+                let mut i = 0;
+                while i < cells.len() {
+                    // A 0 phandle is an empty entry (e.g. a native chip select).
+                    let Some(ctrl) = fdt.phandle(cells[i]).filter(|_| cells[i] != 0) else {
+                        i += 1;
+                        continue;
+                    };
+                    let args = fdt.number(ctrl, "#gpio-cells").unwrap_or(2) as usize;
+                    if ctrl == gpio
+                        && let Some(&line) = cells.get(i + 1)
+                        && reserved.contains(&line)
+                    {
+                        bad.push(format!(
+                            "{} {name} uses GPIO{line} that gpio-reserved-ranges withholds from Linux",
+                            fdt.path(n)
+                        ));
+                    }
+                    i += 1 + args;
+                }
+            }
+        }
+    }
+
     // pinctrl: an enabled node selecting an RP1 pin group that touches an RP1-owned pin.
     if !pins.is_empty() {
         let gpio = fdt
