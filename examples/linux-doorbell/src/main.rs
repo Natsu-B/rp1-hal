@@ -85,12 +85,23 @@ impl Drop for Mapping {
 /// `read()` on a UIO IRQ.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() != 2 {
-        return Err("usage: linux-doorbell /dev/uio<rp1:link> /dev/uio<rp1:doorbell>".into());
+    if !(2..=3).contains(&args.len()) {
+        return Err(
+            "usage: linux-doorbell /dev/uio<rp1:link> /dev/uio<rp1:doorbell> [iterations]".into(),
+        );
     }
+    let iterations: u32 = match args.get(2) {
+        Some(n) => n
+            .to_str()
+            .and_then(|n| n.parse().ok())
+            .filter(|n| *n > 0)
+            .ok_or("iterations must be a positive integer")?,
+        None => 10,
+    };
+    let mut rtt = Vec::with_capacity(iterations as usize);
     let mut link = Mapping::open(Path::new(&args[0]), "rp1:link")?;
     let mut gpio = Mapping::open(Path::new(&args[1]), "rp1:doorbell")?;
-    for sequence in 1..=10u32 {
+    for sequence in 1..=iterations {
         link.write(0x14, 0);
         link.write(0x10, sequence);
         // Same-window read completes the posted SRAM writes before a BAR1 doorbell.
@@ -111,8 +122,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             std::hint::spin_loop();
         }
+        let elapsed = start.elapsed();
         rp1_proto::barrier();
-        println!("doorbell {sequence}: {:?}", start.elapsed());
+        if iterations <= 10 {
+            println!("doorbell {sequence}: {elapsed:?}");
+        }
+        rtt.push(elapsed);
     }
+    rtt.sort_unstable();
+    let pct = |p: usize| rtt[((rtt.len() - 1) * p).div_ceil(100)];
+    println!(
+        "doorbell rtt n={} min={:?} p50={:?} p99={:?} max={:?}",
+        rtt.len(),
+        rtt[0],
+        pct(50),
+        pct(99),
+        rtt[rtt.len() - 1]
+    );
     Ok(())
 }
