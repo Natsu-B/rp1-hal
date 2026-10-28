@@ -48,7 +48,9 @@ static void on_receive(int) {
   portEXIT_CRITICAL(&mux);
 }
 static void slave_start() {
-  assert(Wire.begin(ADDRESS, SDA_PIN, SCL_PIN, 100000));
+  // The slave derives its SDA sample/hold timing from this rate; at 100000 it misread the
+  // address at a real 400 kHz (HW). 400000 also serves 100 kHz masters.
+  assert(Wire.begin(ADDRESS, SDA_PIN, SCL_PIN, 400000));
   Wire.onReceive(on_receive); Wire.onRequest(on_request); preload();
 }
 static void status() {
@@ -95,7 +97,7 @@ static void measure_status() {
 }
 static void handle(String line) {
   line.trim();
-  if (line == "version") Serial.println("firmware=cm5-control-trace version=0.7.0-rp1-hal-i2c-peer");
+  if (line == "version") Serial.println("firmware=cm5-control-trace version=0.7.1-rp1-hal-i2c-peer");
   else if (line == "status") status();
   else if (line == "pinmap") {
     Serial.println("GPIO18 nRPIBOOT NMOS gate; GPIO19 power NMOS gate");
