@@ -174,7 +174,9 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
         return Err(String::from_utf8_lossy(&out.stderr).to_string().into());
     }
     let exclusive_instructions = check_exclusives(&String::from_utf8(out.stdout)?, |address| {
-        for section in file.sections() {
+        // Only immutable bytes count as constants: a literal in .data/.shared/.bss has an
+        // initial value in the ELF but can be changed at run time (review #2).
+        for section in file.sections().filter(|s| literal_section(s)) {
             let start = section.address();
             if within(
                 u64::from(address),
@@ -194,6 +196,19 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
         dsram_bytes: dsram,
         exclusive_instructions,
     })
+}
+/// A section whose contents cannot change at run time: allocated, not writable and not NOBITS.
+fn literal_section(section: &object::Section<'_, '_>) -> bool {
+    use object::{SectionFlags, SectionKind, elf};
+    matches!(
+        section.kind(),
+        SectionKind::Text | SectionKind::ReadOnlyData | SectionKind::ReadOnlyString
+    ) && match section.flags() {
+        SectionFlags::Elf { sh_flags } => {
+            sh_flags & u64::from(elf::SHF_ALLOC) != 0 && sh_flags & u64::from(elf::SHF_WRITE) == 0
+        }
+        _ => false,
+    }
 }
 fn validate_regions(note: &Note<'_>) -> Result<()> {
     let area = note.get(note::SHM_AREA).ok_or("missing SHM_AREA")?.value;
@@ -308,6 +323,16 @@ fn bracket(args: &str, state: &State, pc: u32) -> Option<u32> {
     }
     value.checked_add(offset)
 }
+/// `[pc]` or `[pc, #imm]`: an immediate offset from the instruction's own address.
+fn pc_literal(args: &str) -> bool {
+    let Some(b) = args.split('[').nth(1).and_then(|b| b.split(']').next()) else {
+        return false;
+    };
+    let mut p = b.split(',');
+    reg(p.next().unwrap_or("")) == Some(15)
+        && p.next().is_none_or(|v| v.trim().starts_with('#'))
+        && p.next().is_none()
+}
 /// Conservative control-flow constant propagation. Unknown exclusive targets fail closed.
 pub fn check_exclusives(text: &str, read_word: impl Fn(u32) -> Option<u32>) -> Result<usize> {
     let mut instructions = Vec::new();
@@ -395,7 +420,13 @@ pub fn check_exclusives(text: &str, read_word: impl Fn(u32) -> Option<u32>) -> R
             }
             "ldr" => {
                 if let Some(r) = dest {
-                    state[r] = bracket(&ins.args, &state, ins.address).and_then(&read_word);
+                    // Fold only PC-relative literal-pool loads. A load through any other register
+                    // reads memory whose run-time value the checker cannot know (review #2).
+                    state[r] = if pc_literal(&ins.args) {
+                        bracket(&ins.args, &state, ins.address).and_then(&read_word)
+                    } else {
+                        None
+                    };
                 }
             }
             "bl" | "blx" => {
@@ -486,5 +517,22 @@ mod tests {
         assert!(check_exclusives(bypass, |_| Some(0x1000_2000)).is_err());
         let call = "1000: ldr r1, [pc, #12]\n1002: bl 2000\n1006: ldrex r0, [r1]\n100a: bx lr";
         assert!(check_exclusives(call, |_| Some(0x1000_2000)).is_err());
+    }
+    /// Review #2: a literal points at mutable shared SRAM whose *initial* value is a DSRAM
+    /// address. The run-time value can differ, so the second load must be unknown.
+    #[test]
+    fn two_stage_load_through_mutable_memory_is_rejected() {
+        let text = "00001000 <f>:\n1000: ldr r1, [pc, #12]\n1002: ldr r1, [r1]\n1004: ldrex r0, [r1]\n1008: strex r2, r0, [r1]\n100c: bx lr\n";
+        let table = |a| match a {
+            0x1010 => Some(0x2000_0000),
+            0x2000_0000 => Some(0x1000_2000),
+            _ => None,
+        };
+        assert!(check_exclusives(text, table).is_err());
+        // Register-offset and register-based forms are not literals either.
+        assert!(!pc_literal("r1, [pc, r2]"));
+        assert!(!pc_literal("r1, [r1, #4]"));
+        assert!(pc_literal("r1, [pc, #12]"));
+        assert!(pc_literal("r1, [pc]"));
     }
 }
