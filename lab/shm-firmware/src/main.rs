@@ -49,13 +49,15 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let mut attempted = false;
     let mut probed = false;
     loop {
-        if let Some(v) = rx.pop() {
+        let (value, perst, scmi_event) =
+            idle0(&mut rx, &mut endpoint, &mut scmi, probed, attempted);
+        if let Some(v) = value {
             log!("proc0 received {}\n", v).unwrap();
         }
-        if let Some(r) = endpoint.poll() {
+        if let Some(r) = perst {
             log!("proc0 pcie perst {:?}\n", r).unwrap();
         }
-        if let Some(e) = scmi.poll() {
+        if let Some(e) = scmi_event {
             log!(
                 "proc0 scmi p{:x} m{} {:x?} -> {} votes={:x}\n",
                 e.protocol,
@@ -264,6 +266,32 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             request[6]
         )
         .unwrap();
+    }
+}
+type Perst = Option<Result<rp1_hal::cold::Reconfigured, rp1_hal::cold::ReconfigError>>;
+/// proc0 idle loop, from ISRAM (with the ISRAM fast paths of the polls it calls): returns as
+/// soon as anything needs the cold path (logging, SCMI request, PERST, lab request).
+#[rp1_rt::isram]
+fn idle0(
+    rx: &mut rp1_rt::sync::Consumer<'_, u32, 8, Proc1, Proc0>,
+    endpoint: &mut rp1_hal::cold::EndpointService,
+    scmi: &mut rp1_hal::scmi::Service,
+    probed: bool,
+    attempted: bool,
+) -> (Option<u32>, Perst, Option<rp1_hal::scmi::Event>) {
+    loop {
+        let value = rx.pop();
+        let perst = endpoint.poll();
+        let event = scmi.poll();
+        let request = link_read(link::SHM_REQUEST);
+        if value.is_some()
+            || perst.is_some()
+            || event.is_some()
+            || (!probed && request == 2)
+            || (!attempted && request == 1)
+        {
+            return (value, perst, event);
+        }
     }
 }
 const BATCH: usize = 32;
