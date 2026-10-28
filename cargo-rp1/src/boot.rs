@@ -45,7 +45,7 @@ pub fn hex(b: &[u8]) -> String {
     })
 }
 
-/// Decompress a gzip kernel and check the arm64 Image header magic.
+/// Decompress a gzip kernel and apply the loader's Image placement checks.
 pub fn kernel_image(kernel: &[u8]) -> Result<Vec<u8>> {
     let image = if kernel.starts_with(&[0x1f, 0x8b]) {
         let mut out = Vec::new();
@@ -54,9 +54,7 @@ pub fn kernel_image(kernel: &[u8]) -> Result<Vec<u8>> {
     } else {
         kernel.to_vec()
     };
-    if image.get(56..60) != Some(b"ARM\x64") {
-        return Err("kernel is not an arm64 Image (no ARM\\x64 magic at 56)".into());
-    }
+    rp1boot::kernel_header(&image)?;
     Ok(image)
 }
 
@@ -223,5 +221,15 @@ mod tests {
         assert!(base("", &["initramfs foo".into()], &k));
         assert!(base("", &[], &[0u8; 100]));
         assert!(!base("", &[], &k));
+    }
+
+    #[test]
+    fn rejects_unsafe_kernel_placement_before_bundling() {
+        let mut k = image();
+        for (offset, size) in [(0u64, u64::MAX), (0x4000_0000, 0x1000)] {
+            k[8..16].copy_from_slice(&offset.to_le_bytes());
+            k[16..24].copy_from_slice(&size.to_le_bytes());
+            assert!(kernel_image(&k).is_err());
+        }
     }
 }

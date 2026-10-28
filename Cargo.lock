@@ -53,6 +53,7 @@ dependencies = [
  "rp1-build",
  "rp1-dt",
  "rp1-proto",
+ "rp1boot",
  "sha2",
  "tempfile",
 ]

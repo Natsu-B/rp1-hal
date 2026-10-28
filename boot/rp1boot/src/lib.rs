@@ -187,7 +187,11 @@ impl<'a> Elf<'a> {
     }
 }
 
-/// arm64 Image header (Documentation/arch/arm64/booting.rst): (text_offset, image_size).
+/// Fixed 2 MiB-aligned kernel base and the end of the loader's normal-RAM mapping.
+pub const KERNEL_BASE: u64 = 0x0600_0000;
+pub const RAM_MAP_END: u64 = 0x4000_0000;
+
+/// arm64 Image header, validated for this loader: (text_offset, image_size).
 pub fn kernel_header(image: &[u8]) -> Result<(u64, u64)> {
     if image.get(56..60) != Some(b"ARM\x64") {
         return Err("bundle kernel is not an uncompressed arm64 Image".into());
@@ -197,6 +201,13 @@ pub fn kernel_header(image: &[u8]) -> Result<(u64, u64)> {
     if size < image.len() as u64 {
         return Err("Image header image_size is smaller than the file".into());
     }
+    let load = KERNEL_BASE
+        .checked_add(text_offset)
+        .ok_or("kernel load overflow")?;
+    let range = Range::from_size("kernel", load, size)?;
+    if range.end > RAM_MAP_END {
+        return Err("kernel is outside the loader RAM mapping".into());
+    }
     Ok((text_offset, size))
 }
 
@@ -205,6 +216,30 @@ pub struct Range {
     pub name: &'static str,
     pub start: u64,
     pub end: u64,
+}
+
+impl Range {
+    pub fn from_size(name: &'static str, start: u64, size: u64) -> Result<Self> {
+        let end = start.checked_add(size).ok_or("placement overflow")?;
+        if start >= end {
+            return Err(format!("{name}: empty placement"));
+        }
+        Ok(Self { name, start, end })
+    }
+
+    /// A non-empty destination must fit both mapped RAM and a DT memory bank.
+    pub fn check_ram(&self, memory: &[(u64, u64)]) -> Result<()> {
+        if self.start < self.end
+            && self.end <= RAM_MAP_END
+            && memory.iter().any(|&(a, s)| {
+                a <= self.start && a.checked_add(s).is_some_and(|end| self.end <= end)
+            })
+        {
+            Ok(())
+        } else {
+            Err(format!("{}: placement is outside mapped RAM", self.name))
+        }
+    }
 }
 
 /// First pair of overlapping non-empty ranges.
@@ -289,6 +324,42 @@ mod tests {
             "b"
         );
         assert!(overlap(&[r("a", 0, 0), r("b", 0, 20)]).is_none());
+    }
+
+    #[test]
+    fn kernel_rejects_wrapped_and_unmapped_placement() {
+        let mut k = vec![0u8; 64];
+        k[56..60].copy_from_slice(b"ARM\x64");
+        for (offset, size) in [(0u64, u64::MAX), (0x4000_0000, 0x1000), (u64::MAX, 64)] {
+            k[8..16].copy_from_slice(&offset.to_le_bytes());
+            k[16..24].copy_from_slice(&size.to_le_bytes());
+            assert!(
+                kernel_header(&k).is_err(),
+                "offset={offset:#x} size={size:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn destinations_must_fit_actual_mapped_ram() {
+        let r = Range::from_size("kernel", KERNEL_BASE, 4096).unwrap();
+        assert!(r.check_ram(&[(0, RAM_MAP_END)]).is_ok());
+        assert!(r.check_ram(&[(0, KERNEL_BASE)]).is_err());
+        assert!(r.check_ram(&[(0, u64::MAX), (u64::MAX, 4096)]).is_ok());
+        assert!(r.check_ram(&[(KERNEL_BASE, u64::MAX)]).is_err());
+        assert!(Range::from_size("bad", u64::MAX, 1).is_err());
+        assert!(Range::from_size("empty", 0, 0).is_err());
+        assert!(
+            Range { end: r.start, ..r }
+                .check_ram(&[(0, RAM_MAP_END)])
+                .is_err()
+        );
+        assert!(
+            Range::from_size("unmapped", RAM_MAP_END, 1)
+                .unwrap()
+                .check_ram(&[(0, u64::MAX)])
+                .is_err()
+        );
     }
 
     /// The lab firmware ELF, when present (not committed).

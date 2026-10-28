@@ -8,6 +8,7 @@ license.workspace = true
 rp1-proto = { path = "../rp1-proto" }
 rp1-build = { path = "../rp1-build" }
 rp1-dt = { path = "../rp1-dt" }
+rp1boot = { path = "../boot/rp1boot" }
 object = "0.36"
 sha2 = "0.10"
 flate2 = "1"

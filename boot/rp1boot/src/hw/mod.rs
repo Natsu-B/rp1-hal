@@ -11,11 +11,10 @@ use alloc::{
 };
 use rp1_dt::fdt::Fdt;
 use rp1_proto::{bundle, note};
-use rp1boot::{Elf, Range, hex, kernel_header, overlap, verify_bundle};
+use rp1boot::{Elf, KERNEL_BASE, Range, hex, kernel_header, overlap, verify_bundle};
 use sha2::{Digest, Sha256};
 
-/// Kernel placement (2 MiB aligned; the PoC loader's HW-proven address) and the final DTB.
-const KERNEL_BASE: u64 = 0x0600_0000;
+/// Final DTB placement.
 const DTB_OUT: u64 = 0x2020_0000;
 const DTB_OUT_MAX: u64 = 0x0020_0000;
 /// RP1 image window in shared SRAM (rp1-proto: image 48 KiB from 0x2000_0000).
@@ -232,12 +231,17 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
     let chosen = fdt.find("/chosen").ok_or("DTB lost /chosen")?;
     match initramfs {
         Some(e) => {
-            let s = start + u64::from(e.offset);
+            let s = start
+                .checked_add(u64::from(e.offset))
+                .ok_or("initrd start overflow")?;
             fdt.set_prop(chosen, "linux,initrd-start", s.to_be_bytes().to_vec());
             fdt.set_prop(
                 chosen,
                 "linux,initrd-end",
-                (s + u64::from(e.len)).to_be_bytes().to_vec(),
+                s.checked_add(u64::from(e.len))
+                    .ok_or("initrd end overflow")?
+                    .to_be_bytes()
+                    .to_vec(),
             );
             log!("initrd = bundle initramfs {s:#x}+{:#x}", e.len);
         }
@@ -247,7 +251,13 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
         }
     }
     let (text_offset, image_size) = kernel_header(kernel)?;
-    let load = KERNEL_BASE + text_offset;
+    let load = KERNEL_BASE
+        .checked_add(text_offset)
+        .ok_or("kernel load overflow")?;
+    let kernel_range = Range::from_size("kernel", load, image_size)?;
+    let copy_end = load
+        .checked_add(kernel.len() as u64)
+        .ok_or("kernel copy overflow")?;
     let out = fdt.to_bytes();
     if out.len() as u64 > DTB_OUT_MAX {
         return Err(format!("final DTB is {} B (> {DTB_OUT_MAX:#x})", out.len()));
@@ -261,30 +271,34 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
         Range {
             name: "kernel",
             start: KERNEL_BASE,
-            end: load + image_size,
+            end: kernel_range.end,
         },
         Range {
             name: "bundle",
             start,
             end,
         },
-        Range {
-            name: "firmware DTB",
-            start: dtb_addr as u64,
-            end: dtb_addr as u64 + dtb_len,
-        },
-        Range {
-            name: "final DTB",
-            start: DTB_OUT,
-            end: DTB_OUT + out.len() as u64,
-        },
+        Range::from_size("firmware DTB", dtb_addr as u64, dtb_len)?,
+        Range::from_size("final DTB", DTB_OUT, out.len() as u64)?,
     ]);
     if let Some(a) = area {
-        ranges.push(Range {
-            name: "rp1 shm",
-            start: a.phys,
-            end: a.phys + u64::from(a.size),
-        });
+        ranges.push(Range::from_size("rp1 shm", a.phys, u64::from(a.size))?);
+    }
+    let mut memory = Vec::new();
+    for n in 0..fdt.nodes.len() {
+        if fdt.enabled(n)
+            && fdt
+                .strings(n, "device_type")
+                .first()
+                .is_some_and(|t| t == "memory")
+        {
+            memory.extend(fdt.reg(n)?);
+        }
+    }
+    for r in &ranges {
+        if matches!(r.name, "kernel" | "final DTB") {
+            r.check_ram(&memory)?;
+        }
     }
     if let Some((a, b)) = overlap(&ranges) {
         return Err(format!(
@@ -330,7 +344,7 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
     unsafe {
         core::ptr::copy_nonoverlapping(kernel.as_ptr(), load as *mut u8, kernel.len());
         core::ptr::write_bytes(
-            (load + kernel.len() as u64) as *mut u8,
+            copy_end as *mut u8,
             0,
             (image_size - kernel.len() as u64) as usize,
         );
