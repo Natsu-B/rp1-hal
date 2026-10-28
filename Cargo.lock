@@ -208,12 +208,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "rp1-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "rp1-pac"
 version = "0.0.1"
 dependencies = [
  "cortex-m",
  "critical-section",
  "trybuild",
+]
+
+[[package]]
+name = "rp1-proto"
+version = "0.1.0"
+dependencies = [
+ "rp1-macros",
 ]
 
 [[package]]
