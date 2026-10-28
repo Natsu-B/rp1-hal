@@ -217,17 +217,24 @@ RMW atomic のメソッドは持たない。
   （0x1f000d0000、pinctrl と同じページ）を RW で mmap でき、読んだ値は /dev/mem と一致。書き込みは未試験。
 - **否定（HW）**: HOST_EVENTS → hwirq58（Linux の IRQ159）は `rp1-mailbox` が専有していて、同じ hwirq の UIO ノードは
   `Flags mismatch` / -EBUSY で probe に失敗する。両ドライバとも IRQ 共有を許さない（STATIC）ので、イベント bit を分けても共有できない。
-- **方針（2026-10-28）**: hwirq58 は UIO が専有する。rp1-build の overlay で `rp1-mailbox` ノードと、それに依存するノード
-  （`remoteproc`、mailbox を使う `/firmware/scmi`）を `status = "disabled"` にし、`rp1:link` の UIO ノードに hwirq58 を付ける。
-  Linux → proc0 の PROC_EVENTS も UIO（SYSCFG ページ）から直接書く。
-  - **衝突（STATIC）**: 今の DT では SCMI（`/firmware/scmi`、`mboxes = <&rp1_mbox 0>`）が rp1-mailbox の ch0 を使い、
-    UART（serial@34000）などが SCMI のクロックを参照する。`clock.authority = "rp1"`（既定、§9）とこの方針はそのままでは両立しない。
-    両立させる案（HYP、未検証）: (a) hwirq58 は SCMI 用に残し、link 通知は RP1 内の未使用周辺の割り込み線（DT で disabled の
-    ブロックの hwirq）を M3 から立てて UIO で受ける、(b) `clock.authority = "linux"` の構成でだけ mailbox を外す。
-    実機での確認結果は codexA2 の RESULT.md を参照し、ここに反映する。
+- **mailbox を外して UIO が hwirq58 を取る案（HW 2026-10-28、`<lab-log>`）**:
+  overlay で `rp1-mailbox`・`/firmware/scmi`・OpenAMP `remoteproc` を `status = "disabled"` にし、generic-uio ノード
+  （SYSCFG ページ + BAR2 末尾 16 KiB、`interrupts = <58 4>`）を足すと、Linux は起動し UIO が IRQ159（hwirq58）を取れる。
+  - 往復（Linux が SCMI shmem に要求を書き PROC_EVENTS を立てる → M3 proc0 の SCMI サーバーが応答し HOST_EVENTS を立てる）:
+    ビジーポーリング p50 66.2 / p99 66.9 µs、UIO の `poll`+`read` p50 71.1 / p99 88.8 / max 101.5 µs（各 2000 回）。
+    約 60 µs は M3 側の SCMI 処理で、IRQ 待ちの上乗せはポーリング比 p50 で約 +5 µs、p99 で約 +22 µs（分布の差、HW）。
+  - **注意（HW）**: 1 回の通知につき UIO の起床が 2 回起きる。HOST_EVENTS を消して `write(1)` で再度有効にした直後に、
+    もう 1 回届く（原因は HYP: マスク中に保持された割り込みがアンマスクで再送される）。受け手は起床を「合図」として扱い、
+    リングの状態で判断する（空振りを許す）。
+  - **衝突（HW+STATIC）**: SCMI（`mboxes = <&rp1_mbox 0>`）が使えなくなり、SCMI クロックを使う serial@34000 は deferred のまま。
+    `clock.authority = "rp1"`（既定）とは両立しない。
+- **v0.1 の決定（2026-10-28、feat/v0.1-core の §9）**: rp1-mailbox と SCMI は残し、proc1 → Linux はポーリングで待つ。
+  IRQ が必要になったら、(a) RP1 内の未使用周辺の割り込み線を M3 から立てて UIO で受ける（HYP）、(b) `clock.authority = "linux"`
+  の構成でだけ上の mailbox を外す案を使う（HW で成立）、のどちらかを検討する。
 - **配置（STATIC）**: 今の SCMI shmem（`scmi@d7c0`、0x100 byte）は BAR2 末尾 16 KiB の中にある。link ページ全体を使う前に
   SCMI shmem を移すか、link の配置でその範囲を予約する。
-- 未測定: UIO の IRQ 待ちの往復遅延、UIO mmap への書き込みが M3 から見えるか。
+- **済（HW）**: UIO mmap（BAR2 SRAM）への書き込みは M3 から見える（SCMI 要求 2000/2000 が解釈され応答）。
+- 未測定: hwirq58 以外の IRQ 経路、M3 から見た Linux DDR の遅延・帯域。
 
 ## 7. BCM2712 third stage loader（`boot/rp1boot`）
 
@@ -299,4 +306,4 @@ shm ごとの `generic-uio` ノードに焼き込む。ローダーはそのア�
 | 2026-10-23 | ローダー: 大きなファイルは VPU ファームに束として読ませる。config.txt の使用は束と cmdline のハッシュで確かめる。失敗時は公式ブートローダーの BOOT_ORDER の規則に従う（loader.md） | ユーザー判断 |
 | 2026-10-28 | 束案は成立（HW: ≥32 MiB、約 2.9 MiB/s、配置は /chosen から読む、bootargs はトークン照合）。DTB に残りの BOOT_ORDER は無いので、失敗時の次の方法は set_reboot_order か EEPROM の BOOT_ORDER で決める（loader.md §3） | 実機検証 codexA |
 | 2026-10-28 | PoC ローダーの遅さの主因は TFTP ではなくソフトウェアの gzip 展開（約 18 s）と SHA-256（約 15 s）。I2C 約 3.4 s。旧記録の「initramfs に 36 秒」は誤帰属（loader.md §0） | 実機ログ + コード |
-| 2026-10-28 | hwirq58 は rp1-mailbox が専有し UIO と共有できない（HW）。overlay で rp1-mailbox と依存ノードを disabled にして UIO が取る方針。ただし SCMI クロック（既定）と衝突するので、両立案を実機で確かめてから確定（§6.2） | 実機検証 codexA |
+| 2026-10-28 | hwirq58 は rp1-mailbox が専有し UIO と共有できない（HW）。mailbox・SCMI・remoteproc を disabled にすれば UIO が取れ、IRQ 往復 p50 71 µs（うち M3 の SCMI 処理約 60 µs）、通知ごとに空振り 1 回（HW、codexA2）。SCMI クロック（既定）と両立しないので v0.1 は mailbox/SCMI を残してポーリング（feat/v0.1-core の決定と同じ） | 実機検証 codexA / codexA2 |
