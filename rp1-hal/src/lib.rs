@@ -29,15 +29,26 @@ pub(crate) fn write(address: usize, value: u32) {
     }
     rp1_proto::barrier();
 }
+/// Waits up to 10 ms (raw 1 MHz timer, independent of clk_sys) for `address & mask == value`.
 pub(crate) fn poll(address: usize, mask: u32, value: u32) -> Result<(), Error> {
-    for _ in 0..100_000 {
+    let start = read(TIMER_RAWL);
+    loop {
         if read(address) & mask == value {
             return Ok(());
         }
+        if read(TIMER_RAWL).wrapping_sub(start) > POLL_TIMEOUT_US {
+            // One more look: the deadline may have passed while this core was stalled.
+            return if read(address) & mask == value {
+                Ok(())
+            } else {
+                Err(Error::Timeout)
+            };
+        }
         core::hint::spin_loop();
     }
-    Err(Error::Timeout)
 }
+const TIMER_RAWL: usize = 0x400a_c028;
+const POLL_TIMEOUT_US: u32 = 10_000;
 
 /// The calling firmware must declare and initialize the generated `rp1::log` module.
 #[macro_export]
