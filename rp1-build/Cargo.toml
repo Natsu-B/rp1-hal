@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 rp1-proto = { path = "../rp1-proto" }
+rp1-dt = { path = "../rp1-dt" }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"

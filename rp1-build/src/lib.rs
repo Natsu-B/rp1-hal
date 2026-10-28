@@ -1,4 +1,5 @@
 //! Build-time declaration validation and reproducible static artifacts.
+pub use rp1_dt::fdt;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -6,7 +7,6 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-pub mod fdt;
 pub mod metadata;
 pub mod overlay;
 pub mod wire;

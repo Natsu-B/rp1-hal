@@ -50,6 +50,7 @@ version = "0.1.0"
 dependencies = [
  "object",
  "rp1-build",
+ "rp1-dt",
  "rp1-proto",
  "sha2",
  "tempfile",
@@ -342,11 +343,20 @@ name = "rp1-build"
 version = "0.1.0"
 dependencies = [
  "object",
+ "rp1-dt",
  "rp1-proto",
  "serde",
  "sha2",
  "tempfile",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "rp1-dt"
+version = "0.1.0"
+dependencies = [
+ "rp1-proto",
+ "tempfile",
 ]
 
 [[package]]

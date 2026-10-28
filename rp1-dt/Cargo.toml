@@ -1,0 +1,11 @@
+[package]
+name = "rp1-dt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rp1-proto = { path = "../rp1-proto" }
+
+[dev-dependencies]
+tempfile = "3"

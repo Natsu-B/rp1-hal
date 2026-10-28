@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["rp1-pac", "rp1-regdb", "rp1-proto", "rp1-macros", "rp1-rt", "rp1-hal", "rp1-build", "rp1-linux", "cargo-rp1", "examples/dual-core", "examples/linux-doorbell", "lab/shm-firmware", "lab/shm-linux"]
-default-members = ["rp1-pac", "rp1-regdb", "rp1-proto", "rp1-macros", "rp1-rt", "rp1-hal", "rp1-build", "rp1-linux", "cargo-rp1", "examples/linux-doorbell", "lab/shm-linux"]
+members = ["rp1-pac", "rp1-regdb", "rp1-proto", "rp1-dt", "rp1-macros", "rp1-rt", "rp1-hal", "rp1-build", "rp1-linux", "cargo-rp1", "examples/dual-core", "examples/linux-doorbell", "lab/shm-firmware", "lab/shm-linux"]
+default-members = ["rp1-pac", "rp1-regdb", "rp1-proto", "rp1-dt", "rp1-dt", "rp1-macros", "rp1-rt", "rp1-hal", "rp1-build", "rp1-linux", "cargo-rp1", "examples/linux-doorbell", "lab/shm-linux"]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,8 +1,5 @@
 use object::{Object, ObjectSection};
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.first().is_some_and(|s| s == "rp1") {
@@ -24,52 +21,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(base) = base {
         let bytes = std::fs::read(&elf)?;
         let file = object::File::parse(&*bytes)?;
-        let parent = elf.parent().ok_or("ELF needs a parent directory")?;
-        let overlay = parent.join("rp1-check.dtbo");
-        let merged = parent.join("rp1-check-merged.dtb");
-        if overlay.exists() || merged.exists() {
-            return Err("check output already exists; remove rp1-check artifacts first".into());
-        }
-        std::fs::write(
-            &overlay,
+        // Same code as the loader (rp1boot): libfdt-compatible apply, then the final checks.
+        let base = std::fs::read(&base)?;
+        let before = rp1_dt::fdt::Fdt::parse(&base)?;
+        let mut after = rp1_dt::fdt::Fdt::parse(&base)?;
+        rp1_dt::overlay::apply(
+            &mut after,
             file.section_by_name(".rp1.dtbo")
                 .ok_or("missing overlay")?
                 .data()?,
         )?;
-        let result = rp1_build::overlay::apply(&base, &overlay, &merged).and_then(|()| {
-            let decoded = Command::new("dtc")
-                .args(["-I", "dtb", "-O", "dts"])
-                .arg(&merged)
-                .output()?;
-            if !decoded.status.success() {
-                return Err("merged DTB failed decoding".into());
-            }
-            // Overlays replace gpio-reserved-ranges; Linux must not end up with more pins.
-            let before = rp1_build::overlay::reserved_gpios(&base)?;
-            let after = rp1_build::overlay::reserved_gpios(&merged)?;
-            let freed: Vec<_> = before.difference(&after).collect();
-            if !freed.is_empty() {
-                return Err(format!("overlay would hand RP1 GPIOs {freed:?} back to Linux").into());
-            }
-            // Ownership/pinctrl/reservation conflicts in the DTB Linux will actually get.
-            let note = cargo_rp1::descriptor(
-                file.section_by_name(".note.rp1")
-                    .ok_or("missing .note.rp1")?
-                    .data()?,
-            )?;
-            let conflicts = rp1_build::overlay::final_conflicts(&std::fs::read(&merged)?, note)?;
-            if !conflicts.is_empty() {
-                return Err(format!(
-                    "final DTB conflicts with the RP1 note:\n  {}",
-                    conflicts.join("\n  ")
-                )
-                .into());
-            }
-            Ok(())
-        });
-        let _ = std::fs::remove_file(&overlay);
-        let _ = std::fs::remove_file(&merged);
-        result?;
+        let note = cargo_rp1::descriptor(
+            file.section_by_name(".note.rp1")
+                .ok_or("missing .note.rp1")?
+                .data()?,
+        )?;
+        let conflicts = rp1_dt::check::check(&before, &after, note)?;
+        if !conflicts.is_empty() {
+            return Err(format!(
+                "final DTB conflicts with the RP1 note:\n  {}",
+                conflicts.join("\n  ")
+            )
+            .into());
+        }
     }
     println!(
         "STATIC: image {}/49152 B, ISRAM {}/8192 B, DSRAM {} B + declared stack; {} exclusive instructions checked",
