@@ -72,9 +72,31 @@ lab/           実験・診断（公開 API ではない）
 ライブラリ全体を ISRAM に入れるのではなく、速さが要る部分だけを入れる。
 
 **v0.1**: 手で付けた `#[isram]` の関数と ISR だけを ISRAM に置く。両コアに同じ ISRAM イメージを展開する（共通、各コア 8 KiB）。
-予算超過は linker の ASSERT でエラー。以下の自動配置は v0.2 で検討する。
+予算超過は linker の ASSERT でエラー。
 
-**v0.2 案（自動配置）**:
+**実測（HW、2026-10-29、`<lab-log>`）**: M3 のコアクロックは **約 50 MHz**（SysTick 50154 / timer 1004 µs）。
+1 回あたり: DSRAM 読み 6.0 / 書き 5.0 サイクル、共有 SRAM 読み書き 12.6、DDR（outbound 窓）読み 66（1.32 µs）、posted 書き 26.8（0.54 µs、`dsb` を足しても同じ、STM の 4 語バーストでも 23.6/語）。
+PCIe を 2〜200 µs 空けても書き・読みの時間は変わらない（ASPM の復帰待ちではない）。
+全語を DSRAM に置いたリングでも、コードが共有 SRAM にあると push 820 / pop 843 サイクル/件、ISRAM に置くと 314 / 320 になる（命令取得が律速）。
+
+**ライブラリの既定（v0.1 以降、STATIC + HW）**: 次を `#[isram]` で ISRAM に置く。冷たい経路は `#[rp1_rt::cold]`（`.text.cold`、共有 SRAM）に分ける。
+- `rp1-proto`: `RingTx::push` / `push_slice`、`RingRx::pop` / `pop_into`（feature `isram`、既定で有効。ホストでは何もしない）
+- `rp1-hal`: `scmi::Service::poll` と `cold::EndpointService::poll` の空振り判定（レジスタ 1 回の読み）。要求処理（`serve_pending`）と再設定（`poll_slow`）は cold
+- 使う側のホットループ（例: lab の proc0 `idle0`、proc1 `wait_command`、バッチ送受信）は手で `#[isram]`。配列の `==` は `memcmp`（共有 SRAM）を呼ぶので避ける
+
+**v0.2（自動配置、実装済み・STATIC。shm-firmware の最終ビルドで HW）**: `cargo rp1 build <cargo build の引数>` が 2 段リンクする。
+1 段目のリンク後に `cargo-rp1::isram::plan` が呼び出しグラフ（objdump の直接分岐と long-branch thunk）を作り、根から到達する関数を
+`rp1-isram-auto.x`（`*(.text.<symbol>)` の並び）にして、`RP1_ISRAM_PLAN` 経由で rp1-build が `.isram` 内に `INCLUDE` させて 2 段目をリンクする。
+最後に計画した関数がすべて ISRAM にあることと予算を検査する。`cargo rp1 isram-plan <elf>` で計画だけ表示できる。
+- 根: `.isram` にある関数（手で付けたもの）と、両ベクタ表の例外ハンドラ。
+- 止める所（共有 SRAM に残す）: `.text.cold`、名前が panic / fmt / `_fail` / `failed` のもの、リセット経路が ISRAM のコピー前に使う関数（`__rp1_reset*`、`__rp1_initialize` から各コアの main までの到達集合、例: `memcpy`）。
+- 間接呼び出し（関数ポインタ、`dyn`）は見えない。共有 SRAM に残るだけで正しさには影響しない（両コアの ISRAM は同じ内容）。
+- link.x は `.isram` を `.text` より前に書く（入力セクションは最初に一致した規則へ行く）。`.text` は別の PT_LOAD（`code`）にして、`.isram` のロード位置と重ねない。
+- STATIC: rp1-proto の feature `isram` を切ったビルドで、ring の 4 関数（1070 B）が自動で ISRAM に入り、合計は手で付けた場合とほぼ同じ（2344 B / 2336 B）。
+
+**未実装（v0.2 の残り）**: コアごとの ISRAM overlay（片方のコアだけから到達する関数）、64 bit 除算・fmt への到達の警告、`memcpy` 等をリセット経路と別に ISRAM に複製すること、ベクタ表（VTOR）の ISRAM 化。
+
+**以前の v0.2 案（参考）**:
 
 - 根（root）: `#[isram]` を付けた関数と、各コアのベクタ表に載る ISR。
 - `cargo-rp1` が最終 ELF の呼び出しグラフから根の到達集合を求め、それを ISRAM に配置する（2 段リンク）。
@@ -167,7 +189,7 @@ bulk = [{ name = "obs", size = 65536 }]
 
 - 共有 SRAM を対象にする LDREX/STREX があればエラー。
 - ISRAM・DSRAM・共有 SRAM の予算超過はエラー（linker の ASSERT と同じ内容を分かりやすく表示）。
-- 呼び出しグラフの到達解析は v0.1 では行わない（ISRAM の自動配置とあわせて v0.2 で検討）。
+- 呼び出しグラフの到達解析は v0.1 では行わない。v0.2 の `cargo rp1 build` / `isram-plan` が ISRAM の自動配置のためだけに行う（§3.3）。
 
 ### 5.3 この方針の副作用（受け入れる）
 
@@ -276,7 +298,7 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 
 | 入れる | 後回し（v0.2 以降） |
 |---|---|
-| 2 コアのランタイム（1 イメージ、`#[entry(proc0/1)]`、proc1 起動、DSRAM の既定配置、`#[shared]`/`#[proc0]`/`#[proc1]`） | ISRAM の自動配置（2 段リンク）と到達解析 |
+| 2 コアのランタイム（1 イメージ、`#[entry(proc0/1)]`、proc1 起動、DSRAM の既定配置、`#[shared]`/`#[proc0]`/`#[proc1]`） | ISRAM の自動配置（2 段リンク）と到達解析 → 共通イメージ分は実装済み（§3.3、`cargo rp1 build`） |
 | 手で付ける `#[isram]`（共通 ISRAM イメージ） | コアごとの ISRAM overlay |
 | 宣言 → 型・linker script・note・overlay の生成（rp1-build） | `channel` の正式 API（v0.1 は `ring` 2 本で組めることを例で示す） |
 | 起動一式（config.txt、cmdline.txt、rp1boot.img、rp1.elf）の生成と照合 | async / Embassy |
@@ -323,3 +345,4 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | 2026-10-28 | PoC ローダーの遅さの主因は TFTP ではなくソフトウェアの gzip 展開（約 18 s）と SHA-256（約 15 s）。I2C 約 3.4 s。旧記録の「initramfs に 36 秒」は誤帰属（loader.md §0） | 実機ログ + コード |
 | 2026-10-28 | hwirq58 は rp1-mailbox が専有し UIO と共有できない（HW）。mailbox・SCMI・remoteproc を disabled にすれば UIO が取れ、IRQ 往復 p50 71 µs（うち M3 の SCMI 処理約 60 µs）、通知ごとに空振り 1 回（HW、codexA2）。SCMI クロック（既定）と両立しないので v0.1 は mailbox/SCMI を残してポーリング（feat/v0.1-core の決定と同じ） | 実機検証 codexA / codexA2 |
 | 2026-10-29 | ローダー rp1boot v0.1: stable Rust（build-std なし）、DTB と overlay は純 Rust の `rp1-dt`（libfdt と同じ意味、`cargo rp1 check --dtb` と共用）、束は非圧縮 Image を入れてローダーで展開しない、EL2 で恒等写像のキャッシュを有効にしてから SHA-256。PCIe RC には触らず、RP1 の冷起動は Linux の最初の PERSTn 解除を最大 20 s 待つ。失敗は UART10 に理由を出して停止 | HW（hwrun5、cold boot 2 回 + 負例 1 回）: 電源 → `~ #` 約 31 s（PoC 84〜87 s）、ローダー 1.1 s、dual-core・SCMI v2.0・ttyAMA1・ドアベル・SHM_PASS 成立。束の 1 bit 破損を拒否（loader.md §6） |
+| 2026-10-29 | ライブラリのホットパス（ring の push/pop とバッチ版、SCMI・PCIe エンドポイントの poll の空振り判定）を既定で ISRAM に置き、冷たい経路は `#[rp1_rt::cold]` で共有 SRAM に残す。ring に `push_slice` / `pop_into` を追加。v0.2 の自動配置（共通 ISRAM イメージ分）を `cargo rp1 build` として実装 | HW（<lab-log> boot 2 回）: M3 は約 50 MHz で、共有 SRAM の命令取得が ring の律速。Linux→RP1 0.345 → 5.30 MB/s、RP1→Linux 0.763 → 4.58 MB/s（バッチ）。RP1→Linux は posted 書き込み 0.54 µs/語が律速 |
