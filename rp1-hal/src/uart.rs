@@ -14,6 +14,8 @@ impl<const N: u8> Token<N> {
         assert!(N < 6);
         Self { _private: () }
     }
+    /// `Err(Invalid)` (before touching hardware) unless `TX`/`RX`/`F` is UART N's TX/RX pair
+    /// on bank 0 ([`tx_rx_pins`]).
     pub fn init<const TX: u8, const RX: u8, const F: u8>(
         self,
         _tx: crate::gpio::Pin<TX, crate::gpio::Function<F>>,
@@ -21,9 +23,24 @@ impl<const N: u8> Token<N> {
         clocks: &crate::clocks::Clocks,
         baud: u32,
     ) -> Result<Uart<N>, Error> {
+        if tx_rx_pins(N) != Some((TX, RX, F)) {
+            return Err(Error::Invalid);
+        }
         write(0x4001_7004, 1 << (26 + N));
         poll(0x4001_401c, 1 << (26 + N), 1 << (26 + N))?;
         unsafe { Uart::new(clocks.uart_hz, baud) }
+    }
+}
+/// Bank-0 (TX, RX, function select) of UART `n` (RP1 pin mux, as Linux `pinctrl-rp1`).
+/// UART5 has no bank-0 pins.
+pub const fn tx_rx_pins(n: u8) -> Option<(u8, u8, u8)> {
+    match n {
+        0 => Some((14, 15, 4)),
+        1 => Some((0, 1, 2)),
+        2 => Some((4, 5, 2)),
+        3 => Some((8, 9, 2)),
+        4 => Some((12, 13, 2)),
+        _ => None,
     }
 }
 pub fn divisors(clock_hz: u32, baud: u32) -> Result<(u32, u32), Error> {
@@ -122,6 +139,19 @@ impl<const N: u8> embedded_io::Read for Uart<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_real_tx_rx_pairs_are_accepted() {
+        // REVIEW2 #8: UART0 on GPIO22/27 with function 31 used to type-check and succeed.
+        assert_eq!(tx_rx_pins(0), Some((14, 15, 4)));
+        assert_ne!(tx_rx_pins(0), Some((22, 27, 31)));
+        assert_ne!(tx_rx_pins(0), Some((15, 14, 4)), "TX/RX swapped");
+        assert_ne!(tx_rx_pins(1), Some((0, 1, 4)), "wrong function");
+        assert_eq!(tx_rx_pins(5), None);
+        for n in 0..5 {
+            let (tx, rx, f) = tx_rx_pins(n).unwrap();
+            assert!(tx < 28 && rx < 28 && f <= 31);
+        }
+    }
     #[test]
     fn baud_divisor_and_invalid_inputs() {
         assert_eq!(divisors(50_000_000, 115200), Ok((27, 8)));
