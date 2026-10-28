@@ -39,8 +39,11 @@ const PCIE_INTS: usize = 0x4010_81b4;
 const PCIE_RESET_SEQ_C0: usize = 0x4010_81c0;
 const PCIE_RESET_SEQ_C8: usize = 0x4010_81c8;
 const DBI: usize = 0x4010_9000;
-/// Fresh PERSTn wait. The PoC loader's first host re-init attempt runs ~10 ms after start.
-const PERSTN_TIMEOUT_US: u64 = 1_500_000;
+/// Fresh PERSTn wait. The PoC loader re-initialized the root complex ~0.5 s after start;
+/// rp1boot does not touch PCIe, and the VPU firmware leaves PERSTn asserted ("PCI1/PCI2
+/// reset" before starting the OS), so the first deassertion is Linux's brcm-pcie probe a few
+/// seconds later (HW hwrun5 08-boot7: `Perstn` after the old 1.5 s limit).
+const PERSTN_TIMEOUT_US: u64 = 20_000_000;
 
 /// Which bring-up step failed, with the raw value that failed the check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
