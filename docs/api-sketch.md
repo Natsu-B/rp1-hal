@@ -255,7 +255,7 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
 - **mmap の属性**:
   - `uncached`（既定）: UIO の物理メモリ mmap は arm64 では Device 属性になる（DOC: `uio_mmap_physical` が `pgprot_noncached`）。
     Device 属性ではアラインされていないアクセスと `DC ZVA` がフォルトするため、libc の `memcpy` / `memset` を直接使うと SIGBUS になりうる。
-    `rp1-linux` は 8 バイト整列の volatile コピーだけを使い、利用者に生の `&[u8]` を渡さない。
+    `rp1-linux` は整列した volatile u32/u64 アクセスだけを使い、利用者に生の `&[u8]` を渡さない（STATIC）。
   - `cached`（試験的）: `no-map` を外した領域を `/dev/mem`（`O_SYNC` なし）で cacheable に mmap し、読む前・渡す前に `DC CIVAC` を
     ユーザー空間から発行する（標準カーネルは `CONFIG_STRICT_DEVMEM` 無効なので RAM の mmap が可能。root が必要）。
     RP1 からの PCIe 書き込みが CPU キャッシュとコヒーレントでない前提での保守。速さと正しさを測ってから採用を決める。

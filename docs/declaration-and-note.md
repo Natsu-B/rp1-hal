@@ -173,7 +173,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 | 0x0011 | 1 | CLOCK | authority u8（1 rp1 / 2 linux）、clk_sys_hz u32 |
 | 0x0012 | 0 | LOG | sink u8（1 uart0）、baudrate u32 |
 | 0x0013 | 1 | BOOT | config.txt の SHA-256、cmdline.txt の SHA-256、本来のカーネルのファイル名（文字列） |
-| 0x0020 | 1 | SHM_AREA | DDR 側の合計サイズ u32、境界 u32、共有 SRAM のハンドオフ語のアドレス u32、SRAM 側の合計 u16 |
+| 0x0020 | 1 | SHM_AREA | 24 bytes: DDR 合計サイズ u32（1 MiB 単位、1..16 MiB）、領域境界 u32（65536）、SRAM ハンドオフアドレス u32、SRAM 使用末尾 u16、予約 0 u16、DDR CPU 物理アドレス u64（STATIC: rpi-cm5 は 0x22000000）。旧 14-byte 形式は拒否 |
 | 0x0021 | 1 | SHM_REGION | 1 件 1 レコード: kind u8、direction u8、core u8、notify u8、linux_map u8、writer u8、overflow u8（1 reject / 2 overwrite）、placement u8（1 reader-local / 2 linux）、DDR オフセット/長さ u32×2、SRAM オフセット/長さ u16×2、要素長 u32、depth u32、型 ID u64（要求/応答で 2 つ）、名前（u8 長さ + UTF-8）、型名（同） |
 
 - 文字列は `u8 長さ + UTF-8`（最大 255）。

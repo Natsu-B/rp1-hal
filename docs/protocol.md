@@ -17,7 +17,7 @@ M3 側（`rp1-link`）と Linux 側（`rp1-linux`）の両方がそれを使う�
 | 場所 | 大きさ | M3 から | Linux から | 置くもの |
 |---|---|---|---|---|
 | **link ページ**（共有 SRAM の 1 ページ） | 16 KiB（`0x2000_c000..0x2001_0000`、末尾 `0xff00..` の予約を除く） | ローカル（速い） | BAR2 経由。書き込みは posted、読み出しは遅い | Linux → RP1 リングの本体と head、RP1 → Linux リングの tail、通知の待ちフラグ |
-| **DDR 領域**（BCM2712 の DDR、reserved-memory） | 宣言の合計（64 KiB 単位） | outbound 窓（0x8000_0000..）。書き込みは posted、読み出しは遅い | ローカル（uncached） | 領域ヘッダー、RP1 → Linux リングの本体と head、Linux → RP1 リングの tail、`block` |
+| **DDR 領域**（BCM2712 の DDR、reserved-memory） | 領域は 64 KiB 単位、予約全体は 1 MiB 単位（1..16 MiB） | outbound 窓（0x8100_0000..）。書き込みは posted、読み出しは遅い | ローカル（uncached） | 領域ヘッダー、RP1 → Linux リングの本体と head、Linux → RP1 リングの tail、`block` |
 
 - 配置は宣言で選べる（`placement`、§1.3）。v0.1 が実装するのは `reader-local`（既定）だけ。
 - link ページは BAR2 の 16 KiB 1 枚を UIO（名前 `rp1:link`）で見せる。リングごとに別ページにはできない（共有 SRAM は 4 ページしかない）ので、
@@ -59,7 +59,7 @@ M3 側（`rp1-link`）と Linux 側（`rp1-linux`）の両方がそれを使う�
 ```
 u32 seq     書き手が付ける通し番号（= 書き込み時の head）。読み手は期待値と比べ、ずれたら Error::Corrupt
 u16 len     payload の長さ（T のサイズ以下）
-u16 flags   予約 0
+u16 flags   bit0 = overwrite 書き込み中、他は予約 0
 T   payload 8 バイト境界に 0 埋め
 ```
 
@@ -90,31 +90,33 @@ T   payload 8 バイト境界に 0 埋め
 
 書き手（`push`、`reject`）:
 
-1. `tail`（手元）を読み、`head - tail == depth` なら満杯 → `Err(Full)`（`dropped += 1`）。
+1. `tail`（手元）を読み、`head - tail == depth` なら満杯 → `Err(Full)`（`dropped += 1` は手元だけで数え、次に成功した push で相手側へ書く。満杯で回し続ける書き手が相手のメモリへ書き込みを浴びせないため）。
 2. スロット `head` に `seq`・`len`・payload を書く。
 3. 書き込みの完了を確定する（M3: `dsb`。Linux: Device 属性の書き込みは発行順に出る）。
 4. `head += 1` を書く。
-5. `waiting`（手元）が 1 なら通知する（§3）。
+5. 通知を使うときだけ: `head` を同じ窓から読み戻して到達を確定し（`reader_waiting`）、その後 `waiting`（手元）が 1 なら通知する（§3）。
 
 読み手（`pop`）:
 
 1. `head`（手元）を読む。`tail == head` なら空 → `None`。
-2. スロット `tail` を読み、`seq == tail` を確かめる。
-3. `tail += 1` を相手側へ書く（posted）。
+2. barrier 後にスロット `tail` を読み、`seq == tail` と長さを確かめ、payload を普通のメモリへコピーする。
+3. barrier 後に `tail += 1` を相手側へ書く（posted）。
 
 `overwrite` のときの違い:
 
-- 書き手は `tail` を見ない。スロットに書く前に `seq` を「書き込み中」（`u32::MAX`）にし、payload を書き、最後に `seq = head` を書く。
-- 読み手はスロットの `seq` を payload のコピーの前後で読む。
-  - 前後とも `tail` に一致 → 正常。
-  - `seq > tail`（追い越された）または途中で変わった → 失った数を数え、`tail = head - depth + 1` に進めて読み直す。呼び出し側には `Lost(n)` を返す。
-  - `u32::MAX` → 書き込み中なので読み直す。
+- STATIC: 書き手は `tail` を見ず、flags bit0 を立てて barrier → payload と `seq=head` → barrier → flags を 0 → barrier → head を公開する。
+  `u32::MAX` も有効な連番なので、書き込み中の印には使わない。
+- 読み手は `head-tail > depth` なら `Lost(head-tail-depth)` とともに `tail=head-depth` へ進む。
+  スロットの flags と seq を barrier を挟んでコピーの前後に読み、flags=0・seq=tail が両方一致した場合だけ返す。
+  競合が続いたら `NotReady` を返し、呼び手が再試行する。
 - `tail` と `waiting` は通知の間引きのためにだけ使う。
 
 眠る（`wait`）:
 
-1. `waiting = 1` を相手側へ書く。
+1. `waiting = 1` を相手側へ書き、**同じ窓から読み戻して**到達を確定する（posted 書き込みは `dsb` だけでは相手のメモリに届いた保証がない）。
 2. **もう一度 `head` を読み**、空でなければ `waiting = 0` にして戻る（通知の取りこぼし防止）。
+   書き手側の 5. と対になり、両方が「自分の書き込みの到達を確定してから相手の値を読む」ので、両者が古い値を見て眠り続ける組み合わせは起きない（STATIC/DOC: PCIe の非 posted 読み出しは同じ経路の先行 posted 書き込みを追い越さない）。
+   HW 未検証: v0.1 の実機試験はポーリングだけで、待機経路は実測していない。
 3. 通知を待つ（Linux: UIO の `read`。M3: WFE / 割り込み）。起きたら `waiting = 0`。
 
 ### 2.4 順序の根拠と未確認点
@@ -143,7 +145,7 @@ T   payload 8 バイト境界に 0 埋め
 
 1. `Shm::enable` で RP1 は世代番号を奇数にし、DDR 領域と link ページの自分の担当をゼロ化し、ヘッダーを書き、偶数（前の値 + 2）にする。
 2. Linux 側の `open` は、世代番号が偶数であること、note の SHA-256 が一致することを確かめてから使う。
-3. Linux 側は各操作の前後で世代番号を見て、変わっていたら `Err(Reset)` を返す。利用者は開き直す。
+3. Linux 側は読み取りの前後、書き込みの前に世代番号を見て、変わっていたら `Err(Reset)` を返す。書き込み済みのデータを取り消すことはできない。cold boot 以外の同時リセットからの回復は保証しない。
 4. Linux のプロセスが再起動しても、`tail` は共有メモリに残っているので続きから読める。最初から読み直す `reset` は v0.1 では持たない。
 5. v0.1 は cold boot のみ（PCIe リセットで outbound ATU が消える）。RP1 の再ロードは Linux の再起動を伴う。
 
@@ -161,7 +163,7 @@ offset 8.. T             8 バイト境界
 | `both` | 利用者に任せる | `raw()` で生の読み書き API だけを渡す | 同左 |
 
 - RP1 が `block` を読むのは PCIe の往復になり遅い（「遅くて大きいメモリ」）。大きなデータは RP1 が書き、Linux が読む向きを推奨する。
-- Linux 側は uncached（Device 属性）で mmap するので、`rp1-linux` は 8 バイト整列の volatile コピーだけを使い、生の `&[u8]` を渡さない。
+- Linux 側は uncached（Device 属性）で mmap するので、`rp1-linux` は整列した volatile u32/u64 アクセスだけを使い、生の `&[u8]` を渡さない。
 
 ## 6. 型
 
