@@ -28,6 +28,13 @@ fn renumber(ov: &mut Fdt, delta: u32) -> Result<()> {
             }
         }
     }
+    update_local_refs(ov, |p| {
+        p.checked_add(delta)
+            .ok_or_else(|| "phandle overflow".into())
+    })
+}
+
+fn update_local_refs(ov: &mut Fdt, update: impl Fn(u32) -> Result<u32>) -> Result<()> {
     let Some(local) = ov.find("/__local_fixups__") else {
         return Ok(());
     };
@@ -48,11 +55,7 @@ fn renumber(ov: &mut Fdt, delta: u32) -> Result<()> {
                 let at = u32::from_be_bytes([o[0], o[1], o[2], o[3]]) as usize;
                 let v = target.1.get(at..at + 4).ok_or("local fixup out of range")?;
                 let p = u32::from_be_bytes([v[0], v[1], v[2], v[3]]);
-                put_be32(
-                    &mut target.1,
-                    at,
-                    p.checked_add(delta).ok_or("phandle overflow")?,
-                )?;
+                put_be32(&mut target.1, at, update(p)?)?;
             }
         }
         for &c in &ov.nodes[fix].children.clone() {
@@ -110,6 +113,23 @@ fn merge(base: &mut Fdt, target: usize, ov: &Fdt, src: usize) {
     }
 }
 
+fn preserve_phandles(base: &Fdt, target: usize, ov: &mut Fdt, src: usize) -> Result<()> {
+    if let (Some(old), Some(new)) = (base.phandle_of(target), ov.phandle_of(src)) {
+        for name in ["phandle", "linux,phandle"] {
+            if ov.prop(src, name).is_some() {
+                ov.set_prop(src, name, old.to_be_bytes().to_vec());
+            }
+        }
+        update_local_refs(ov, |p| Ok(if p == new { old } else { p }))?;
+    }
+    for c in ov.nodes[src].children.clone() {
+        if let Some(t) = base.child(target, &ov.nodes[c].name) {
+            preserve_phandles(base, t, ov, c)?;
+        }
+    }
+    Ok(())
+}
+
 fn fragment_target(base: &Fdt, ov: &Fdt, frag: usize) -> Result<usize> {
     if let Some(c) = ov.cells(frag, "target") {
         let [h] = c[..] else {
@@ -152,6 +172,7 @@ pub fn apply(base: &mut Fdt, overlay: &[u8]) -> Result<()> {
     }
     let mut targets: Vec<(String, String)> = Vec::new();
     for (frag, target, body) in fragments {
+        preserve_phandles(base, target, &mut ov, body)?;
         merge(base, target, &ov, body);
         targets.push((ov.path(frag), base.path(target)));
     }

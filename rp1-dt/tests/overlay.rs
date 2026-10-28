@@ -102,6 +102,40 @@ fn fixture_matches_fdtoverlay() {
 }
 
 #[test]
+fn existing_phandles_keep_old_and_new_consumers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dtc(
+        tmp.path(),
+        "base",
+        r#"/dts-v1/; / {
+        old: device { phandle = <1>; linux,phandle = <1>; x = <1>; };
+        user { link = <&old>; };
+    };"#,
+    );
+    let ov = dtc(
+        tmp.path(),
+        "ov",
+        r#"/dts-v1/; /plugin/; / {
+        fragment@0 { target-path = "/"; __overlay__ {
+            local: device { phandle = <1>; linux,phandle = <1>; x = <2>; };
+            use { link = <&local>; };
+        }; };
+    };"#,
+    );
+    for omit in [None, Some("phandle"), Some("linux,phandle")] {
+        let mut b = Fdt::parse(&base).unwrap();
+        let mut o = Fdt::parse(&ov).unwrap();
+        if let Some(prop) = omit {
+            let device = b.find("/device").unwrap();
+            b.remove_prop(device, prop);
+            let device = o.find("/fragment@0/__overlay__/device").unwrap();
+            o.remove_prop(device, prop);
+        }
+        same_as_libfdt(&b.to_bytes(), &o.to_bytes());
+    }
+}
+
+#[test]
 fn round_trip_is_lossless() {
     let tmp = tempfile::tempdir().unwrap();
     let base = dtc(tmp.path(), "base", BASE);
