@@ -102,6 +102,26 @@ pub fn isram(args: TokenStream, input: TokenStream) -> TokenStream {
     .into()
 }
 
+/// Rarely executed code that must stay in shared SRAM: automatic ISRAM placement
+/// (`cargo rp1 build`) stops at these functions even when an ISRAM function calls them.
+#[proc_macro_attribute]
+pub fn cold(args: TokenStream, input: TokenStream) -> TokenStream {
+    if !args.is_empty() {
+        return error("cold takes no arguments");
+    }
+    let f = parse_macro_input!(input as ItemFn);
+    quote!(
+        #[cold]
+        #[inline(never)]
+        #[cfg_attr(
+            all(target_arch = "arm", target_os = "none"),
+            unsafe(link_section = ".text.rp1_cold")
+        )]
+        #f
+    )
+    .into()
+}
+
 #[proc_macro_attribute]
 pub fn shared(args: TokenStream, input: TokenStream) -> TokenStream {
     if !args.is_empty() {

@@ -1,7 +1,7 @@
 #![no_std]
 //! Two cores share code; ordinary statics have a private DSRAM copy on each core.
 use core::{cell::UnsafeCell, marker::PhantomData};
-pub use rp1_macros::{entry, isram, proc0, proc1, shared};
+pub use rp1_macros::{cold, entry, isram, proc0, proc1, shared};
 pub use rp1_proto::SharedSafe;
 #[cfg(target_arch = "arm")]
 mod startup;

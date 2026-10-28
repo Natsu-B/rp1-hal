@@ -413,8 +413,7 @@ impl Service {
         }
         self.serve_pending()
     }
-    #[cold]
-    #[inline(never)]
+    #[rp1_rt::cold]
     fn serve_pending(&mut self) -> Option<Event> {
         serve(&mut self.server, &mut self.transport)
     }

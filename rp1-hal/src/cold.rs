@@ -451,8 +451,7 @@ impl EndpointService {
         }
         self.poll_slow()
     }
-    #[cold]
-    #[inline(never)]
+    #[rp1_rt::cold]
     fn poll_slow(&mut self) -> Option<Result<Reconfigured, ReconfigError>> {
         let mut io = |op| Ok(mmio(op));
         self.poll_with(&mut io)
