@@ -1,4 +1,5 @@
-//! Clock authority for v0.1: adopt the clock tree that the EEPROM-stage RP1 firmware left behind.
+//! Clock authority for v0.1: adopt the running clock tree. After a loader reset RP1 is at cold
+//! defaults; `crate::cold::clocks` programs the same tuple first (HW: hwrun1).
 //!
 //! v0.1 does not program PLLs or the clk_sys mux. No cold-start sequence for those has been
 //! proven on hardware; the PoC only ever *read* PLL_SYS / CLK_UART and admitted one exact tuple
@@ -62,6 +63,12 @@ impl Snapshot {
             && self.prim & !0x10 == 0x0005_1000
             && uart_clock_admitted(self.uart_ctrl, self.uart_div, self.uart_sel)
     }
+}
+
+/// Reads the clock tuple twice; true if it is the admitted running tuple.
+pub(crate) fn running_tuple_admitted() -> bool {
+    let a = Snapshot::take();
+    a == Snapshot::take() && a.admitted()
 }
 
 pub(crate) fn uart_clock_admitted(ctrl: u32, div: u32, sel: u32) -> bool {
