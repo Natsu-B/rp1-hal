@@ -1,0 +1,10 @@
+[package]
+name = "rp1-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rp1-proto = { path = "../rp1-proto" }
+libc = "0.2"
+sha2 = "0.10"

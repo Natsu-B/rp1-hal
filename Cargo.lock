@@ -361,6 +361,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp1-linux"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rp1-proto",
+ "sha2",
+]
+
+[[package]]
 name = "rp1-macros"
 version = "0.1.0"
 dependencies = [
