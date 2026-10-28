@@ -154,6 +154,65 @@ fn later_fragments_can_target_added_nodes() {
     }
 }
 
+fn fdtoverlay_fails(dir: &Path, base: &[u8], ov: &[u8]) -> bool {
+    let (b, o, m) = (dir.join("b.dtb"), dir.join("o.dtbo"), dir.join("m.dtb"));
+    fs::write(&b, base).unwrap();
+    fs::write(&o, ov).unwrap();
+    !Command::new("fdtoverlay")
+        .arg("-i")
+        .arg(&b)
+        .arg("-o")
+        .arg(&m)
+        .arg(&o)
+        .output()
+        .expect("fdtoverlay")
+        .status
+        .success()
+}
+
+#[test]
+fn reserved_phandle_results_are_rejected_like_libfdt() {
+    // REVIEW2 #7: base max 0xfffffffe + overlay phandle 1 would give 0xffffffff.
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dtc(
+        tmp.path(),
+        "base",
+        "/dts-v1/; / { top: dev { phandle = <0xfffffffe>; }; };",
+    );
+    let ov = dtc(
+        tmp.path(),
+        "ov",
+        r#"/dts-v1/; /plugin/; / {
+        fragment@0 { target-path = "/"; __overlay__ {
+            local: added { x = <1>; };
+            use { link = <&local>; };
+        }; };
+    };"#,
+    );
+    assert!(fdtoverlay_fails(tmp.path(), &base, &ov));
+    let mut fdt = Fdt::parse(&base).unwrap();
+    let before = fdt.to_bytes();
+    assert!(rp1_dt::overlay::apply(&mut fdt, &ov).is_err());
+    assert_eq!(
+        fdt.to_bytes(),
+        before,
+        "a failed apply leaves the base untouched"
+    );
+
+    // Reserved values in the overlay's own definitions are rejected too.
+    let base = dtc(tmp.path(), "base", "/dts-v1/; / {};");
+    for bad in [0u32, u32::MAX] {
+        let mut o = Fdt::parse(&ov).unwrap();
+        let added = o.find("/fragment@0/__overlay__/added").unwrap();
+        o.set_prop(added, "phandle", bad.to_be_bytes().to_vec());
+        let mut fdt = Fdt::parse(&base).unwrap();
+        assert!(
+            rp1_dt::overlay::apply(&mut fdt, &o.to_bytes()).is_err(),
+            "{bad:#x}"
+        );
+    }
+}
+
 #[test]
 fn round_trip_is_lossless() {
     let tmp = tempfile::tempdir().unwrap();

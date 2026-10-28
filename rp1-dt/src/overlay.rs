@@ -16,22 +16,35 @@ fn put_be32(v: &mut [u8], at: usize, value: u32) -> Result<()> {
     Ok(())
 }
 
+/// `p + delta` as a usable phandle: `0` and `0xffffffff` are reserved (libfdt
+/// `FDT_ERR_NOPHANDLES`), in the overlay's definition as well as in the result.
+fn shift_phandle(p: u32, delta: u32) -> Result<u32> {
+    if p == 0 || p == u32::MAX {
+        return Err(format!("overlay uses reserved phandle {p:#x}"));
+    }
+    match p.checked_add(delta) {
+        Some(q) if q != u32::MAX => Ok(q),
+        _ => Err("no phandles left for the overlay".into()),
+    }
+}
+
 /// Add `delta` to every phandle the overlay defines and to every local reference to one.
 fn renumber(ov: &mut Fdt, delta: u32) -> Result<()> {
     for n in 0..ov.nodes.len() {
         for (name, v) in ov.nodes[n].props.iter_mut() {
-            if (name == "phandle" || name == "linux,phandle") && v.len() == 4 {
-                let p = u32::from_be_bytes([v[0], v[1], v[2], v[3]]);
-                if p != 0 && p != u32::MAX {
-                    put_be32(v, 0, p.checked_add(delta).ok_or("phandle overflow")?)?;
-                }
+            if name == "phandle" || name == "linux,phandle" {
+                let [a, b, c, d] = v[..] else {
+                    return Err(format!("overlay {name} is not one cell"));
+                };
+                put_be32(
+                    v,
+                    0,
+                    shift_phandle(u32::from_be_bytes([a, b, c, d]), delta)?,
+                )?;
             }
         }
     }
-    update_local_refs(ov, |p| {
-        p.checked_add(delta)
-            .ok_or_else(|| "phandle overflow".into())
-    })
+    update_local_refs(ov, |p| shift_phandle(p, delta))
 }
 
 fn update_local_refs(ov: &mut Fdt, update: impl Fn(u32) -> Result<u32>) -> Result<()> {
