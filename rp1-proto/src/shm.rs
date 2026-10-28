@@ -320,6 +320,16 @@ impl<T: Message> RingTx<T> {
     ) -> Result<Self, Error> {
         check_ring::<T>(data, data_len, ctrl, ctrl_len, depth)?;
         let head = unsafe { ld(data, HEAD) };
+        if overflow == Overflow::Reject {
+            // A reject-mode slot's length never changes, so it is written once here instead
+            // of with every message (one posted store less per push over PCIe). Rewriting
+            // the same value is harmless for slots the reader has not consumed yet.
+            for i in 0..depth {
+                let slot =
+                    unsafe { data.add(CONTROL_SIZE + i as usize * slot_size(size_of::<T>())) };
+                unsafe { st(slot, 4, size_of::<T>() as u32) };
+            }
+        }
         Ok(Self {
             data,
             ctrl,
@@ -364,7 +374,8 @@ impl<T: Message> RingTx<T> {
             unsafe { st(self.data, DROPPED, self.dropped) };
         }
     }
-    /// Fill the slot for index `head + k` (payload, seq, length); not yet published.
+    /// Fill the slot for index `head + k` (payload, seq; the length was written by
+    /// `attach`); not yet published.
     #[inline(always)]
     fn write_slot(&self, k: u32, value: &T) {
         let index = self.head.wrapping_add(k);
@@ -372,7 +383,6 @@ impl<T: Message> RingTx<T> {
         unsafe {
             copy_to_mapping(slot.add(8), ptr::from_ref(value).cast(), size_of::<T>());
             st(slot, 0, index);
-            st(slot, 4, size_of::<T>() as u32);
         }
     }
     /// Publish one message. Order: payload, seq, length → barrier → head (protocol.md §2.3).
@@ -876,6 +886,10 @@ mod tests {
         }
         let mut tx = unsafe { RingTx::<u64>::attach(d, 256, c, 128, 8, Overflow::Reject) }.unwrap();
         let mut rx = unsafe { RingRx::<u64>::attach(d, 256, c, 128, 8, Overflow::Reject) }.unwrap();
+        // Reject-mode slot lengths are written once by the writer's attach.
+        for i in 0..8 {
+            assert_eq!(unsafe { ld(d, CONTROL_SIZE + i * 16 + 4) }, 8);
+        }
         let values: vec::Vec<u64> = (0..20).collect();
         // Only the free slots are written; one head store covers the batch.
         assert_eq!(tx.push_slice(&values[..5]), 5);
