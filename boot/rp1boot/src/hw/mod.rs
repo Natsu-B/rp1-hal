@@ -36,12 +36,39 @@ _start:
     b.hs 2f
     str xzr, [x1], #8
     b 1b
-2:  mov x0, x19
+2:  adr x1, rp1boot_vectors
+    msr vbar_el2, x1
+    isb
+    mov x0, x19
     bl rp1boot_main
 3:  wfe
     b 3b
+
+    .balign 2048
+rp1boot_vectors:
+    .irp n, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    .balign 128
+    mov x0, #\n
+    b rp1boot_exception
+    .endr
 "#
 );
+
+/// Any exception taken to EL2 while the loader runs is fatal: report it and stop.
+#[unsafe(no_mangle)]
+extern "C" fn rp1boot_exception(vector: u64) -> ! {
+    let (esr, elr, far): (u64, u64, u64);
+    // SAFETY: reading exception syndrome registers.
+    unsafe {
+        core::arch::asm!("mrs {}, esr_el2", "mrs {}, elr_el2", "mrs {}, far_el2",
+            out(reg) esr, out(reg) elr, out(reg) far, options(nomem, nostack));
+    }
+    // No allocation here: the heap may be what faulted.
+    log!("FAIL: exception vector {vector} ESR_EL2={esr:#x} ELR_EL2={elr:#x} FAR_EL2={far:#x}");
+    loop {
+        cpu::wfe();
+    }
+}
 
 macro_rules! log {
     ($($t:tt)*) => { $crate::hw::uart::print(format_args!("[rp1boot {:>7}] {}\n", $crate::hw::cpu::ms(), format_args!($($t)*))) };
@@ -96,6 +123,7 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
     let dtb_len = rp1_dt::fdt::total_size(mem(dtb_addr as u64, 8))? as u64;
     let dtb_in = mem(dtb_addr as u64, dtb_len);
     let mut fdt = Fdt::parse(dtb_in)?;
+    log!("firmware DTB parsed");
     let chosen = fdt.find("/chosen").ok_or("DTB has no /chosen")?;
     if let Some(b) = fdt.find("/chosen/bootloader") {
         log!(
@@ -109,6 +137,11 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
         .into_iter()
         .next()
         .unwrap_or_default();
+    log!(
+        "bootargs {} B: ...{}",
+        bootargs.len(),
+        bootargs.get(bootargs.len().saturating_sub(48)..).unwrap_or("")
+    );
     let (start, end) = (
         fdt.number(chosen, "linux,initrd-start"),
         fdt.number(chosen, "linux,initrd-end"),

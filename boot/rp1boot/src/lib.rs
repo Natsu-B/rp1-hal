@@ -23,6 +23,19 @@ pub fn verify_bundle<'a>(
     bootargs: &str,
     sha256: impl Fn(&[u8]) -> [u8; 32],
 ) -> Result<Bundle<'a>> {
+    // cargo-rp1 puts the token last, so a firmware-truncated cmdline loses (part of) it.
+    let last = bootargs.split_ascii_whitespace().last().unwrap_or("");
+    let truncated = (bundle::TOKEN.starts_with(last) && !last.is_empty())
+        || last
+            .strip_prefix(bundle::TOKEN)
+            .is_some_and(|v| v.len() < 16);
+    if truncated {
+        return Err(format!(
+            "bootargs end in {last:?} after {} B: the firmware truncated the command line; \
+             shorten cmdline.txt",
+            bootargs.len()
+        ));
+    }
     let token = bundle::find_token(bootargs).map_err(|e| match e {
         rp1_proto::Error::Mismatch => String::from("bootargs carry more than one rp1.bundle="),
         _ => String::from(
@@ -246,6 +259,10 @@ mod tests {
         assert!(verify_bundle(&b, &args, sha).is_ok());
         let e = verify_bundle(&b, "console=x", sha).err().unwrap();
         assert!(e.contains("no rp1.bundle="), "{e}");
+        for cut in ["console=x rp1.bun", "console=x rp1.bundle=7f6f"] {
+            let e = verify_bundle(&b, cut, sha).err().unwrap();
+            assert!(e.contains("truncated"), "{e}");
+        }
         let e = verify_bundle(&b, "rp1.bundle=0000000000000000", sha)
             .err()
             .unwrap();
