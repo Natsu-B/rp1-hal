@@ -125,6 +125,41 @@ fn owned_block_or_clocks_re_enabled_by_a_later_overlay_are_rejected() {
 }
 
 #[test]
+fn i2c_overlay_and_later_linux_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = declaration();
+    d.proc0.pins.extend([2, 3]);
+    d.proc0.peripherals.push("I2C1".into());
+    let base = dtc(
+        tmp.path(),
+        "base",
+        &BASE.replace("@EXTRA_RESERVED@", "").replace(
+            "@EXTRA_RP1@",
+            r#"rp1_i2c1: i2c@74000 { status = "okay"; };"#,
+        ),
+    );
+    let a = generate("i2c", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    let app = dtc(tmp.path(), "app", &a.dts);
+    let merged = tmp.path().join("merged.dtb");
+    overlay::apply(&base, &app, &merged).unwrap();
+    let mut fdt = rp1_build::fdt::Fdt::parse(&fs::read(&merged).unwrap()).unwrap();
+    assert!(rp1_dt_check(&fdt, &a.note).is_empty());
+    assert!(
+        rp1_build::overlay::reserved_gpios(&merged)
+            .unwrap()
+            .is_superset(&[2, 3].into())
+    );
+    let i2c = fdt.label("rp1_i2c1").unwrap();
+    fdt.set_prop(i2c, "status", b"okay\0".to_vec());
+    let bad = rp1_dt_check(&fdt, &a.note);
+    assert!(bad.iter().any(|c| c.contains("rp1_i2c1")), "{bad:?}");
+}
+
+fn rp1_dt_check(fdt: &rp1_build::fdt::Fdt, note: &[u8]) -> Vec<String> {
+    overlay::final_conflicts(&fdt.to_bytes(), note).unwrap()
+}
+
+#[test]
 fn reservation_overlap_is_rejected() {
     let c = conflicts(
         "vring@220f0000 { reg = <0 0x220f0000 0x4000>; no-map; };",

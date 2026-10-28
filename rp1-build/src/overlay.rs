@@ -100,6 +100,18 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
             "status = \"disabled\";",
         );
     }
+    for i2c in d
+        .proc0
+        .peripherals
+        .iter()
+        .chain(&d.proc1.peripherals)
+        .filter_map(|p| p.strip_prefix("I2C"))
+    {
+        fragment(
+            &format!("target = <&rp1_i2c{i2c}>"),
+            "status = \"disabled\";",
+        );
+    }
     fragment(
         "target-path = \"/\"",
         &format!(

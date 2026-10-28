@@ -16,6 +16,16 @@ impl<const N: u8> Pin<N> {
         assert!(N < 28);
         Self { _mode: PhantomData }
     }
+    pub(crate) fn into_i2c(self) -> Pin<N, Function<3>> {
+        write(0x4001_7004, 1 << 19);
+        // Disable the pad while switching; only the I2C peripheral may sink the line.
+        write(0x400f_0004 + N as usize * 4, 0xfa);
+        write(0x400e_3004, 1 << N);
+        write(0x400d_0004 + N as usize * 8, 3);
+        // Schmitt, input enable, 12 mA sink, weak pull-up; external pull-ups are required.
+        write(0x400f_0004 + N as usize * 4, 0x7a);
+        Pin { _mode: PhantomData }
+    }
     pub fn into_output(self, high: bool) -> Pin<N, Output> {
         write(0x4001_7004, 1 << 19);
         write(if high { 0x400e_2000 } else { 0x400e_3000 }, 1 << N);

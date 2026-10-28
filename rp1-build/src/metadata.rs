@@ -140,6 +140,12 @@ pub fn peripheral_type(p: &str) -> Result<String> {
     {
         Ok(format!("::rp1_hal::uart::Token<{n}>"))
     } else if let Some(n) = p
+        .strip_prefix("I2C")
+        .and_then(|s| s.parse::<u8>().ok())
+        .filter(|n| *n < 4 && p == format!("I2C{n}"))
+    {
+        Ok(format!("::rp1_hal::i2c::Token<{n}>"))
+    } else if let Some(n) = p
         .strip_prefix("TIMER.ALARM")
         .and_then(|s| s.parse::<u8>().ok())
         .filter(|n| *n < 4)
@@ -153,6 +159,8 @@ pub fn peripheral_id(p: &str) -> Result<(u8, u16)> {
     peripheral_type(p)?;
     Ok(if let Some(n) = p.strip_prefix("UART") {
         (2, n.parse()?)
+    } else if let Some(n) = p.strip_prefix("I2C") {
+        (2, 32 + n.parse::<u16>()?)
     } else {
         (3, p.strip_prefix("TIMER.ALARM").unwrap().parse()?)
     })
@@ -215,8 +223,10 @@ impl Declaration {
                 if *p >= 28 || !pins.insert(*p) {
                     return Err(format!("GPIO {p} unsupported or claimed twice").into());
                 }
-                // CM5 board management pins are retained by Linux/firmware.
-                if [0, 1, 2, 3].contains(p) {
+                // Linux UART1 retains 0/1; 2/3 may be granted to the same core's I2C1.
+                if [0, 1].contains(p)
+                    || ([2, 3].contains(p) && !c.peripherals.iter().any(|p| p == "I2C1"))
+                {
                     return Err(format!("GPIO {p} is reserved by rpi-cm5 board policy").into());
                 }
             }

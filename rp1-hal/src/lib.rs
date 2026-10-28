@@ -3,6 +3,7 @@ pub use rp1_pac as pac;
 pub mod clocks;
 pub mod cold;
 pub mod gpio;
+pub mod i2c;
 pub mod logging;
 pub mod scmi;
 pub mod shm;

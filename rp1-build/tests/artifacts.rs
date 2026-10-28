@@ -43,6 +43,41 @@ fn rejects_mistakes_before_building() {
     assert!(d.validate().is_err());
     assert!(toml::from_str::<Declaration>("typo=1").is_err());
 }
+#[test]
+fn i2c_ownership_and_board_management_pins() {
+    use rp1_build::metadata::{peripheral_id, peripheral_type};
+    for n in 0..4 {
+        assert_eq!(peripheral_id(&format!("I2C{n}")).unwrap(), (2, 32 + n));
+    }
+    for p in ["I2C4", "I2C5", "I2C6", "I2C7", "I2C01"] {
+        assert!(peripheral_type(p).is_err());
+    }
+    let mut d = declaration();
+    d.proc0.pins.extend([2, 3]);
+    assert!(d.validate().is_err());
+    d.proc1.peripherals.push("I2C1".into());
+    assert!(
+        d.validate().is_err(),
+        "a different core cannot unlock GPIO2/3"
+    );
+    d.proc1.peripherals.clear();
+    d.proc0.peripherals.push("I2C1".into());
+    d.validate().unwrap();
+    let a = generate("i2c", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    assert!(a.dts.contains("target = <&rp1_i2c1>"));
+    let note = Note::parse(&a.note).unwrap();
+    assert!(
+        note.get(rp1_proto::note::OWNERSHIP).unwrap().value[4..]
+            .as_chunks::<4>()
+            .0
+            .contains(&[2, 1, 33, 0])
+    );
+    d.proc1.peripherals.push("I2C1".into());
+    assert!(d.validate().is_err());
+    d.proc1.peripherals.clear();
+    d.proc0.pins.push(0);
+    assert!(d.validate().is_err(), "Linux UART1 retains GPIO0/1");
+}
 /// Review #7/#9: declarations v0.1 cannot deliver are build errors, not silent no-ops.
 #[test]
 fn rejects_unsupported_clock_authority_and_notify() {
