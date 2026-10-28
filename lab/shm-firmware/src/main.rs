@@ -6,6 +6,18 @@ use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
 #[shared]
 static VALUES: Spsc<u32, 8> = Spsc::new();
+/// Zero-initialised, so it lands in .bss. Each core zeroes its own DSRAM copy at startup;
+/// reading it before any write checks that (review #10), and the store keeps it non-constant.
+static BSS: [core::sync::atomic::AtomicU32; 4] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; 4];
+fn bss_check(marker: u32) -> u32 {
+    let mut seen = 0;
+    for word in &BSS {
+        seen |= word.load(core::sync::atomic::Ordering::Relaxed);
+        word.store(marker, core::sync::atomic::Ordering::Relaxed);
+    }
+    seen
+}
 type Sample = [u32; 4];
 type Control = [u32; 16];
 type Bulk = [u32; 262144];
@@ -29,7 +41,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         rp1_hal::cold::endpoint_and_syscfg(programmed)
     })
     .unwrap();
-    log!("proc0 ready shm\n").unwrap();
+    log!("proc0 ready shm bss=0x{:x}\n", bss_check(0xb55_0000)).unwrap();
     p.proc1.launch(&mut core).unwrap();
     let mut rx = VALUES.consumer(&mut core);
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
@@ -97,7 +109,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
 
 #[entry(proc1)]
 fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
-    log!("proc1 ready shm\n").unwrap();
+    log!("proc1 ready shm bss=0x{:x}\n", bss_check(0xb55_1000)).unwrap();
     VALUES.producer(&mut core).push(42).unwrap();
     let mut doorbell = Doorbell::new(p.pins.gpio27);
     while link_read(link::SHM_STATUS) != 1 {

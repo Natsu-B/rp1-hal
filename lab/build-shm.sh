@@ -11,6 +11,8 @@ cd "$repo"
 cargo build --offline -p shm-firmware --target thumbv7m-none-eabi --release
 cargo build --offline -p shm-linux -p linux-doorbell --target aarch64-unknown-linux-musl --release
 cp target/thumbv7m-none-eabi/release/shm-firmware "$out/fw/RP1.elf"
+# The bss smoke test needs a real .bss in the image (review #10).
+arm-none-eabi-size -A "$out/fw/RP1.elf" | awk '$1==".bss" { found = $2 > 0 } END { exit !found }'
 cp target/aarch64-unknown-linux-musl/release/{shm-linux,linux-doorbell} "$out/"
 llvm-objcopy --dump-section .rp1.dtbo="$out/dtb/app.dtbo" "$out/fw/RP1.elf"
 fdtoverlay -i "$base" -o "$out/dtb/scmi_linux.dtb" "$out/dtb/app.dtbo"
