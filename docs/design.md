@@ -183,7 +183,7 @@ bulk = [{ name = "obs", size = 65536 }]
 | `#[proc0] static` / `#[proc1] static` | DSRAM | されない | `Local<T, Proc0>` に包まれ、`Proc0` トークンが無いと読めない（rustc） |
 | コア専用の処理 | — | — | 資源（`rp1::Proc0Resources` の中身）やトークンを引数に取る。相手コアは持っていないので呼べない（rustc） |
 | コア間で渡すもの | — | — | 値渡し（`Copy`）か `#[shared]` 領域へのハンドルだけを受け付ける API。DSRAM へのポインタは渡せない（rustc） |
-| 割り込み | 各コアのベクタ表 | — | `#[interrupt(proc1)]` でコアを明示 |
+| 割り込み | 各コアのベクタ表 | — | `#[interrupt(proc1)]` でコアを明示（**v0.2 以降。v0.1 は未実装**: ベクタは全て既定ハンドラ（戻らない）で、登録 API が無い。v0.1 の alarm はポーリング専用で、`Alarm::enable_interrupt` は自前のベクタ表を入れた利用者向けの `unsafe fn`。レビュー 2 #5） |
 
 ### 5.2 リンク後の ELF 検査（cargo-rp1、v0.1）
 
@@ -306,7 +306,7 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | Linux 共有メモリ `ring` と `block`（UIO、uncached） | 実行時の PCIe 状態機械、Linux 再起動への追従 |
 | SCMI クロックサーバー（clock.authority = rp1 が既定のため必須） | DMA / PIO / ADC / I2S / SPI / I2C のドライバ |
 | `log!`（UART0） | `log!` の Linux 通信路への出力 |
-| GPIO / UART / timer（alarm）ドライバと embedded-hal | |
+| GPIO / UART / timer（alarm、ポーリング）ドライバと embedded-hal | 割り込みハンドラの登録（`#[interrupt(procN)]`、ベクタ生成）と IRQ 駆動の alarm |
 | ELF 検査（共有 SRAM 上の LDREX/STREX、予算） | |
 
 ## 8. 進め方（最初の縦 1 本）

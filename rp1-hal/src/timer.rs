@@ -67,7 +67,21 @@ impl<const N: u8> Alarm<N> {
     pub fn clear(&mut self) {
         write(0x400a_c034, 1 << N);
     }
-    pub fn enable_interrupt(&mut self) {
+    /// Unmask this alarm's timer interrupt.
+    ///
+    /// v0.1 alarms are polling-only ([`Alarm::pending`] / [`Alarm::clear`]): `rp1-rt` has no
+    /// handler registration and every vector points at a default handler that never returns.
+    ///
+    /// ```compile_fail,E0133
+    /// let mut alarm = unsafe { rp1_hal::timer::Alarm::<0>::new() };
+    /// alarm.enable_interrupt(); // unsafe: no handler can be registered in v0.1
+    /// ```
+    ///
+    /// # Safety
+    /// Before this IRQ is enabled in the NVIC and unmasked on the CPU, the caller has
+    /// installed its own handler for it (its own vector table via VTOR); otherwise the core
+    /// parks in the default handler.
+    pub unsafe fn enable_interrupt(&mut self) {
         write(0x400a_e038, 1 << N);
     }
     pub fn disable_interrupt(&mut self) {

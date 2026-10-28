@@ -167,6 +167,7 @@ fn proc1_main(core: Proc1, p: rp1::Proc1Resources) -> ! {
 fn sample() -> u32 { /* ... */ 0 }
 
 // 割り込みはコアを明示する。そのコアの NVIC とベクタ表にだけ登録される。
+// （v0.2 以降の案。v0.1 は未実装で、alarm はポーリング専用。design.md §5.1）
 #[interrupt(proc1)]
 #[isram]
 fn TIMER_IRQ_1() { /* ... */ }
