@@ -75,6 +75,7 @@ lab/           実験・診断（公開 API ではない）
 予算超過は linker の ASSERT でエラー。
 
 **実測（HW、2026-10-29、`<lab-log>`）**: M3 のコアクロックは **約 50 MHz**（SysTick 50154 / timer 1004 µs）。
+これは clk_sys が XOSC のままだったため。`clocks::Authority::init` が clk_sys を PLL_SYS 200 MHz（公式ファームと同じ）へ切り替えた後は SysTick 200099 / timer 1000 µs（HW、`<lab-log>`）。以下のサイクル数は 50 MHz 時のもの。
 1 回あたり: DSRAM 読み 6.0 / 書き 5.0 サイクル、共有 SRAM 読み書き 12.6、DDR（outbound 窓）読み 66（1.32 µs）、posted 書き 26.8（0.54 µs、`dsb` を足しても同じ、STM の 4 語バーストでも 23.6/語）。
 PCIe を 2〜200 µs 空けても書き・読みの時間は変わらない（ASPM の復帰待ちではない）。
 全語を DSRAM に置いたリングでも、コードが共有 SRAM にあると push 820 / pop 843 サイクル/件、ISRAM に置くと 314 / 320 になる（命令取得が律速）。
@@ -346,3 +347,4 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | 2026-10-28 | hwirq58 は rp1-mailbox が専有し UIO と共有できない（HW）。mailbox・SCMI・remoteproc を disabled にすれば UIO が取れ、IRQ 往復 p50 71 µs（うち M3 の SCMI 処理約 60 µs）、通知ごとに空振り 1 回（HW、codexA2）。SCMI クロック（既定）と両立しないので v0.1 は mailbox/SCMI を残してポーリング（feat/v0.1-core の決定と同じ） | 実機検証 codexA / codexA2 |
 | 2026-10-29 | ローダー rp1boot v0.1: stable Rust（build-std なし）、DTB と overlay は純 Rust の `rp1-dt`（libfdt と同じ意味、`cargo rp1 check --dtb` と共用）、束は非圧縮 Image を入れてローダーで展開しない、EL2 で恒等写像のキャッシュを有効にしてから SHA-256。PCIe RC には触らず、RP1 の冷起動は Linux の最初の PERSTn 解除を最大 20 s 待つ。失敗は UART10 に理由を出して停止 | HW（hwrun5、cold boot 2 回 + 負例 1 回）: 電源 → `~ #` 約 31 s（PoC 84〜87 s）、ローダー 1.1 s、dual-core・SCMI v2.0・ttyAMA1・ドアベル・SHM_PASS 成立。束の 1 bit 破損を拒否（loader.md §6） |
 | 2026-10-29 | ライブラリのホットパス（ring の push/pop とバッチ版、SCMI・PCIe エンドポイントの poll の空振り判定）を既定で ISRAM に置き、冷たい経路は `#[rp1_rt::cold]` で共有 SRAM に残す。ring に `push_slice` / `pop_into` を追加。v0.2 の自動配置（共通 ISRAM イメージ分）を `cargo rp1 build` として実装 | HW（<lab-log> boot 2 回）: M3 は約 50 MHz で、共有 SRAM の命令取得が ring の律速。Linux→RP1 0.345 → 5.30 MB/s、RP1→Linux 0.763 → 4.58 MB/s（バッチ）。RP1→Linux は posted 書き込み 0.54 µs/語が律速 |
+| 2026-10-29 | 上の 2026-10-28「PLL / clk_sys を書かない」を改める。`clocks::Authority::init`（旧 `adopt`）が、`cold::clocks` でロックした PLL_SYS（1 GHz /5 /1）へ clk_sys の mux を切り替える（CLK_SYS_CTRL.SRC=2 のみ書き、CLK_SYS_SEL=4 を待つ。DIV_INT=1 と PLL の組を事前に確認、200 MHz 以外は不可）。`Clocks` はレジスタから読み戻した値で、I2C の SCL カウントは clk_sys から計算、UART/log は clk_uart を読む。レジスタ待ちは 1 MHz タイマーで 10 ms | HW（<lab-log> boot 2 回）: SysTick 200.1 / 199.9 MHz、SEL=4。I2C SCL 100.1 / 400.0 kHz（ESP32 RMT）。バッチ ring RP1→Linux 4.41 → 14.14 MB/s、Linux→RP1 5.57 → 22.20 MB/s、ドアベル p50 4.43 → 2.32 µs。SCMI の uart 50 MHz / uart_apb 100 MHz は clk_sys と独立（PLL_SYS PRI_PH、DOC clk-rp1）で変わらない。PoC で実機確認済みの手順（codex/clk-sys-200-20261022）の移植 |

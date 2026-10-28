@@ -23,7 +23,7 @@ Linux 6.12 の SCMI クロック・UIO ドアベル・共有メモリ（ring / b
 |---|---|---|
 | `rp1-regdb` / `rp1-pac` | レジスタ DB・PAC 生成器・検証器 / 生成 PAC（`Peripherals::take()` は `unsafe`） | STATIC |
 | `rp1-macros` / `rp1-rt` | 2 コア 1 イメージ起動、`#[entry(proc0/1)]`、proc1 起動、`#[shared]`+`SharedSafe`、`#[isram]`、`#[proc0]`/`#[proc1]`、`Spsc` | HW（両コア起動、.bss 初期化、`Spsc` 受け渡し、hwrun4/5）。割り込みハンドラ登録（`#[interrupt]`）は未実装（v0.2） |
-| `rp1-hal` | GPIO / UART / timer（alarm はポーリング専用）+ embedded-hal 1.0、`cold`（冷起動と PCIe エンドポイント再設定）、clocks（`adopt` で照合）、`log!`（UART0）、SCMI クロックサーバー（Base+Clock 2.0、ポーリング）、shm の RP1 側 | HW: UART0 ログ、ドアベル、SCMI probe・clk_disable_unused 後も UART0 継続（hwrun2）、shm（hwrun3〜5）。STATIC のみ: SCMI RATE_SET 拒否、PCIe 再設定の故障経路、UART1 の外部送受信は未検証 |
+| `rp1-hal` | GPIO / UART / timer（alarm はポーリング専用）+ embedded-hal 1.0、`cold`（冷起動と PCIe エンドポイント再設定）、clocks（`init` で clk_sys を公式の 200 MHz へ、HW）、`log!`（UART0）、SCMI クロックサーバー（Base+Clock 2.0、ポーリング）、shm の RP1 側 | HW: UART0 ログ、ドアベル、SCMI probe・clk_disable_unused 後も UART0 継続（hwrun2）、shm（hwrun3〜5）。STATIC のみ: SCMI RATE_SET 拒否、PCIe 再設定の故障経路、UART1 の外部送受信は未検証 |
 | `rp1-proto` | `.note.rp1` v2、link ページ、SPSC ring（reject / overwrite、バッチ）、block、世代番号、起動束（bundle） | HW: ring 双方向 10^6 件欠落・破損 0、overwrite の Lost、block 1 MiB 一致（ポーリング）。STATIC のみ: 待機（通知）ハンドシェイク、overwrite の 2^32 周回（レビュー 2 #4） |
 | `rp1-linux` | UIO 経由の共有メモリクライアント（uncached） | HW（lab/shm-linux） |
 | `rp1-dt` | 純 Rust の FDT と overlay 適用（libfdt `fdtoverlay` と同じ結果を目標）、最終 DTB の衝突検査 | HW: lab の base DTB + app overlay（`fdtoverlay` と一致、STATIC でも比較）。一般の overlay は fixture とレビュー 2 #1/#3/#7 の反例を `fdtoverlay` と比較した範囲（STATIC） |

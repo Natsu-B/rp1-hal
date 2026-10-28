@@ -44,15 +44,17 @@ pull-up and 12 mA sink strength; **external pull-ups are required**. Initializat
 disables the pad output during mux selection. It releases only the owned I2C reset;
 cold bring-up must already have started GPIO bank0 and the raw microsecond timer.
 
-HW: the controller clock (`ic_clk`) measures **50 MHz**, although the adopted clock tuple
-reports `clk_sys` = 200 MHz: with counts computed for 200 MHz, SCL was 25 kHz and the
-high period was exactly HCNT + SPKLEN + 7 cycles of 20 ns. `Standard`, `Fast`, and
-`FastPlus` therefore program counts for 50 MHz with a 3-cycle (60 ns) spike filter:
-SCL high/low targets 4.6/5.4 us, 0.9/1.6 us and 0.4/0.6 us (I2C minimums kept), i.e.
-nominal 100 kHz, 400 kHz and 1 MHz. Measured rates are in the hardware RESULT. Actual
-timing depends on pull-ups, capacitance, stretching and FIFO service. No shared clock
-is programmed and SCMI ownership is unchanged. Clock drift fails admission. Why
-`clk_sys` is not 200 MHz is open (the unchecked CLK_SYS mux encoding, see `clocks.rs`).
+HW: the controller clock (`ic_clk`) is clk_sys. With clk_sys on XOSC it measured
+50 MHz (high period exactly HCNT + SPKLEN + 7 cycles of 20 ns); since
+`clocks::Authority::init` selects PLL_SYS it is 200 MHz. The driver computes the counts
+from `Clocks::sys_hz()` at init and `set_speed`: SCL high/low targets 4.6/5.4 us,
+0.9/1.6 us and 0.4/0.6 us (I2C minimums kept, nominal 100 kHz, 400 kHz, 1 MHz), a 50 ns
+spike filter (3 cycles at 50 MHz, 10 at 200 MHz) and 100 ns of pull-up rise taken off
+the low period. HW at 200 MHz (`<lab-log>`, ESP32
+RMT, 100 ns ticks): 100.1 kHz, 400.0 kHz, 1011 kHz (NACK probe only). Actual timing
+depends on pull-ups, capacitance, stretching and FIFO service. No shared clock is
+programmed and SCMI ownership is unchanged. A clock tree that no longer matches the
+`Clocks` value fails with `Precondition`.
 
 STATIC: address NACK, data NACK and arbitration loss map to embedded-hal's matching
 error kinds. Other aborts retain `IC_TX_ABRT_SOURCE`. FIFO errors are reported as
