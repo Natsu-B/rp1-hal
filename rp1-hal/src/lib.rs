@@ -5,6 +5,7 @@ pub mod cold;
 pub mod gpio;
 pub mod logging;
 pub mod scmi;
+pub mod shm;
 pub mod timer;
 pub mod uart;
 
