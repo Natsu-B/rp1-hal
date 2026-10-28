@@ -4,6 +4,7 @@ use rp1_hal::{gpio::Doorbell, log};
 use rp1_proto::{Error, link};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
+mod prof;
 #[shared]
 static VALUES: Spsc<u32, 8> = Spsc::new();
 /// Zero-initialised, so it lands in .bss. Each core zeroes its own DSRAM copy at startup;
@@ -124,12 +125,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut last = 0;
     let mut seen = 0;
     loop {
-        service_doorbell(&mut doorbell);
-        // Idle cost is one DDR load (not a 17-word read), so the doorbell stays responsive.
-        let sequence = control.sequence();
-        if sequence == seen {
-            continue;
-        }
+        let sequence = wait_command(&mut doorbell, &control, seen);
         let Ok(mut request) = control.read() else {
             continue;
         };
@@ -243,6 +239,14 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     }
                 }
             }
+            10 | 12 => errors = up_batch(&mut up, count, start),
+            11 | 13 => errors = down_batch(&mut down, count, start),
+            9 => {
+                // Lab micro-profile; RP1 holds the bulk writer role and uses it as DDR scratch.
+                let mut writer = unsafe { bulk.begin_write() };
+                prof::run(unsafe { writer.as_ptr() });
+                writer.commit();
+            }
             _ => errors = 1,
         }
         rp1_hal::shm::complete_posted_writes();
@@ -261,6 +265,55 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         )
         .unwrap();
     }
+}
+const BATCH: usize = 32;
+/// Batched RP1→Linux stream: one `head` store per `push_slice`; the loop itself runs from ISRAM.
+#[rp1_rt::isram]
+fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u32 {
+    let mut buf = [[0u32; 4]; BATCH];
+    let mut i = 0;
+    while i < count {
+        let k = (count - i).min(BATCH as u32) as usize;
+        for (j, b) in buf[..k].iter_mut().enumerate() {
+            *b = sample(i + j as u32);
+        }
+        let mut done = 0;
+        while done < k {
+            done += tx.push_slice(&buf[done..k]);
+            if now().wrapping_sub(start) > 180_000_000 {
+                return 1;
+            }
+        }
+        i += k as u32;
+    }
+    0
+}
+/// Batched Linux→RP1 stream: one `tail` store per `pop_into`, every message checked.
+#[rp1_rt::isram]
+fn down_batch(rx: &mut rp1_hal::shm::RingRx<Sample>, count: u32, start: u32) -> u32 {
+    let mut buf = [[0u32; 4]; BATCH];
+    let mut i = 0;
+    let mut errors = 0;
+    while i < count {
+        let want = (count - i).min(BATCH as u32) as usize;
+        match rx.pop_into(&mut buf[..want]) {
+            Ok(n) => {
+                for b in &buf[..n] {
+                    let s = sample(i);
+                    // Word compares: an array `!=` would call memcmp in shared SRAM.
+                    if (b[0] ^ s[0]) | (b[1] ^ s[1]) | (b[2] ^ s[2]) | (b[3] ^ s[3]) != 0 {
+                        errors += 1;
+                    }
+                    i += 1;
+                }
+            }
+            Err(_) => return errors + 1,
+        }
+        if now().wrapping_sub(start) > 180_000_000 {
+            return errors + 1;
+        }
+    }
+    errors
 }
 // ISRAM removes shared-SRAM instruction fetches from the DDR measurement; identical baseline loop.
 #[rp1_rt::isram]
@@ -285,6 +338,19 @@ unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
         unsafe { pointer.add(i).write_volatile(i as u32 ^ seed) };
     }
 }
+/// proc1 idle loop, from ISRAM: answer doorbells until the control block's sequence changes.
+/// Idle cost is one DDR load (not a 17-word read), so the doorbell stays responsive.
+#[rp1_rt::isram]
+fn wait_command(doorbell: &mut Doorbell, control: &rp1_hal::shm::Block<Control>, seen: u32) -> u32 {
+    loop {
+        service_doorbell(doorbell);
+        let sequence = control.sequence();
+        if sequence != seen {
+            return sequence;
+        }
+    }
+}
+#[inline(always)]
 fn service_doorbell(doorbell: &mut Doorbell) {
     if doorbell.pending() {
         doorbell.acknowledge();

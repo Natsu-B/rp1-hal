@@ -265,6 +265,72 @@ fn main() -> Result<()> {
         report[6],
         report[6] as f64 / 256.0
     );
+    // Batched streams: RP1 uses push_slice/pop_into from ISRAM, Linux uses the batch API too.
+    let mut batch = [[0u32; 4]; 64];
+    let start = request(&mut ctrl, 10, 10, count, 0)?;
+    let mut got = 0;
+    while got < count {
+        let n = up.pop_into(&mut batch)?;
+        for s in &batch[..n] {
+            if *s != sample(got) {
+                return Err(format!("up batch corrupt at {got}: {s:?}").into());
+            }
+            got += 1;
+        }
+        expired(start)?;
+    }
+    let report = response(&ctrl, 10, start)?;
+    println!(
+        "RING up_batch n={got} missing=0 corrupt=0 seconds={:.6} MBps={:.3} rp1_us={} us_per_msg={:.3}",
+        start.elapsed().as_secs_f64(),
+        count as f64 * 16.0 / start.elapsed().as_secs_f64() / 1e6,
+        report[6],
+        report[6] as f64 / count as f64
+    );
+    let start = request(&mut ctrl, 11, 11, count, 0)?;
+    let mut sent = 0;
+    while sent < count {
+        let k = (count - sent).min(batch.len() as u32) as usize;
+        for (j, b) in batch[..k].iter_mut().enumerate() {
+            *b = sample(sent + j as u32);
+        }
+        sent += down.push_slice(&batch[..k])? as u32;
+        expired(start)?;
+    }
+    let report = response(&ctrl, 11, start)?;
+    println!(
+        "RING down_batch n={sent} missing=0 corrupt=0 seconds={:.6} MBps={:.3} rp1_us={} us_per_msg={:.3}",
+        start.elapsed().as_secs_f64(),
+        count as f64 * 16.0 / start.elapsed().as_secs_f64() / 1e6,
+        report[6],
+        report[6] as f64 / count as f64
+    );
+    // Isolated batch costs (Linux idle on the link page), as ISOLATED above.
+    for i in 0..128 {
+        down.push(&sample(i))?;
+    }
+    let start = request(&mut ctrl, 13, 13, 128, 0)?;
+    let report = response(&ctrl, 13, start)?;
+    println!(
+        "ISOLATED down_pop_batch n=128 rp1_us={} us_per_msg={:.3}",
+        report[6],
+        report[6] as f64 / 128.0
+    );
+    let start = request(&mut ctrl, 12, 12, 256, 0)?;
+    let report = response(&ctrl, 12, start)?;
+    for i in 0..256 {
+        if up.pop()? != Some(sample(i)) {
+            return Err(format!("isolated batch up corrupt at {i}").into());
+        }
+    }
+    println!(
+        "ISOLATED up_push_batch n=256 rp1_us={} us_per_msg={:.3}",
+        report[6],
+        report[6] as f64 / 256.0
+    );
+    let start = request(&mut ctrl, 9, 9, 0, 0)?;
+    let report = response(&ctrl, 9, start)?;
+    println!("PROFILE rp1_us={} (results on UART0)", report[6]);
     println!("SHM_PASS");
     Ok(())
 }

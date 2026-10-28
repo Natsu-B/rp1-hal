@@ -14,6 +14,8 @@ for x in /sys/class/uio/uio*; do
     case "$n" in rp1:link) L=/dev/${x##*/};; rp1:doorbell) D=/dev/${x##*/};; esac
 done
 cat /proc/iomem
+echo ASPM_POLICY=$(cat /sys/module/pcie_aspm/parameters/policy 2>&1)
+for d in /sys/bus/pci/devices/*; do echo "PCI $d $(cat $d/vendor) $(cat $d/device)"; ls $d/link 2>/dev/null && grep . $d/link/* 2>/dev/null; od -A x -t x4 -N 256 $d/config; done
 /bin/linux-doorbell "$L" "$D" 1000
 echo DOORBELL_BEFORE_RC=$?
 /bin/shm-linux 1000000
