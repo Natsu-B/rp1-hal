@@ -26,5 +26,5 @@ BCM2712 上の Linux との AMP 連携、および RP1 ファームを載せる 
 | `rp1-build` | 宣言 → linker script・note・DT overlay（dtbo）・資源型の生成 | ビルド済み。overlay は scmi_linux.dtb のコピーに `fdtoverlay` で適用できることを確認（STATIC） |
 | `cargo-rp1` | ELF 検査（共有 SRAM 上の LDREX/STREX、予算、note、PT_LOAD の重なり）、`--dtb` で overlay 適用確認 | ビルド済み。release の例で検査が通る |
 | `examples/dual-core` | proc0/proc1 の `log!`、`#[shared] Spsc`、GPIO27 ドアベルのエコー | ビルド済み・実機未確認 |
-| `examples/linux-doorbell` | UIO で link / doorbell / events を mmap してドアベル往復（ポーリング） | aarch64-musl ビルド済み・実機未確認 |
+| `examples/linux-doorbell` | UIO で link / doorbell を mmap してドアベル往復（返事はポーリング、UIO IRQ は使わない） | aarch64-musl ビルド済み・実機未確認 |
 | ローダー（`rp1boot`） | — | 未着手（範囲外） |
