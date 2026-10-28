@@ -6,3 +6,8 @@ license.workspace = true
 
 [dependencies]
 rp1-macros = { path = "../rp1-macros" }
+
+[features]
+# Place the ring hot paths (push/pop and their batch forms) in core-local ISRAM on RP1.
+default = ["isram"]
+isram = []

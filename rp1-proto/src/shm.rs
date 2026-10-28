@@ -296,6 +296,8 @@ pub struct RingTx<T> {
     mask: u32,
     overflow: Overflow,
     head: u32,
+    /// Last `tail` read from the local `ctrl`; reread only when the ring looks full.
+    tail_seen: u32,
     dropped: u32,
     /// `dropped` changed since it was last stored remotely.
     dropped_dirty: bool,
@@ -317,12 +319,15 @@ impl<T: Message> RingTx<T> {
         overflow: Overflow,
     ) -> Result<Self, Error> {
         check_ring::<T>(data, data_len, ctrl, ctrl_len, depth)?;
+        let head = unsafe { ld(data, HEAD) };
         Ok(Self {
             data,
             ctrl,
             mask: depth - 1,
             overflow,
-            head: unsafe { ld(data, HEAD) },
+            head,
+            // Looks full until the first push reads the real tail.
+            tail_seen: head.wrapping_sub(depth),
             dropped: unsafe { ld(data, DROPPED) },
             dropped_dirty: false,
             _t: PhantomData,
@@ -340,30 +345,53 @@ impl<T: Message> RingTx<T> {
         let tail = unsafe { ld(self.ctrl, TAIL) };
         (self.mask + 1).saturating_sub(self.head.wrapping_sub(tail))
     }
+    /// Free slots for a reject-mode push, rereading `tail` only when the cached one says
+    /// fewer than `want` are free.
+    #[inline(always)]
+    fn reject_free(&mut self, want: u32) -> u32 {
+        let depth = self.mask + 1;
+        let free = depth.saturating_sub(self.head.wrapping_sub(self.tail_seen));
+        if free >= want {
+            return free;
+        }
+        self.tail_seen = unsafe { ld(self.ctrl, TAIL) };
+        depth.saturating_sub(self.head.wrapping_sub(self.tail_seen))
+    }
+    #[inline(always)]
+    fn store_dropped(&mut self) {
+        if self.dropped_dirty {
+            self.dropped_dirty = false;
+            unsafe { st(self.data, DROPPED, self.dropped) };
+        }
+    }
+    /// Fill the slot for index `head + k` (payload, seq, length); not yet published.
+    #[inline(always)]
+    fn write_slot(&self, k: u32, value: &T) {
+        let index = self.head.wrapping_add(k);
+        let slot = self.slot(index);
+        unsafe {
+            copy_to_mapping(slot.add(8), ptr::from_ref(value).cast(), size_of::<T>());
+            st(slot, 0, index);
+            st(slot, 4, size_of::<T>() as u32);
+        }
+    }
     /// Publish one message. Order: payload, seq, length → barrier → head (protocol.md §2.3).
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn push(&mut self, value: &T) -> Result<(), Error> {
         let len = size_of::<T>() as u32;
         let slot = self.slot(self.head);
         match self.overflow {
             Overflow::Reject => {
-                let tail = unsafe { ld(self.ctrl, TAIL) };
-                if self.head.wrapping_sub(tail) > self.mask {
+                if self.reject_free(1) == 0 {
                     // Counted locally; stored with the next successful push, so a writer
                     // spinning on `Full` issues no remote stores into the reader's memory.
                     self.dropped = self.dropped.wrapping_add(1);
                     self.dropped_dirty = true;
                     return Err(Error::Full);
                 }
-                if self.dropped_dirty {
-                    self.dropped_dirty = false;
-                    unsafe { st(self.data, DROPPED, self.dropped) };
-                }
+                self.store_dropped();
                 barrier();
-                unsafe {
-                    copy_to_mapping(slot.add(8), ptr::from_ref(value).cast(), size_of::<T>());
-                    st(slot, 0, self.head);
-                    st(slot, 4, len);
-                }
+                self.write_slot(0, value);
             }
             Overflow::Overwrite => unsafe {
                 st(slot, 4, BUSY | len);
@@ -378,6 +406,33 @@ impl<T: Message> RingTx<T> {
         self.head = self.head.wrapping_add(1);
         unsafe { st(self.data, HEAD, self.head) };
         Ok(())
+    }
+    /// Publish up to `values.len()` messages with one `head` store (and one barrier) for the
+    /// whole batch: the reader sees all of them at once. Returns how many were written
+    /// (`0` if the ring is full). Unlike [`RingTx::push`] a short write does not count as
+    /// `dropped`; the caller still holds the rest. `overwrite` rings push one by one.
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
+    pub fn push_slice(&mut self, values: &[T]) -> usize {
+        if self.overflow == Overflow::Overwrite {
+            for v in values {
+                let _ = self.push(v);
+            }
+            return values.len();
+        }
+        let want = values.len().min(u32::MAX as usize) as u32;
+        let n = self.reject_free(want).min(want);
+        if n == 0 {
+            return 0;
+        }
+        self.store_dropped();
+        barrier();
+        for (k, v) in values[..n as usize].iter().enumerate() {
+            self.write_slot(k as u32, v);
+        }
+        barrier();
+        self.head = self.head.wrapping_add(n);
+        unsafe { st(self.data, HEAD, self.head) };
+        n as usize
     }
     /// The reader armed a notification (`waiting`); the caller decides how to notify.
     ///
@@ -408,6 +463,8 @@ pub struct RingRx<T> {
     mask: u32,
     overflow: Overflow,
     tail: u32,
+    /// Last `head` read from the local `data`; reread only when the ring looks empty.
+    head_seen: u32,
     _t: PhantomData<fn() -> T>,
 }
 unsafe impl<T> Send for RingRx<T> {}
@@ -425,12 +482,14 @@ impl<T: Message> RingRx<T> {
         overflow: Overflow,
     ) -> Result<Self, Error> {
         check_ring::<T>(data, data_len, ctrl, ctrl_len, depth)?;
+        let tail = unsafe { ld(ctrl, TAIL) };
         Ok(Self {
             data,
             ctrl,
             mask: depth - 1,
             overflow,
-            tail: unsafe { ld(ctrl, TAIL) },
+            tail,
+            head_seen: tail,
             _t: PhantomData,
         })
     }
@@ -450,29 +509,46 @@ impl<T: Message> RingRx<T> {
         self.tail = self.tail.wrapping_add(1);
         unsafe { st(self.ctrl, TAIL, self.tail) };
     }
+    /// Messages readable in reject mode, rereading `head` only when the cached one shows
+    /// fewer than `want`. A reread is followed by a barrier so slot reads cannot pass it.
+    #[inline(always)]
+    fn reject_available(&mut self, want: u32) -> Result<u32, Error> {
+        let mut available = self.head_seen.wrapping_sub(self.tail);
+        if available < want {
+            self.head_seen = unsafe { ld(self.data, HEAD) };
+            barrier();
+            available = self.head_seen.wrapping_sub(self.tail);
+        }
+        if available > self.mask + 1 {
+            return Err(Error::Corrupt);
+        }
+        Ok(available)
+    }
+    /// Read the slot at `tail + k` (reject mode): checks seq and length.
+    #[inline(always)]
+    fn read_slot(&self, k: u32) -> Result<T, Error> {
+        let index = self.tail.wrapping_add(k);
+        let slot = self.slot(index);
+        let (seq, word) = unsafe { (ld(slot, 0), ld(slot, 4)) };
+        if seq != index {
+            return Err(Error::Corrupt);
+        }
+        if word != size_of::<T>() as u32 {
+            return Err(Error::Invalid);
+        }
+        Ok(unsafe { read_value::<T>(slot.add(8)) })
+    }
     /// `Ok(None)` when empty. `Err(Lost(n))` (overwrite only) reports skipped messages; the
     /// reader has already moved to the oldest surviving slot, so just call `pop` again.
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn pop(&mut self) -> Result<Option<T>, Error> {
         let len = size_of::<T>() as u32;
         match self.overflow {
             Overflow::Reject => {
-                let available = self.available();
-                if available == 0 {
+                if self.reject_available(1)? == 0 {
                     return Ok(None);
                 }
-                if available > self.mask + 1 {
-                    return Err(Error::Corrupt);
-                }
-                barrier();
-                let slot = self.slot(self.tail);
-                let (seq, word) = unsafe { (ld(slot, 0), ld(slot, 4)) };
-                if seq != self.tail {
-                    return Err(Error::Corrupt);
-                }
-                if word != len {
-                    return Err(Error::Invalid);
-                }
-                let value = unsafe { read_value::<T>(slot.add(8)) };
+                let value = self.read_slot(0)?;
                 self.consume();
                 Ok(Some(value))
             }
@@ -512,6 +588,41 @@ impl<T: Message> RingRx<T> {
                 Err(Error::NotReady)
             }
         }
+    }
+    /// Read up to `out.len()` messages and release them with one `tail` store. Returns how
+    /// many were read (`Ok(0)` when empty). If a slot fails its check after some were read,
+    /// those are returned and the error repeats on the next call. `overwrite` rings pop one by
+    /// at most one message per call (and may return `Err(Lost(n))` as [`RingRx::pop`]).
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
+    pub fn pop_into(&mut self, out: &mut [T]) -> Result<usize, Error> {
+        if self.overflow == Overflow::Overwrite {
+            // One message per call so `Err(Lost(n))` is never swallowed by a batch.
+            return match out.first_mut() {
+                None => Ok(0),
+                Some(slot) => Ok(self.pop()?.map(|v| *slot = v).is_some() as usize),
+            };
+        }
+        let want = out.len().min(u32::MAX as usize) as u32;
+        let n = self.reject_available(want)?.min(want);
+        let mut done = 0;
+        let mut result = Ok(());
+        while done < n {
+            match self.read_slot(done) {
+                Ok(v) => out[done as usize] = v,
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
+            done += 1;
+        }
+        if done > 0 {
+            barrier();
+            self.tail = self.tail.wrapping_add(done);
+            unsafe { st(self.ctrl, TAIL, self.tail) };
+            return Ok(done as usize);
+        }
+        result.map(|()| 0)
     }
     /// Arm `waiting`, then re-check `head` so a push racing with the arm is not missed.
     /// Returns `true` if the ring is still empty and the caller may sleep.
@@ -752,6 +863,66 @@ mod tests {
         // Corruption of a slot sequence is detected.
         unsafe { st(d, CONTROL_SIZE + 16, 7) };
         assert_eq!(again.pop(), Err(Error::Corrupt));
+    }
+
+    #[test]
+    fn batch_push_and_pop_publish_once() {
+        let mut data = mem::<{ CONTROL_SIZE + 8 * 16 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        unsafe {
+            st(d, HEAD, u32::MAX - 2);
+            st(c, TAIL, u32::MAX - 2);
+        }
+        let mut tx = unsafe { RingTx::<u64>::attach(d, 256, c, 128, 8, Overflow::Reject) }.unwrap();
+        let mut rx = unsafe { RingRx::<u64>::attach(d, 256, c, 128, 8, Overflow::Reject) }.unwrap();
+        let values: vec::Vec<u64> = (0..20).collect();
+        // Only the free slots are written; one head store covers the batch.
+        assert_eq!(tx.push_slice(&values[..5]), 5);
+        assert_eq!(unsafe { ld(d, HEAD) }, (u32::MAX - 2).wrapping_add(5));
+        assert_eq!(tx.push_slice(&values[5..]), 3);
+        assert_eq!(tx.push_slice(&values[8..]), 0);
+        assert_eq!(tx.push(&99), Err(Error::Full));
+        let mut out = [0u64; 3];
+        assert_eq!(rx.pop_into(&mut out), Ok(3));
+        assert_eq!(out, [0, 1, 2]);
+        assert_eq!(unsafe { ld(c, TAIL) }, (u32::MAX - 2).wrapping_add(3));
+        // The writer sees the released slots only through the stored tail.
+        assert_eq!(tx.push_slice(&values[8..]), 3);
+        let mut out = [0u64; 16];
+        assert_eq!(rx.pop_into(&mut out), Ok(8));
+        assert_eq!(out[..8], values[3..11]);
+        assert_eq!(rx.pop_into(&mut out), Ok(0));
+        assert_eq!(rx.pop(), Ok(None));
+        // Single push/pop interleave with batches.
+        tx.push(&50).unwrap();
+        assert_eq!(tx.push_slice(&[51, 52]), 2);
+        assert_eq!(rx.pop(), Ok(Some(50)));
+        assert_eq!(rx.pop_into(&mut out[..1]), Ok(1));
+        assert_eq!(out[0], 51);
+        // A corrupt slot after a good one: the good one is returned, the error follows.
+        assert_eq!(tx.push_slice(&[53, 54]), 2);
+        let bad = rx.tail().wrapping_add(2);
+        unsafe { st(d, CONTROL_SIZE + (bad & 7) as usize * 16, 7) };
+        assert_eq!(rx.pop_into(&mut out), Ok(2));
+        assert_eq!(out[..2], [52, 53]);
+        assert_eq!(rx.pop_into(&mut out), Err(Error::Corrupt));
+    }
+
+    #[test]
+    fn overwrite_pop_into_reports_lost() {
+        let mut data = mem::<{ CONTROL_SIZE + 4 * 16 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let mut tx =
+            unsafe { RingTx::<u64>::attach(d, 192, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        let mut rx =
+            unsafe { RingRx::<u64>::attach(d, 192, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        assert_eq!(tx.push_slice(&[0, 1, 2, 3, 4, 5]), 6);
+        let mut out = [0u64; 8];
+        assert_eq!(rx.pop_into(&mut out), Err(Error::Lost(2)));
+        assert_eq!(rx.pop_into(&mut out), Ok(1));
+        assert_eq!(out[0], 2);
     }
 
     #[test]
