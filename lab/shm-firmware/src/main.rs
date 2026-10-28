@@ -29,6 +29,9 @@ fn now() -> u32 {
 fn link_read(offset: usize) -> u32 {
     unsafe { ((rp1_proto::LINK_START as usize + offset) as *const u32).read_volatile() }
 }
+fn reg(address: usize) -> u32 {
+    unsafe { (address as *const u32).read_volatile() }
+}
 fn sample(i: u32) -> Sample {
     [i, !i, i ^ 0x5a96_c33c, 0x5250_3148]
 }
@@ -36,9 +39,18 @@ fn sample(i: u32) -> Sample {
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
-    let (clocks, mut scmi) = p.clock_authority.adopt(200_000_000).unwrap();
+    let (clocks, mut scmi) = p.clock_authority.init(200_000_000).unwrap();
     rp1::log::init(&mut core).unwrap();
-    log!("proc0 clocks programmed={}\n", programmed).unwrap();
+    log!(
+        "proc0 clocks programmed={} sys_hz={} uart_hz={} clk_sys ctrl=0x{:x} div={} sel=0x{:x}\n",
+        programmed,
+        clocks.sys_hz(),
+        clocks.uart_hz(),
+        reg(0x4001_8014),
+        reg(0x4001_8018),
+        reg(0x4001_8020)
+    )
+    .unwrap();
     log!("proc0 pcie {:?}\n", unsafe {
         rp1_hal::cold::endpoint_and_syscfg(programmed)
     })
