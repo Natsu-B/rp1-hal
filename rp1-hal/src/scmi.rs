@@ -359,7 +359,7 @@ impl Transport for Rp1Transport {
     }
 }
 
-/// Physical clock state from the registers adopted by [`crate::clocks`] (read twice; any
+/// Physical clock state from the registers checked by [`crate::clocks`] (read twice; any
 /// difference from the admitted tuple reads as a hardware error).
 pub struct Rp1Clocks {
     _private: (),
@@ -368,13 +368,14 @@ pub struct Rp1Clocks {
 impl ClockHardware for Rp1Clocks {
     fn state(&mut self, id: u32) -> Result<PhysicalState, Status> {
         match id {
-            // clk_sys/2 from PLL_SYS PRIM (1 GHz / 5 / 1 / 2); enabled = PRIM PRI_PH bit 4 (PoC).
+            // PLL_SYS PRI_PH = PLL_SYS primary (1 GHz / 5 / 1) / 2, a PLL output independent of
+            // the clk_sys mux (DOC clk-rp1 `pll_sys_pri_ph`); enabled = PRIM bit 4 (PoC).
             0 if crate::clocks::running_tuple_admitted() => Ok(PhysicalState {
                 rate_hz: 100_000_000,
                 enabled: read(0x4002_0010) & 0x10 != 0,
             }),
-            1 if crate::clocks::uart_clock_is_50mhz() => Ok(PhysicalState {
-                rate_hz: 50_000_000,
+            1 if crate::clocks::uart_hz() == Some(RP1_CLOCKS[1].rate_hz) => Ok(PhysicalState {
+                rate_hz: RP1_CLOCKS[1].rate_hz,
                 enabled: true,
             }),
             0 | 1 => Err(Status::HardwareError),
@@ -383,7 +384,7 @@ impl ClockHardware for Rp1Clocks {
     }
 }
 
-/// The SCMI server on proc0. Created by [`crate::clocks::Authority::adopt`].
+/// The SCMI server on proc0. Created by [`crate::clocks::Authority::init`].
 pub struct Service {
     server: Server<'static, Rp1Clocks>,
     transport: Rp1Transport,

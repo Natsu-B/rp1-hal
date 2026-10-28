@@ -24,9 +24,9 @@ fn bss_check(marker: u32) -> u32 {
 
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
-    // After a loader reset RP1 is at cold defaults: program clocks, then adopt them.
+    // After a loader reset RP1 is at cold defaults: lock PLL_SYS, then select clk_sys = 200 MHz.
     let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
-    let (_clocks, mut scmi) = p.clock_authority.adopt(200_000_000).unwrap();
+    let (_clocks, mut scmi) = p.clock_authority.init(200_000_000).unwrap();
     rp1::log::init(&mut core).unwrap();
     log!("proc0 clocks programmed={}\n", programmed).unwrap();
     // The host is waiting for the PCIe link; bring the endpoint up before anything slow.

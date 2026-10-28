@@ -26,9 +26,12 @@ impl<const N: u8> Token<N> {
         if tx_rx_pins(N) != Some((TX, RX, F)) {
             return Err(Error::Invalid);
         }
+        if !clocks.still_current() {
+            return Err(Error::Precondition);
+        }
         write(0x4001_7004, 1 << (26 + N));
         poll(0x4001_401c, 1 << (26 + N), 1 << (26 + N))?;
-        unsafe { Uart::new(clocks.uart_hz, baud) }
+        unsafe { Uart::new(clocks.uart_hz(), baud) }
     }
 }
 /// Bank-0 (TX, RX, function select) of UART `n` (RP1 pin mux, as Linux `pinctrl-rp1`).

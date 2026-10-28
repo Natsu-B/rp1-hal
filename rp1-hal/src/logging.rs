@@ -31,10 +31,8 @@ impl Logger {
         if self.ready.load(Ordering::Acquire) != 0 {
             return Err(Error::Precondition);
         }
-        // The 115200-class divisors assume clk_uart = 50 MHz XOSC; refuse anything else.
-        if !crate::clocks::uart_clock_is_50mhz() {
-            return Err(Error::Precondition);
-        }
+        // Divisors come from the clk_uart rate read back from the registers.
+        let uart_hz = crate::clocks::uart_hz().ok_or(Error::Precondition)?;
         write(0x4001_7004, 1 << 19);
         for pin in [14, 15] {
             write(0x400d_0004 + pin * 8, 4);
@@ -42,7 +40,7 @@ impl Logger {
         }
         write(0x4001_7004, 1 << 26);
         poll(0x4001_401c, 1 << 26, 1 << 26)?;
-        let _uart = unsafe { Uart::<0>::new(50_000_000, baud)? };
+        let _uart = unsafe { Uart::<0>::new(uart_hz, baud)? };
         self.ready.store(1, Ordering::Release);
         Ok(())
     }

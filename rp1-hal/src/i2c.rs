@@ -1,6 +1,6 @@
 //! Polling, seven-bit DesignWare master (DOC: RP1 §9 and Linux i2c-designware).
-//! Runs from the controller clock as measured on hardware (50 MHz) without changing shared
-//! clocks or SCMI votes.
+//! SCL counts are computed from `ic_clk` = clk_sys as reported by [`crate::clocks::Clocks`]
+//! (HW: 50 MHz on XOSC, 200 MHz on PLL_SYS); no shared clock or SCMI vote is changed.
 //! External pull-ups are required. Only bank-0 routes are exposed; I2C4..6 are internal.
 use crate::{
     gpio::{Function, Pin},
@@ -98,6 +98,7 @@ pub struct I2c<const N: u8, const SDA: u8, const SCL: u8> {
     _scl: Pin<SCL, Function<3>>,
     rx_depth: usize,
     usable: bool,
+    clocks: crate::clocks::Clocks,
 }
 
 impl<const N: u8> Token<N> {
@@ -120,9 +121,10 @@ impl<const N: u8> Token<N> {
         Pin<SDA>: Sda<N>,
         Pin<SCL>: Scl<N>,
     {
-        if clocks.sys_hz != 200_000_000 || !crate::clocks::running_tuple_admitted() {
+        if !clocks.still_current() {
             return Err(Error::Precondition);
         }
+        let counts = timing(clocks.sys_hz(), speed)?;
         write(RESETS_CLR0, reset_bit(N));
         crate::poll(RESETS_DONE0, reset_bit(N), reset_bit(N)).map_err(|_| Error::Timeout)?;
         let mut io = Mmio {
@@ -136,53 +138,68 @@ impl<const N: u8> Token<N> {
         io.read(CLEAR);
         io.write(RX_TL, 0);
         io.write(TX_TL, 0);
-        configure(&mut io, speed);
+        configure(&mut io, counts);
         let rx_depth = ((io.read(PARAM) >> 8) & 255) as usize + 1;
         Ok(I2c {
             _sda: sda.into_i2c(),
             _scl: scl.into_i2c(),
             rx_depth,
             usable: true,
+            clocks: *clocks,
         })
     }
 }
 
-/// HW: the DesignWare `ic_clk` runs at 50 MHz although `Clocks::sys_hz` reports 200 MHz.
-/// With the old 200 MHz counts SCL measured high = HCNT + SPKLEN + 7 = 810 and
-/// low = LCNT + 1 (+~5 rise) cycles of 20 ns, i.e. 25 kHz for "100 kHz".
-const IC_CLK_HZ: u32 = 50_000_000;
-/// 3 cycles = 60 ns >= the 50 ns spike filter of Fm/Fm+; small enough for 1 MHz.
-const SPIKE_CYCLES: u32 = 3;
-/// Cycles the pull-up rise adds to the measured low period (HW, 100 kHz capture).
-const RISE_CYCLES: u32 = 5;
+/// DW spike filter target: the 50 ns of Fm/Fm+ (HW at 50 MHz: 3 cycles = 60 ns).
+const SPIKE_NS: u32 = 50;
+/// Time the pull-up rise adds to the measured low period (HW, 100 kHz capture: 5 cycles at 20 ns).
+const RISE_NS: u32 = 100;
 
-/// `(speed mode, HCNT, LCNT)` for the SCL high/low targets below at `IC_CLK_HZ`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Counts {
+    mode: u32,
+    spklen: u32,
+    hcnt: u32,
+    lcnt: u32,
+}
+
+/// Counts for the SCL high/low targets of `speed` at `ic_clk_hz` (= clk_sys).
 /// Targets keep the I2C minimums (Sm 4.0/4.7 us, Fm 0.6/1.3 us, Fm+ 0.26/0.5 us).
-fn timing(speed: Speed) -> (u32, u32, u32) {
+/// HW (DesignWare, measured at 50 MHz): high = HCNT + SPKLEN + 7, low = LCNT + 1 cycles + rise.
+fn timing(ic_clk_hz: u32, speed: Speed) -> Result<Counts, Error> {
     let (mode, high_ns, low_ns) = match speed {
         Speed::Standard => (1, 4_600, 5_400),
         Speed::Fast => (2, 900, 1_600),
         Speed::FastPlus => (2, 400, 600),
     };
-    let cycles = |ns: u32| ns * (IC_CLK_HZ / 1_000_000) / 1_000;
-    (
-        mode,
-        cycles(high_ns) - SPIKE_CYCLES - 7,
-        cycles(low_ns) - 1 - RISE_CYCLES,
-    )
+    let cycles = |ns: u32| (u64::from(ns) * u64::from(ic_clk_hz)).div_ceil(1_000_000_000);
+    let spklen = cycles(SPIKE_NS).max(1);
+    let hcnt = cycles(high_ns).checked_sub(spklen + 7);
+    let lcnt = cycles(low_ns).checked_sub(1 + cycles(RISE_NS));
+    match (hcnt, lcnt) {
+        // DesignWare minimums: HCNT >= SPKLEN + 5, LCNT >= SPKLEN + 7; 16-bit registers.
+        (Some(h), Some(l)) if h >= spklen + 5 && l >= spklen + 7 && h.max(l) <= 0xffff => {
+            Ok(Counts {
+                mode,
+                spklen: spklen as u32,
+                hcnt: h as u32,
+                lcnt: l as u32,
+            })
+        }
+        _ => Err(Error::Invalid),
+    }
 }
-fn configure(io: &mut impl Io, speed: Speed) {
-    let (mode, high, low) = timing(speed);
-    let (h, l) = if speed == Speed::Standard {
+fn configure(io: &mut impl Io, c: Counts) {
+    let (h, l) = if c.mode == 1 {
         (SS_HCNT, SS_LCNT)
     } else {
         (FS_HCNT, FS_LCNT)
     };
-    io.write(SPKLEN, SPIKE_CYCLES);
-    io.write(h, high);
-    io.write(l, low);
-    io.write(HOLD, low / 2);
-    io.write(CON, 1 | (mode << 1) | (1 << 5) | (1 << 6));
+    io.write(SPKLEN, c.spklen);
+    io.write(h, c.hcnt);
+    io.write(l, c.lcnt);
+    io.write(HOLD, c.lcnt / 2);
+    io.write(CON, 1 | (c.mode << 1) | (1 << 5) | (1 << 6));
 }
 
 // The small register interface also runs the real FIFO/abort loop against a host model.
@@ -307,13 +324,14 @@ impl<const N: u8, const SDA: u8, const SCL: u8> I2c<N, SDA, SCL> {
         }
     }
     pub fn set_speed(&mut self, speed: Speed) -> Result<(), Error> {
-        if !self.usable || !crate::clocks::running_tuple_admitted() {
+        if !self.usable || !self.clocks.still_current() {
             return Err(Error::Precondition);
         }
+        let counts = timing(self.clocks.sys_hz(), speed)?;
         let mut io = self.io();
         self.usable = false;
         disable(&mut io)?;
-        configure(&mut io, speed);
+        configure(&mut io, counts);
         self.usable = true;
         Ok(())
     }
@@ -501,20 +519,34 @@ mod tests {
         assert_eq!(RESETS_CLR0, 0x4001_7000);
         assert_eq!(RESETS_DONE0, 0x4001_4018);
         assert_eq!(reset_bit(6), 1 << 13);
-        assert_eq!(timing(Speed::Standard), (1, 220, 264));
-        assert_eq!(timing(Speed::Fast), (2, 35, 74));
-        assert_eq!(timing(Speed::FastPlus), (2, 10, 24));
+        let c = |hz, speed| {
+            let t = timing(hz, speed).unwrap();
+            (t.mode, t.spklen, t.hcnt, t.lcnt)
+        };
+        // 50 MHz: the counts measured as 100.2 / 403.6 / 1011 kHz (HW, i2c-driver step 29).
+        assert_eq!(c(50_000_000, Speed::Standard), (1, 3, 220, 264));
+        assert_eq!(c(50_000_000, Speed::Fast), (2, 3, 35, 74));
+        assert_eq!(c(50_000_000, Speed::FastPlus), (2, 3, 10, 24));
+        // 200 MHz: same times, four times the cycles.
+        assert_eq!(c(200_000_000, Speed::Standard), (1, 10, 903, 1059));
+        assert_eq!(c(200_000_000, Speed::Fast), (2, 10, 163, 299));
+        assert_eq!(c(200_000_000, Speed::FastPlus), (2, 10, 63, 99));
         // Period = (HCNT + SPKLEN + 7) + (LCNT + 1 + rise) cycles; DesignWare minimums hold.
-        for (speed, hz) in [
-            (Speed::Standard, 100_000),
-            (Speed::Fast, 400_000),
-            (Speed::FastPlus, 1_000_000),
-        ] {
-            let (_, h, l) = timing(speed);
-            let cycles = h + SPIKE_CYCLES + 7 + l + 1 + RISE_CYCLES;
-            assert_eq!(IC_CLK_HZ / cycles, hz);
-            assert!(h >= SPIKE_CYCLES + 5 && l >= SPIKE_CYCLES + 7);
+        for hz in [50_000_000, 200_000_000] {
+            for (speed, scl) in [
+                (Speed::Standard, 100_000),
+                (Speed::Fast, 400_000),
+                (Speed::FastPlus, 1_000_000),
+            ] {
+                let t = timing(hz, speed).unwrap();
+                let rise = hz / 10_000_000;
+                let cycles = t.hcnt + t.spklen + 7 + t.lcnt + 1 + rise;
+                assert_eq!(hz / cycles, scl);
+            }
         }
+        // Too slow a clock for the I2C or DesignWare minimums.
+        assert_eq!(timing(5_000_000, Speed::FastPlus), Err(Error::Invalid));
+        assert_eq!(timing(1_000_000, Speed::Standard), Err(Error::Invalid));
         assert_eq!(
             Error::AddressNack.kind(),
             ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address)

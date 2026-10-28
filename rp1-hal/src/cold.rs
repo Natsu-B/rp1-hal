@@ -348,7 +348,7 @@ fn release_syscfg() -> Result<(), ColdError> {
         .ok_or(ColdError::Syscfg(read(RESETS_DONE1)))
 }
 
-/// Program clocks (only if at cold defaults). Call before `Authority::adopt` and `log::init`.
+/// Program clocks (only if at cold defaults). Call before `Authority::init` and `log::init`.
 ///
 /// # Safety
 /// proc0 only, once, before any other driver. Requires `clock.authority = "rp1"`.
