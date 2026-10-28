@@ -211,12 +211,23 @@ RMW atomic のメソッドは持たない。
   必要なら cacheable に mmap し、ユーザー空間から DC CIVAC で保守する（arm64 Linux は EL0 からの DC 命令を許可、DOC）。測定して決める。
 - 多重化、流量制御、名前解決、標準ツール（rpmsg_char、tty）は自前で用意する必要がある。
 
-### 6.2 未検証（最初の縦 1 本で確認する）
+### 6.2 検証の状況（2026-10-28、`<lab-log>`）
 
-- `uio_pdrv_genirq` は標準カーネル設定にある（`CONFIG_UIO_PDRV_GENIRQ=m`、確認済み）。`of_id=generic-uio` を cmdline か modprobe 設定で渡して実際に bind できるか。
-- proc1 → Linux の割り込み（HOST_EVENTS → hwirq58）を UIO ノードで受けられるか、rp1-mailbox と衝突しないか。
-- GPIO INTF のドアベルは pinctrl と同じページ。UIO で重ねてマップできるか。
-- UIO の IRQ 待ちの往復遅延。
+- **済（HW）**: `uio_pdrv_genirq` に `of_id=generic-uio` で bind できる。BAR2 末尾 16 KiB（0x1f0040c000）と GPIO INTF ページ
+  （0x1f000d0000、pinctrl と同じページ）を RW で mmap でき、読んだ値は /dev/mem と一致。書き込みは未試験。
+- **否定（HW）**: HOST_EVENTS → hwirq58（Linux の IRQ159）は `rp1-mailbox` が専有していて、同じ hwirq の UIO ノードは
+  `Flags mismatch` / -EBUSY で probe に失敗する。両ドライバとも IRQ 共有を許さない（STATIC）ので、イベント bit を分けても共有できない。
+- **方針（2026-10-28）**: hwirq58 は UIO が専有する。rp1-build の overlay で `rp1-mailbox` ノードと、それに依存するノード
+  （`remoteproc`、mailbox を使う `/firmware/scmi`）を `status = "disabled"` にし、`rp1:link` の UIO ノードに hwirq58 を付ける。
+  Linux → proc0 の PROC_EVENTS も UIO（SYSCFG ページ）から直接書く。
+  - **衝突（STATIC）**: 今の DT では SCMI（`/firmware/scmi`、`mboxes = <&rp1_mbox 0>`）が rp1-mailbox の ch0 を使い、
+    UART（serial@34000）などが SCMI のクロックを参照する。`clock.authority = "rp1"`（既定、§9）とこの方針はそのままでは両立しない。
+    両立させる案（HYP、未検証）: (a) hwirq58 は SCMI 用に残し、link 通知は RP1 内の未使用周辺の割り込み線（DT で disabled の
+    ブロックの hwirq）を M3 から立てて UIO で受ける、(b) `clock.authority = "linux"` の構成でだけ mailbox を外す。
+    実機での確認結果は codexA2 の RESULT.md を参照し、ここに反映する。
+- **配置（STATIC）**: 今の SCMI shmem（`scmi@d7c0`、0x100 byte）は BAR2 末尾 16 KiB の中にある。link ページ全体を使う前に
+  SCMI shmem を移すか、link の配置でその範囲を予約する。
+- 未測定: UIO の IRQ 待ちの往復遅延、UIO mmap への書き込みが M3 から見えるか。
 
 ## 7. BCM2712 third stage loader（`boot/rp1boot`）
 
@@ -286,3 +297,6 @@ shm ごとの `generic-uio` ノードに焼き込む。ローダーはそのア�
 | 2026-10-23 | config.txt と cmdline.txt を成果物（起動一式）にし、必ずそれを使う。ローダーがハッシュを照合する | ユーザー提案 |
 | 2026-10-23 | v0.1 の範囲を絞る（§8.1） | ユーザー許可 |
 | 2026-10-23 | ローダー: 大きなファイルは VPU ファームに束として読ませる。config.txt の使用は束と cmdline のハッシュで確かめる。失敗時は公式ブートローダーの BOOT_ORDER の規則に従う（loader.md） | ユーザー判断 |
+| 2026-10-28 | 束案は成立（HW: ≥32 MiB、約 2.9 MiB/s、配置は /chosen から読む、bootargs はトークン照合）。DTB に残りの BOOT_ORDER は無いので、失敗時の次の方法は set_reboot_order か EEPROM の BOOT_ORDER で決める（loader.md §3） | 実機検証 codexA |
+| 2026-10-28 | PoC ローダーの遅さの主因は TFTP ではなくソフトウェアの gzip 展開（約 18 s）と SHA-256（約 15 s）。I2C 約 3.4 s。旧記録の「initramfs に 36 秒」は誤帰属（loader.md §0） | 実機ログ + コード |
+| 2026-10-28 | hwirq58 は rp1-mailbox が専有し UIO と共有できない（HW）。overlay で rp1-mailbox と依存ノードを disabled にして UIO が取る方針。ただし SCMI クロック（既定）と衝突するので、両立案を実機で確かめてから確定（§6.2） | 実機検証 codexA |
