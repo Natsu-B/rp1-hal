@@ -358,6 +358,7 @@ dependencies = [
  "rp1-pac",
  "rp1-proto",
  "rp1-rt",
+ "trybuild",
 ]
 
 [[package]]

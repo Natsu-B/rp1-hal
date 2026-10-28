@@ -1,0 +1,5 @@
+error[E0277]: the trait bound `Logger: Default` is not satisfied
+ --> tests/ui/logger_default.rs:2:45
+  |
+2 |     let _second: rp1_hal::logging::Logger = Default::default();
+  |                                             ^^^^^^^^^^^^^^^^^^ the trait `Default` is not implemented for `Logger`

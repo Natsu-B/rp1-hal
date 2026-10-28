@@ -12,13 +12,14 @@ pub struct Logger {
     ready: AtomicU32,
 }
 unsafe impl rp1_proto::SharedSafe for Logger {}
-impl Default for Logger {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 impl Logger {
-    pub const fn new() -> Self {
+    /// # Safety
+    /// Only the generated `rp1::log` module may construct a `Logger`: it exists exactly when the
+    /// declaration gives UART0 and GPIO14/15 to the log (`log = { sink = "uart0" }`), and that
+    /// declaration cannot also hand UART0 or those pins to a driver. One instance per image, in
+    /// `.shared`; a second `Logger` would bypass both the ownership and the Peterson lock
+    /// (review #6).
+    pub const unsafe fn new() -> Self {
         Self {
             want: [const { AtomicU32::new(0) }; 2],
             turn: AtomicU32::new(0),

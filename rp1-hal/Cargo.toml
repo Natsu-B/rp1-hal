@@ -10,3 +10,6 @@ rp1-rt = { path = "../rp1-rt" }
 rp1-proto = { path = "../rp1-proto" }
 embedded-hal = "1"
 embedded-io = "0.6"
+
+[dev-dependencies]
+trybuild = "1"

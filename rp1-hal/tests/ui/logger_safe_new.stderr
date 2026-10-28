@@ -1,0 +1,7 @@
+error[E0133]: call to unsafe function `Logger::new` is unsafe and requires unsafe block
+ --> tests/ui/logger_safe_new.rs:1:43
+  |
+1 | static SECOND: rp1_hal::logging::Logger = rp1_hal::logging::Logger::new();
+  |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+  |
+  = note: consult the function's documentation for information on how to avoid undefined behavior

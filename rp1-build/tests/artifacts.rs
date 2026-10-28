@@ -29,6 +29,10 @@ fn rejects_mistakes_before_building() {
     d.proc0.pins.push(14);
     assert!(d.validate().is_err());
     d.proc0.pins.pop();
+    // The log owns UART0: no driver may also take it (review #6).
+    d.proc0.peripherals.push("UART0".into());
+    assert!(d.validate().is_err());
+    d.proc0.peripherals.pop();
     d.proc1.peripherals.push("TIMER.ALARM0".into());
     assert!(d.validate().is_err());
     d.proc1.peripherals.pop();
