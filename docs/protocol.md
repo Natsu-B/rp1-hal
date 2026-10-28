@@ -73,6 +73,8 @@ T   payload 8 バイト境界に 0 埋め
 | `tail` | 読み手（次に読むスロットの添字） | 書き手の手元 |
 | `waiting` | 読み手（眠る前に 1、起きたら 0） | 書き手の手元 |
 | `dropped` | 書き手（満杯で捨てた数） | 読み手の手元（観測用） |
+| `head_hi`（`head` の +4） | 書き手（`overwrite` のみ。`head` が `u32::MAX` から 0 へ回った回数） | 読み手の手元 |
+| `tail_hi`（`tail` の +4） | 読み手（`overwrite` のみ。`tail` が回った回数） | 書き手の手元 |
 
 | 向き | スロットと `head`・`dropped` | `tail`・`waiting` |
 |---|---|---|
@@ -112,6 +114,11 @@ T   payload 8 バイト境界に 0 埋め
 - STATIC: 書き手は `tail` を見ず、flags bit0 を立てて barrier → payload と `seq=head` → barrier → flags を 0 → barrier → head を公開する。
   `u32::MAX` も有効な連番なので、書き込み中の印には使わない。
 - 読み手は `head-tail > depth` なら `Lost(head-tail-depth)` とともに `tail=head-depth` へ進む。
+  `head`・`tail` は上位語（`head_hi`・`tail_hi`）と合わせた 64 bit で比べる。書き手は止まった読み手に制限されないので、
+  32 bit だけでは読み手の停止中に `2^32` 件進むと `head == tail` になり、残っているスロットも `Lost` も見えなくなる（レビュー 2 #4）。
+  書き手は `head` が 0 に回ったとき、`head` の後に barrier を挟んで `head_hi` を書く。読み手は `head_hi` → barrier → `head` の順に読むので、
+  新しい `head_hi` を見たなら `head` も新しい。ずれ得るのは「`head` だけ新しい」場合で、そのとき差は負になり、空（古い `head` と同じ扱い）とみなす。
+  `Lost` の件数が `u32::MAX` を超える場合は分けて返す（合計は正確）。`reject` は書き手が `tail` で止まるので上位語を使わない（常に 0）。
   スロットの flags と seq を barrier を挟んでコピーの前後に読み、flags=0・seq=tail が両方一致した場合だけ返す。
   競合が続いたら `NotReady` を返し、呼び手が再試行する。
 - `tail` と `waiting` は通知の間引きのためにだけ使う。

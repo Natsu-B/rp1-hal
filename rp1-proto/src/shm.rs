@@ -24,10 +24,14 @@ pub const HEADER_SIZE: usize = 64;
 pub const CONTROL_SIZE: usize = 128;
 /// `data`: next slot index the writer will fill.
 pub const HEAD: usize = 0;
+/// `data`: times `head` wrapped past `u32::MAX` (`overflow = overwrite`; written after `head`).
+pub const HEAD_HI: usize = 4;
 /// `data`: rejected pushes (`overflow = reject`), observational only.
 pub const DROPPED: usize = 64;
 /// `ctrl`: next slot index the reader will consume.
 pub const TAIL: usize = 0;
+/// `ctrl`: times `tail` wrapped past `u32::MAX` (`overflow = overwrite`).
+pub const TAIL_HI: usize = 4;
 /// `ctrl`: the reader is about to sleep and wants a notification.
 pub const WAITING: usize = 64;
 /// Slot word 1 bit: the writer is rewriting this slot (`overflow = overwrite`).
@@ -296,6 +300,8 @@ pub struct RingTx<T> {
     mask: u32,
     overflow: Overflow,
     head: u32,
+    /// Upper half of the 64-bit logical `head` (overwrite only, see [`HEAD_HI`]).
+    head_hi: u32,
     /// Last `tail` read from the local `ctrl`; reread only when the ring looks full.
     tail_seen: u32,
     dropped: u32,
@@ -336,6 +342,7 @@ impl<T: Message> RingTx<T> {
             mask: depth - 1,
             overflow,
             head,
+            head_hi: unsafe { ld(data, HEAD_HI) },
             // Looks full until the first push reads the real tail.
             tail_seen: head.wrapping_sub(depth),
             dropped: unsafe { ld(data, DROPPED) },
@@ -415,6 +422,14 @@ impl<T: Message> RingTx<T> {
         barrier();
         self.head = self.head.wrapping_add(1);
         unsafe { st(self.data, HEAD, self.head) };
+        if self.overflow == Overflow::Overwrite && self.head == 0 {
+            // A stopped reader may fall a full 2^32 behind; `head_hi` tells that apart from
+            // an empty ring. Stored after `head`, so a reader that sees the new `head_hi`
+            // also sees the wrapped `head` (protocol.md §2.3).
+            barrier();
+            self.head_hi = self.head_hi.wrapping_add(1);
+            unsafe { st(self.data, HEAD_HI, self.head_hi) };
+        }
         Ok(())
     }
     /// Publish up to `values.len()` messages with one `head` store (and one barrier) for the
@@ -473,6 +488,8 @@ pub struct RingRx<T> {
     mask: u32,
     overflow: Overflow,
     tail: u32,
+    /// Upper half of the 64-bit logical `tail` (overwrite only, see [`TAIL_HI`]).
+    tail_hi: u32,
     /// Last `head` read from the local `data`; reread only when the ring looks empty.
     head_seen: u32,
     _t: PhantomData<fn() -> T>,
@@ -499,6 +516,7 @@ impl<T: Message> RingRx<T> {
             mask: depth - 1,
             overflow,
             tail,
+            tail_hi: unsafe { ld(ctrl, TAIL_HI) },
             head_seen: tail,
             _t: PhantomData,
         })
@@ -510,14 +528,40 @@ impl<T: Message> RingRx<T> {
                 .add(CONTROL_SIZE + (index & self.mask) as usize * slot_size(size_of::<T>()))
         }
     }
-    /// Messages available as seen now (reads the local `head`).
+    /// Messages available as seen now (reads the local `head`). Overwrite rings count with
+    /// the 64-bit indices and saturate at `u32::MAX`.
     pub fn available(&self) -> u32 {
-        unsafe { ld(self.data, HEAD) }.wrapping_sub(self.tail)
+        match self.overflow {
+            Overflow::Reject => unsafe { ld(self.data, HEAD) }.wrapping_sub(self.tail),
+            Overflow::Overwrite => self.available64().min(u32::MAX as u64) as u32,
+        }
+    }
+    /// Overwrite mode: `head - tail` over 64-bit logical indices. `head_hi` is read first: it
+    /// is stored after `head`, so a new `head_hi` implies a new `head`, and the only torn
+    /// result is a `head` 2^32 too small, which reads as "nothing yet" (like a stale `head`).
+    fn available64(&self) -> u64 {
+        let hi = unsafe { ld(self.data, HEAD_HI) };
+        barrier();
+        let lo = unsafe { ld(self.data, HEAD) };
+        let head = (u64::from(hi) << 32) | u64::from(lo);
+        let tail = (u64::from(self.tail_hi) << 32) | u64::from(self.tail);
+        let diff = head.wrapping_sub(tail);
+        // A negative distance (torn or stale `head`) is "empty for now".
+        if diff > u64::MAX / 2 { 0 } else { diff }
+    }
+    /// Advance and store `tail` by `n` (one remote store, two on a 2^32 wrap).
+    fn advance_tail(&mut self, n: u32) {
+        let (tail, wrapped) = self.tail.overflowing_add(n);
+        self.tail = tail;
+        unsafe { st(self.ctrl, TAIL, self.tail) };
+        if wrapped && self.overflow == Overflow::Overwrite {
+            self.tail_hi = self.tail_hi.wrapping_add(1);
+            unsafe { st(self.ctrl, TAIL_HI, self.tail_hi) };
+        }
     }
     fn consume(&mut self) {
         barrier();
-        self.tail = self.tail.wrapping_add(1);
-        unsafe { st(self.ctrl, TAIL, self.tail) };
+        self.advance_tail(1);
     }
     /// Messages readable in reject mode, rereading `head` only when the cached one shows
     /// fewer than `want`. A reread is followed by a barrier so slot reads cannot pass it.
@@ -564,14 +608,15 @@ impl<T: Message> RingRx<T> {
             }
             Overflow::Overwrite => {
                 for _ in 0..1024 {
-                    let available = self.available();
+                    let available = self.available64();
                     if available == 0 {
                         return Ok(None);
                     }
-                    if available > self.mask + 1 {
-                        let lost = available - (self.mask + 1);
-                        self.tail = self.tail.wrapping_add(lost);
-                        unsafe { st(self.ctrl, TAIL, self.tail) };
+                    let depth = u64::from(self.mask) + 1;
+                    if available > depth {
+                        // More than u32::MAX lost: report it in parts, the next pop continues.
+                        let lost = (available - depth).min(u32::MAX as u64) as u32;
+                        self.advance_tail(lost);
                         return Err(Error::Lost(lost));
                     }
                     let slot = self.slot(self.tail);
@@ -975,6 +1020,79 @@ mod tests {
         tx.push(&10).unwrap();
         unsafe { st(d, CONTROL_SIZE + (10 & 3) * 16 + 4, BUSY | 8) };
         assert_eq!(rx.pop(), Err(Error::NotReady));
+    }
+
+    #[test]
+    fn overwrite_stopped_reader_survives_full_index_lap() {
+        // REVIEW2 #4: a reader stopped at tail=0 while the writer runs 2^32 pushes.
+        let mut data = mem::<{ CONTROL_SIZE + 4 * 16 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        unsafe { st(d, HEAD, u32::MAX - 3) };
+        let mut tx =
+            unsafe { RingTx::<u64>::attach(d, 192, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        let mut rx =
+            unsafe { RingRx::<u64>::attach(d, 192, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        for i in 0..4u64 {
+            tx.push(&i).unwrap();
+        }
+        assert_eq!(unsafe { (ld(d, HEAD), ld(d, HEAD_HI)) }, (0, 1));
+        assert_eq!(rx.available(), u32::MAX);
+        assert_eq!(rx.pop(), Err(Error::Lost(u32::MAX - 3)));
+        let got: vec::Vec<_> = core::iter::from_fn(|| rx.pop().unwrap()).collect();
+        assert_eq!(got, [0, 1, 2, 3]);
+        assert_eq!(unsafe { (ld(c, TAIL), ld(c, TAIL_HI)) }, (0, 1));
+        // The reader's lap survives a restart through the shared `tail_hi`.
+        tx.push(&4).unwrap();
+        let mut again =
+            unsafe { RingRx::<u64>::attach(d, 192, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        assert_eq!(again.pop(), Ok(Some(4)));
+        assert_eq!(again.pop(), Ok(None));
+    }
+
+    #[test]
+    fn overwrite_lost_beyond_u32_is_reported_in_parts() {
+        let mut data = mem::<{ CONTROL_SIZE + 4 * 16 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        unsafe { st(d, HEAD, u32::MAX - 3) };
+        unsafe { st(d, HEAD_HI, 1) };
+        let mut tx =
+            unsafe { RingTx::<u64>::attach(d, 192, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        let mut rx =
+            unsafe { RingRx::<u64>::attach(d, 192, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        for i in 0..4u64 {
+            tx.push(&i).unwrap();
+        }
+        // 2^33 pushed, depth 4 kept: 2^33 - 4 lost in total.
+        let mut lost = 0u64;
+        loop {
+            match rx.pop() {
+                Err(Error::Lost(n)) => lost += u64::from(n),
+                Ok(Some(v)) => {
+                    assert_eq!(v, 0);
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(lost, (1u64 << 33) - 4);
+    }
+
+    #[test]
+    fn overwrite_torn_head_reads_as_empty() {
+        // `head` wrapped but `head_hi` not yet visible: the reader must not see 2^32 lost.
+        let mut data = mem::<{ CONTROL_SIZE + 4 * 16 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        unsafe {
+            st(c, TAIL, u32::MAX);
+            st(d, HEAD, 0);
+        }
+        let mut rx =
+            unsafe { RingRx::<u64>::attach(d, 192, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        assert_eq!(rx.pop(), Ok(None));
+        assert_eq!(rx.available(), 0);
     }
 
     #[test]
