@@ -116,10 +116,10 @@ VPU ファーム: config.txt / cmdline.txt を処理、rp1-bundle.img を initra
 
 | 部品 | 中身 | 出どころ |
 |---|---|---|
-| `rp1-boot`（rp1-hal リポジトリの crate、no_std） | RP1 の I2C bootstrap、ELF → イメージ、note の検査、束の検査、ハンドオフ語 | PoC の `rp1_bootstrap.rs` / `rp1_image.rs` / `rp1_note.rs` を整理して移す |
-| BCM2712 の I2C・AON GPIO（RUN ピン）・PCIe RC・UART10・タイマー | 既存の `arch_hal` | `aarch64_type1_hypervisor` の crate を rev 固定で使う（ユーザーのリポジトリ） |
-| DTB の読み書き・overlay の適用 | libfdt（`fdt_open_into`、`fdt_overlay_apply`、`fdt_pack`） | C のソースを `cc` で組み込む |
-| gzip 展開、SHA-256 | `miniz_oxide`、`sha2` | PoC と同じ |
+| `boot/rp1boot`（rp1-hal リポジトリの crate） | lib（ホストで試験）: 束の検査、ELF → イメージ、Image ヘッダー、配置の重なり。bin（aarch64）: 入口・例外、MMU、UART10、RP1 の I2C 起動、Linux への引き渡し | PoC の `rp1_bootstrap.rs` / `bcm2712_i2c.rs` / `bcm2712_aon.rs` / `rp1_image.rs` / `linux.rs` を必要な分だけ移植（**実装 2026-10-29**） |
+| BCM2712 の I2C・AON GPIO（RUN ピン）・UART10・タイマー | rp1boot 内の数十行の MMIO（`arch_hal` は使わない）。PCIe RC は触らない（§6） | — |
+| DTB の読み書き・overlay の適用・最終検査 | **`rp1-dt`（純 Rust、no_std + alloc）**。libfdt の `fdt_overlay_apply` と同じ意味で、`cargo rp1 check --dtb` と同じコード | 決定（§6）: cc + libfdt はやめた |
+| SHA-256 | `sha2`（no_std）。gzip 展開は持たない（カーネルはホストで展開して束に入れる） | — |
 | SD・FAT・TFTP・GEM・DHCP | **持たない** | — |
 
 ## 5. 決定（2026-10-23）
@@ -130,3 +130,31 @@ VPU ファーム: config.txt / cmdline.txt を処理、rp1-bundle.img を initra
    2026-10-28 修正: DTB から残りの起動順は読めない（HW）。次の方法は `set_reboot_order`（案 A、DOC/HYP）か EEPROM の BOOT_ORDER（案 B、HYP）で決め、どちらも検証してから確定する。
 3. **手順 7（PCIe を初期化し直して準備完了を待つ）を既定で有効**にする。
 4. **I2C の約 3 秒は v0.1 では受け入れる**。PoC ローダーが遅い原因は 2026-10-28 に調べた（§0）: 主因は TFTP ではなくソフトウェアの gzip 展開と SHA-256。
+
+## 6. v0.1 の実装（2026-10-29、HW hwrun5）
+
+実装: `boot/rp1boot`（ローダー）、`rp1-dt`（DTB）、`rp1-proto::bundle`（束の形式）、`cargo rp1 bundle`（起動一式）、
+`lab/build-rp1boot.sh`（lab の組）。証拠: `<lab>`。
+
+| 項目 | 決めたこと | 根拠 |
+|---|---|---|
+| ツールチェーン | **stable** の Rust、rustup 配布の `aarch64-unknown-none-softfloat` の core/alloc。build-std も nightly 機能も使わない | STATIC（ビルド）+ HW（cold boot で Linux まで） |
+| 束 | `RP1BNDL` ヘッダー（各要素の位置・長さ・SHA-256）+ `rp1.elf` + **非圧縮の arm64 Image** [+ initramfs]、4 KiB 境界。束の id はヘッダーの SHA-256、cmdline.txt の末尾に `rp1.bundle=<id の先頭 8 byte の hex>` | ローダーにソフトウェア gzip を持たせない。要素ごとの SHA-256 で壊れた束を拒否（HW: カーネル中の 1 bit 反転を検出） |
+| ハッシュ | 束全体（28.7 MB）の SHA-256 を 183 ms（EL2 で恒等写像の MMU・キャッシュを有効にした後） | HW。PoC はキャッシュ無しで Image の SHA-256 に約 13 s |
+| overlay | `rp1-dt::overlay::apply`（純 Rust）。fixture と実ボードの DTB で `fdtoverlay` と同じ木になる（ホスト試験）。当てた後に `rp1_dt::check::check`（`gpio-reserved-ranges` の縮小 + `final_conflicts`）。実機では適用と検査で 1 ms | STATIC + HW |
+| initrd | `/chosen/linux,initrd-*` を束の中の initramfs の範囲（8 byte）に書き換える。コピーしない | HW（Linux が initramfs から `~ #`） |
+| 配置 | ローダー 0x80000（ファームの表示は「offset 0x200000」だが実際は 0x80000 で動く、HW）、カーネル 0x06000000、最終 DTB 0x20200000。ローダー・束・元の DTB・shm・最終 DTB の予約と重なれば停止 | HW |
+| RP1 | PoC と同じ I2C 手順。scratch の stack は note ENTRY の初期 MSP（0x10004000、ファームの reset は自分で MSP を設定する）。I2C 27,800 B で 822 ms | HW |
+| PCIe（§2 手順 7） | **ローダーは RC を触らない**。VPU ファームは OS 起動前に PERSTn を下げたままにするので、RP1 の冷起動は Linux の brcm-pcie probe の PERSTn 解除（RP1 起動から約 2.5 s）を待ってエンドポイントを立てる（`rp1_hal::cold` の待ちを 1.5 s → 20 s）。手順 7（ローダーでの再初期化と準備完了待ち）は v0.1 では実装しない | HW（perstn_wait 2.4〜2.5 s、link 8.2 ms、SCMI・ドアベル・shm 成立） |
+| 失敗時（§3） | v0.1 は理由を UART10 に出して停止（例外も ESR/ELR/FAR を出して停止）。案 A（`set_reboot_order`）・LED は未実装（TODO） | HW（負例） |
+
+実機で分かった注意:
+
+- ファームは **DTB に既にある `/chosen/bootargs` を cmdline.txt の前に足し**、bootargs を約 1966 B で切る（HW）。
+  ローダーは末尾のトークンが欠けたら「切り詰め」と出して止まる。`cargo rp1 bundle` は 880 B を超える cmdline を拒否する。
+- 基準 DTB: 今の `.rp1.dtbo` は SCMI のノード（`rp1_scmi`）と openamp のノードがある DT を前提にする。標準の
+  `bcm2712-rpi-cm5l-cm5io.dtb` には無いので、lab は PoC が作った DT（実行時のダンプから古い `/chosen` を消したもの）を
+  `device_tree=rp1-base.dtb` で渡している。SCMI の transport を `.rp1.dtbo` に入れて標準 DTB だけで動かすのは TODO。
+- 起動時間（電源 → BusyBox の `~ #`、UART の 1 s 精度）: **約 31 s**（PoC 84〜87 s）。内訳: VPU ファーム（束 28.7 MB の
+  TFTP 約 10 s を含む）約 26 s、rp1boot 約 1.1 s、Linux 約 3 s。
+- SD 起動の経路は未試験。

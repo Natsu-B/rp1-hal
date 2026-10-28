@@ -249,10 +249,11 @@ VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり
       5. overlay を当てた DTB で、本来のカーネルへ EL2 でジャンプ（initramfs と cmdline は firmware が用意したもの）
 ```
 
+- 上の手順 1〜2 は旧案。今の正は [loader.md](loader.md)（大きなファイルは VPU ファームが束として読み、ローダーは SD・TFTP を持たない。v0.1 実装は §6）。
 - Linux 用の DT の調整はビルド時に overlay として生成して ELF に入れ、ローダーが最後に当てる（declaration-and-note.md §3）。
 - SD と TFTP は「ファイルを読む部分」だけが違う。ファイル名と配置は同じ。
 - 旧 PoC の実験用 feature（約 50 個）と hash 固定値は持ち込まない（`lab/`）。
-- 未検証: firmware が置いた initramfs を上書きせずに引き継げるか、`/chosen` をそのまま使えるか。
+- HW（2026-10-29 hwrun5）: firmware が置いた束の中の initramfs をコピーせずに引き継げる。`/chosen/bootargs` はそのまま使うが、firmware は既存の bootargs を前に足して約 1966 B で切る（loader.md §6）。
 
 ## 7.1 Linux 共有メモリの確保（`shm`）
 
@@ -321,3 +322,4 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | 2026-10-28 | 束案は成立（HW: ≥32 MiB、約 2.9 MiB/s、配置は /chosen から読む、bootargs はトークン照合）。DTB に残りの BOOT_ORDER は無いので、失敗時の次の方法は set_reboot_order か EEPROM の BOOT_ORDER で決める（loader.md §3） | 実機検証 codexA |
 | 2026-10-28 | PoC ローダーの遅さの主因は TFTP ではなくソフトウェアの gzip 展開（約 18 s）と SHA-256（約 15 s）。I2C 約 3.4 s。旧記録の「initramfs に 36 秒」は誤帰属（loader.md §0） | 実機ログ + コード |
 | 2026-10-28 | hwirq58 は rp1-mailbox が専有し UIO と共有できない（HW）。mailbox・SCMI・remoteproc を disabled にすれば UIO が取れ、IRQ 往復 p50 71 µs（うち M3 の SCMI 処理約 60 µs）、通知ごとに空振り 1 回（HW、codexA2）。SCMI クロック（既定）と両立しないので v0.1 は mailbox/SCMI を残してポーリング（feat/v0.1-core の決定と同じ） | 実機検証 codexA / codexA2 |
+| 2026-10-29 | ローダー rp1boot v0.1: stable Rust（build-std なし）、DTB と overlay は純 Rust の `rp1-dt`（libfdt と同じ意味、`cargo rp1 check --dtb` と共用）、束は非圧縮 Image を入れてローダーで展開しない、EL2 で恒等写像のキャッシュを有効にしてから SHA-256。PCIe RC には触らず、RP1 の冷起動は Linux の最初の PERSTn 解除を最大 20 s 待つ。失敗は UART10 に理由を出して停止 | HW（hwrun5、cold boot 2 回 + 負例 1 回）: 電源 → `~ #` 約 31 s（PoC 84〜87 s）、ローダー 1.1 s、dual-core・SCMI v2.0・ttyAMA1・ドアベル・SHM_PASS 成立。束の 1 bit 破損を拒否（loader.md §6） |
