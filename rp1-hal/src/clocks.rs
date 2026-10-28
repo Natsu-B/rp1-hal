@@ -97,11 +97,14 @@ impl Authority {
         Self { _private: () }
     }
 
-    /// Admit the existing 200 MHz clk_sys / 50 MHz clk_uart configuration without writing anything.
+    /// Admit the existing 200 MHz clk_sys / 50 MHz clk_uart configuration without writing anything,
+    /// and start the SCMI service that publishes these clocks to Linux (authority = rp1 means
+    /// Linux's DT points its RP1 clock users at SCMI, so the server is part of the obligation).
+    /// Poll the returned [`crate::scmi::Service`] from proc0's main loop.
     ///
     /// `sys_hz` is the declared value (`clk_sys_hz`); only 200 MHz is accepted. The CLK_SYS mux
     /// itself is not checked because its register encoding has not been observed on hardware (HYP).
-    pub fn adopt(self, sys_hz: u32) -> Result<Clocks, Error> {
+    pub fn adopt(self, sys_hz: u32) -> Result<(Clocks, crate::scmi::Service), Error> {
         if sys_hz != 200_000_000 {
             return Err(Error::Invalid);
         }
@@ -110,10 +113,15 @@ impl Authority {
         if a != b || !b.admitted() {
             return Err(Error::Precondition);
         }
-        Ok(Clocks {
-            sys_hz,
-            uart_hz: 50_000_000,
-        })
+        // SAFETY: `self` is the one clock authority, issued to proc0.
+        let scmi = unsafe { crate::scmi::Service::new() };
+        Ok((
+            Clocks {
+                sys_hz,
+                uart_hz: 50_000_000,
+            },
+            scmi,
+        ))
     }
 }
 
