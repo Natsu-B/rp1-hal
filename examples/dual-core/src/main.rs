@@ -15,7 +15,7 @@ static ZERO: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     // After a loader reset RP1 is at cold defaults: program clocks, then adopt them.
     let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
-    let _clocks = p.clock_authority.adopt(200_000_000).unwrap();
+    let (_clocks, mut scmi) = p.clock_authority.adopt(200_000_000).unwrap();
     rp1::log::init(&mut core).unwrap();
     log!("proc0 clocks programmed={}\n", programmed).unwrap();
     // The host is waiting for the PCIe link; bring the endpoint up before anything slow.
@@ -38,6 +38,18 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         }
         if let Some(r) = endpoint.poll() {
             log!("proc0 pcie perst {:?}\n", r).unwrap();
+        }
+        // Linux's arm-scmi asks for the RP1 clocks (serial@34000 uses clk_uart via SCMI).
+        if let Some(e) = scmi.poll() {
+            log!(
+                "proc0 scmi p{:x} m{} {:x?} -> {} votes={:x}\n",
+                e.protocol,
+                e.message,
+                e.args,
+                e.status,
+                e.votes
+            )
+            .unwrap();
         }
     }
 }
