@@ -140,7 +140,9 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
     log!(
         "bootargs {} B: ...{}",
         bootargs.len(),
-        bootargs.get(bootargs.len().saturating_sub(48)..).unwrap_or("")
+        bootargs
+            .get(bootargs.len().saturating_sub(48)..)
+            .unwrap_or("")
     );
     let (start, end) = (
         fdt.number(chosen, "linux,initrd-start"),
