@@ -1,8 +1,7 @@
 # rp1-hal 設計（2026-10-23 版）
 
 根拠の強さ: **HW** = 実機で測定、**STATIC** = 逆アセンブル、**DOC** = 資料・Linux ソース、**HYP** = 仮説。
-根拠の出典は `<lab>`（以下 KG）、
-`<lab>`、`<lab>`（旧草案）。
+根拠の出典はリポジトリ外の調査記録（RP1 の知識ギャップ調査 2026-10-22、以下 KG）、旧 HAL の棚卸し（2026-10-23）、旧草案（2026-10-23）。
 
 ## 1. 方針
 
@@ -74,8 +73,8 @@ lab/           実験・診断（公開 API ではない）
 **v0.1**: 手で付けた `#[isram]` の関数と ISR だけを ISRAM に置く。両コアに同じ ISRAM イメージを展開する（共通、各コア 8 KiB）。
 予算超過は linker の ASSERT でエラー。
 
-**実測（HW、2026-10-29、`<lab-log>`）**: M3 のコアクロックは **約 50 MHz**（SysTick 50154 / timer 1004 µs）。
-これは clk_sys が XOSC のままだったため。`clocks::Authority::init` が clk_sys を PLL_SYS 200 MHz（公式ファームと同じ）へ切り替えた後は SysTick 200099 / timer 1000 µs（HW、`<lab-log>`）。以下のサイクル数は 50 MHz 時のもの。
+**実測（HW、2026-10-29、cold boot ×2）**: M3 のコアクロックは **約 50 MHz**（SysTick 50154 / timer 1004 µs）。
+これは clk_sys が XOSC のままだったため。`clocks::Authority::init` が clk_sys を PLL_SYS 200 MHz（公式ファームと同じ）へ切り替えた後は SysTick 200099 / timer 1000 µs（HW、2026-10-29）。以下のサイクル数は 50 MHz 時のもの。
 1 回あたり: DSRAM 読み 6.0 / 書き 5.0 サイクル、共有 SRAM 読み書き 12.6、DDR（outbound 窓）読み 66（1.32 µs）、posted 書き 26.8（0.54 µs、`dsb` を足しても同じ、STM の 4 語バーストでも 23.6/語）。
 PCIe を 2〜200 µs 空けても書き・読みの時間は変わらない（ASPM の復帰待ちではない）。
 全語を DSRAM に置いたリングでも、コードが共有 SRAM にあると push 820 / pop 843 サイクル/件、ISRAM に置くと 314 / 320 になる（命令取得が律速）。
@@ -113,7 +112,7 @@ proc1 の entry とホットループからの到達集合は 6.9 KB / 38 関数
 
 ### 3.4 PCIe 初期化中の共有 SRAM
 
-実機確認（2026-10-23、1 cold boot、`<lab>`）:
+実機確認（HW、2026-10-23、cold boot ×1）:
 proc0 が RP1 側の PCIe エンドポイントを立ち上げ、ホストが RC を再初期化して BAR2 を読む区間に、proc1 が ISRAM から共有 SRAM を
 3 秒間計測した。**データ不一致 0、フォルト 0、1 アクセス最大 42 サイクル（約 50 MHz 時）**で、PCIe の再初期化の時点に段差は無かった（HW）。
 最初の約 1.1 秒だけ 1 回の計測あたり 40→最大 92 サイクルに増えたのは、proc0 が共有 SRAM 上のコードを実行していたためのコア間競合と見られる（推論）。
@@ -221,7 +220,7 @@ RMW atomic のメソッドは持たない。
 
 | | OpenAMP/RPMsg（旧 PoC） | rp1-proto |
 |---|---|---|
-| 実測 | RTT p50 5.7 ms / p99 8.1 ms、179 往復/s（496 B エコー、M3 は FreeRTOS タスク、`reports/openamp-rpmsg.md`） | ドアベル RTT p50 4.1 us / max 8.0 us（proc1 ISRAM ISR、Linux はビジーポーリング、`<lab-log>`） |
+| 実測 | RTT p50 5.7 ms / p99 8.1 ms、179 往復/s（496 B エコー、M3 は FreeRTOS タスク、HW 2026-10 の OpenAMP 評価） | ドアベル RTT p50 4.1 us / max 8.0 us（proc1 ISRAM ISR、Linux はビジーポーリング、HW 2026-10-23） |
 | Linux の経路 | mailbox IRQ → remoteproc / virtio / rpmsg bus → rpmsg_char → read/write（コピー） | UIO で mmap（ゼロコピー）。待ち方は IRQ（`read(/dev/uio)`）かポーリングを選べる |
 | 1 メッセージ | 最大 496 B | 制限なし（リングの設計次第） |
 | カーネル依存 | `stm32-rproc` の attach 挙動、`COMPILE_TEST` + `STM32_RPROC` が必要 | UIO の公開 ABI のみ |
@@ -234,13 +233,13 @@ RMW atomic のメソッドは持たない。
   必要なら cacheable に mmap し、ユーザー空間から DC CIVAC で保守する（arm64 Linux は EL0 からの DC 命令を許可、DOC）。測定して決める。
 - 多重化、流量制御、名前解決、標準ツール（rpmsg_char、tty）は自前で用意する必要がある。
 
-### 6.2 検証の状況（2026-10-28、`<lab-log>`）
+### 6.2 検証の状況（HW、2026-10-28）
 
 - **済（HW）**: `uio_pdrv_genirq` に `of_id=generic-uio` で bind できる。BAR2 末尾 16 KiB（0x1f0040c000）と GPIO INTF ページ
   （0x1f000d0000、pinctrl と同じページ）を RW で mmap でき、読んだ値は /dev/mem と一致。書き込みは未試験。
 - **否定（HW）**: HOST_EVENTS → hwirq58（Linux の IRQ159）は `rp1-mailbox` が専有していて、同じ hwirq の UIO ノードは
   `Flags mismatch` / -EBUSY で probe に失敗する。両ドライバとも IRQ 共有を許さない（STATIC）ので、イベント bit を分けても共有できない。
-- **mailbox を外して UIO が hwirq58 を取る案（HW 2026-10-28、`<lab-log>`）**:
+- **mailbox を外して UIO が hwirq58 を取る案（HW 2026-10-28）**:
   overlay で `rp1-mailbox`・`/firmware/scmi`・OpenAMP `remoteproc` を `status = "disabled"` にし、generic-uio ノード
   （SYSCFG ページ + BAR2 末尾 16 KiB、`interrupts = <58 4>`）を足すと、Linux は起動し UIO が IRQ159（hwirq58）を取れる。
   - 往復（Linux が SCMI shmem に要求を書き PROC_EVENTS を立てる → M3 proc0 の SCMI サーバーが応答し HOST_EVENTS を立てる）:
@@ -276,7 +275,7 @@ VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり
 - Linux 用の DT の調整はビルド時に overlay として生成して ELF に入れ、ローダーが最後に当てる（declaration-and-note.md §3）。
 - SD と TFTP は「ファイルを読む部分」だけが違う。ファイル名と配置は同じ。
 - 旧 PoC の実験用 feature（約 50 個）と hash 固定値は持ち込まない（`lab/`）。
-- HW（2026-10-29 hwrun5）: firmware が置いた束の中の initramfs をコピーせずに引き継げる。`/chosen/bootargs` はそのまま使うが、firmware は既存の bootargs を前に足して約 1966 B で切る（loader.md §6）。
+- HW（2026-10-29）: firmware が置いた束の中の initramfs をコピーせずに引き継げる。`/chosen/bootargs` はそのまま使うが、firmware は既存の bootargs を前に足して約 1966 B で切る（loader.md §6）。
 
 ## 7.1 Linux 共有メモリの確保（`shm`）
 
@@ -287,7 +286,7 @@ shm ごとの `generic-uio` ノードに焼き込む。ローダーはそのア�
 STATIC（v0.1 実装）: rpi-cm5 は `0x2200_0000`、予約全体は 1..16 MiB。既存の scratch/openamp 予約を拡張しない。
 Linux の PCIe probe/PERSTn 完了後、UIO の link ページで初期化を要求し、proc0 が `rp1_hal::shm::enable` で ATU と領域を初期化する。
 具体的な API・ローダーの開発用パッチ・検証方法は [lab/README.md](../lab/README.md)。
-HW（hwrun3、同じ組で cold boot 2 回）: 2 MiB 予約の全語を M3 窓から書いて読み戻し一致、ring は各向き 10^6 件で欠落・破損 0、
+HW（2026-10-29、同じ組で cold boot 2 回）: 2 MiB 予約の全語を M3 窓から書いて読み戻し一致、ring は各向き 10^6 件で欠落・破損 0、
 block 1 MiB は両向き全語一致。M3 から DDR: 読み遅延 約 1.32 µs/語、走査読み 約 3.0 MB/s、書き 約 5.9 MB/s。
 ring は RP1→Linux 0.76 MB/s、Linux→RP1 0.35 MB/s（16 byte）で、Linux を止めても M3 側の push 約 20 µs / pop 約 43 µs が律速。
 Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側が遅い原因は未特定（HYP: 共有 SRAM からの命令取得と proc0 のポーリングとの競合）。
@@ -320,7 +319,7 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 
 | 日付 | 決定 | 理由 |
 |---|---|---|
-| 2026-10-23 | 新リポジトリで作る。旧スタンドアロン系列は `<local>` に改名 | PoC の診断コードと feature を持ち込まない |
+| 2026-10-23 | 新リポジトリで作る。旧スタンドアロン系列は別名のリポジトリに退避 | PoC の診断コードと feature を持ち込まない |
 | 2026-10-23 | RTOS を載せない | RPMsg を外すと必要性がない |
 | 2026-10-23 | Linux はカーネル内部 API に依存しない（DT + ユーザープロセス） | カーネル版ごとの変化に追従しない |
 | 2026-10-23 | proc0 / proc1 は 1 イメージ | コア間の共有データ受け渡しのため |
@@ -338,14 +337,14 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | 2026-10-23 | ローダー: 大きなファイルは VPU ファームに束として読ませる。config.txt の使用は束と cmdline のハッシュで確かめる。失敗時は公式ブートローダーの BOOT_ORDER の規則に従う（loader.md） | ユーザー判断 |
 | 2026-10-28 | v0.1 の `clocks::Authority` は PLL / clk_sys を書かず、EEPROM 段の RP1 ファームが残した状態（PLL_SYS 1 GHz・PRIM 5×1、CLK_UART = XOSC/1）を読んで照合する（`adopt`）。違えばエラー | 冷起動から 200 MHz にする手順は PoC でも実機未確認（PoC は同じ組を読み取りで受け入れていただけ、HW）。未確認の書き込みを既定経路にしない |
 | 2026-10-28 | v0.1: rp1-mailbox/SCMI kept; proc1→Linux events by polling; alternate host IRQ path is an open TODO (hwirq58 is owned by rp1-mailbox, verified HW 2026-10-28)。overlay は mailbox と SCMI に触れず、UIO ノード（link・GPIO INTF）は interrupts を持たない。無効にするのは OpenAMP remoteproc だけ。`gpio-reserved-ranges` は基の DT の予約と宣言ピンの和にする（Linux に渡るピンを増やさない、`cargo rp1 check --dtb` で照合） | SCMI クロック権限は必須（上の 2026-10-23 の決定）なので transport を奪えない。UIO は hwirq58 を共有できず -EBUSY（HW、Codex A）。ポーリングのドアベル RTT は約 4 µs（HW、§6.1） |
-| 2026-10-28 | 上の `adopt` だけの決定を訂正する。PoC ローダーは RP1 を I2C でリセットしてから起動するので、v0.1 のファームは冷状態（PLL_SYS リセット中、CLK_UART 停止、UART0 リセット中、PCIe エンドポイント未設定）から始まる。`rp1_hal::cold` で PoC ファームと同じ手順（PLL/PRIM/CLK_UART、エンドポイントクロック、PCIe state 1..5、SYSCFG）を実行してから `adopt` で照合する。Linux の brcm-pcie probe の PERSTn でエンドポイントが既定値に戻るので、proc0 が `EndpointService` をポーリングして DBI 設定を再適用する | HW（hwrun1 2026-10-28）: adopt だけでは UART0 無出力・LinkTimeout。移植後はリンク 12.4 ms、PERSTn 後の再設定 105 µs、Linux の rp1 が probe し、ドアベル RTT は 1000 回で p50 5.87 / p99 5.95 / max 32.7 µs |
+| 2026-10-28 | 上の `adopt` だけの決定を訂正する。PoC ローダーは RP1 を I2C でリセットしてから起動するので、v0.1 のファームは冷状態（PLL_SYS リセット中、CLK_UART 停止、UART0 リセット中、PCIe エンドポイント未設定）から始まる。`rp1_hal::cold` で PoC ファームと同じ手順（PLL/PRIM/CLK_UART、エンドポイントクロック、PCIe state 1..5、SYSCFG）を実行してから `adopt` で照合する。Linux の brcm-pcie probe の PERSTn でエンドポイントが既定値に戻るので、proc0 が `EndpointService` をポーリングして DBI 設定を再適用する | HW（2026-10-28）: adopt だけでは UART0 無出力・LinkTimeout。移植後はリンク 12.4 ms、PERSTn 後の再設定 105 µs、Linux の rp1 が probe し、ドアベル RTT は 1000 回で p50 5.87 / p99 5.95 / max 32.7 µs |
 | 2026-10-28 | `.bss` は PT_LOAD に含めない（`:NONE`）。各コアが起動時に自分の DSRAM で 0 にする | ローダーは p_paddr から p_memsz を展開し重なりを拒否するため、DSRAM に再配置した `.bss` の memsz が共有 SRAM の LMA に被る（STATIC、PoC ローダーのコード） |
-| 2026-10-28 | SCMI クロックサーバー（`rp1_hal::scmi`）: Base + Clock 2.0、mailbox ch0 + shmem `0x2000_d7c0`、proc0 のループでポーリング。`Authority::adopt` が `scmi::Service` を返す。公開クロックは uart_apb(0)・uart(1) で、どちらも RP1 所有（固定レート・常時オン）。RATE_SET の別レートは DENIED、CONFIG_SET は Linux の投票だけ記録しレジスタを書かない | HW（hwrun2 2026-10-28、cold boot 2 回）: arm-scmi が probe、serial@34000（ttyAMA1）が probe。`clk_ignore_unused` を外した cmdline で `clk_disable_unused` が uart/uart_apb に CONFIG_SET disable を送っても UART0（clk_uart）は出力を続けた。RATE_SET の拒否は STATIC（単体テスト）のみ、Linux の pl011 は rate を変えに来ない（HW） |
-| 2026-10-29 | PERSTn 後のエンドポイント再設定は PoC の transaction 契約ごと移す（`rp1_hal::cold::reconfig`）。各アクセスの前に READY・selector・PERSTn-low からの 5 ms 期限を確認し、書き込み後に失敗したら以後の PERSTn では書かない（Poisoned、冷起動でのみ回復）。PoC の「proc1 はリセット中」の確認は、proc1 が動く前提のため `EndpointService::new` の排他条件（selector/DBI/outbound window に他のコードが触れない）に置き換える。あわせて ELF 検査は pc 相対のリテラルを非書き込みセクションからだけ畳み込み、`cargo rp1 check --dtb` は最終 DTB を note と照合する。`clock.authority = "linux"` はビルドエラー | review（codexReview #1〜#4/#6/#7/#9/#10）。HW（hwrun4）: 再設定 597 µs（旧 104〜110 µs、期限 5 ms 内）で Linux の rp1 が probe、SCMI・ttyAMA1・ドアベル・shm 一式が成立。故障注入はホスト試験（STATIC） |
-| 2026-10-28 | 束案は成立（HW: ≥32 MiB、約 2.9 MiB/s、配置は /chosen から読む、bootargs はトークン照合）。DTB に残りの BOOT_ORDER は無いので、失敗時の次の方法は set_reboot_order か EEPROM の BOOT_ORDER で決める（loader.md §3） | 実機検証 codexA |
+| 2026-10-28 | SCMI クロックサーバー（`rp1_hal::scmi`）: Base + Clock 2.0、mailbox ch0 + shmem `0x2000_d7c0`、proc0 のループでポーリング。`Authority::adopt` が `scmi::Service` を返す。公開クロックは uart_apb(0)・uart(1) で、どちらも RP1 所有（固定レート・常時オン）。RATE_SET の別レートは DENIED、CONFIG_SET は Linux の投票だけ記録しレジスタを書かない | HW（2026-10-28、cold boot 2 回）: arm-scmi が probe、serial@34000（ttyAMA1）が probe。`clk_ignore_unused` を外した cmdline で `clk_disable_unused` が uart/uart_apb に CONFIG_SET disable を送っても UART0（clk_uart）は出力を続けた。RATE_SET の拒否は STATIC（単体テスト）のみ、Linux の pl011 は rate を変えに来ない（HW） |
+| 2026-10-29 | PERSTn 後のエンドポイント再設定は PoC の transaction 契約ごと移す（`rp1_hal::cold::reconfig`）。各アクセスの前に READY・selector・PERSTn-low からの 5 ms 期限を確認し、書き込み後に失敗したら以後の PERSTn では書かない（Poisoned、冷起動でのみ回復）。PoC の「proc1 はリセット中」の確認は、proc1 が動く前提のため `EndpointService::new` の排他条件（selector/DBI/outbound window に他のコードが触れない）に置き換える。あわせて ELF 検査は pc 相対のリテラルを非書き込みセクションからだけ畳み込み、`cargo rp1 check --dtb` は最終 DTB を note と照合する。`clock.authority = "linux"` はビルドエラー | 外部レビュー（#1〜#4/#6/#7/#9/#10）。HW（2026-10-29）: 再設定 597 µs（旧 104〜110 µs、期限 5 ms 内）で Linux の rp1 が probe、SCMI・ttyAMA1・ドアベル・shm 一式が成立。故障注入はホスト試験（STATIC） |
+| 2026-10-28 | 束案は成立（HW: ≥32 MiB、約 2.9 MiB/s、配置は /chosen から読む、bootargs はトークン照合）。DTB に残りの BOOT_ORDER は無いので、失敗時の次の方法は set_reboot_order か EEPROM の BOOT_ORDER で決める（loader.md §3） | HW（2026-10-28） |
 | 2026-10-28 | PoC ローダーの遅さの主因は TFTP ではなくソフトウェアの gzip 展開（約 18 s）と SHA-256（約 15 s）。I2C 約 3.4 s。旧記録の「initramfs に 36 秒」は誤帰属（loader.md §0） | 実機ログ + コード |
-| 2026-10-28 | hwirq58 は rp1-mailbox が専有し UIO と共有できない（HW）。mailbox・SCMI・remoteproc を disabled にすれば UIO が取れ、IRQ 往復 p50 71 µs（うち M3 の SCMI 処理約 60 µs）、通知ごとに空振り 1 回（HW、codexA2）。SCMI クロック（既定）と両立しないので v0.1 は mailbox/SCMI を残してポーリング（feat/v0.1-core の決定と同じ） | 実機検証 codexA / codexA2 |
-| 2026-10-29 | ローダー rp1boot v0.1: stable Rust（build-std なし）、DTB と overlay は純 Rust の `rp1-dt`（libfdt と同じ意味、`cargo rp1 check --dtb` と共用）、束は非圧縮 Image を入れてローダーで展開しない、EL2 で恒等写像のキャッシュを有効にしてから SHA-256。PCIe RC には触らず、RP1 の冷起動は Linux の最初の PERSTn 解除を最大 20 s 待つ。失敗は UART10 に理由を出して停止 | HW（hwrun5、cold boot 2 回 + 負例 1 回）: 電源 → `~ #` 約 31 s（PoC 84〜87 s）、ローダー 1.1 s、dual-core・SCMI v2.0・ttyAMA1・ドアベル・SHM_PASS 成立。束の 1 bit 破損を拒否（loader.md §6） |
-| 2026-10-29 | ライブラリのホットパス（ring の push/pop とバッチ版、SCMI・PCIe エンドポイントの poll の空振り判定）を既定で ISRAM に置き、冷たい経路は `#[rp1_rt::cold]` で共有 SRAM に残す。ring に `push_slice` / `pop_into` を追加。v0.2 の自動配置（共通 ISRAM イメージ分）を `cargo rp1 build` として実装 | HW（<lab-log> boot 2 回）: M3 は約 50 MHz で、共有 SRAM の命令取得が ring の律速。Linux→RP1 0.345 → 5.30 MB/s、RP1→Linux 0.763 → 4.58 MB/s（バッチ）。RP1→Linux は posted 書き込み 0.54 µs/語が律速 |
-| 2026-10-29 | 上の 2026-10-28「PLL / clk_sys を書かない」を改める。`clocks::Authority::init`（旧 `adopt`）が、`cold::clocks` でロックした PLL_SYS（1 GHz /5 /1）へ clk_sys の mux を切り替える（CLK_SYS_CTRL.SRC=2 のみ書き、CLK_SYS_SEL=4 を待つ。DIV_INT=1 と PLL の組を事前に確認、200 MHz 以外は不可）。`Clocks` はレジスタから読み戻した値で、I2C の SCL カウントは clk_sys から計算、UART/log は clk_uart を読む。レジスタ待ちは 1 MHz タイマーで 10 ms | HW（<lab-log> boot 2 回）: SysTick 200.1 / 199.9 MHz、SEL=4。I2C SCL 100.1 / 400.0 kHz（ESP32 RMT）。バッチ ring RP1→Linux 4.41 → 14.14 MB/s、Linux→RP1 5.57 → 22.20 MB/s、ドアベル p50 4.43 → 2.32 µs。SCMI の uart 50 MHz / uart_apb 100 MHz は clk_sys と独立（PLL_SYS PRI_PH、DOC clk-rp1）で変わらない。PoC で実機確認済みの手順（codex/clk-sys-200-20261022）の移植 |
-| 2026-10-29 | `.rp1.dtbo` は標準のボード DTB（`bcm2712-rpi-cm5l-cm5io.dtb`）に当てる。SCMI（`/firmware/scmi`、mailbox ch0 + `sram` 配下の shmem `scmi@d7c0`）と `rp1_uart0..5` の SCMI クロックを overlay が自分で足し、clk-rp1・標準 RP1 ファームのクライアント（同じ mailbox ch0）・clk-rp1 か標準ファームが必要な有効ノード（adc/eth/dma/pio/usb0/usb1）・予約線の利用者（led_pwr、cam0_reg、RP1 の hog）を無効化、`pcie2` に tperst 20 ms。OpenAMP は path で disabled（標準 DTB では空の disabled ノード）。`device_tree=` と PoC の基準 DT（rp1-base.dtb）は廃止。最終 DTB 検査に「有効な hog・gpio 利用者が予約線を使う」を追加 | HW（<lab-log> boot 2 回）: rp1boot が標準 DTB に overlay を当てて検査通過（2 ms）、dual-core・Spsc 42・SCMI v2.0・ttyAMA1・clk_disable_unused 後も UART0 継続・ドアベル・SHM_PASS・I2C（ESP32、100k/400k）成立。最初の起動で led-pwr/cam0_reg が -EINVAL（予約線）→ 無効化して解消。rp1-dt の結果は fdtoverlay と一致（実 ELF と標準 DTB、STATIC） |
+| 2026-10-28 | hwirq58 は rp1-mailbox が専有し UIO と共有できない（HW）。mailbox・SCMI・remoteproc を disabled にすれば UIO が取れ、IRQ 往復 p50 71 µs（うち M3 の SCMI 処理約 60 µs）、通知ごとに空振り 1 回（HW）。SCMI クロック（既定）と両立しないので v0.1 は mailbox/SCMI を残してポーリング（feat/v0.1-core の決定と同じ） | HW（2026-10-28） |
+| 2026-10-29 | ローダー rp1boot v0.1: stable Rust（build-std なし）、DTB と overlay は純 Rust の `rp1-dt`（libfdt と同じ意味、`cargo rp1 check --dtb` と共用）、束は非圧縮 Image を入れてローダーで展開しない、EL2 で恒等写像のキャッシュを有効にしてから SHA-256。PCIe RC には触らず、RP1 の冷起動は Linux の最初の PERSTn 解除を最大 20 s 待つ。失敗は UART10 に理由を出して停止 | HW（2026-10-29、cold boot 2 回 + 負例 1 回）: 電源 → `~ #` 約 31 s（PoC 84〜87 s）、ローダー 1.1 s、dual-core・SCMI v2.0・ttyAMA1・ドアベル・SHM_PASS 成立。束の 1 bit 破損を拒否（loader.md §6） |
+| 2026-10-29 | ライブラリのホットパス（ring の push/pop とバッチ版、SCMI・PCIe エンドポイントの poll の空振り判定）を既定で ISRAM に置き、冷たい経路は `#[rp1_rt::cold]` で共有 SRAM に残す。ring に `push_slice` / `pop_into` を追加。v0.2 の自動配置（共通 ISRAM イメージ分）を `cargo rp1 build` として実装 | HW（2026-10-29、cold boot 2 回）: M3 は約 50 MHz で、共有 SRAM の命令取得が ring の律速。Linux→RP1 0.345 → 5.30 MB/s、RP1→Linux 0.763 → 4.58 MB/s（バッチ）。RP1→Linux は posted 書き込み 0.54 µs/語が律速 |
+| 2026-10-29 | 上の 2026-10-28「PLL / clk_sys を書かない」を改める。`clocks::Authority::init`（旧 `adopt`）が、`cold::clocks` でロックした PLL_SYS（1 GHz /5 /1）へ clk_sys の mux を切り替える（CLK_SYS_CTRL.SRC=2 のみ書き、CLK_SYS_SEL=4 を待つ。DIV_INT=1 と PLL の組を事前に確認、200 MHz 以外は不可）。`Clocks` はレジスタから読み戻した値で、I2C の SCL カウントは clk_sys から計算、UART/log は clk_uart を読む。レジスタ待ちは 1 MHz タイマーで 10 ms | HW（2026-10-29、cold boot 2 回）: SysTick 200.1 / 199.9 MHz、SEL=4。I2C SCL 100.1 / 400.0 kHz（ESP32 RMT）。バッチ ring RP1→Linux 4.41 → 14.14 MB/s、Linux→RP1 5.57 → 22.20 MB/s、ドアベル p50 4.43 → 2.32 µs。SCMI の uart 50 MHz / uart_apb 100 MHz は clk_sys と独立（PLL_SYS PRI_PH、DOC clk-rp1）で変わらない。PoC で実機確認済みの手順（2026-10-22）の移植 |
+| 2026-10-29 | `.rp1.dtbo` は標準のボード DTB（`bcm2712-rpi-cm5l-cm5io.dtb`）に当てる。SCMI（`/firmware/scmi`、mailbox ch0 + `sram` 配下の shmem `scmi@d7c0`）と `rp1_uart0..5` の SCMI クロックを overlay が自分で足し、clk-rp1・標準 RP1 ファームのクライアント（同じ mailbox ch0）・clk-rp1 か標準ファームが必要な有効ノード（adc/eth/dma/pio/usb0/usb1）・予約線の利用者（led_pwr、cam0_reg、RP1 の hog）を無効化、`pcie2` に tperst 20 ms。OpenAMP は path で disabled（標準 DTB では空の disabled ノード）。`device_tree=` と PoC の基準 DT（rp1-base.dtb）は廃止。最終 DTB 検査に「有効な hog・gpio 利用者が予約線を使う」を追加 | HW（2026-10-29、cold boot 2 回）: rp1boot が標準 DTB に overlay を当てて検査通過（2 ms）、dual-core・Spsc 42・SCMI v2.0・ttyAMA1・clk_disable_unused 後も UART0 継続・ドアベル・SHM_PASS・I2C（ESP32、100k/400k）成立。最初の起動で led-pwr/cam0_reg が -EINVAL（予約線）→ 無効化して解消。rp1-dt の結果は fdtoverlay と一致（実 ELF と標準 DTB、STATIC） |

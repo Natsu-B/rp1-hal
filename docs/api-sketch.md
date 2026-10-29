@@ -257,7 +257,7 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
   - `uncached`（既定）: UIO の物理メモリ mmap は arm64 では Device 属性になる（DOC: `uio_mmap_physical` が `pgprot_noncached`）。
     Device 属性ではアラインされていないアクセスと `DC ZVA` がフォルトするため、libc の `memcpy` / `memset` を直接使うと SIGBUS になりうる。
     `rp1-linux` は整列した volatile u32/u64 アクセスだけを使い、利用者に生の `&[u8]` を渡さない（STATIC）。
-    実測（HW 2026-10-28、UIO で `rp1-ddr-scratch` 0x21000000 の 64 KiB、`<lab-log>`）:
+    実測（HW 2026-10-28、UIO で `rp1-ddr-scratch` 0x21000000 の 64 KiB）:
     64 bit 読み出し 893 MB/s、64 bit 書き込み 531 MB/s、32 bit 読み 1 回 約 129 ns。libc `memcpy` は整列済みなら成功
     （読み出し 1.9 GB/s）、非整列は読み書きとも SIGBUS、`memset` は SIGBUS。
   - `cached`（試験的）: `no-map` を外した領域を `/dev/mem`（`O_SYNC` なし）で cacheable に mmap し、読む前・渡す前に `DC CIVAC` を

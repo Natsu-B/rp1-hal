@@ -7,7 +7,7 @@ use std::{fmt::Write as _, io::Read, path::Path};
 
 pub const BUNDLE: &str = "rp1-bundle.img";
 pub const LOADER: &str = "rp1boot.img";
-/// HW 2026-10-29 (hwrun5 07-boot6): the firmware prepended 1034 B and cut /chosen/bootargs
+/// HW 2026-10-29: the firmware prepended 1034 B and cut /chosen/bootargs
 /// at 1966 B, so cmdline.txt must stay well under ~930 B including the 28 B token.
 pub const CMDLINE_MAX: usize = 880;
 

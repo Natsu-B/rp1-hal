@@ -1,6 +1,6 @@
 /* The VPU firmware runs the raw (header-less) `kernel=` image at 0x80000. Its log says
    "Loading 'rp1boot.img' to 0x00000000 offset 0x200000", but a build linked at 0x200000 ran
-   0x180000 below its link address (HW 2026-10-29, hwrun5 06-boot5); the PoC also links here. */
+   0x180000 below its link address (HW 2026-10-29); the PoC also links here. */
 ENTRY(_start)
 SECTIONS
 {

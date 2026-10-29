@@ -92,7 +92,7 @@ target/rp1/boot/
 - 起動一式にはビルド済みの `rp1boot.img` を入れる（`rp1boot-bin` crate に同梱し、版と SHA-256 を固定）。
 - ソースから作る場合は `cargo build -p rp1boot --target aarch64-unknown-none-softfloat --release` と
   `llvm-objcopy -O binary`。旧 PoC は nightly と `-Z build-std` を使っていたが、**rp1boot は stable と rustup 配布の
-  `aarch64-unknown-none-softfloat` の core/alloc で作れる**（2026-10-29、STATIC + HW hwrun5）。
+  `aarch64-unknown-none-softfloat` の core/alloc で作れる**（2026-10-29、STATIC + HW）。
 - overlay の適用は C の libfdt ではなく純 Rust の `rp1-dt`（`fdtoverlay` との一致をホストで試験）。`cargo rp1 check --dtb` も同じコード。
 - 起動一式は今は `cargo rp1 bundle <rp1.elf> --kernel <Image[.gz]> [--initramfs F] [--loader rp1boot.img] [--cmdline ..] [--config-extra ..] --out DIR`
   で作る（`cargo rp1 build` への統合と宣言 `boot.*` からの生成は TODO）。

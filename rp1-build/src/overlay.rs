@@ -218,7 +218,7 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         for label in BOARD_NO_SCMI_CLOCK {
             fragment(&format!("target = <&{label}>"), "status = \"disabled\";");
         }
-        // PoC lab DT (reports/amp-pcie-handoff-20261008.md): hold PERST 20 ms with the refclk
+        // PoC lab DT (PCIe handoff study, HW 2026-10-08): hold PERST 20 ms with the refclk
         // running so the RP1 endpoint reconfiguration (rp1_hal::cold) is reliable.
         fragment("target = <&pcie2>", "brcm,tperst-clk-ms = <20>;");
     }

@@ -1,7 +1,7 @@
 //! PERSTn endpoint re-configuration transaction (review #4).
 //!
 //! Port of the HW-proven PoC contract
-//! (`RP1-hal-PoC-openamp-20260929/examples/minimal/src/endpoint_config.rs`, `Transaction`):
+//! (PoC HAL `Natsu-B/RP1-hal` `examples/minimal/src/endpoint_config.rs`, `Transaction`):
 //! the same recipe, and the same guards around *every* MMIO access — READY (PERSTn deasserted and
 //! CORE_ALIVE), the expected DBI selector, and the deadline measured from the PERSTn-low sample.
 //! A guard failure after the first write is terminal: the partial configuration is never

@@ -50,7 +50,7 @@ HW: the controller clock (`ic_clk`) is clk_sys. With clk_sys on XOSC it measured
 from `Clocks::sys_hz()` at init and `set_speed`: SCL high/low targets 4.6/5.4 us,
 0.9/1.6 us and 0.4/0.6 us (I2C minimums kept, nominal 100 kHz, 400 kHz, 1 MHz), a 50 ns
 spike filter (3 cycles at 50 MHz, 10 at 200 MHz) and 100 ns of pull-up rise taken off
-the low period. HW at 200 MHz (`<lab-log>`, ESP32
+the low period. HW at 200 MHz (2026-10-29, ESP32
 RMT, 100 ns ticks): 100.1 kHz, 400.0 kHz, 1011 kHz (NACK probe only). Actual timing
 depends on pull-ups, capacitance, stretching and FIFO service. No shared clock is
 programmed and SCMI ownership is unchanged. A clock tree that no longer matches the
@@ -84,5 +84,5 @@ documents standard/fast operation up to 400 kHz. Payload proofs therefore use
 ESP32 slave stopped and its RMT input measuring SCL. A 1 MHz-capable data peer is
 still needed to qualify payload transfers at that speed.
 
-Hardware results and limits are recorded separately after each run, under
-`<lab>`.
+Hardware results and limits are recorded separately after each run, in run notes kept
+outside this repository (HW, 2026-10-29).

@@ -6,8 +6,8 @@ BCM2712 の third stage loader。VPU ファームから `kernel=` として起�
 
 | 項目 | 値 | 出典 |
 |---|---|---|
-| I2C で RP1 へ書き込む時間 | 約 3 秒（62.7 KB のイメージ） | `<lab-log>`（chip id 15:40:20 → image loaded 15:40:23） |
-| ローダー自前の TFTP | **訂正（2026-10-28）**: 旧記録の「initramfs に約 36 秒」は誤帰属。36 秒はカーネル取得完了から initramfs 取得完了までで、間にカーネルの gzip 展開と SHA-256 が入る。initramfs の取得そのものは約 4 秒。再測定: 4.35 MB の取得 2.85 s（約 1.46 MiB/s）、512 B stop-and-wait（STATIC） | 同上（15:39:42 → 15:40:14 開始 → 15:40:18）、`<lab-log>`（HW+STATIC） |
+| I2C で RP1 へ書き込む時間 | 約 3 秒（62.7 KB のイメージ） | HW 2026-10-23 の UART10 ログ（chip id 15:40:20 → image loaded 15:40:23） |
+| ローダー自前の TFTP | **訂正（2026-10-28）**: 旧記録の「initramfs に約 36 秒」は誤帰属。36 秒はカーネル取得完了から initramfs 取得完了までで、間にカーネルの gzip 展開と SHA-256 が入る。initramfs の取得そのものは約 4 秒。再測定: 4.35 MB の取得 2.85 s（約 1.46 MiB/s）、512 B stop-and-wait（STATIC） | 同上（15:39:42 → 15:40:14 開始 → 15:40:18）、2026-10-28 の再測定（HW+STATIC） |
 | ローダーの遅さの本当の内訳 | ソフトウェア gzip 展開 約 17.8 s、展開後 Image の検査・SHA-256 約 13.0 s、initramfs の SHA-256 約 2.4 s、I2C 約 3.4 s（64 B チャンク、DIV=2500、実 SCL は未測定）。キャッシュ属性の影響は HYP | 同上 `timing-20261028.json`（HW） |
 | TFTP の通信路 | RP1 内蔵の Ethernet（GEM）。RP1 を再ロードすると一度切れる。PoC は「先に全部取る → GEM を止める → RP1 再ロード → GEM を再初期化」 | `net_boot.rs` |
 | 配置 | カーネル・initramfs・DTB の置き場所が固定アドレス | `placement.rs` |
@@ -18,7 +18,7 @@ BCM2712 の third stage loader。VPU ファームから `kernel=` として起�
 VPU ファームは SD・TFTP（・USB・NVMe）からファイルを読む機能を最初から持っている。TFTP は実測 **約 2.9 MiB/s**（16 MiB 5.48 s、32 MiB 11.02 s、HW 2026-10-28）で、PoC ローダー自前の TFTP（約 1.46 MiB/s）より速い。
 ファームの `initramfs` 指定は中身を解釈せずにメモリへ置き、場所を DTB の `/chosen` に書くだけなので、ここに「起動一式の束」を入れる。
 
-**検証済み（HW 2026-10-28、`<lab-log>`・`01-blob32/`）:**
+**検証済み（HW 2026-10-28、16 MiB と 32 MiB の束）:**
 
 - cpio でない 16 MiB・32 MiB のバイナリをそのまま置き、全域のパターン照合で不一致 0。最大サイズは未確定（**少なくとも 32 MiB**）。
 - 置き場所はファームが決める（16 MiB で `[0x2e000000,0x2f000000)`、32 MiB で `[0x2d000000,0x2f000000)`、終端が 0x2f000000 付近）。`followkernel` は「ローダー直後」を意味しない。ローダーは必ず `/chosen/linux,initrd-start/end` を読む。
@@ -87,7 +87,7 @@ VPU ファーム: config.txt / cmdline.txt を処理、rp1-bundle.img を initra
 
 ローダーの失敗は「この起動方法の失敗」とみなし、同じ規則に従いたい。ただし **`/chosen/bootloader` に残りの起動順は無い**
 （HW 2026-10-28: 全 10 属性 `boot-mode=2`, `version`, `capabilities`, `update-timestamp`, `build-timestamp`, `tryboot`, `rsts`,
-`partition`, `arg1`, `count`。BOOT_ORDER 相当は無い。`<lab-log>`）。
+`partition`, `arg1`, `count`。BOOT_ORDER 相当は無い）。
 今の起動方法（`boot-mode`）は分かるが、「次」はローダーが自分では知らない。そこで:
 
 1. 理由を UART10 に出し、ACT LED でエラーを示す。形式は公式に合わせ「長い点滅 n 回 → 短い点滅 m 回、通常 2 秒休んで繰り返す」
@@ -131,10 +131,10 @@ VPU ファーム: config.txt / cmdline.txt を処理、rp1-bundle.img を initra
 3. **手順 7（PCIe を初期化し直して準備完了を待つ）を既定で有効**にする。
 4. **I2C の約 3 秒は v0.1 では受け入れる**。PoC ローダーが遅い原因は 2026-10-28 に調べた（§0）: 主因は TFTP ではなくソフトウェアの gzip 展開と SHA-256。
 
-## 6. v0.1 の実装（2026-10-29、HW hwrun5）
+## 6. v0.1 の実装（2026-10-29、HW）
 
 実装: `boot/rp1boot`（ローダー）、`rp1-dt`（DTB）、`rp1-proto::bundle`（束の形式）、`cargo rp1 bundle`（起動一式）、
-`lab/build-rp1boot.sh`（lab の組）。証拠: `<lab>`。
+`lab/build-rp1boot.sh`（lab の組）。証拠: HW、2026-10-29、cold boot ×2 + 負例 ×1。
 
 | 項目 | 決めたこと | 根拠 |
 |---|---|---|
@@ -155,7 +155,7 @@ VPU ファーム: config.txt / cmdline.txt を処理、rp1-bundle.img を initra
 - 基準 DTB: ファームが選ぶ標準の `bcm2712-rpi-cm5l-cm5io.dtb`（+ `bcm2712d0.dtbo`、lab は `dtoverlay=uart1-pi5`）。
   `device_tree=` は使わない。SCMI の transport・クロック利用者の付け替え・予約は `.rp1.dtbo` が自分で足す
   （declaration-and-note.md §3.1）。標準 DTB の `/chosen/bootargs`（約 150 B）がファームにより cmdline.txt の前に付くが、
-  880 B の上限内で収まる（HW: bootargs 568 B）。HW（<lab-log> boot 2 回）。
+  880 B の上限内で収まる（HW: bootargs 568 B）。HW（2026-10-29、cold boot 2 回）。
 - 起動時間（電源 → BusyBox の `~ #`、UART の 1 s 精度）: **約 31 s**（PoC 84〜87 s）。内訳: VPU ファーム（束 28.7 MB の
   TFTP 約 10 s を含む）約 26 s、rp1boot 約 1.1 s、Linux 約 3 s。
 - SD 起動の経路は未試験。

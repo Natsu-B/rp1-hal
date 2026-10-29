@@ -2,18 +2,17 @@
 //! rates the drivers must use.
 //!
 //! After a loader reset RP1 is at cold defaults; [`crate::cold::clocks`] locks PLL_SYS
-//! (1 GHz VCO, PRIM /5 /1 = 200 MHz) and starts CLK_UART = XOSC / 1 (HW: hwrun1). clk_sys is
-//! still on XOSC (50 MHz) at that point (HW: SysTick 50154 cycles / 1004 µs,
-//! `<lab-log>`). [`Authority::init`] then moves the clk_sys mux to
-//! PLL_SYS, the 200 MHz the official RP1 firmware runs at.
+//! (1 GHz VCO, PRIM /5 /1 = 200 MHz) and starts CLK_UART = XOSC / 1 (HW 2026-10-28). clk_sys
+//! is still on XOSC (50 MHz) at that point (HW 2026-10-29: SysTick 50154 cycles / 1004 µs).
+//! [`Authority::init`] then moves the clk_sys mux to PLL_SYS, the 200 MHz the official RP1
+//! firmware runs at.
 //!
-//! The switch is the HW-proven PoC sequence (`RP1-hal-PoC-openamp-20260929`
-//! `codex/clk-sys-200-20261022` `clk_sys::switch`): with PLL_SYS locked on the admitted tuple
-//! and CLK_SYS_DIV_INT = 1, write only CLK_SYS_CTRL.SRC[1:0] = 2 and poll CLK_SYS_SEL for the
-//! one-hot value 4. HW: 200.000 MHz measured on two boots (`<lab-log>`),
-//! and a live XOSC ⇄ PLL_SYS switch from Linux devmem was glitch-free
-//! (`<lab-log>`). DOC: Linux clk-rp1 lists clk_sys parents
-//! {xosc, -, pll_sys}, `clk_src_mask = 0x3`, `max_freq = 200 MHz`. No PLL value, divider or
+//! The switch is the HW-proven PoC sequence (the PoC HAL's `clk_sys::switch`): with PLL_SYS
+//! locked on the admitted tuple and CLK_SYS_DIV_INT = 1, write only CLK_SYS_CTRL.SRC[1:0] = 2
+//! and poll CLK_SYS_SEL for the one-hot value 4. HW 2026-10-22: 200.000 MHz measured on two
+//! boots, and a live XOSC ⇄ PLL_SYS switch from Linux devmem was glitch-free. DOC: Linux
+//! clk-rp1 lists clk_sys parents {xosc, -, pll_sys}, `clk_src_mask = 0x3`,
+//! `max_freq = 200 MHz`. No PLL value, divider or
 //! other clock is written here, and no rate above 200 MHz is possible through this API.
 //!
 //! What follows clk_sys (HW): the M3 cores and the DesignWare I2C `ic_clk`. What does not:

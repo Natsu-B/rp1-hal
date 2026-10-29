@@ -3,10 +3,10 @@
 //! After the PoC loader resets RP1 and starts this image, RP1 is at cold defaults: PLL_SYS is
 //! held in reset, CLK_UART is off, UART0 is held in reset and the PCIe endpoint is not
 //! configured. The host cannot reach RP1 (BARs read 0xffffffff) until the firmware brings the
-//! endpoint up. HW: hwrun1 02-stepA-v1b (`[RP1PCIE] LinkTimeout`, silent UART0).
+//! endpoint up. HW 2026-10-28: `adopt`-only image (`[RP1PCIE] LinkTimeout`, silent UART0).
 //!
 //! The register sequences below are those of the HW-proven PoC firmware
-//! (`RP1-hal-PoC-openamp-20260929/examples/minimal`: `scmi_cold_clock::prepare`,
+//! (PoC HAL `Natsu-B/RP1-hal` `examples/minimal`: `scmi_cold_clock::prepare`,
 //! `enable_endpoint_clock_bit26`, `pre_state1_reset_clock_boundary`,
 //! `state1_2_perstn_qualified_boundary`, `state3_composite_boundary`,
 //! `state5_composite_boundary`), with the same values, order and timeouts. Each step checks its
@@ -42,7 +42,7 @@ const DBI: usize = 0x4010_9000;
 /// Fresh PERSTn wait. The PoC loader re-initialized the root complex ~0.5 s after start;
 /// rp1boot does not touch PCIe, and the VPU firmware leaves PERSTn asserted ("PCI1/PCI2
 /// reset" before starting the OS), so the first deassertion is Linux's brcm-pcie probe a few
-/// seconds later (HW hwrun5 08-boot7: `Perstn` after the old 1.5 s limit).
+/// seconds later (HW 2026-10-29: `Perstn` after the old 1.5 s limit).
 const PERSTN_TIMEOUT_US: u64 = 20_000_000;
 
 /// Which bring-up step failed, with the raw value that failed the check.
@@ -264,7 +264,7 @@ fn endpoint() -> Result<(u32, u32, u32), ColdError> {
     modify(PCIE_PM_CONTROL, |v| v & !(1 << 3));
     modify(PCIE_CONTROL, |v| v & !(1 << 2));
     modify(PCIE_CONTROL, |v| v | 1);
-    // Drop a PERSTn event latched before this image started (HW hwrun1 03: the wait returned
+    // Drop a PERSTn event latched before this image started (HW 2026-10-28: the wait returned
     // after 4 us, the link came up before the host re-initialized the root complex, and the
     // host then refused the unassigned BARs). Wait for the host's fresh PERSTn deassertion,
     // as the slower-starting PoC firmware effectively did; if none comes, continue when PERSTn
@@ -392,7 +392,7 @@ pub use reconfig::{Cleanup as ReconfigCleanup, Receipt, Status as ReconfigStatus
 ///
 /// Linux's brcm-pcie probe asserts PERSTn, which resets the RP1 endpoint core to defaults
 /// (class 0, BAR1 256 KiB, BAR2 8 MiB, no inbound ATU); the rp1 driver then fails with
-/// "BAR 0 not claimed" (HW hwrun1 04). The configuration must be rewritten in the window between
+/// "BAR 0 not claimed" (HW 2026-10-28). The configuration must be rewritten in the window between
 /// PERSTn deassertion + CORE_ALIVE and the host's enumeration. This runs the PoC's guarded
 /// transaction ([`reconfig`]): every access re-checks READY, the selector and the 5 ms deadline
 /// from the PERSTn-low sample, so a late CORE_ALIVE or a reset in the middle stops it.
