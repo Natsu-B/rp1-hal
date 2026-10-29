@@ -132,11 +132,14 @@ pub const fn align(n: usize, a: usize) -> usize {
     (n + a - 1) & !(a - 1)
 }
 
+/// Only canonical names (`UART1`, `I2C1`, `TIMER.ALARM0`) are accepted: `TIMER.ALARM00` or
+/// `UART+1` would otherwise name the same block under a second string and pass the duplicate
+/// check (review 3 #5).
 pub fn peripheral_type(p: &str) -> Result<String> {
     if let Some(n) = p
         .strip_prefix("UART")
         .and_then(|s| s.parse::<u8>().ok())
-        .filter(|n| *n < 6)
+        .filter(|n| *n < 6 && p == format!("UART{n}"))
     {
         Ok(format!("::rp1_hal::uart::Token<{n}>"))
     } else if let Some(n) = p
@@ -150,7 +153,7 @@ pub fn peripheral_type(p: &str) -> Result<String> {
     } else if let Some(n) = p
         .strip_prefix("TIMER.ALARM")
         .and_then(|s| s.parse::<u8>().ok())
-        .filter(|n| *n < 4)
+        .filter(|n| *n < 4 && p == format!("TIMER.ALARM{n}"))
     {
         Ok(format!("::rp1_hal::timer::Alarm<{n}>"))
     } else {
@@ -247,7 +250,7 @@ impl Declaration {
                 return Err("invalid UART0 log declaration".into());
             }
             pins.extend([14, 15]);
-            peripherals.insert("UART0".to_string());
+            peripherals.insert(peripheral_id("UART0")?);
         }
         for c in [&self.proc0, &self.proc1] {
             for p in &c.pins {
@@ -267,13 +270,13 @@ impl Declaration {
                 }
             }
             for p in &c.peripherals {
-                peripheral_type(p)?;
-                if !peripherals.insert(p.clone()) {
+                // Duplicates by hardware identity, not by spelling.
+                if !peripherals.insert(peripheral_id(p)?) {
                     return Err(format!("{p} is claimed twice").into());
                 }
             }
         }
-        if self.clock.authority == "linux" && peripherals.iter().any(|p| p.starts_with("UART")) {
+        if self.clock.authority == "linux" && peripherals.iter().any(|&(k, n)| k == 2 && n < 32) {
             return Err("UARTs share clk_uart with Linux; set clock.authority = rp1".into());
         }
         let mut names = BTreeSet::new();

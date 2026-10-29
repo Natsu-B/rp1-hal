@@ -39,6 +39,42 @@ fn rejects_mistakes_before_building() {
     d.proc1.gpio_irq.push(26);
     assert!(d.validate().is_err());
     d.proc1.gpio_irq.pop();
+    // Review 3 #5: a second spelling of a declared block, on the other core or the same one.
+    for (core, alias) in [
+        (1, "TIMER.ALARM00"),
+        (0, "TIMER.ALARM00"),
+        (1, "TIMER.ALARM+0"),
+        (1, "UART00"),
+        (1, "UART+0"),
+    ] {
+        let c = if core == 0 {
+            &mut d.proc0
+        } else {
+            &mut d.proc1
+        };
+        c.peripherals.push(alias.into());
+        assert!(d.validate().is_err(), "{alias}");
+        assert!(
+            generate("test", "0.1.0", &d, [0; 32], [0; 20]).is_err(),
+            "{alias}"
+        );
+        let c = if core == 0 {
+            &mut d.proc0
+        } else {
+            &mut d.proc1
+        };
+        c.peripherals.pop();
+    }
+    // Non-canonical names are rejected even without a clash.
+    for alias in ["TIMER.ALARM03", "UART05", "UART+5", "I2C01"] {
+        assert!(
+            rp1_build::metadata::peripheral_type(alias).is_err(),
+            "{alias}"
+        );
+    }
+    for name in ["TIMER.ALARM3", "UART5", "I2C1"] {
+        rp1_build::metadata::peripheral_type(name).unwrap();
+    }
     d.clock.authority = "linux".into();
     assert!(d.validate().is_err());
     assert!(toml::from_str::<Declaration>("typo=1").is_err());
