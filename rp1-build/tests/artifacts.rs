@@ -179,6 +179,39 @@ notify="{notify}"
     }
 }
 #[test]
+fn shm_names_of_builtin_uio_nodes_are_rejected() {
+    // Review 4 #1: a region named like a built-in UIO node would add a second `rp1:<name>`
+    // node, and Linux-side init would fail on the duplicate.
+    let region = |name: &str| -> Declaration {
+        let mut d: Declaration = toml::from_str(&format!(
+            r#"
+[[shm]]
+name="{name}"
+kind="ring"
+core="proc1"
+message="u32"
+direction="linux-to-rp1"
+depth=16
+"#
+        ))
+        .unwrap();
+        d.types.insert("u32".into(), TypeInfo::of::<u32>());
+        d
+    };
+    region("commands").validate().unwrap();
+    for name in rp1_proto::uio::BUILTIN {
+        let d = region(name);
+        assert!(d.validate().is_err(), "{name}");
+        assert!(
+            generate("test", "0.1.0", &d, [0; 32], [0; 20]).is_err(),
+            "{name}"
+        );
+    }
+    // Only the exact names are reserved.
+    region("link2").validate().unwrap();
+    region("header_log").validate().unwrap();
+}
+#[test]
 fn typed_regions_and_sram_budget() {
     let mut d: Declaration = toml::from_str(
         r#"

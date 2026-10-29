@@ -170,13 +170,16 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         &format!(
             r#"
         rp1-firmware {{ rp1,note = [{bytes}]; rp1,abi = <2>; rp1,static-only; }};
-        rp1_link: rp1-link@1f0040c000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:link";
+        rp1_link: rp1-link@1f0040c000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:{link}";
             reg = <0x1f 0x0040c000 0x4000>; status = "okay"; }};
-        rp1-doorbell@1f000d0000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:doorbell";
+        rp1-doorbell@1f000d0000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:{doorbell}";
             reg = <0x1f 0x000d0000 0x4000>; status = "okay"; }};
-        rp1-header@{phys:x} {{ compatible = "generic-uio"; linux,uio-name = "rp1:header";
+        rp1-header@{phys:x} {{ compatible = "generic-uio"; linux,uio-name = "rp1:{header}";
             reg = <0 0x{phys:x} 0x10000>; status = "okay"; }};
-    "#
+    "#,
+            link = rp1_proto::uio::LINK,
+            doorbell = rp1_proto::uio::DOORBELL,
+            header = rp1_proto::uio::HEADER,
         ),
     );
     // Independent of any other reservation (`final_conflicts` rejects overlaps).

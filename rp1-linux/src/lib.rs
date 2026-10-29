@@ -2,7 +2,7 @@
 use rp1_proto::{
     Error, Message, barrier,
     note::{Note, SHM_AREA, SHM_REGION, ShmArea, ShmKind, ShmRegion, Writer},
-    shm,
+    shm, uio,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -115,7 +115,7 @@ impl Firmware {
         let bytes = fs::read("/sys/firmware/devicetree/base/rp1-firmware/rp1,note")?;
         let note = Note::parse(&bytes)?;
         let area = ShmArea::parse(note.get(SHM_AREA).ok_or(Error::Invalid)?.value)?;
-        let link = Mapping::open("rp1:link", rp1_proto::LINK_PHYS, 0x4000)?;
+        let link = Mapping::open(&format!("rp1:{}", uio::LINK), rp1_proto::LINK_PHYS, 0x4000)?;
         if link.read(rp1_proto::link::HANDOFF_MAGIC) != rp1_proto::link::MAGIC
             || link.read(rp1_proto::link::HANDOFF_PHYS_LOW) != area.phys as u32
             || link.read(rp1_proto::link::HANDOFF_PHYS_HIGH) != (area.phys >> 32) as u32
@@ -131,7 +131,7 @@ impl Firmware {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        let map = Mapping::open("rp1:header", area.phys, 65536)?;
+        let map = Mapping::open(&format!("rp1:{}", uio::HEADER), area.phys, 65536)?;
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
         let header = unsafe { shm::Header::open(map.ptr(), &digest) }?;
         if header.generation() != link.read(rp1_proto::link::SHM_GENERATION)

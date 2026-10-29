@@ -39,6 +39,15 @@ pub mod link {
     pub const MAGIC: u32 = u32::from_le_bytes(*b"RP1H");
 }
 
+/// UIO names (`linux,uio-name = "rp1:<name>"`) of the nodes the generated overlay always
+/// creates. A declared shm region becomes `rp1:<region name>`, so regions may not use these.
+pub mod uio {
+    pub const LINK: &str = "link";
+    pub const DOORBELL: &str = "doorbell";
+    pub const HEADER: &str = "header";
+    pub const BUILTIN: [&str; 3] = [LINK, DOORBELL, HEADER];
+}
+
 /// rpi-cm5 board table: Linux DDR reservation for `shm`. 2 MiB aligned, above the PoC
 /// loader's placements (kernel 0x0600_0000.., initramfs 0x1000_0000.., DTB 0x2000_0000 and
 /// its copy ..0x2040_0000) and the base DT's reservations at 0x2100_0000..0x2111_0000.

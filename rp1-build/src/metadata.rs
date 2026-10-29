@@ -295,6 +295,13 @@ impl Declaration {
             {
                 return Err("invalid or duplicate shm name".into());
             }
+            // The overlay always creates these UIO nodes; a region of the same name would add a
+            // second `rp1:<name>` node and Linux-side init would fail on the duplicate.
+            if rp1_proto::uio::BUILTIN.contains(&r.name.as_str()) {
+                return Err(
+                    format!("shm name {} is reserved for a built-in UIO node", r.name).into(),
+                );
+            }
             if !matches!(r.core.as_str(), "proc0" | "proc1") {
                 return Err("invalid shm core".into());
             }
