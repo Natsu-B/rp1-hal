@@ -14,6 +14,8 @@ rp1-hal = { path = "../../rp1-hal" }
 rp1-rt = { path = "../../rp1-rt" }
 rp1-proto = { path = "../../rp1-proto" }
 embedded-hal = "1"
+embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"] }
+nb = "1"
 
 [build-dependencies]
 rp1-build = { path = "../../rp1-build" }
@@ -26,7 +28,7 @@ log = { sink = "uart0", baudrate = 115200 }
 
 [package.metadata.rp1.proc0]
 pins = [2, 3, 22]
-peripherals = ["TIMER.ALARM0", "I2C1"]
+peripherals = ["TIMER.ALARM0", "I2C1", "ADC"]
 
 [package.metadata.rp1.proc1]
 pins = [27]

@@ -4,6 +4,7 @@ use rp1_hal::{gpio::Doorbell, log};
 use rp1_proto::{Error, link};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
+mod adc_proof;
 mod i2c_proof;
 mod prof;
 #[shared]
@@ -76,13 +77,22 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     );
     log!("proc0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
     let mut i2c = i2c.ok();
+    let adc = p.ADC.init(&clocks);
+    log!("proc0 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
+    let mut adc = adc.ok();
+    if let Some(adc) = adc.as_mut() {
+        let r = adc_proof::prove(adc, "BOOT");
+        log!("ADC_RESULT boot {:?}\n", r).unwrap();
+    }
     let mut rx = VALUES.consumer(&mut core);
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     let mut attempted = false;
     let mut probed = false;
     loop {
         let request = i2c_proof::pending();
-        if request != 0 {
+        if request == adc_proof::REQUEST {
+            adc_proof::run(adc.as_mut(), request);
+        } else if request != 0 {
             i2c_proof::run(i2c.as_mut(), request);
         }
         let (value, perst, scmi_event) =
