@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Read-only NACK probes while the ESP32 RMT observes SCL; no bus writes."""
+"""Read-only NACK probes while the ESP32 RMT observes SCL; no bus writes.
+
+Usage: measure-i2c.py OUT_DIR. Required environment: CM5_HACK_ROOT (lab tree with
+scripts/cm5ctl.py), RP1_UART0 and RP1_UART10 (serial devices), RP1_HW_LOCK (lock file
+shared with the other hardware helpers).
+"""
 import datetime
 import fcntl
 import os
@@ -25,10 +30,16 @@ def main():
         print("PASS RMT period extraction")
         return
     out = Path(sys.argv[1]); out.mkdir(parents=True, exist_ok=True)
-    root = Path(os.environ.get("CM5_HACK_ROOT", "<lab>"))
-    with open("/tmp/codex-rp1-priority-hardware.lock", "a") as lock:
+    def env(name):
+        value = os.environ.get(name)
+        if not value:
+            raise SystemExit(f"set {name}")
+        return value
+    root = Path(env("CM5_HACK_ROOT"))
+    port0, port10 = env("RP1_UART0"), env("RP1_UART10")
+    with open(env("RP1_HW_LOCK"), "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        holders = subprocess.run(["fuser", "/dev/cm5-uart0", "/dev/cm5-uart10"], capture_output=True)
+        holders = subprocess.run(["fuser", port0, port10], capture_output=True)
         if holders.returncode != 1:
             raise RuntimeError("UARTs busy or fuser failed")
         with (out / "commands.txt").open("w") as commands:
@@ -41,7 +52,7 @@ def main():
                  serial.Serial(None, baudrate=115200, timeout=0, exclusive=True) as uart10, \
                  (out / "uart0.raw").open("wb") as log0, (out / "uart10.raw").open("wb") as log10, \
                  (out / "timestamps.txt").open("w") as stamps:
-                for uart, port, dtr in [(uart0, "/dev/cm5-uart0", False), (uart10, "/dev/cm5-uart10", True)]:
+                for uart, port, dtr in [(uart0, port0, False), (uart10, port10, True)]:
                     uart.dtr = dtr; uart.rts = False; uart.port = port; uart.open()
                 try:
                     for request in [101, 102, 103]:

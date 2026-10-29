@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Build a hash-pinned dev tuple; deployment is a separate, backed-up step.
+# Required: SHM_ARTIFACT_ROOT (output dir), RP1_LOADER_ROOT (PoC loader checkout),
+# RP1_BASE_DTB (the PoC base DTB the overlay is applied to).
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
-root=${CM5_HACK_ROOT:-<lab>}
-out=${SHM_ARTIFACT_ROOT:-$root/<lab-artifact>
-loader=${RP1_LOADER_ROOT:-<local>
-base=${RP1_BASE_DTB:-$root/<lab-backup>
+out=${SHM_ARTIFACT_ROOT:?set SHM_ARTIFACT_ROOT to the output directory}
+loader=${RP1_LOADER_ROOT:?set RP1_LOADER_ROOT to the PoC loader checkout}
+base=${RP1_BASE_DTB:?set RP1_BASE_DTB to the base DTB}
 mkdir -p "$out/fw" "$out/dtb" "$out/loader"
 cd "$repo"
 cargo build --offline -p shm-firmware --target thumbv7m-none-eabi --release

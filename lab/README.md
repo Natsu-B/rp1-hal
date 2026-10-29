@@ -7,9 +7,10 @@ accounting, M3 scalar DDR read latency/read bandwidth/posted-write bandwidth, an
 M3 per-message push/pop cost (commands 7/8, Linux idle on the link page).
 Rates include API/loop overhead; M3 writes include a same-window read to drain PCIe writes.
 
-Build with `bash lab/build-shm.sh` and `python3 lab/pack-shm.py`. Paths can be overridden with
-`CM5_HACK_ROOT`, `SHM_ARTIFACT_ROOT`, `RP1_LOADER_ROOT`, and `RP1_BASE_DTB`.
-The patch is for the existing `claude/rp1-hal-dev-20261028` PoC loader: it publishes the fixed
+Build with `bash lab/build-shm.sh` and `python3 lab/pack-shm.py`. Locations come from the
+environment: `SHM_ARTIFACT_ROOT`, `RP1_LOADER_ROOT`, `RP1_BASE_DTB` (build), and
+`SHM_ARTIFACT_ROOT`, `RP1_INITRAMFS`, `RP1_INITRAMFS_HELPER` (pack); see each script header.
+The patch is for the PoC chainboot loader (its rp1-hal dev branch): it publishes the fixed
 board-table PA and generated DT reservation size over I2C before starting RP1. ELF and merged
 DTB remain SHA-256 pinned. This is a dev-loader integration, not the full rp1boot bundle loader.
 
@@ -36,4 +37,4 @@ locks and must not mmap aliases. Only cold boot is supported; a live PCIe reset 
 For writer=both the lab command handshake transfers writer ownership; the SeqLock alone does
 not arbitrate two writers. Blocks support word sections, so RP1 needs no 1 MiB local copy.
 
-HW results belong in the external `hwrun3/RESULT.md`; build success alone is STATIC evidence.
+HW results belong in the run notes kept outside this repository; build success alone is STATIC evidence.

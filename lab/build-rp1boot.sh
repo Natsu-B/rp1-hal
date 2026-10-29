@@ -2,14 +2,15 @@
 # Build the rp1boot boot set for the shm lab firmware (hash-recorded; deploying is separate).
 # Inputs (overridable): the stock board DTB the firmware loads, the Linux kernel and the shm initramfs.
 # The firmware boots the stock DTB (no device_tree=); rp1boot applies RP1.elf's .rp1.dtbo onto it.
+# Required: RP1BOOT_ARTIFACT_ROOT (output dir), RP1_TFTP_ROOT (firmware boot dir with the stock
+# DTB and overlays/), RP1_KERNEL, RP1_INITRAMFS. Optional: RP1_BASE_DTB, RP1_CMDLINE.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
-root=${CM5_HACK_ROOT:-<lab>}
-out=${RP1BOOT_ARTIFACT_ROOT:-$root/<lab-artifact>
-tftp=${RP1_TFTP_ROOT:-$root/tftpboot}
+out=${RP1BOOT_ARTIFACT_ROOT:?set RP1BOOT_ARTIFACT_ROOT to the output directory}
+tftp=${RP1_TFTP_ROOT:?set RP1_TFTP_ROOT to the firmware boot directory}
 base=${RP1_BASE_DTB:-$tftp/bcm2712-rpi-cm5l-cm5io.dtb}
-kernel=${RP1_KERNEL:-$root/tftpboot/linux_2712.img}
-initramfs=${RP1_INITRAMFS:-$root/<lab-artifact>
+kernel=${RP1_KERNEL:?set RP1_KERNEL to the Linux Image}
+initramfs=${RP1_INITRAMFS:?set RP1_INITRAMFS to the initramfs}
 cmdline=${RP1_CMDLINE:-earlycon=pl011,0x107d001000,115200n8 console=ttyAMA10,115200 rdinit=/init panic=0 ftrace=nop trace_clock=mono_raw trace_buf_size=256K trace_options=nooverwrite}
 mkdir -p "$out"
 cd "$repo"

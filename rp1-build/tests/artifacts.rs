@@ -196,22 +196,23 @@ writer="both"
     assert!(Note::parse(&a.note).is_err());
 }
 /// The stock board DTB as the firmware hands it over: `bcm2712-rpi-cm5l-cm5io.dtb` (what the
-/// lab's firmware loads for this CM5 Lite on the CM5 IO board) plus `overlays/bcm2712d0.dtbo`.
+/// firmware loads for a CM5 Lite on the CM5 IO board), plus `overlays/bcm2712d0.dtbo` when
+/// `RP1_TEST_DTB_OVERLAY` names it. Skips (returns `None`) when `RP1_TEST_DTB` is unset.
 fn stock_board_dtb(dir: &Path) -> Option<std::path::PathBuf> {
-    let root = Path::new("<lab>");
-    let base = std::env::var_os("RP1_TEST_DTB")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| root.join("bcm2712-rpi-cm5l-cm5io.dtb"));
-    if !base.is_file() {
+    let Some(base) = std::env::var_os("RP1_TEST_DTB").map(std::path::PathBuf::from) else {
         eprintln!("STATIC fixture unavailable: set RP1_TEST_DTB for integration check");
         return None;
-    }
+    };
+    assert!(
+        base.is_file(),
+        "RP1_TEST_DTB is not a file: {}",
+        base.display()
+    );
     let copy = dir.join("stock.dtb");
     fs::write(&copy, fs::read(&base).unwrap()).unwrap();
-    let d0 = root.join("overlays/bcm2712d0.dtbo");
-    if std::env::var_os("RP1_TEST_DTB").is_none() && d0.is_file() {
+    if let Some(d0) = std::env::var_os("RP1_TEST_DTB_OVERLAY") {
         let out = dir.join("stock-d0.dtb");
-        rp1_build::overlay::apply(&copy, &d0, &out).unwrap();
+        rp1_build::overlay::apply(&copy, Path::new(&d0), &out).unwrap();
         return Some(out);
     }
     Some(copy)

@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
-"""Keep the deployed initramfs; replace the two local test tools. No kernel changes."""
+"""Keep the deployed initramfs; replace the two local test tools. No kernel changes.
+
+Required environment: SHM_ARTIFACT_ROOT (build-shm.sh output), RP1_INITRAMFS (the deployed
+initramfs to extend), RP1_INITRAMFS_HELPER (Python module providing parse_newc/add_newc).
+"""
 import gzip
 import hashlib
 import os
 from pathlib import Path
 import runpy
 
-root = Path(os.environ.get("CM5_HACK_ROOT", "<lab>"))
-out = Path(os.environ.get("SHM_ARTIFACT_ROOT", root / "<lab-artifact>"))
-helper = runpy.run_path(str(root / "<lab-artifact>"))
+def env(name):
+    value = os.environ.get(name)
+    if not value:
+        raise SystemExit(f"set {name}")
+    return Path(value)
+
+out = env("SHM_ARTIFACT_ROOT")
+base_initramfs = env("RP1_INITRAMFS")
+helper = runpy.run_path(str(env("RP1_INITRAMFS_HELPER")))
 tools = {"bin/shm-linux": out / "shm-linux", "bin/linux-doorbell": out / "linux-doorbell"}
-entries = [(n, m, bytes(d)) for n, m, d, _ in helper["parse_newc"](gzip.decompress((root / "tftpboot/initramfs_2712").read_bytes()))
+entries = [(n, m, bytes(d)) for n, m, d, _ in helper["parse_newc"](gzip.decompress(base_initramfs.read_bytes()))
            if n != "TRAILER!!!" and n not in tools]
 entries.extend((n, 0o100755, path.read_bytes()) for n, path in tools.items())
 assert len(entries) == len({n for n, _, _ in entries})
