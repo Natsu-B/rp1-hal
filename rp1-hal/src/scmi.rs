@@ -13,8 +13,12 @@
 //! - [`Kind::Linux`]: the generator of a block Linux owns (Ethernet, DMA, ADC, PWM, I2S, audio
 //!   out). Linux's enable/disable and rate requests program the generator (CTRL.ENABLE, AUXSRC and
 //!   the divider), restricted to the parents RP1 keeps running (XOSC and the PLL_SYS outputs).
-//!   In v0.1 an RP1 image cannot declare any of these blocks (`rp1_build::metadata`), so the
-//!   split is static.
+//!
+//! A Linux-kind clock whose block the image declares (v0.1: `ADC`) is *held* by RP1
+//! ([`Server::holding`], from [`crate::linux_blocks::LinuxBlocks::held_clocks`]): the block's
+//! driver owns the generator, Linux's node is disabled by the overlay, and the server treats the
+//! clock like a fixed one at whatever the generator runs (rate changes `DENIED`, enable/disable
+//! only votes), so `clk_disable_unused` cannot stop it.
 //!
 //! The service is polled from proc0's main loop ([`Service::poll`]); no interrupt is used.
 use crate::read;
@@ -356,6 +360,16 @@ pub struct Server<'a, H> {
     clocks: &'a [ClockSpec],
     hw: H,
     votes: u32,
+    held: u32,
+}
+
+/// How the server treats one clock in a request.
+#[derive(Clone, Copy)]
+enum Role {
+    Fixed(u32),
+    Linux(Generator),
+    /// A Linux-kind generator RP1 holds: report only, never written.
+    Held,
 }
 
 impl<'a, H: ClockHardware> Server<'a, H> {
@@ -365,7 +379,15 @@ impl<'a, H: ClockHardware> Server<'a, H> {
             clocks,
             hw,
             votes: 0,
+            held: 0,
         }
+    }
+
+    /// Marks the clocks in `held` (one bit per ID) as held by RP1. Only Linux-kind clocks can
+    /// be held; fixed ones already are.
+    pub const fn holding(mut self, held: u32) -> Self {
+        self.held = held;
+        self
     }
 
     pub fn votes(&self) -> u32 {
@@ -377,20 +399,27 @@ impl<'a, H: ClockHardware> Server<'a, H> {
         self.dispatch(header, args).unwrap_or_else(Response::err)
     }
 
-    fn clock(&mut self, id: u32) -> Result<(ClockSpec, PhysicalState), Status> {
+    fn clock(&mut self, id: u32) -> Result<(ClockSpec, PhysicalState, Role), Status> {
         let spec = *self.clocks.get(id as usize).ok_or(Status::NotFound)?;
-        let state = match spec.kind {
+        let (state, role) = match spec.kind {
             Kind::Fixed(rate) => {
                 let state = self.hw.fixed_state(id)?;
                 // RP1 needs it running at its fixed rate; anything else is a fault.
                 if state.rate_hz != rate || !state.enabled {
                     return Err(Status::HardwareError);
                 }
-                state
+                (state, Role::Fixed(rate))
             }
-            Kind::Linux(g) => g.state(&mut self.hw).ok_or(Status::HardwareError)?,
+            Kind::Linux(g) => {
+                let state = g.state(&mut self.hw).ok_or(Status::HardwareError)?;
+                if self.held & (1 << id) != 0 {
+                    (state, Role::Held)
+                } else {
+                    (state, Role::Linux(g))
+                }
+            }
         };
-        Ok((spec, state))
+        Ok((spec, state, role))
     }
 
     fn dispatch(&mut self, header: u32, a: &[u32]) -> Result<Response, Status> {
@@ -443,20 +472,22 @@ impl<'a, H: ClockHardware> Server<'a, H> {
             }
             // attributes (bit0 enabled), name[16], clock_enable_latency (2.0).
             (CLOCK_PROTOCOL, 3) => {
-                let (spec, state) = self.clock(a[0])?;
+                let (spec, state, _) = self.clock(a[0])?;
                 Response::named(&[u32::from(state.enabled)], spec.name, &[0])
             }
-            // Discrete list, none remaining: the fixed rate, or the lowest and highest rate of a
-            // Linux generator (Linux takes them as its rate range and asks for any rate in it).
+            // Discrete list, none remaining: the fixed (or held) rate, or the lowest and highest
+            // rate of a Linux generator (Linux takes them as its rate range and asks for any
+            // rate in it).
             (CLOCK_PROTOCOL, 4) => {
-                let (spec, _) = self.clock(a[0])?;
-                match (a[1], spec.kind) {
-                    (0, Kind::Fixed(rate)) => Response::ok(&[1, rate, 0]),
-                    (0, Kind::Linux(g)) => {
+                let (_, state, role) = self.clock(a[0])?;
+                match (a[1], role) {
+                    (0, Role::Fixed(rate)) => Response::ok(&[1, rate, 0]),
+                    (0, Role::Held) => Response::ok(&[1, state.rate_hz, 0]),
+                    (0, Role::Linux(g)) => {
                         let (low, high) = g.range();
                         Response::ok(&[2, low, 0, high, 0])
                     }
-                    (1, Kind::Fixed(_)) | (2, Kind::Linux(_)) => Response::ok(&[0]),
+                    (1, Role::Fixed(_) | Role::Held) | (2, Role::Linux(_)) => Response::ok(&[0]),
                     _ => return Err(Status::InvalidParameters),
                 }
             }
@@ -465,14 +496,15 @@ impl<'a, H: ClockHardware> Server<'a, H> {
                 if a[0] & !0xc != 0 {
                     return Err(Status::InvalidParameters);
                 }
-                let (spec, _) = self.clock(a[1])?;
+                let (_, state, role) = self.clock(a[1])?;
                 if a[3] != 0 {
                     return Err(Status::InvalidParameters);
                 }
-                match spec.kind {
-                    Kind::Fixed(rate) if a[2] == rate => {}
-                    Kind::Fixed(_) => return Err(Status::Denied),
-                    Kind::Linux(g) => {
+                match role {
+                    Role::Fixed(rate) if a[2] == rate => {}
+                    Role::Held if a[2] == state.rate_hz => {}
+                    Role::Fixed(_) | Role::Held => return Err(Status::Denied),
+                    Role::Linux(g) => {
                         let (aux, div, _) = g.choose(a[2]).ok_or(Status::InvalidParameters)?;
                         g.program(&mut self.hw, aux, div);
                     }
@@ -480,17 +512,18 @@ impl<'a, H: ClockHardware> Server<'a, H> {
                 Response::ok(&[])
             }
             (CLOCK_PROTOCOL, 6) => {
-                let (_, state) = self.clock(a[0])?;
+                let (_, state, _) = self.clock(a[0])?;
                 Response::ok(&[state.rate_hz, 0])
             }
             (CLOCK_PROTOCOL, 7) => {
                 if a[1] & !1 != 0 {
                     return Err(Status::InvalidParameters);
                 }
-                let (spec, _) = self.clock(a[0])?;
+                let (_, _, role) = self.clock(a[0])?;
                 let on = a[1] & 1 != 0;
-                // Fixed: the vote only, the clock stays on for RP1. Linux: the vote is the state.
-                if let Kind::Linux(g) = spec.kind {
+                // Fixed / held: the vote only, the clock stays on for RP1. Linux: the vote is
+                // the state.
+                if let Role::Linux(g) = role {
                     g.set_enabled(&mut self.hw, on);
                 }
                 if on {
@@ -673,11 +706,11 @@ impl Service {
     /// # Safety
     /// One instance, proc0, holding clock authority; no other user of mailbox channel 0, the
     /// shmem area or the Linux-owned clock generators on RP1.
-    pub(crate) unsafe fn new(linux_blocks: crate::linux_blocks::Report) -> Self {
+    pub(crate) unsafe fn new(linux_blocks: crate::linux_blocks::Report, held: u32) -> Self {
         let mut transport = Rp1Transport { _private: () };
         reset_channel(&mut transport);
         Self {
-            server: Server::new(RP1_CLOCKS, Rp1Clocks { _private: () }),
+            server: Server::new(RP1_CLOCKS, Rp1Clocks { _private: () }).holding(held),
             transport,
             linux_blocks,
         }
@@ -898,6 +931,35 @@ mod tests {
         assert_eq!(req(&mut s, 0x14, 5, &[0, id::ETH, 400_000_000, 0]), [0]);
         assert_eq!(req(&mut s, 0x14, 6, &[id::ETH]), [0, 125_000_000, 0]);
         assert_eq!(req(&mut s, 0x14, 5, &[0, id::ETH, 0, 0])[0] as i32, -2);
+    }
+
+    #[test]
+    fn held_clock_reports_but_never_changes() {
+        // An image that declares ADC: RP1's driver runs clk_adc at XOSC / 1.
+        let mut s = server().holding(1 << id::ADC);
+        let adc = generator(id::ADC);
+        s.hw.regs.insert(adc.ctrl, CTRL_ENABLE);
+        s.hw.regs.insert(adc.ctrl + 4, 1);
+        assert_eq!(req(&mut s, 0x14, 3, &[id::ADC])[..2], [0, 1]);
+        assert_eq!(req(&mut s, 0x14, 6, &[id::ADC]), [0, 50_000_000, 0]);
+        assert_eq!(req(&mut s, 0x14, 4, &[id::ADC, 0]), [0, 1, 50_000_000, 0]);
+        assert_eq!(req(&mut s, 0x14, 4, &[id::ADC, 1]), [0, 0]);
+        assert_eq!(req(&mut s, 0x14, 4, &[id::ADC, 2])[0] as i32, -2);
+        assert_eq!(
+            req(&mut s, 0x14, 5, &[0, id::ADC, 25_000_000, 0])[0] as i32,
+            -3
+        );
+        assert_eq!(req(&mut s, 0x14, 5, &[0, id::ADC, 50_000_000, 0]), [0]);
+        // clk_disable_unused / a consumer's disable: a vote only, the clock stays on.
+        assert_eq!(req(&mut s, 0x14, 7, &[id::ADC, 1]), [0]);
+        assert_eq!(s.votes(), 1 << id::ADC);
+        assert_eq!(req(&mut s, 0x14, 7, &[id::ADC, 0]), [0]);
+        assert_eq!(s.votes(), 0);
+        assert_eq!(req(&mut s, 0x14, 3, &[id::ADC])[1], 1);
+        assert!(s.hw.writes.is_empty());
+        // Other Linux clocks are unaffected.
+        assert_eq!(req(&mut s, 0x14, 7, &[id::DMA, 1]), [0]);
+        assert_eq!(s.hw.writes.len(), 1);
     }
 
     #[test]

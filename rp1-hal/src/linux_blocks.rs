@@ -87,7 +87,35 @@ impl LinuxBlocks {
     pub const fn resets(&self) -> [u32; 3] {
         self.resets
     }
+    /// SCMI clock IDs (one bit each) of the Linux-kind generators whose block is not Linux's:
+    /// the image declared it (v0.1: only `ADC` can be), so RP1 holds the clock
+    /// ([`crate::scmi::Server::holding`]) and [`bring_up`] leaves the generator to its driver.
+    pub const fn held_clocks(&self) -> u32 {
+        let mut held = 0;
+        let mut i = 0;
+        while i < CLOCK_BLOCKS.len() {
+            let (id, bank, mask) = CLOCK_BLOCKS[i];
+            if self.resets[bank] & mask != mask {
+                held |= 1 << id;
+            }
+            i += 1;
+        }
+        held
+    }
 }
+
+/// (SCMI clock ID, reset bank, reset bits) of each Linux-kind generator's block(s). The I2S
+/// clock is shared by I2S0..2: Linux keeps it only while it owns all three.
+const CLOCK_BLOCKS: [(u32, usize, u32); 8] = [
+    (crate::scmi::id::DMA, 0, 1 << 3),
+    (crate::scmi::id::ETH, 0, ETH_IP_BIT),
+    (crate::scmi::id::ETH_TSU, 0, ETH_IP_BIT),
+    (crate::scmi::id::ADC, 0, 1),
+    (crate::scmi::id::PWM0, 1, 1 << 4),
+    (crate::scmi::id::PWM1, 1, 1 << 5),
+    (crate::scmi::id::AUDIO_OUT, 0, 1 << 2),
+    (crate::scmi::id::I2S, 0, 0x7 << 14),
+];
 
 /// What [`bring_up`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,7 +131,8 @@ pub(crate) trait Hardware: Registers {
 }
 
 /// Starts PLL_SYS_SEC, puts every Linux-owned generator on a parent RP1 runs, starts the clocks
-/// the stock firmware starts, and releases the resets. Fails (before touching any reset) only if
+/// the stock firmware starts, and releases the resets. Generators of declared blocks
+/// ([`LinuxBlocks::held_clocks`]) are not touched. Fails (before touching any reset) only if
 /// PLL_SYS_SEC does not read back as programmed. Idempotent: a running set-up is left as it is.
 pub(crate) fn bring_up(r: &mut impl Hardware, blocks: LinuxBlocks) -> Result<Report, crate::Error> {
     let sec = r.read(PLL_SYS_SEC);
@@ -119,8 +148,12 @@ pub(crate) fn bring_up(r: &mut impl Hardware, blocks: LinuxBlocks) -> Result<Rep
             return Err(crate::Error::Hardware);
         }
     }
+    let held = blocks.held_clocks();
     for (id, spec) in RP1_CLOCKS.iter().enumerate() {
         let Kind::Linux(g) = spec.kind else { continue };
+        if held & (1 << id) != 0 {
+            continue;
+        }
         if g.state(r).is_none() {
             default(r, &g);
         }
@@ -341,6 +374,27 @@ mod tests {
         assert!(!f.regs.contains_key(&USBHOST_CFG[0]));
         assert!(!f.regs.contains_key(&VBUSCTRL));
         assert_eq!(report.released[2], 0);
+    }
+
+    #[test]
+    fn declared_adc_is_held_and_its_generator_left_alone() {
+        assert_eq!(ALL.held_clocks(), 0);
+        let blocks = unsafe { LinuxBlocks::new([ALLOWED[0] & !1, ALLOWED[1], ALLOWED[2]]) };
+        assert_eq!(blocks.held_clocks(), 1 << id::ADC);
+        // One I2S instance declared would hold the shared I2S clock.
+        let i2s = unsafe { LinuxBlocks::new([ALLOWED[0] & !(1 << 15), ALLOWED[1], ALLOWED[2]]) };
+        assert_eq!(i2s.held_clocks(), 1 << id::I2S);
+        let mut f = cold();
+        // A generator state bring_up would otherwise reprogram (DIV_INT 0 = /65536 is valid,
+        // so use an unserved parent: AUXSRC 1).
+        f.regs.insert(ctrl(id::ADC), 1 << 5);
+        bring_up(&mut f, blocks).unwrap();
+        assert!(
+            !f.writes
+                .iter()
+                .any(|w| w.0 == ctrl(id::ADC) || w.0 == ctrl(id::ADC) + 4)
+        );
+        assert_eq!(f.regs[&RESETS_CLR] & 1, 0);
     }
 
     #[test]

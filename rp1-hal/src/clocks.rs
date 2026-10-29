@@ -240,7 +240,7 @@ impl Authority {
         }
         let linux = crate::linux_blocks::bring_up(&mut crate::linux_blocks::Mmio, self.linux)?;
         // SAFETY: `self` is the one clock authority, issued to proc0.
-        let scmi = unsafe { crate::scmi::Service::new(linux) };
+        let scmi = unsafe { crate::scmi::Service::new(linux, self.linux.held_clocks()) };
         Ok((clocks, scmi))
     }
 }
