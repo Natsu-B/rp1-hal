@@ -51,6 +51,17 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         reg(0x4001_8020)
     )
     .unwrap();
+    let lb = scmi.linux_blocks();
+    log!(
+        "proc0 linux_blocks released={:x},{:x},{:x} pending={:x},{:x},{:x}\n",
+        lb.released[0],
+        lb.released[1],
+        lb.released[2],
+        lb.pending[0],
+        lb.pending[1],
+        lb.pending[2]
+    )
+    .unwrap();
     log!("proc0 pcie {:?}\n", unsafe {
         rp1_hal::cold::endpoint_and_syscfg(programmed)
     })

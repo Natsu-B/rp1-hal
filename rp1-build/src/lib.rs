@@ -235,7 +235,8 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         if index == 0 {
             s.push_str("proc1: unsafe { ::rp1_rt::Proc1Launcher::new() },\n");
             if d.clock.authority == "rp1" {
-                s.push_str("clock_authority: unsafe { ::rp1_hal::clocks::Authority::new() },\n");
+                let [r0, r1, r2] = d.linux_resets();
+                s.push_str(&format!("clock_authority: unsafe {{ ::rp1_hal::clocks::Authority::new(::rp1_hal::linux_blocks::LinuxBlocks::new([{r0:#x}, {r1:#x}, {r2:#x}])) }},\n"));
             }
         }
         s.push_str("} } }\n");

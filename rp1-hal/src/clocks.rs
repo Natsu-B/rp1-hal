@@ -45,7 +45,7 @@ const SWITCH_TIMEOUT_US: u32 = 10_000;
 
 /// Proof that this image holds clock authority (`clock.authority = "rp1"`), issued to proc0.
 pub struct Authority {
-    _private: (),
+    linux: crate::linux_blocks::LinuxBlocks,
 }
 
 /// Frequencies the drivers rely on. Only [`Authority::init`] creates one, from the registers.
@@ -207,15 +207,18 @@ fn select_pll_sys(r: &mut impl Registers) -> Result<u32, Error> {
 impl Authority {
     /// # Safety
     /// Issued once to proc0 by the generated resources. Linux must not own the clock generator.
-    pub const unsafe fn new() -> Self {
-        Self { _private: () }
+    /// `linux` is the set of blocks the declaration leaves to Linux.
+    pub const unsafe fn new(linux: crate::linux_blocks::LinuxBlocks) -> Self {
+        Self { linux }
     }
 
     /// Selects clk_sys = `sys_hz` (the declared `clk_sys_hz`; only the official 200 MHz is
     /// accepted), checks PLL_SYS / CLK_UART, and starts the SCMI service that publishes the
     /// RP1 clocks to Linux (authority = rp1 means Linux's DT points its RP1 clock users at
-    /// SCMI, so the server is part of the obligation). Poll the returned
-    /// [`crate::scmi::Service`] from proc0's main loop.
+    /// SCMI, so the server is part of the obligation). It also brings up the blocks Linux owns
+    /// ([`crate::linux_blocks`]: PLL_SYS_SEC, their clock generators and resets), since Linux
+    /// can no longer do that through clk-rp1. Poll the returned [`crate::scmi::Service`] from
+    /// proc0's main loop; [`crate::scmi::Service::linux_blocks`] reports the reset release.
     ///
     /// Call after [`crate::cold::clocks`] and before any driver that depends on clk_sys
     /// (I2C). The returned [`Clocks`] is read back from the registers, not from `sys_hz`.
@@ -235,8 +238,9 @@ impl Authority {
         if clocks.sys_hz != sys_hz {
             return Err(Error::Hardware);
         }
+        let linux = crate::linux_blocks::bring_up(&mut crate::linux_blocks::Mmio, self.linux)?;
         // SAFETY: `self` is the one clock authority, issued to proc0.
-        let scmi = unsafe { crate::scmi::Service::new() };
+        let scmi = unsafe { crate::scmi::Service::new(linux) };
         Ok((clocks, scmi))
     }
 }

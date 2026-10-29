@@ -5,11 +5,17 @@
 //! `0x2000_d7c0` (256 bytes, kept out of the link page by rp1-build). Same message layout as the
 //! HW-proven PoC server (PoC HAL `Natsu-B/RP1-hal` `crates/rp1-hal/src/scmi_*.rs`, HW 2026-10-22).
 //!
-//! Policy: every clock exposed here is RP1-owned (UART0 on RP1 shares clk_uart with Linux's
-//! UART1). The rate is fixed and the clock stays on: `CLOCK_RATE_SET` to another rate is
-//! `DENIED`, `CLOCK_CONFIG_SET` only records Linux's vote (SCMI shared-clock semantics: the
-//! platform keeps a clock running while another agent needs it). Nothing here writes a clock
-//! register; reads report the physical state and fail closed if it drifts.
+//! The table ([`RP1_CLOCKS`]) has two kinds of clock:
+//!
+//! - [`Kind::Fixed`]: a clock RP1 itself runs on (clk_sys, clk_slow_sys, clk_uart, the UART APB
+//!   clock). The rate is fixed and the clock stays on: `CLOCK_RATE_SET` to another rate is
+//!   `DENIED`, `CLOCK_CONFIG_SET` only records Linux's vote (SCMI shared-clock semantics). Nothing
+//!   writes these registers; reads report the physical state and fail closed if it drifts.
+//! - [`Kind::Linux`]: the generator of a block Linux owns (Ethernet, DMA, ADC, PWM, I2S, audio
+//!   out). Linux's enable/disable and rate requests program the generator (CTRL.ENABLE, AUXSRC and
+//!   the divider), restricted to the parents RP1 keeps running (XOSC and the PLL_SYS outputs).
+//!   In v0.1 an RP1 image cannot declare any of these blocks (`rp1_build::metadata`), so the
+//!   split is static.
 //!
 //! The service is polled from proc0's main loop ([`Service::poll`]); no interrupt is used.
 use crate::read;
@@ -31,25 +37,256 @@ pub enum Status {
     ProtocolError = -10,
 }
 
+/// A clock source RP1 keeps running for Linux-owned generators (DOC clk-rp1 parent names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Xosc,
+    /// PLL_SYS primary, 1 GHz / 5 / 1.
+    PllSys,
+    /// PLL_SYS primary phase output, PLL_SYS / 2.
+    PllSysPriPh,
+    /// PLL_SYS secondary divider, 1 GHz / 8 (programmed by [`crate::linux_blocks`]).
+    PllSysSec,
+}
+
+impl Source {
+    pub const fn hz(self) -> u32 {
+        match self {
+            Source::Xosc => 50_000_000,
+            Source::PllSys => 200_000_000,
+            Source::PllSysPriPh => 100_000_000,
+            Source::PllSysSec => 125_000_000,
+        }
+    }
+}
+
+/// A clock-generator in the CLOCKS block (CTRL, DIV_INT, DIV_FRAC, SEL at +0/+4/+8/+0xc).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Generator {
+    /// Absolute address of CLK_x_CTRL.
+    pub ctrl: usize,
+    /// Has a fractional divider (DIV_FRAC, kept at 0).
+    pub frac: bool,
+    pub div_max: u32,
+    pub max_hz: u32,
+    /// (CTRL.AUXSRC value, source) for the parents that may be selected; the first is the default.
+    pub parents: &'static [(u8, Source)],
+}
+
+pub const CTRL_ENABLE: u32 = 1 << 11;
+const AUXSRC_SHIFT: u32 = 5;
+const AUXSRC_MASK: u32 = 0x1f << AUXSRC_SHIFT;
+
+/// Register access, separate so the generator logic runs on the host in tests.
+pub trait Registers {
+    fn read(&mut self, address: usize) -> u32;
+    fn write(&mut self, address: usize, value: u32);
+}
+
+impl Generator {
+    fn parent(&self, aux: u32) -> Option<Source> {
+        self.parents
+            .iter()
+            .find(|p| u32::from(p.0) == aux)
+            .map(|p| p.1)
+    }
+
+    /// Rate and enable state from the registers; `None` if the selected parent is not one RP1
+    /// keeps running or a fractional divider is set (this server only writes integer dividers).
+    pub fn state(&self, r: &mut impl Registers) -> Option<PhysicalState> {
+        let ctrl = r.read(self.ctrl);
+        let parent = self.parent((ctrl & AUXSRC_MASK) >> AUXSRC_SHIFT)?;
+        if self.frac && r.read(self.ctrl + 8) != 0 {
+            return None;
+        }
+        // DIV_INT 0 means 65536 (clk-rp1).
+        let div = match r.read(self.ctrl + 4) {
+            0 => 1 << 16,
+            n => n,
+        };
+        Some(PhysicalState {
+            rate_hz: parent.hz() / div,
+            enabled: ctrl & CTRL_ENABLE != 0,
+        })
+    }
+
+    /// Integer divider for `parent` closest to `rate`, never above `max_hz`. Integer only: the
+    /// M3 then needs no 64-bit division (code size), and the rates Linux asks for here (Ethernet
+    /// 125 / 25 / 2.5 MHz, DMA, ADC, I2S) are integer divisions of the parents.
+    fn divider(&self, parent: Source, rate: u32) -> u32 {
+        let p = parent.hz();
+        let nearest = p / rate + u32::from(p % rate >= rate.div_ceil(2));
+        nearest.clamp(p.div_ceil(self.max_hz).max(1), self.div_max)
+    }
+
+    /// Best (AUXSRC, divider, achieved rate) for `rate`, or `None` for 0 Hz.
+    pub fn choose(&self, rate: u32) -> Option<(u8, u32, u32)> {
+        if rate == 0 {
+            return None;
+        }
+        let mut best: Option<(u8, u32, u32)> = None;
+        for &(aux, parent) in self.parents {
+            let div = self.divider(parent, rate);
+            let got = parent.hz() / div;
+            if best.is_none_or(|b| got.abs_diff(rate) < b.2.abs_diff(rate)) {
+                best = Some((aux, div, got));
+            }
+        }
+        best
+    }
+
+    /// Lowest and highest rate the generator can produce from its allowed parents.
+    pub fn range(&self) -> (u32, u32) {
+        let mut low = u32::MAX;
+        let mut high = 0;
+        for &(_, parent) in self.parents {
+            low = low.min(parent.hz() / self.div_max);
+            high = high.max(parent.hz() / self.divider(parent, self.max_hz));
+        }
+        (low, high)
+    }
+
+    /// Programs parent and divider. A running clock is stopped around the change (the AUXSRC
+    /// mux is not glitch-free, HYP from RP2040) and restarted.
+    pub fn program(&self, r: &mut impl Registers, aux: u8, div: u32) {
+        let ctrl = r.read(self.ctrl);
+        if ctrl & CTRL_ENABLE != 0 {
+            r.write(self.ctrl, ctrl & !CTRL_ENABLE);
+        }
+        r.write(self.ctrl + 4, div);
+        if self.frac {
+            r.write(self.ctrl + 8, 0);
+        }
+        let new = (ctrl & !(AUXSRC_MASK | CTRL_ENABLE)) | (u32::from(aux) << AUXSRC_SHIFT);
+        r.write(self.ctrl, new);
+        if ctrl & CTRL_ENABLE != 0 {
+            r.write(self.ctrl, new | CTRL_ENABLE);
+        }
+    }
+
+    pub fn set_enabled(&self, r: &mut impl Registers, on: bool) {
+        let ctrl = r.read(self.ctrl);
+        let new = if on {
+            ctrl | CTRL_ENABLE
+        } else {
+            ctrl & !CTRL_ENABLE
+        };
+        if new != ctrl {
+            r.write(self.ctrl, new);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// RP1 runs on it: fixed rate, always on, Linux only votes.
+    Fixed(u32),
+    /// Owned by Linux: requests program the generator.
+    Linux(Generator),
+}
+
 /// One clock as Linux sees it. The SCMI clock ID is the index in the table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClockSpec {
     /// At most 15 bytes (SCMI 2.0 name field, NUL terminated).
     pub name: &'static str,
-    pub rate_hz: u32,
+    pub kind: Kind,
 }
 
-/// rpi-cm5 board table. IDs must match the `clocks = <&scmi_clk N>` users in scmi_linux.dtb
-/// (serial@34000: uartclk = 1, apb_pclk = 0).
+const CLOCKS: usize = 0x4001_8000;
+const fn linux(
+    name: &'static str,
+    ctrl: usize,
+    frac: bool,
+    div_max: u32,
+    max_hz: u32,
+    parents: &'static [(u8, Source)],
+) -> ClockSpec {
+    ClockSpec {
+        name,
+        kind: Kind::Linux(Generator {
+            ctrl: CLOCKS + ctrl,
+            frac,
+            div_max,
+            max_hz,
+            parents,
+        }),
+    }
+}
+
+/// SCMI clock IDs (the `<&rp1_scmi_clocks N>` cells the overlay from rp1-build writes).
+pub mod id {
+    pub const UART_APB: u32 = 0;
+    pub const UART: u32 = 1;
+    pub const SYS: u32 = 2;
+    pub const SLOW_SYS: u32 = 3;
+    pub const DMA: u32 = 4;
+    pub const ETH: u32 = 5;
+    pub const ETH_TSU: u32 = 6;
+    pub const ADC: u32 = 7;
+    pub const PWM0: u32 = 8;
+    pub const PWM1: u32 = 9;
+    pub const AUDIO_OUT: u32 = 10;
+    pub const I2S: u32 = 11;
+}
+
+/// rpi-cm5 board table. CTRL offsets, AUXSRC indices, divider widths and maximum rates are those
+/// of Linux clk-rp1 (DOC) and match rp1-regdb `clocks-main`; only parents RP1 runs are listed.
+/// Order must match [`id`].
 pub const RP1_CLOCKS: &[ClockSpec] = &[
+    // PLL_SYS PRI_PH: the APB clock clk-rp1 names for the PL011s.
     ClockSpec {
         name: "uart_apb",
-        rate_hz: 100_000_000,
+        kind: Kind::Fixed(100_000_000),
     },
     ClockSpec {
         name: "uart",
-        rate_hz: 50_000_000,
+        kind: Kind::Fixed(50_000_000),
     },
+    ClockSpec {
+        name: "sys",
+        kind: Kind::Fixed(200_000_000),
+    },
+    ClockSpec {
+        name: "slow_sys",
+        kind: Kind::Fixed(50_000_000),
+    },
+    linux(
+        "dma",
+        0x44,
+        false,
+        0xff,
+        100_000_000,
+        &[(0, Source::PllSysPriPh), (2, Source::Xosc)],
+    ),
+    linux(
+        "eth",
+        0x64,
+        false,
+        0xff,
+        125_000_000,
+        &[(0, Source::PllSysSec), (1, Source::PllSys)],
+    ),
+    linux(
+        "eth_tsu",
+        0x134,
+        false,
+        0xff,
+        50_000_000,
+        &[(0, Source::Xosc)],
+    ),
+    linux("adc", 0x144, false, 0xff, 50_000_000, &[(0, Source::Xosc)]),
+    linux("pwm0", 0x74, true, 0xffff, 76_800_000, &[(2, Source::Xosc)]),
+    linux("pwm1", 0x84, true, 0xffff, 76_800_000, &[(2, Source::Xosc)]),
+    linux(
+        "audio_out",
+        0xa4,
+        false,
+        0xff,
+        153_600_000,
+        &[(3, Source::Xosc)],
+    ),
+    linux("i2s", 0xb4, false, 0xff, 50_000_000, &[(0, Source::Xosc)]),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,9 +295,10 @@ pub struct PhysicalState {
     pub enabled: bool,
 }
 
-/// Reads the physical state of clock `id` (index in the table).
-pub trait ClockHardware {
-    fn state(&mut self, id: u32) -> Result<PhysicalState, Status>;
+/// Clock hardware: the state of the fixed clocks (checked by [`crate::clocks`]) and register
+/// access for the Linux-owned generators.
+pub trait ClockHardware: Registers {
+    fn fixed_state(&mut self, id: u32) -> Result<PhysicalState, Status>;
 }
 
 /// What one request did, for logging by the caller (outside the response path).
@@ -142,11 +380,17 @@ impl<'a, H: ClockHardware> Server<'a, H> {
 
     fn clock(&mut self, id: u32) -> Result<(ClockSpec, PhysicalState), Status> {
         let spec = *self.clocks.get(id as usize).ok_or(Status::NotFound)?;
-        let state = self.hw.state(id)?;
-        // RP1 needs every exposed clock running at its fixed rate; anything else is a fault.
-        if state.rate_hz != spec.rate_hz || !state.enabled {
-            return Err(Status::HardwareError);
-        }
+        let state = match spec.kind {
+            Kind::Fixed(rate) => {
+                let state = self.hw.fixed_state(id)?;
+                // RP1 needs it running at its fixed rate; anything else is a fault.
+                if state.rate_hz != rate || !state.enabled {
+                    return Err(Status::HardwareError);
+                }
+                state
+            }
+            Kind::Linux(g) => g.state(&mut self.hw).ok_or(Status::HardwareError)?,
+        };
         Ok((spec, state))
     }
 
@@ -203,23 +447,36 @@ impl<'a, H: ClockHardware> Server<'a, H> {
                 let (spec, state) = self.clock(a[0])?;
                 Response::named(&[u32::from(state.enabled)], spec.name, &[0])
             }
+            // Discrete list, none remaining: the fixed rate, or the lowest and highest rate of a
+            // Linux generator (Linux takes them as its rate range and asks for any rate in it).
             (CLOCK_PROTOCOL, 4) => {
                 let (spec, _) = self.clock(a[0])?;
-                match a[1] {
-                    // One discrete rate, none remaining.
-                    0 => Response::ok(&[1, spec.rate_hz, 0]),
-                    1 => Response::ok(&[0]),
+                match (a[1], spec.kind) {
+                    (0, Kind::Fixed(rate)) => Response::ok(&[1, rate, 0]),
+                    (0, Kind::Linux(g)) => {
+                        let (low, high) = g.range();
+                        Response::ok(&[2, low, 0, high, 0])
+                    }
+                    (1, Kind::Fixed(_)) | (2, Kind::Linux(_)) => Response::ok(&[0]),
                     _ => return Err(Status::InvalidParameters),
                 }
             }
             (CLOCK_PROTOCOL, 5) => {
-                // flags: bit0 async (not offered), bits 3:2 round up/down/auto (harmless here).
+                // flags: bit0 async (not offered), bits 3:2 round up/down/auto (always nearest).
                 if a[0] & !0xc != 0 {
                     return Err(Status::InvalidParameters);
                 }
                 let (spec, _) = self.clock(a[1])?;
-                if a[2] != spec.rate_hz || a[3] != 0 {
-                    return Err(Status::Denied);
+                if a[3] != 0 {
+                    return Err(Status::InvalidParameters);
+                }
+                match spec.kind {
+                    Kind::Fixed(rate) if a[2] == rate => {}
+                    Kind::Fixed(_) => return Err(Status::Denied),
+                    Kind::Linux(g) => {
+                        let (aux, div, _) = g.choose(a[2]).ok_or(Status::InvalidParameters)?;
+                        g.program(&mut self.hw, aux, div);
+                    }
                 }
                 Response::ok(&[])
             }
@@ -231,9 +488,13 @@ impl<'a, H: ClockHardware> Server<'a, H> {
                 if a[1] & !1 != 0 {
                     return Err(Status::InvalidParameters);
                 }
-                self.clock(a[0])?;
-                // The vote only; the clock stays on for RP1.
-                if a[1] & 1 != 0 {
+                let (spec, _) = self.clock(a[0])?;
+                let on = a[1] & 1 != 0;
+                // Fixed: the vote only, the clock stays on for RP1. Linux: the vote is the state.
+                if let Kind::Linux(g) = spec.kind {
+                    g.set_enabled(&mut self.hw, on);
+                }
+                if on {
                     self.votes |= 1 << a[0];
                 } else {
                     self.votes &= !(1 << a[0]);
@@ -359,26 +620,44 @@ impl Transport for Rp1Transport {
     }
 }
 
-/// Physical clock state from the registers checked by [`crate::clocks`] (read twice; any
-/// difference from the admitted tuple reads as a hardware error).
+/// Physical clock state from the registers: the fixed clocks as [`crate::clocks`] checks them
+/// (read twice; any difference from the admitted tuple reads as a hardware error), and plain
+/// MMIO for the Linux-owned generators.
 pub struct Rp1Clocks {
     _private: (),
 }
 
+impl Registers for Rp1Clocks {
+    fn read(&mut self, address: usize) -> u32 {
+        read(address)
+    }
+    fn write(&mut self, address: usize, value: u32) {
+        crate::write(address, value);
+    }
+}
+
 impl ClockHardware for Rp1Clocks {
-    fn state(&mut self, id: u32) -> Result<PhysicalState, Status> {
+    fn fixed_state(&mut self, id: u32) -> Result<PhysicalState, Status> {
+        let on = |rate_hz| {
+            Ok(PhysicalState {
+                rate_hz,
+                enabled: true,
+            })
+        };
         match id {
             // PLL_SYS PRI_PH = PLL_SYS primary (1 GHz / 5 / 1) / 2, a PLL output independent of
             // the clk_sys mux (DOC clk-rp1 `pll_sys_pri_ph`); enabled = PRIM bit 4 (PoC).
-            0 if crate::clocks::running_tuple_admitted() => Ok(PhysicalState {
+            id::UART_APB if crate::clocks::running_tuple_admitted() => Ok(PhysicalState {
                 rate_hz: 100_000_000,
                 enabled: read(0x4002_0010) & 0x10 != 0,
             }),
-            1 if crate::clocks::uart_hz() == Some(RP1_CLOCKS[1].rate_hz) => Ok(PhysicalState {
-                rate_hz: RP1_CLOCKS[1].rate_hz,
-                enabled: true,
-            }),
-            0 | 1 => Err(Status::HardwareError),
+            id::UART => crate::clocks::uart_hz().map_or(Err(Status::HardwareError), on),
+            id::SYS => crate::clocks::sys_hz().map_or(Err(Status::HardwareError), on),
+            // CLK_SLOW_SYS: XOSC (SEL one-hot 1) / DIV_INT 1, always on in hardware (DOC clk-rp1).
+            id::SLOW_SYS if read(CLOCKS + 0x28) == 1 && read(CLOCKS + 0x30) == 1 => {
+                on(crate::clocks::XOSC_HZ)
+            }
+            id::UART_APB | id::SLOW_SYS => Err(Status::HardwareError),
             _ => Err(Status::NotFound),
         }
     }
@@ -388,18 +667,20 @@ impl ClockHardware for Rp1Clocks {
 pub struct Service {
     server: Server<'static, Rp1Clocks>,
     transport: Rp1Transport,
+    linux_blocks: crate::linux_blocks::Report,
 }
 
 impl Service {
     /// # Safety
-    /// One instance, proc0, holding clock authority; no other user of mailbox channel 0 or the
-    /// shmem area on RP1.
-    pub(crate) unsafe fn new() -> Self {
+    /// One instance, proc0, holding clock authority; no other user of mailbox channel 0, the
+    /// shmem area or the Linux-owned clock generators on RP1.
+    pub(crate) unsafe fn new(linux_blocks: crate::linux_blocks::Report) -> Self {
         let mut transport = Rp1Transport { _private: () };
         reset_channel(&mut transport);
         Self {
             server: Server::new(RP1_CLOCKS, Rp1Clocks { _private: () }),
             transport,
+            linux_blocks,
         }
     }
 
@@ -422,39 +703,98 @@ impl Service {
     pub fn votes(&self) -> u32 {
         self.server.votes()
     }
+
+    /// What the bring-up of the Linux-owned blocks did (for logging).
+    pub fn linux_blocks(&self) -> crate::linux_blocks::Report {
+        self.linux_blocks
+    }
 }
 
 #[cfg(test)]
 mod tests {
     extern crate std;
     use super::*;
+    use std::collections::BTreeMap;
     use std::vec::Vec;
 
-    struct Hw(PhysicalState);
+    #[derive(Default)]
+    struct Hw {
+        uart: Option<PhysicalState>,
+        regs: BTreeMap<usize, u32>,
+        writes: Vec<(usize, u32)>,
+    }
+    impl Registers for Hw {
+        fn read(&mut self, address: usize) -> u32 {
+            *self.regs.get(&address).unwrap_or(&0)
+        }
+        fn write(&mut self, address: usize, value: u32) {
+            self.regs.insert(address, value);
+            self.writes.push((address, value));
+        }
+    }
     impl ClockHardware for Hw {
-        fn state(&mut self, id: u32) -> Result<PhysicalState, Status> {
+        fn fixed_state(&mut self, id: u32) -> Result<PhysicalState, Status> {
+            let on = |rate_hz| PhysicalState {
+                rate_hz,
+                enabled: true,
+            };
             match id {
-                0 => Ok(PhysicalState {
-                    rate_hz: 100_000_000,
-                    ..self.0
-                }),
-                1 => Ok(self.0),
+                0 => Ok(on(100_000_000)),
+                1 => Ok(self.uart.unwrap_or(on(50_000_000))),
+                2 => Ok(on(200_000_000)),
+                3 => Ok(on(50_000_000)),
                 _ => Err(Status::NotFound),
             }
         }
     }
     fn server() -> Server<'static, Hw> {
-        Server::new(
-            RP1_CLOCKS,
-            Hw(PhysicalState {
-                rate_hz: 50_000_000,
-                enabled: true,
-            }),
-        )
+        Server::new(RP1_CLOCKS, Hw::default())
     }
     fn req(s: &mut Server<Hw>, p: u8, m: u8, a: &[u32]) -> Vec<u32> {
         let r = s.handle((0x2a << 18) | (u32::from(p) << 10) | u32::from(m), a);
         r.words[..r.len].to_vec()
+    }
+    fn generator(id: u32) -> Generator {
+        match RP1_CLOCKS[id as usize].kind {
+            Kind::Linux(g) => g,
+            Kind::Fixed(_) => panic!(),
+        }
+    }
+
+    #[test]
+    fn table_matches_ids_and_clk_rp1_offsets() {
+        let names: Vec<_> = RP1_CLOCKS.iter().map(|c| c.name).collect();
+        assert_eq!(
+            names,
+            [
+                "uart_apb",
+                "uart",
+                "sys",
+                "slow_sys",
+                "dma",
+                "eth",
+                "eth_tsu",
+                "adc",
+                "pwm0",
+                "pwm1",
+                "audio_out",
+                "i2s"
+            ]
+        );
+        // CLK_x_CTRL addresses (DOC clk-rp1, rp1-regdb clocks-main).
+        for (id, ctrl) in [
+            (id::DMA, 0x4001_8044),
+            (id::ETH, 0x4001_8064),
+            (id::ETH_TSU, 0x4001_8134),
+            (id::ADC, 0x4001_8144),
+            (id::PWM0, 0x4001_8074),
+            (id::PWM1, 0x4001_8084),
+            (id::AUDIO_OUT, 0x4001_80a4),
+            (id::I2S, 0x4001_80b4),
+        ] {
+            assert_eq!(generator(id).ctrl, ctrl, "{id}");
+        }
+        assert!(RP1_CLOCKS.iter().all(|c| c.name.len() <= 15));
     }
 
     #[test]
@@ -471,43 +811,141 @@ mod tests {
     }
 
     #[test]
-    fn clock_discovery_and_rates() {
+    fn fixed_clocks_discovery_and_rates() {
         let mut s = server();
-        assert_eq!(req(&mut s, 0x14, 1, &[]), [0, 2]);
+        assert_eq!(req(&mut s, 0x14, 1, &[]), [0, 12]);
         let attr = req(&mut s, 0x14, 3, &[1]);
         assert_eq!(attr.len(), 7);
         assert_eq!(attr[..3], [0, 1, u32::from_le_bytes(*b"uart")]);
         assert_eq!(req(&mut s, 0x14, 4, &[0, 0]), [0, 1, 100_000_000, 0]);
         assert_eq!(req(&mut s, 0x14, 6, &[1]), [0, 50_000_000, 0]);
-        assert_eq!(req(&mut s, 0x14, 6, &[2])[0] as i32, -4);
+        assert_eq!(req(&mut s, 0x14, 6, &[2]), [0, 200_000_000, 0]);
+        assert_eq!(req(&mut s, 0x14, 6, &[3]), [0, 50_000_000, 0]);
+        assert_eq!(req(&mut s, 0x14, 6, &[12])[0] as i32, -4);
         assert_eq!(req(&mut s, 0x14, 2, &[9])[0] as i32, -1);
     }
 
     #[test]
-    fn rate_change_is_denied_and_votes_never_stop_the_clock() {
+    fn fixed_clocks_deny_rates_and_votes_never_stop_them() {
         let mut s = server();
         assert_eq!(req(&mut s, 0x14, 5, &[0, 1, 48_000_000, 0])[0] as i32, -3);
+        assert_eq!(req(&mut s, 0x14, 5, &[0, 2, 100_000_000, 0])[0] as i32, -3);
         assert_eq!(req(&mut s, 0x14, 5, &[0, 1, 50_000_000, 0]), [0]);
         assert_eq!(req(&mut s, 0x14, 5, &[1, 1, 50_000_000, 0])[0] as i32, -2);
         assert_eq!(req(&mut s, 0x14, 7, &[1, 1]), [0]);
         assert_eq!(s.votes(), 2);
         assert_eq!(req(&mut s, 0x14, 7, &[1, 0]), [0]);
+        assert_eq!(req(&mut s, 0x14, 7, &[2, 0]), [0]);
         assert_eq!(s.votes(), 0);
-        // Still on after Linux dropped its vote.
+        // Still on after Linux dropped its vote, and no register was written.
         assert_eq!(req(&mut s, 0x14, 3, &[1])[1], 1);
+        assert!(s.hw.writes.is_empty());
         assert_eq!(req(&mut s, 0x14, 7, &[1, 2])[0] as i32, -2);
     }
 
     #[test]
     fn drift_and_bad_headers_fail_closed() {
         let mut s = server();
-        s.hw.0.rate_hz = 48_000_000;
+        s.hw.uart = Some(PhysicalState {
+            rate_hz: 48_000_000,
+            enabled: true,
+        });
         assert_eq!(req(&mut s, 0x14, 6, &[1])[0] as i32, -9);
         assert_eq!(req(&mut s, 0x14, 7, &[1, 1])[0] as i32, -9);
         assert_eq!(s.votes(), 0);
         assert_eq!(s.handle(1 << 8, &[]).status(), -10);
         assert_eq!(req(&mut s, 0x14, 6, &[1, 0])[0] as i32, -2);
         assert_eq!(req(&mut s, 0x15, 0, &[])[0] as i32, -1);
+    }
+
+    #[test]
+    fn linux_clock_follows_enable_and_rate_requests() {
+        let mut s = server();
+        let eth = generator(id::ETH);
+        // Stock state: AUXSRC 0 (pll_sys_sec), DIV 1, enabled.
+        s.hw.regs.insert(eth.ctrl, 0x1000_0800);
+        s.hw.regs.insert(eth.ctrl + 4, 1);
+        let attr = req(&mut s, 0x14, 3, &[id::ETH]);
+        assert_eq!(attr[..3], [0, 1, u32::from_le_bytes(*b"eth\0")]);
+        assert_eq!(req(&mut s, 0x14, 6, &[id::ETH]), [0, 125_000_000, 0]);
+        // macb at 100 Mb/s: 25 MHz = pll_sys_sec / 5, written with the clock stopped.
+        assert_eq!(req(&mut s, 0x14, 5, &[0, id::ETH, 25_000_000, 0]), [0]);
+        assert_eq!(
+            s.hw.writes,
+            [
+                (eth.ctrl, 0x1000_0000),
+                (eth.ctrl + 4, 5),
+                (eth.ctrl, 0x1000_0000),
+                (eth.ctrl, 0x1000_0800)
+            ]
+        );
+        assert_eq!(req(&mut s, 0x14, 6, &[id::ETH]), [0, 25_000_000, 0]);
+        // 10 Mb/s.
+        assert_eq!(req(&mut s, 0x14, 5, &[0, id::ETH, 2_500_000, 0]), [0]);
+        assert_eq!(req(&mut s, 0x14, 6, &[id::ETH]), [0, 2_500_000, 0]);
+        // Disable writes CTRL.ENABLE.
+        assert_eq!(req(&mut s, 0x14, 7, &[id::ETH, 0]), [0]);
+        assert_eq!(s.hw.regs[&eth.ctrl] & CTRL_ENABLE, 0);
+        assert_eq!(req(&mut s, 0x14, 3, &[id::ETH])[1], 0);
+        assert_eq!(req(&mut s, 0x14, 7, &[id::ETH, 1]), [0]);
+        assert_eq!(req(&mut s, 0x14, 3, &[id::ETH])[1], 1);
+        assert_eq!(s.votes(), 1 << id::ETH);
+        // Rate range: 125 MHz / 255 .. 125 MHz.
+        assert_eq!(
+            req(&mut s, 0x14, 4, &[id::ETH, 0]),
+            [0, 2, 125_000_000 / 255, 0, 125_000_000, 0]
+        );
+        // Above the maximum: the closest legal rate. 0 Hz: invalid.
+        assert_eq!(req(&mut s, 0x14, 5, &[0, id::ETH, 400_000_000, 0]), [0]);
+        assert_eq!(req(&mut s, 0x14, 6, &[id::ETH]), [0, 125_000_000, 0]);
+        assert_eq!(req(&mut s, 0x14, 5, &[0, id::ETH, 0, 0])[0] as i32, -2);
+    }
+
+    #[test]
+    fn linux_clock_on_an_unserved_parent_is_a_hardware_error() {
+        let mut s = server();
+        // PWM0 AUXSRC 0 = pll_audio_pri_ph, which RP1 does not run.
+        assert_eq!(req(&mut s, 0x14, 6, &[id::PWM0])[0] as i32, -9);
+        assert_eq!(req(&mut s, 0x14, 7, &[id::PWM0, 1])[0] as i32, -9);
+        assert!(s.hw.writes.is_empty());
+    }
+
+    #[test]
+    fn generator_choice() {
+        let dma = generator(id::DMA);
+        assert_eq!(dma.choose(100_000_000), Some((0, 1, 100_000_000)));
+        // 50 MHz: pri_ph / 2 and xosc / 1 are equal; the first parent wins.
+        assert_eq!(dma.choose(50_000_000), Some((0, 2, 50_000_000)));
+        assert_eq!(dma.choose(200_000_000).unwrap().2, 100_000_000);
+        let eth = generator(id::ETH);
+        // 200 MHz parent exceeds max_hz at /1.
+        assert_eq!(eth.choose(200_000_000).unwrap().2, 125_000_000);
+        assert_eq!(eth.choose(100_000_000), Some((1, 2, 100_000_000)));
+        // PWM: integer divider only, DIV_FRAC written as 0.
+        let pwm = generator(id::PWM0);
+        let (aux, div, got) = pwm.choose(16_000_000).unwrap();
+        assert_eq!((aux, div, got), (2, 3, 16_666_666));
+        assert_eq!(pwm.range(), (50_000_000 / 0xffff, 50_000_000));
+        let mut hw = Hw::default();
+        pwm.program(&mut hw, aux, div);
+        assert_eq!(
+            hw.writes,
+            [(pwm.ctrl + 4, 3), (pwm.ctrl + 8, 0), (pwm.ctrl, 2 << 5)]
+        );
+        assert_eq!(
+            pwm.state(&mut hw),
+            Some(PhysicalState {
+                rate_hz: 16_666_666,
+                enabled: false
+            })
+        );
+        // A fractional divider set by someone else is not a state this server made.
+        hw.regs.insert(pwm.ctrl + 8, 0x8000_0000);
+        assert_eq!(pwm.state(&mut hw), None);
+        // DIV_INT 0 reads as 65536 (clk-rp1).
+        hw.regs.insert(pwm.ctrl + 4, 0);
+        hw.regs.insert(pwm.ctrl + 8, 0);
+        assert_eq!(pwm.state(&mut hw).unwrap().rate_hz, 50_000_000 / 65536);
     }
 
     struct Fake {

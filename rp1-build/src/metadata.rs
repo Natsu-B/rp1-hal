@@ -165,7 +165,31 @@ pub fn peripheral_id(p: &str) -> Result<(u8, u16)> {
         (3, p.strip_prefix("TIMER.ALARM").unwrap().parse()?)
     })
 }
+/// rpi-cm5: RESETS bits (bank 0, 1, 2) of the RP1 blocks Linux owns unless the image declares
+/// them (rp1_hal::linux_blocks::ALLOWED): ADC, AUDIO_OUT, DMA, DMA_TICK, ETH_IP, I2C0..6,
+/// I2S0..2, PADS_ETH | PWM0/1, SPI0..8, SYS_RIO1/2, UART0..5 | USBHOST0/1, VBUSCTRL.
+pub const BOARD_LINUX_RESETS: [u32; 3] = [
+    1 | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (0x7f << 7) | (0x7 << 14) | (1 << 25),
+    (0x3 << 4) | (0x1ff << 10) | (0x3 << 20) | (0x3f << 26),
+    0x7,
+];
 impl Declaration {
+    /// [`BOARD_LINUX_RESETS`] without the UARTs and I2Cs the image declares (and UART0 with
+    /// `log`): rp1-hal releases these for Linux.
+    pub fn linux_resets(&self) -> [u32; 3] {
+        let mut r = BOARD_LINUX_RESETS;
+        for p in self.proc0.peripherals.iter().chain(&self.proc1.peripherals) {
+            if let Some(n) = p.strip_prefix("UART").and_then(|n| n.parse::<u32>().ok()) {
+                r[1] &= !(1 << (26 + n));
+            } else if let Some(n) = p.strip_prefix("I2C").and_then(|n| n.parse::<u32>().ok()) {
+                r[0] &= !(1 << (7 + n));
+            }
+        }
+        if self.log.is_some() {
+            r[1] &= !(1 << 26);
+        }
+        r
+    }
     pub fn stack_size(&self, core: usize) -> Result<usize> {
         let s = if core == 0 {
             &self.stack.proc0
