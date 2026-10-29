@@ -122,7 +122,8 @@ const CLOCK_BLOCKS: [(u32, usize, u32); 8] = [
 pub struct Report {
     /// Reset bits released (cleared) per bank.
     pub released: [u32; 3],
-    /// Released bits whose DONE did not come up within 10 ms.
+    /// Released bits whose DONE did not come up within 10 ms. Always zero in a returned report:
+    /// a stuck DONE is an error (kept for the log format).
     pub pending: [u32; 3],
 }
 
@@ -132,8 +133,12 @@ pub(crate) trait Hardware: Registers {
 
 /// Starts PLL_SYS_SEC, puts every Linux-owned generator on a parent RP1 runs, starts the clocks
 /// the stock firmware starts, and releases the resets. Generators of declared blocks
-/// ([`LinuxBlocks::held_clocks`]) are not touched. Fails (before touching any reset) only if
-/// PLL_SYS_SEC does not read back as programmed. Idempotent: a running set-up is left as it is.
+/// ([`LinuxBlocks::held_clocks`]) are not touched. Fails before touching any reset if
+/// PLL_SYS_SEC does not read back as programmed, and with [`crate::Error::Hardware`] before any
+/// block register is written if a released reset (other than ADC's, which has no DONE) does not
+/// report DONE within 10 ms: the Ethernet / pads / USB / VBUS set-up and the SCMI service that
+/// lets Linux probe these blocks must not run on a block still in reset (review 3 #6).
+/// Idempotent: a running set-up is left as it is.
 pub(crate) fn bring_up(r: &mut impl Hardware, blocks: LinuxBlocks) -> Result<Report, crate::Error> {
     let sec = r.read(PLL_SYS_SEC);
     if sec != PLL_SYS_SEC_125MHZ {
@@ -184,8 +189,11 @@ pub(crate) fn bring_up(r: &mut impl Hardware, blocks: LinuxBlocks) -> Result<Rep
         for (bank, mask) in resets.iter().enumerate() {
             pending[bank] = mask & !NO_DONE[bank] & !r.read(RESETS_DONE + 4 * bank);
         }
-        if pending == [0; 3] || r.now_us().wrapping_sub(start) > 10_000 {
+        if pending == [0; 3] {
             break;
+        }
+        if r.now_us().wrapping_sub(start) > 10_000 {
+            return Err(crate::Error::Hardware);
         }
     }
     // After the release: these blocks ignore writes while in reset.
@@ -398,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn stuck_done_is_reported_not_fatal_and_adc_is_not_waited_for() {
+    fn stuck_done_fails_before_block_setup_and_adc_is_not_waited_for() {
         let mut f = cold();
         f.done = [0; 3];
         struct Stuck(Fake);
@@ -421,8 +429,40 @@ mod tests {
             }
         }
         let mut s = Stuck(f);
-        let report = bring_up(&mut s, ALL).unwrap();
-        assert_eq!(report.pending, [0, 0, 1]);
+        // USBHOST0's DONE (bank 2 bit 0) never comes up: an error, and none of the block
+        // registers that need the reset released is written (review 3 #6).
+        assert_eq!(bring_up(&mut s, ALL), Err(crate::Error::Hardware));
+        for (a, _) in &s.0.writes {
+            assert!(
+                !USBHOST_CFG.contains(a)
+                    && *a != VBUSCTRL
+                    && *a != VBUSCTRL + 4
+                    && *a != ETH_CFG_INTE
+                    && !(PADS_ETH..=PADS_ETH + 0x3c).contains(a),
+                "wrote 0x{a:x} after a stuck DONE"
+            );
+        }
+        // ADC (bank 0 bit 0, NO_DONE) stuck alone is not waited for.
+        let mut f = cold();
+        f.done = [0; 3];
+        struct AdcStuck(Fake);
+        impl Registers for AdcStuck {
+            fn read(&mut self, a: usize) -> u32 {
+                let v = self.0.read(a);
+                if a == RESETS_DONE { v & !1 } else { v }
+            }
+            fn write(&mut self, a: usize, v: u32) {
+                self.0.write(a, v)
+            }
+        }
+        impl Hardware for AdcStuck {
+            fn now_us(&mut self) -> u32 {
+                self.0.now_us()
+            }
+        }
+        let mut s = AdcStuck(f);
+        assert_eq!(bring_up(&mut s, ALL).unwrap().pending, [0; 3]);
+        assert!(s.0.writes.iter().any(|(a, _)| USBHOST_CFG.contains(a)));
     }
 
     #[test]
