@@ -167,8 +167,12 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     }
     VALUES.producer(&mut core).push(42).unwrap();
     let mut doorbell = Doorbell::new(p.pins.gpio27);
+    // Linux may ask for an ADC burst before it enables the shm area.
     while link_read(link::SHM_STATUS) != 1 {
         service_doorbell(&mut doorbell);
+        if i2c_proof::pending() == adc_proof::REQUEST {
+            adc_proof::run(adc.as_mut(), adc_proof::REQUEST);
+        }
     }
     let mut area = unsafe { rp1_hal::shm::Area::attach(rp1::SHM_NOTE, 2) }.unwrap();
     let mut up = area.ring_tx::<Sample>("up").unwrap();
