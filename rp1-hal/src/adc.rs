@@ -12,7 +12,7 @@
 //! documented here, so only the temperature sensor has a known meaning.
 use crate::{
     linux_blocks::Mmio,
-    scmi::{Kind, RP1_CLOCKS, id},
+    scmi::{Kind, RP1_CLOCKS, Round, id},
 };
 use crate::{read, write};
 
@@ -85,7 +85,7 @@ impl Token {
             return Err(Error::Precondition);
         };
         let (aux, div, hz) = clk
-            .choose(crate::clocks::XOSC_HZ)
+            .choose(crate::clocks::XOSC_HZ, Round::Down)
             .ok_or(Error::Precondition)?;
         let mut r = Mmio;
         let running = clk.state(&mut r);
@@ -234,7 +234,10 @@ mod tests {
         let Kind::Linux(clk) = RP1_CLOCKS[id::ADC as usize].kind else {
             panic!()
         };
-        assert_eq!(clk.choose(crate::clocks::XOSC_HZ), Some((0, 1, 50_000_000)));
+        assert_eq!(
+            clk.choose(crate::clocks::XOSC_HZ, Round::Down),
+            Some((0, 1, 50_000_000))
+        );
     }
 
     #[test]

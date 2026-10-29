@@ -63,6 +63,27 @@ impl Source {
     }
 }
 
+/// CLOCK_RATE_SET rounding (SCMI flags bits 3:2; Linux `CLOCK_SET_ROUND_UP` = bit 2,
+/// `CLOCK_SET_ROUND_AUTO` = bit 3). Neither bit: round down, the rate must not exceed the request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Round {
+    Down,
+    Up,
+    Nearest,
+}
+
+impl Round {
+    pub const fn from_flags(flags: u32) -> Round {
+        if flags & 8 != 0 {
+            Round::Nearest
+        } else if flags & 4 != 0 {
+            Round::Up
+        } else {
+            Round::Down
+        }
+    }
+}
+
 /// A clock-generator in the CLOCKS block (CTRL, DIV_INT, DIV_FRAC, SEL at +0/+4/+8/+0xc).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Generator {
@@ -113,26 +134,36 @@ impl Generator {
         })
     }
 
-    /// Integer divider for `parent` closest to `rate`, never above `max_hz`. Integer only: the
-    /// M3 then needs no 64-bit division (code size), and the rates Linux asks for here (Ethernet
-    /// 125 / 25 / 2.5 MHz, DMA, ADC, I2S) are integer divisions of the parents.
-    fn divider(&self, parent: Source, rate: u32) -> u32 {
-        let p = parent.hz();
-        let nearest = p / rate + u32::from(p % rate >= rate.div_ceil(2));
-        nearest.clamp(p.div_ceil(self.max_hz).max(1), self.div_max)
+    /// Legal integer dividers for `parent`: never above `max_hz`, at most `div_max`. Integer
+    /// only: the M3 then needs no 64-bit division (code size), and the rates Linux asks for here
+    /// (Ethernet 125 / 25 / 2.5 MHz, DMA, ADC, I2S) are integer divisions of the parents.
+    fn dividers(&self, parent: Source) -> (u32, u32) {
+        (parent.hz().div_ceil(self.max_hz).max(1), self.div_max)
     }
 
-    /// Best (AUXSRC, divider, achieved rate) for `rate`, or `None` for 0 Hz.
-    pub fn choose(&self, rate: u32) -> Option<(u8, u32, u32)> {
+    /// Best (AUXSRC, divider, achieved rate) for `rate` in direction `round`, comparing the
+    /// achieved output Hz of the two dividers around `parent / rate` for every parent. `None` for
+    /// 0 Hz or when no legal setting lies in the requested direction.
+    pub fn choose(&self, rate: u32, round: Round) -> Option<(u8, u32, u32)> {
         if rate == 0 {
             return None;
         }
         let mut best: Option<(u8, u32, u32)> = None;
         for &(aux, parent) in self.parents {
-            let div = self.divider(parent, rate);
-            let got = parent.hz() / div;
-            if best.is_none_or(|b| got.abs_diff(rate) < b.2.abs_diff(rate)) {
-                best = Some((aux, div, got));
+            let p = parent.hz();
+            let (lo, hi) = self.dividers(parent);
+            // p / (p / rate) >= rate and p / ceil(p / rate) <= rate (integer division).
+            for div in [p / rate, p.div_ceil(rate)] {
+                let div = div.clamp(lo, hi);
+                let got = p / div;
+                let fits = match round {
+                    Round::Down => got <= rate,
+                    Round::Up => got >= rate,
+                    Round::Nearest => true,
+                };
+                if fits && best.is_none_or(|b| got.abs_diff(rate) < b.2.abs_diff(rate)) {
+                    best = Some((aux, div, got));
+                }
             }
         }
         best
@@ -144,7 +175,7 @@ impl Generator {
         let mut high = 0;
         for &(_, parent) in self.parents {
             low = low.min(parent.hz() / self.div_max);
-            high = high.max(parent.hz() / self.divider(parent, self.max_hz));
+            high = high.max(parent.hz() / self.dividers(parent).0);
         }
         (low, high)
     }
@@ -492,7 +523,8 @@ impl<'a, H: ClockHardware> Server<'a, H> {
                 }
             }
             (CLOCK_PROTOCOL, 5) => {
-                // flags: bit0 async (not offered), bits 3:2 round up/down/auto (always nearest).
+                // flags: bit0 async (not offered), bit2 round up, bit3 round auto (else down).
+                // No legal rate in the requested direction is an error, never a silent overshoot.
                 if a[0] & !0xc != 0 {
                     return Err(Status::InvalidParameters);
                 }
@@ -505,7 +537,9 @@ impl<'a, H: ClockHardware> Server<'a, H> {
                     Role::Held if a[2] == state.rate_hz => {}
                     Role::Fixed(_) | Role::Held => return Err(Status::Denied),
                     Role::Linux(g) => {
-                        let (aux, div, _) = g.choose(a[2]).ok_or(Status::InvalidParameters)?;
+                        let (aux, div, _) = g
+                            .choose(a[2], Round::from_flags(a[0]))
+                            .ok_or(Status::InvalidParameters)?;
                         g.program(&mut self.hw, aux, div);
                     }
                 }
@@ -976,20 +1010,85 @@ mod tests {
         assert!(s.hw.writes.is_empty());
     }
 
+    /// Review 3 #3: RATE_SET honours the rounding flags and compares achieved output Hz.
+    #[test]
+    fn rate_set_rounding_direction() {
+        let mut s = server();
+        // ADC: 50 MHz xosc, integer divider. (flags, request, result)
+        for (flags, rate, got) in [
+            (0, 36_000_000, 25_000_000), // down: never above the request (was 50 MHz)
+            (4, 20_000_000, 25_000_000), // up: never below it (was 16.67 MHz)
+            (8, 36_000_000, 25_000_000), // auto: nearest output (|11| < |14| MHz)
+            (12, 40_000_000, 50_000_000),
+            (0, 50_000_000, 50_000_000),
+            (4, 50_000_000, 50_000_000),
+            (4, 1, 50_000_000 / 0xff),
+            (0, 400_000_000, 50_000_000),
+        ] {
+            assert_eq!(
+                req(&mut s, 0x14, 5, &[flags, id::ADC, rate, 0]),
+                [0],
+                "{flags} {rate}"
+            );
+            assert_eq!(
+                req(&mut s, 0x14, 6, &[id::ADC]),
+                [0, got, 0],
+                "{flags} {rate}"
+            );
+        }
+        // Nothing legal in the requested direction: an error, and the generator is untouched.
+        let before = req(&mut s, 0x14, 6, &[id::ADC]);
+        assert_eq!(
+            req(&mut s, 0x14, 5, &[4, id::ADC, 60_000_000, 0])[0] as i32,
+            -2
+        );
+        assert_eq!(
+            req(&mut s, 0x14, 5, &[0, id::ADC, 100_000, 0])[0] as i32,
+            -2
+        );
+        assert_eq!(req(&mut s, 0x14, 6, &[id::ADC]), before);
+        // Bits other than async/round stay invalid.
+        assert_eq!(
+            req(&mut s, 0x14, 5, &[2, id::ADC, 25_000_000, 0])[0] as i32,
+            -2
+        );
+        // Several parents: every candidate respects the direction.
+        let eth = generator(id::ETH);
+        for rate in [
+            1_000_000u32,
+            2_500_000,
+            3_000_000,
+            33_000_000,
+            99_000_000,
+            124_000_000,
+        ] {
+            let down = eth.choose(rate, Round::Down).unwrap().2;
+            let up = eth.choose(rate, Round::Up).unwrap().2;
+            let near = eth.choose(rate, Round::Nearest).unwrap().2;
+            assert!(down <= rate && up >= rate, "{rate}: {down} {up}");
+            assert_eq!(
+                near.abs_diff(rate),
+                down.abs_diff(rate).min(up.abs_diff(rate)),
+                "{rate}"
+            );
+        }
+    }
+
     #[test]
     fn generator_choice() {
         let dma = generator(id::DMA);
-        assert_eq!(dma.choose(100_000_000), Some((0, 1, 100_000_000)));
+        let near = Round::Nearest;
+        assert_eq!(dma.choose(100_000_000, near), Some((0, 1, 100_000_000)));
         // 50 MHz: pri_ph / 2 and xosc / 1 are equal; the first parent wins.
-        assert_eq!(dma.choose(50_000_000), Some((0, 2, 50_000_000)));
-        assert_eq!(dma.choose(200_000_000).unwrap().2, 100_000_000);
+        assert_eq!(dma.choose(50_000_000, near), Some((0, 2, 50_000_000)));
+        assert_eq!(dma.choose(200_000_000, near).unwrap().2, 100_000_000);
         let eth = generator(id::ETH);
         // 200 MHz parent exceeds max_hz at /1.
-        assert_eq!(eth.choose(200_000_000).unwrap().2, 125_000_000);
-        assert_eq!(eth.choose(100_000_000), Some((1, 2, 100_000_000)));
+        assert_eq!(eth.choose(200_000_000, near).unwrap().2, 125_000_000);
+        assert_eq!(eth.choose(100_000_000, near), Some((1, 2, 100_000_000)));
         // PWM: integer divider only, DIV_FRAC written as 0.
         let pwm = generator(id::PWM0);
-        let (aux, div, got) = pwm.choose(16_000_000).unwrap();
+        let (aux, div, got) = pwm.choose(16_000_000, near).unwrap();
         assert_eq!((aux, div, got), (2, 3, 16_666_666));
         assert_eq!(pwm.range(), (50_000_000 / 0xffff, 50_000_000));
         let mut hw = Hw::default();
