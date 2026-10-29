@@ -81,7 +81,11 @@ pub const BOARD_SCMI_CONSUMERS: &[(&str, &[u32])] = &[
     ("rp1_spi8", &[2]),
 ];
 /// Consumers whose stock `assigned-clocks` name an RP1 clock (pwm, audio out): the SCMI ID.
-const BOARD_SCMI_ASSIGNED: &[(&str, u32)] =
+/// Their `assigned-clock-parents` (audio out: `<&rp1_clocks 10>`, PLL_AUDIO) would still point
+/// at the disabled clk-rp1 and defer the probe; an overlay cannot delete a property, so it is
+/// replaced by one null phandle, which Linux skips (`of_clk_set_defaults`, clk-conf.c). SCMI
+/// clocks have no parent Linux can select.
+pub const BOARD_SCMI_ASSIGNED: &[(&str, u32)] =
     &[("rp1_pwm0", 8), ("rp1_pwm1", 9), ("rp1_audio_out", 10)];
 
 pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
@@ -252,7 +256,9 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         for (label, id) in BOARD_SCMI_ASSIGNED {
             fragment(
                 &format!("target = <&{label}>"),
-                &format!("assigned-clocks = <&rp1_scmi_clocks {id}>;"),
+                &format!(
+                    "assigned-clocks = <&rp1_scmi_clocks {id}>; assigned-clock-parents = <0>;"
+                ),
             )
         }
         for label in BOARD_NEEDS_STOCK_FIRMWARE {

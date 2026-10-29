@@ -226,6 +226,24 @@ writer="both"
 /// The stock board DTB as the firmware hands it over: `bcm2712-rpi-cm5l-cm5io.dtb` (what the
 /// firmware loads for a CM5 Lite on the CM5 IO board), plus `overlays/bcm2712d0.dtbo` when
 /// `RP1_TEST_DTB_OVERLAY` names it. Skips (returns `None`) when `RP1_TEST_DTB` is unset.
+/// Review 3 #4 without a board DTB: every consumer whose assigned clock moves to SCMI also has
+/// its stock assigned parent (audio_out: clk-rp1 PLL_AUDIO) replaced by a null phandle.
+#[test]
+fn scmi_assigned_clocks_drop_the_clk_rp1_parent() {
+    let a = generate("test", "0.1.0", &declaration(), [0; 32], [0; 20]).unwrap();
+    for (label, id) in rp1_build::overlay::BOARD_SCMI_ASSIGNED {
+        let fragment = format!(
+            "target = <&{label}>; __overlay__ {{ assigned-clocks = <&rp1_scmi_clocks {id}>; assigned-clock-parents = <0>; }}"
+        );
+        assert!(a.dts.contains(&fragment), "{label}");
+    }
+    assert!(
+        rp1_build::overlay::BOARD_SCMI_ASSIGNED
+            .iter()
+            .any(|(l, _)| *l == "rp1_audio_out")
+    );
+}
+
 fn stock_board_dtb(dir: &Path) -> Option<std::path::PathBuf> {
     let Some(base) = std::env::var_os("RP1_TEST_DTB").map(std::path::PathBuf::from) else {
         eprintln!("STATIC fixture unavailable: set RP1_TEST_DTB for integration check");
@@ -376,14 +394,75 @@ fn overlay_applies_to_a_copy_of_the_stock_board_dtb() {
     );
     // Ethernet's PHY reset/IRQ and USB VBUS lines (32, 37, 42) are Linux's.
     assert!(![32, 37, 42].iter().any(|p| merged_pins.contains(p)));
-    // No enabled node outside the unserved video/SDIO set still uses clk-rp1.
+    // Phandles of a clock specifier list (`clocks`, `assigned-clock*`); null entries have no
+    // argument cells.
+    let providers = |cells: &[u32]| {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < cells.len() {
+            let ph = cells[i];
+            out.push(ph);
+            let args = if ph == 0 {
+                0
+            } else {
+                let n = m
+                    .phandle(ph)
+                    .unwrap_or_else(|| panic!("dangling phandle {ph:#x}"));
+                m.cells(n, "#clock-cells")
+                    .unwrap_or_else(|| panic!("{} has no #clock-cells", m.path(n)))[0]
+                    as usize
+            };
+            i += 1 + args;
+        }
+        out
+    };
+    const CLOCK_PROPS: [&str; 3] = ["clocks", "assigned-clocks", "assigned-clock-parents"];
+    // Review 3 #4: a consumer moved to SCMI (enabled or not; audio_out is off in the stock DT)
+    // keeps no reference to clk-rp1 in any clock property.
     let rp1_clk = m.phandle_of(label("rp1_clocks")).unwrap();
+    let moved = rp1_build::overlay::BOARD_SCMI_CONSUMERS
+        .iter()
+        .map(|(l, _)| *l)
+        .chain(
+            rp1_build::overlay::BOARD_SCMI_ASSIGNED
+                .iter()
+                .map(|(l, _)| *l),
+        );
+    for l in moved {
+        for prop in CLOCK_PROPS {
+            if let Some(c) = m.cells(label(l), prop) {
+                assert!(!providers(&c).contains(&rp1_clk), "{l} {prop} uses clk-rp1");
+            }
+        }
+    }
+    assert_eq!(
+        m.cells(label("rp1_audio_out"), "assigned-clocks").unwrap(),
+        [scmi_clk, 10]
+    );
+    assert_eq!(
+        m.cells(label("rp1_audio_out"), "assigned-clock-parents")
+            .unwrap(),
+        [0]
+    );
+    // No enabled node outside the unserved video/SDIO set still uses clk-rp1.
     for (i, _) in m.nodes.iter().enumerate() {
-        if !m.enabled(i) || i == label("rp1_clocks") {
+        // Label tables hold path strings under the same property names.
+        let path = m.path(i);
+        if !m.enabled(i)
+            || i == label("rp1_clocks")
+            || path.starts_with("/__")
+            || path == "/aliases"
+        {
             continue;
         }
-        if let Some(c) = m.cells(i, "clocks") {
-            assert_ne!(c.first(), Some(&rp1_clk), "{} uses clk-rp1", m.path(i));
+        for prop in CLOCK_PROPS {
+            if let Some(c) = m.cells(i, prop) {
+                assert!(
+                    !providers(&c).contains(&rp1_clk),
+                    "{} {prop} uses clk-rp1",
+                    m.path(i)
+                );
+            }
         }
     }
     assert_eq!(m.cells(label("pcie2"), "brcm,tperst-clk-ms").unwrap(), [20]);
