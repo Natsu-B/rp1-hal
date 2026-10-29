@@ -152,9 +152,10 @@ VPU ファーム: config.txt / cmdline.txt を処理、rp1-bundle.img を initra
 
 - ファームは **DTB に既にある `/chosen/bootargs` を cmdline.txt の前に足し**、bootargs を約 1966 B で切る（HW）。
   ローダーは末尾のトークンが欠けたら「切り詰め」と出して止まる。`cargo rp1 bundle` は 880 B を超える cmdline を拒否する。
-- 基準 DTB: 今の `.rp1.dtbo` は SCMI のノード（`rp1_scmi`）と openamp のノードがある DT を前提にする。標準の
-  `bcm2712-rpi-cm5l-cm5io.dtb` には無いので、lab は PoC が作った DT（実行時のダンプから古い `/chosen` を消したもの）を
-  `device_tree=rp1-base.dtb` で渡している。SCMI の transport を `.rp1.dtbo` に入れて標準 DTB だけで動かすのは TODO。
+- 基準 DTB: ファームが選ぶ標準の `bcm2712-rpi-cm5l-cm5io.dtb`（+ `bcm2712d0.dtbo`、lab は `dtoverlay=uart1-pi5`）。
+  `device_tree=` は使わない。SCMI の transport・クロック利用者の付け替え・予約は `.rp1.dtbo` が自分で足す
+  （declaration-and-note.md §3.1）。標準 DTB の `/chosen/bootargs`（約 150 B）がファームにより cmdline.txt の前に付くが、
+  880 B の上限内で収まる（HW: bootargs 568 B）。HW（<lab-log> boot 2 回）。
 - 起動時間（電源 → BusyBox の `~ #`、UART の 1 s 精度）: **約 31 s**（PoC 84〜87 s）。内訳: VPU ファーム（束 28.7 MB の
   TFTP 約 10 s を含む）約 26 s、rp1boot 約 1.1 s、Linux 約 3 s。
 - SD 起動の経路は未試験。

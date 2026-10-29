@@ -190,7 +190,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 |---|---|---|
 | ローダー | ENTRY、SHM_AREA（ハンドオフ）、OWNERSHIP（当てた後の DTB の検査、§3.2）。overlay 本体は `.rp1.dtbo` | 知らない critical レコード・CRC 不一致・DTB の印（§3.2）と不一致 → RP1 を起動せず停止（ログに理由） |
 | Linux 側 `rp1-linux` | overlay が載せたコピー（`/rp1-firmware` ノードの `rp1,note` プロパティ）の SHM_*、FIRMWARE | 型 ID 不一致・名前が無い → `Err` |
-| `cargo rp1 check --dtb` | OWNERSHIP、LOG、SHM_AREA/SHM_REGION、note 全体 | Linux DT との衝突を一覧にして失敗（`rp1_build::overlay::final_conflicts`、STATIC）: 有効なノードの `pinctrl-N` が `rp1_gpio` 配下のグループで RP1 所有ピンを設定、所有ブロックのノード（`rp1_uartN` 等）が有効・ラベルが無い、authority=rp1 なのに `rp1_clocks` が有効、`rp1-shm` 予約が SHM_AREA と違う・他の予約や `/memreserve/` と重なる、`rp1:<name>` の UIO が領域と違う、`/rp1-firmware rp1,note` が ELF の note と違う |
+| `cargo rp1 check --dtb` | OWNERSHIP、LOG、SHM_AREA/SHM_REGION、note 全体 | Linux DT との衝突を一覧にして失敗（`rp1_build::overlay::final_conflicts`、STATIC）: 有効なノードの `pinctrl-N` が `rp1_gpio` 配下のグループで RP1 所有ピンを設定、所有ブロックのノード（`rp1_uartN` 等）が有効・ラベルが無い、authority=rp1 なのに `rp1_clocks` が有効、`rp1-shm` 予約が SHM_AREA と違う・他の予約や `/memreserve/` と重なる、`rp1:<name>` の UIO が領域と違う、`/rp1-firmware rp1,note` が ELF の note と違う、有効な gpio-hog・`gpio(s)`/`*-gpio(s)` の利用者が `gpio-reserved-ranges` の線を使う |
 
 ## 3. Linux 用 DT overlay（`rp1-app.dtbo`）
 
@@ -201,7 +201,9 @@ Linux 側の調整はすべてビルド時に overlay として作る。ロー�
 | 断片 | 内容 | 元になる宣言 |
 |---|---|---|
 | 周辺・ピン | RP1 が持つ周辺のノードを `status = "disabled"`。RP1 のピンを GPIO コントローラーの `gpio-reserved-ranges` に入れ、libgpiod から要求できなくする | OWNERSHIP |
-| クロック | clk-rp1 を無効化し、`arm,scmi`（rp1 mailbox + shmem）を足し、各利用者ノードの `clocks` を SCMI 側に付け替える | CLOCK（authority = rp1 のときだけ） |
+| クロック | clk-rp1 を無効化し、`/firmware/scmi`（`arm,scmi`、`mboxes = <&rp1_mbox 0>`、shmem は `&sram` 配下の `scmi@d7c0`）を足し、`rp1_uart0..5` の `clocks` を SCMI の uart(1)/uart_apb(0) に付け替える。同じ mailbox ch0 を使う標準の RP1 ファームのクライアント（`rp1_firmware`、`rp1_fw_shmem`）と、clk-rp1 か標準ファームでしか動かない有効ノード（`rp1_adc`/`rp1_eth`/`rp1_dma`/`rp1_pio`/`rp1_usb0`/`rp1_usb1`）を無効化。`pcie2` に `brcm,tperst-clk-ms = <20>`（PoC DT と同じ） | CLOCK（authority = rp1 のときだけ） |
+| 予約ピンの利用者（ボード表） | 予約に入る線を使う標準ノード（`led_pwr` GPIO44、`cam0_reg` GPIO34）と RP1 の gpio-hog（`micclk1_hog`/`micdat1_hog`、GPIO46/48）を無効化 | ボード表（rpi-cm5） |
+| OpenAMP | `/openamp-address-space` を `disabled`（標準 DTB には無いので、compatible の無い空の disabled ノードが残るだけ） | 常に |
 | ログ | UART0 のノードを `disabled` | LOG |
 | 共有メモリ | `reserved-memory`（no-map、連続）1 つと、shm ごとの `generic-uio` ノード（名前 `rp1:<name>`、領域、IRQ） | SHM_* |
 | Linux 向けの note のコピー | `/rp1-firmware { rp1,note = [note のバイト列]; rp1,owned-nodes = ".."; }` | note 全体、OWNERSHIP |
@@ -209,6 +211,8 @@ Linux 側の調整はすべてビルド時に overlay として作る。ロー�
 - 外部参照はボード表が持つラベル（Raspberry Pi の DTB が持つ `__symbols__`）で書く。overlay は `-@` 付きでコンパイルする。
 - 共有メモリの物理アドレスはビルド時に決める（ボード表の固定領域。現行の `rp1-ddr-scratch@21000000` と同じやり方）。
   これでローダーが確保・計算する必要がなくなる。
+- **基準は標準 DTB**（2026-10-29、HW）: ファームが読む `bcm2712-rpi-cm5l-cm5io.dtb`（+ `bcm2712d0.dtbo`、config.txt の
+  `dtoverlay=uart1-pi5`）にそのまま当てる。`device_tree=` は使わない。
 - ホストで検証できる: `fdtoverlay` で標準 DTB に当て、`dtc` で読めること・参照が解決することを `cargo rp1 build` で確認する。
 
 ### 3.2 適用（ローダー）と検査
