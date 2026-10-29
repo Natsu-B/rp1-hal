@@ -32,12 +32,21 @@ pub fn run(bus: Option<&mut Bus>, request: u32) {
     rp1_proto::barrier();
 }
 /// A failed step: its name and the driver error, or the first mismatching reply byte.
-#[derive(Debug)]
-#[allow(dead_code)] // Fields are read through Debug.
 pub enum Failure {
     Bus(&'static str, Error),
     Data(&'static str, usize, u8),
     NoNack(Result<(), Error>),
+}
+/// The step names print with `Display`: `<&str as Debug>` escaping pulls in the Unicode tables
+/// (about 3 KiB of the 48 KiB shared SRAM image).
+impl core::fmt::Debug for Failure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Bus(step, e) => write!(f, "Bus({step}, {e:?})"),
+            Self::Data(step, i, b) => write!(f, "Data({step}, {i}, {b})"),
+            Self::NoNack(r) => write!(f, "NoNack({r:?})"),
+        }
+    }
 }
 fn check(step: &'static str, bytes: &[u8]) -> Result<(), Failure> {
     let expected = |i: usize| 0x31u8.wrapping_add((i * 29) as u8);
