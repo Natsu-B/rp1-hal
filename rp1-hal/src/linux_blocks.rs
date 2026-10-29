@@ -39,6 +39,20 @@ const USB_HOSTS: u32 = 0x3;
 
 /// CLK_USBH0/1_MICROFRAME, CLK_USBH0/1_SUSPEND (CTRL; DIV_INT at +4). AUXSRC 0 = XOSC.
 const USB_CLOCKS: [usize; 4] = [0x4001_80f4, 0x4001_8104, 0x4001_8114, 0x4001_8124];
+/// Block set-up the stock firmware leaves behind and no Linux driver does (HW, stock firmware
+/// register dump 2026-10-29; under rp1-hal these read as reset values without it):
+/// - PADS_ETH pads +4..=+0x3c = 0x40 (IE, output enabled). Reset value 0x90 has OD set, so the
+///   MDIO / RGMII outputs are off and the PHY is not found ("MDIO device at address 0 is missing").
+/// - USBHOSTn_CFG +0 = 1. Without it an access to the xHCI (AXI) never completes and wedges the
+///   RP1 fabric for the M3 and PCIe alike (HW: M3 read of 0x4020_c120 hung).
+/// - VBUSCTRL +0 = 0x1111, +4 = 0x0200_1111.
+const PADS_ETH: usize = 0x400f_c000;
+const PADS_ETH_BIT: u32 = 1 << 25;
+const PAD_ENABLED: u32 = 0x40;
+const USBHOST_CFG: [usize; 2] = [0x4016_0000, 0x4016_4000];
+const VBUSCTRL: usize = 0x4017_0000;
+const VBUSCTRL_BIT: u32 = 1 << 2;
+const VBUSCTRL_STOCK: [u32; 2] = [0x1111, 0x0200_1111];
 /// SCMI clocks that run before Linux probes, as under the stock firmware.
 const STARTED: [u32; 3] = [
     crate::scmi::id::DMA,
@@ -134,6 +148,26 @@ pub(crate) fn bring_up(r: &mut impl Hardware, blocks: LinuxBlocks) -> Result<Rep
         if pending == [0; 3] || r.now_us().wrapping_sub(start) > 10_000 {
             break;
         }
+    }
+    // After the release: these blocks ignore writes while in reset.
+    let mut set = |a: usize, v: u32| {
+        if r.read(a) != v {
+            r.write(a, v);
+        }
+    };
+    if resets[0] & PADS_ETH_BIT != 0 {
+        for pad in (PADS_ETH + 4..=PADS_ETH + 0x3c).step_by(4) {
+            set(pad, PAD_ENABLED);
+        }
+    }
+    for (host, cfg) in USBHOST_CFG.iter().enumerate() {
+        if resets[2] & (1 << host) != 0 {
+            set(*cfg, 1);
+        }
+    }
+    if resets[2] & VBUSCTRL_BIT != 0 {
+        set(VBUSCTRL, VBUSCTRL_STOCK[0]);
+        set(VBUSCTRL + 4, VBUSCTRL_STOCK[1]);
     }
     Ok(Report {
         released: resets,
@@ -239,14 +273,30 @@ mod tests {
         for c in USB_CLOCKS {
             assert_eq!(f.regs[&c], 0x800);
         }
-        // Resets last, through the CLR alias.
-        let n = f.writes.len();
+        // Resets through the CLR alias, then the set-up of the released blocks.
+        let n = f.writes.iter().position(|w| w.0 == RESETS_CLR).unwrap();
         assert_eq!(
-            f.writes[n - 3..],
+            f.writes[n..n + 3],
             [
                 (RESETS_CLR, ALLOWED[0]),
                 (RESETS_CLR + 4, ALLOWED[1]),
                 (RESETS_CLR + 8, ALLOWED[2])
+            ]
+        );
+        let after: Vec<_> = f.writes[n + 3..].to_vec();
+        assert_eq!(after.len(), 15 + 2 + 2);
+        assert!(
+            after[..15]
+                .iter()
+                .all(|&(a, v)| (PADS_ETH + 4..=PADS_ETH + 0x3c).contains(&a) && v == PAD_ENABLED)
+        );
+        assert_eq!(
+            after[15..],
+            [
+                (USBHOST_CFG[0], 1),
+                (USBHOST_CFG[1], 1),
+                (VBUSCTRL, 0x1111),
+                (VBUSCTRL + 4, 0x0200_1111)
             ]
         );
     }
@@ -275,6 +325,8 @@ mod tests {
         assert_eq!(f.regs[&(RESETS_CLR + 4)] & (1 << 26), 0);
         assert!(!f.regs.contains_key(&(RESETS_CLR + 8)));
         assert!(!f.regs.contains_key(&USB_CLOCKS[0]));
+        assert!(!f.regs.contains_key(&USBHOST_CFG[0]));
+        assert!(!f.regs.contains_key(&VBUSCTRL));
         assert_eq!(report.released[2], 0);
     }
 
