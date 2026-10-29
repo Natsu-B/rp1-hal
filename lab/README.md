@@ -44,7 +44,9 @@ runs `python3 lab/verify-shm.py --uart0 U0 --uart10 U10 --result OBSERVER_JSON`,
 the capture's `"complete": true`, the UART10 markers in order (`SHM_PASS`, `SHM_RC=0`, both
 doorbells, `I2C_REPLY=0x00000001`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
 `PROF_DONE`, `proc1 shm cmd=9 ... errors=0`, the three `I2C_PASS` lines and
-`I2C_RESULT request=1 Ok`. A boot-marker report (`full_success`) is not a pass for this
-regression. Host tests: `python3 lab/test_verify_shm.py`.
+`I2C_RESULT request=1 Ok`. The ADC is declared on proc1 in `shm-firmware`: proc1 gets its
+`Clocks` with `Clocks::wait_from_proc0`, runs the boot burst (`proc1 adc init Ok`,
+`ADC_P1BOOT ... PASS`) and answers Linux's 0xadc request (`ADC_P1REQ ... PASS`).
+A boot-marker report (`full_success`) is not a pass for this regression. Host tests: `python3 lab/test_verify_shm.py`.
 
 HW results belong in the run notes kept outside this repository; build success alone is STATIC evidence.

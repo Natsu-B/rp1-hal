@@ -1,4 +1,5 @@
-//! Lab-only ADC proof: a burst of conversions logged on UART0, at boot and on request
+//! Lab-only ADC proof, run by proc1 (which owns the ADC and gets its Clocks from proc0):
+//! a burst of conversions logged on UART0, at boot and on request
 //! (link+0x28 = [`REQUEST`], reply at link+0x2c = the request on success, all-ones on failure).
 use crate::rp1;
 use embedded_hal_0_2::adc::OneShot;
@@ -58,7 +59,7 @@ fn nb_block(r: nb::Result<u16, Error>) -> Result<u16, Error> {
 
 pub fn run(adc: Option<&mut Adc>, request: u32) {
     let result = match adc {
-        Some(adc) => prove(adc, "REQ"),
+        Some(adc) => prove(adc, "P1REQ"),
         None => Err(Error::Precondition),
     };
     log!("ADC_RESULT request=0x{:x} {:?}\n", request, result).unwrap();

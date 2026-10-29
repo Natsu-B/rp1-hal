@@ -77,22 +77,14 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     );
     log!("proc0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
     let mut i2c = i2c.ok();
-    let adc = p.ADC.init(&clocks);
-    log!("proc0 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
-    let mut adc = adc.ok();
-    if let Some(adc) = adc.as_mut() {
-        let r = adc_proof::prove(adc, "BOOT");
-        log!("ADC_RESULT boot {:?}\n", r).unwrap();
-    }
     let mut rx = VALUES.consumer(&mut core);
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     let mut attempted = false;
     let mut probed = false;
     loop {
+        // 0xadc is proc1's (it owns the ADC); every other request is an I2C one.
         let request = i2c_proof::pending();
-        if request == adc_proof::REQUEST {
-            adc_proof::run(adc.as_mut(), request);
-        } else if request != 0 {
+        if request != 0 && request != adc_proof::REQUEST {
             i2c_proof::run(i2c.as_mut(), request);
         }
         let (value, perst, scmi_event) =
@@ -159,6 +151,20 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
 #[entry(proc1)]
 fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     log!("proc1 ready shm bss=0x{:x}\n", bss_check(0xb55_1000)).unwrap();
+    // The ADC is declared on proc1: its Clocks come from proc0's clock_authority.init
+    // (published before proc0 launches proc1).
+    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000);
+    log!("proc1 clocks {:?}\n", clocks).unwrap();
+    let adc = match clocks {
+        Ok(c) => p.ADC.init(&c),
+        Err(_) => Err(rp1_hal::adc::Error::Precondition),
+    };
+    log!("proc1 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
+    let mut adc = adc.ok();
+    if let Some(adc) = adc.as_mut() {
+        let r = adc_proof::prove(adc, "P1BOOT");
+        log!("ADC_RESULT boot {:?}\n", r).unwrap();
+    }
     VALUES.producer(&mut core).push(42).unwrap();
     let mut doorbell = Doorbell::new(p.pins.gpio27);
     while link_read(link::SHM_STATUS) != 1 {
@@ -174,6 +180,12 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut seen = 0;
     loop {
         let sequence = wait_command(&mut doorbell, &control, seen);
+        if i2c_proof::pending() == adc_proof::REQUEST {
+            adc_proof::run(adc.as_mut(), adc_proof::REQUEST);
+        }
+        if sequence == seen {
+            continue;
+        }
         let Ok(mut request) = control.read() else {
             continue;
         };
@@ -336,7 +348,7 @@ fn idle0(
             || event.is_some()
             || (!probed && request == 2)
             || (!attempted && request == 1)
-            || i2c_proof::pending() != 0
+            || !matches!(i2c_proof::pending(), 0 | adc_proof::REQUEST)
         {
             return (value, perst, event);
         }
@@ -414,14 +426,15 @@ unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
         unsafe { pointer.add(i).write_volatile(i as u32 ^ seed) };
     }
 }
-/// proc1 idle loop, from ISRAM: answer doorbells until the control block's sequence changes.
+/// proc1 idle loop, from ISRAM: answer doorbells until the control block's sequence changes
+/// or Linux asks for an ADC burst (returns `seen` then).
 /// Idle cost is one DDR load (not a 17-word read), so the doorbell stays responsive.
 #[rp1_rt::isram]
 fn wait_command(doorbell: &mut Doorbell, control: &rp1_hal::shm::Block<Control>, seen: u32) -> u32 {
     loop {
         service_doorbell(doorbell);
         let sequence = control.sequence();
-        if sequence != seen {
+        if sequence != seen || i2c_proof::pending() == crate::adc_proof::REQUEST {
             return sequence;
         }
     }

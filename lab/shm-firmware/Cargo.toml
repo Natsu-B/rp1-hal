@@ -28,12 +28,12 @@ log = { sink = "uart0", baudrate = 115200 }
 
 [package.metadata.rp1.proc0]
 pins = [2, 3, 22]
-peripherals = ["TIMER.ALARM0", "I2C1", "ADC"]
+peripherals = ["TIMER.ALARM0", "I2C1"]
 
 [package.metadata.rp1.proc1]
 pins = [27]
 gpio_irq = [27]
-peripherals = ["TIMER.ALARM1"]
+peripherals = ["TIMER.ALARM1", "ADC"]
 
 [[package.metadata.rp1.shm]]
 name = "up"
