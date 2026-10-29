@@ -14,6 +14,10 @@ let mut adc = p.ADC.init(&clocks)?;          // after clocks::Authority::init
 let raw: u16 = adc.read(0)?;                 // input 0, 0..=0xfff
 let mc: i32 = adc.read_temperature()?;       // millidegrees Celsius
 
+// Declared under [proc1] instead: proc1 takes the Clocks proc0's Authority::init published.
+let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000)?;   // core: Proc1
+let mut adc = p.ADC.init(&clocks)?;
+
 // embedded-hal 0.2 (1.0 has no ADC trait):
 use embedded_hal_0_2::adc::OneShot;
 let t = nb::block!(OneShot::read(&mut adc, &mut rp1_hal::adc::TemperatureSensor {}))?;
@@ -33,6 +37,24 @@ STATIC: declaring `ADC` does three things.
   Linux's `clk_disable_unused` therefore cannot stop it.
 
 Without the declaration, the ADC stays Linux's, as before.
+
+Either core may own the ADC. On proc1, `init` needs proc0's clocks: `Clocks::from_proc0` /
+`Clocks::wait_from_proc0` return the value proc0's `clocks::Authority::init` published
+(see [Clocks on proc1](#clocks-on-proc1)).
+
+## Clocks on proc1
+
+STATIC: only proc0 holds the clock authority, so only proc0's `Authority::init` creates a
+`Clocks`. Just before it returns `Ok`, init stores the same value in a rp1-hal-private
+`.shared` cell (frequencies first, then a ready word with a release store; init clears the
+ready word when it starts). `Clocks::from_proc0(&Proc1)` reads the ready word with an
+acquire load and returns that copy, or `None` before init has succeeded; it also checks
+that the clock tree still matches, as the drivers do. `Clocks::wait_from_proc0(&Proc1,
+timeout_us)` polls it against the raw 1 MHz timer and returns `Error::NotReady` on timeout.
+Only loads and stores are used (no LDREX/STREX in shared SRAM). Safe code cannot build a
+`Clocks` from arbitrary numbers, so a proc1 `Clocks` still means "proc0's init ran".
+Launching proc1 after init (the usual order) makes the wait return at once.
+
 
 ## Sequence
 

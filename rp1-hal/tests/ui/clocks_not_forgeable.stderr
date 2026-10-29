@@ -1,0 +1,5 @@
+error[E0451]: fields `sys_hz` and `uart_hz` of struct `Clocks` are private
+ --> tests/ui/clocks_not_forgeable.rs:4:14
+  |
+4 |     Clocks { sys_hz: 200_000_000, uart_hz: 50_000_000 }
+  |              ^^^^^^ private field ^^^^^^^ private field

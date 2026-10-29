@@ -70,6 +70,20 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let private = PRIVATE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let bss = bss_check(0xb55_1000 | private);
     log!("proc1 ready private={} bss=0x{:x}\n", private, bss).unwrap();
+    // ADC and I2C1 are declared on proc1: their drivers take the Clocks that proc0's
+    // `clock_authority.init` published (proc0 launches proc1 only after that, so no wait).
+    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000).unwrap();
+    let mut adc = p.ADC.init(&clocks).unwrap();
+    log!("proc1 temp_mc={}\n", adc.read_temperature().unwrap()).unwrap();
+    let _i2c = p
+        .I2C1
+        .init(
+            p.pins.gpio2,
+            p.pins.gpio3,
+            &clocks,
+            rp1_hal::i2c::Speed::Standard,
+        )
+        .unwrap();
     let mut tx = VALUES.producer(&mut core);
     tx.push(increment(core::hint::black_box(41))).unwrap();
     let mut doorbell = Doorbell::new(p.pins.gpio27);

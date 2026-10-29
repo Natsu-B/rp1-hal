@@ -18,7 +18,14 @@
 //! What follows clk_sys (HW): the M3 cores and the DesignWare I2C `ic_clk`. What does not:
 //! the 1 MHz timer (HW), CLK_UART (separate generator, XOSC / 1) and PLL_SYS PRI_PH (the
 //! 100 MHz `uart_apb` that SCMI reports, a PLL output independent of the clk_sys mux, DOC).
+//!
+//! proc1: only proc0 holds the [`Authority`], so a driver owned by proc1 (ADC, I2C, UART
+//! declared under `[proc1]`) gets its [`Clocks`] from [`Clocks::from_proc0`] /
+//! [`Clocks::wait_from_proc0`]. [`Authority::init`] publishes the value it returns in a
+//! `.shared` cell before returning, so proc1 can only ever obtain a `Clocks` that proc0's
+//! init created; launch proc1 after init (or let proc1 wait).
 use crate::{Error, read};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 const CLK_SYS_CTRL: usize = 0x4001_8014;
 const CLK_SYS_DIV_INT: usize = 0x4001_8018;
@@ -48,7 +55,8 @@ pub struct Authority {
     linux: crate::linux_blocks::LinuxBlocks,
 }
 
-/// Frequencies the drivers rely on. Only [`Authority::init`] creates one, from the registers.
+/// Frequencies the drivers rely on. Only [`Authority::init`] creates one, from the registers;
+/// proc1 receives a copy of that value through [`Clocks::from_proc0`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Clocks {
     sys_hz: u32,
@@ -67,6 +75,75 @@ impl Clocks {
     /// The tree still matches what this value was created from (drivers check before use).
     pub(crate) fn still_current(&self) -> bool {
         sys_hz() == Some(self.sys_hz) && uart_hz() == Some(self.uart_hz)
+    }
+}
+
+/// [`Authority::init`]'s result for proc1: written by proc0 only (init), read by proc1 only.
+/// Plain acquire/release loads and stores, no LDREX/STREX (shared SRAM). `.shared` is loaded
+/// with the image (`ready` = 0); init clears `ready` before it writes the frequencies again.
+struct Handoff {
+    ready: AtomicU32,
+    sys_hz: AtomicU32,
+    uart_hz: AtomicU32,
+}
+const READY: u32 = 0x434c_4b53;
+
+#[unsafe(link_section = ".shared")]
+static HANDOFF: Handoff = Handoff::new();
+
+impl Handoff {
+    const fn new() -> Self {
+        Self {
+            ready: AtomicU32::new(0),
+            sys_hz: AtomicU32::new(0),
+            uart_hz: AtomicU32::new(0),
+        }
+    }
+    fn withdraw(&self) {
+        self.ready.store(0, Ordering::Release);
+    }
+    /// Only called by [`Authority::init`] with the value it is about to return.
+    fn publish(&self, clocks: &Clocks) {
+        self.sys_hz.store(clocks.sys_hz, Ordering::Relaxed);
+        self.uart_hz.store(clocks.uart_hz, Ordering::Relaxed);
+        self.ready.store(READY, Ordering::Release);
+        #[cfg(target_arch = "arm")]
+        unsafe {
+            core::arch::asm!("dsb sy", "sev", options(nostack, preserves_flags));
+        }
+    }
+    fn take(&self) -> Option<Clocks> {
+        if self.ready.load(Ordering::Acquire) != READY {
+            return None;
+        }
+        Some(Clocks {
+            sys_hz: self.sys_hz.load(Ordering::Relaxed),
+            uart_hz: self.uart_hz.load(Ordering::Relaxed),
+        })
+    }
+}
+
+impl Clocks {
+    /// proc1's copy of the [`Clocks`] that proc0's [`Authority::init`] returned, or `None` if
+    /// init has not succeeded yet (or the tree no longer matches it). Takes the proc1 token:
+    /// proc0 already has its own value.
+    pub fn from_proc0(_core: &rp1_rt::Proc1) -> Option<Clocks> {
+        HANDOFF.take().filter(Clocks::still_current)
+    }
+
+    /// [`Clocks::from_proc0`], polled for up to `timeout_us` (raw 1 MHz timer, which runs from
+    /// the cold bring-up on). [`Error::NotReady`] if proc0's init has not published by then.
+    pub fn wait_from_proc0(core: &rp1_rt::Proc1, timeout_us: u32) -> Result<Clocks, Error> {
+        let start = read(crate::TIMER_RAWL);
+        loop {
+            if let Some(clocks) = Self::from_proc0(core) {
+                return Ok(clocks);
+            }
+            if read(crate::TIMER_RAWL).wrapping_sub(start) > timeout_us {
+                return Self::from_proc0(core).ok_or(Error::NotReady);
+            }
+            core::hint::spin_loop();
+        }
     }
 }
 
@@ -223,7 +300,10 @@ impl Authority {
     /// Call after [`crate::cold::clocks`] and before any driver that depends on clk_sys
     /// (I2C). The returned [`Clocks`] is read back from the registers, not from `sys_hz`.
     /// Already on PLL_SYS (warm restart): nothing is written.
+    ///
+    /// On success the same [`Clocks`] is published for proc1 ([`Clocks::from_proc0`]).
     pub fn init(self, sys_hz: u32) -> Result<(Clocks, crate::scmi::Service), Error> {
+        HANDOFF.withdraw();
         if sys_hz != PLL_SYS_HZ {
             return Err(Error::Invalid);
         }
@@ -241,6 +321,7 @@ impl Authority {
         let linux = crate::linux_blocks::bring_up(&mut crate::linux_blocks::Mmio, self.linux)?;
         // SAFETY: `self` is the one clock authority, issued to proc0.
         let scmi = unsafe { crate::scmi::Service::new(linux, self.linux.held_clocks()) };
+        HANDOFF.publish(&clocks);
         Ok((clocks, scmi))
     }
 }
@@ -307,6 +388,20 @@ mod tests {
             decode_sys(0, 1, 1, &Pll { cs: 0, ..LOCKED }),
             Some(50_000_000)
         );
+    }
+
+    #[test]
+    fn handoff_is_empty_until_published() {
+        let h = Handoff::new();
+        assert_eq!(h.take(), None);
+        let c = Clocks {
+            sys_hz: PLL_SYS_HZ,
+            uart_hz: XOSC_HZ,
+        };
+        h.publish(&c);
+        assert_eq!(h.take(), Some(c));
+        h.withdraw();
+        assert_eq!(h.take(), None);
     }
 
     #[test]

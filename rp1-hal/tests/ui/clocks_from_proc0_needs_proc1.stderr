@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+ --> tests/ui/clocks_from_proc0_needs_proc1.rs:4:32
+  |
+4 |     let _ = Clocks::from_proc0(core);
+  |             ------------------ ^^^^ expected `&Proc1`, found `&Proc0`
+  |             |
+  |             arguments to this function are incorrect
+  |
+  = note: expected reference `&Proc1`
+             found reference `&Proc0`
+note: associated function defined here
+ --> src/clocks.rs
+  |
+  |     pub fn from_proc0(_core: &rp1_rt::Proc1) -> Option<Clocks> {
+  |            ^^^^^^^^^^
