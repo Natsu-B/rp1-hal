@@ -316,22 +316,47 @@ fn overlay_applies_to_a_copy_of_the_stock_board_dtb() {
         assert_eq!(m.cells(n, "clocks").unwrap(), [scmi_clk, 1, scmi_clk, 0]);
         assert_eq!(m.strings(n, "clock-names"), ["uartclk", "apb_pclk"]);
     }
-    // clk-rp1, the stock RP1 firmware client (same mailbox channel) and the nodes that only
-    // clk-rp1 / the stock firmware can serve are off; so are the hogs on reserved lines.
+    // clk-rp1, the stock RP1 firmware client (same mailbox channel) and PIO (needs that
+    // client) are off.
     for l in ["rp1_clocks", "rp1_firmware", "rp1_fw_shmem"]
         .into_iter()
-        .chain(rp1_build::overlay::BOARD_NO_SCMI_CLOCK.iter().copied())
         .chain(
-            rp1_build::overlay::BOARD_RESERVED_GPIO_USERS
+            rp1_build::overlay::BOARD_NEEDS_STOCK_FIRMWARE
                 .iter()
                 .copied(),
         )
     {
         assert!(!m.enabled(label(l)), "{l} still enabled");
     }
-    let gpio = label("rp1_gpio");
-    for hog in rp1_build::overlay::BOARD_GPIO_HOGS {
-        assert!(!m.enabled(m.child(gpio, hog).unwrap()), "{hog} enabled");
+    // The blocks Linux owns stay enabled as in the stock DT, with their clocks on SCMI.
+    for l in [
+        "rp1_eth", "rp1_dma", "rp1_adc", "rp1_usb0", "rp1_usb1", "led_pwr", "cam0_reg",
+    ] {
+        assert!(m.enabled(label(l)), "{l} disabled");
+    }
+    for (l, ids) in rp1_build::overlay::BOARD_SCMI_CONSUMERS {
+        let cells: Vec<u32> = ids.iter().flat_map(|i| [scmi_clk, *i]).collect();
+        assert_eq!(m.cells(label(l), "clocks").unwrap(), cells, "{l}");
+    }
+    assert_eq!(
+        m.cells(label("rp1_eth"), "clocks").unwrap(),
+        [scmi_clk, 2, scmi_clk, 2, scmi_clk, 6, scmi_clk, 5]
+    );
+    assert_eq!(
+        m.cells(label("rp1_pwm0"), "assigned-clocks").unwrap(),
+        [scmi_clk, 8]
+    );
+    // Ethernet's PHY reset/IRQ and USB VBUS lines (32, 37, 42) are Linux's.
+    assert!(![32, 37, 42].iter().any(|p| merged_pins.contains(p)));
+    // No enabled node outside the unserved video/SDIO set still uses clk-rp1.
+    let rp1_clk = m.phandle_of(label("rp1_clocks")).unwrap();
+    for (i, _) in m.nodes.iter().enumerate() {
+        if !m.enabled(i) || i == label("rp1_clocks") {
+            continue;
+        }
+        if let Some(c) = m.cells(i, "clocks") {
+            assert_ne!(c.first(), Some(&rp1_clk), "{} uses clk-rp1", m.path(i));
+        }
     }
     assert_eq!(m.cells(label("pcie2"), "brcm,tperst-clk-ms").unwrap(), [20]);
     // No OpenAMP in the stock DT: the overlay leaves only an inert disabled stub.

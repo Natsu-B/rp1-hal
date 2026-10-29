@@ -29,6 +29,14 @@ const BASE: &str = r#"/dts-v1/;
         rp1_uart5: serial@44000 { status = "disabled"; };
         rp1_adc: adc { }; rp1_eth: ethernet { }; rp1_dma: dma { }; rp1_pio: pio { };
         rp1_usb0: usb0 { }; rp1_usb1: usb1 { };
+        rp1_pwm0: pwm0 { }; rp1_pwm1: pwm1 { }; rp1_audio_out: audio-out { };
+        rp1_i2s0: i2s0 { }; rp1_i2s1: i2s1 { }; rp1_i2s2: i2s2 { };
+        rp1_i2c0: i2c@70000 { }; rp1_i2c1: i2c@74000 { status = "disabled"; };
+        rp1_i2c2: i2c@78000 { }; rp1_i2c3: i2c@7c000 { }; rp1_i2c4: i2c@80000 { };
+        rp1_i2c5: i2c@84000 { }; rp1_i2c6: i2c@88000 { };
+        rp1_spi0: spi0 { }; rp1_spi1: spi1 { }; rp1_spi2: spi2 { }; rp1_spi3: spi3 { };
+        rp1_spi4: spi4 { }; rp1_spi5: spi5 { }; rp1_spi6: spi6 { }; rp1_spi7: spi7 { };
+        rp1_spi8: spi8 { };
         rp1_gpio: gpio@d0000 { gpio-reserved-ranges = <2 52>; #gpio-cells = <2>;
             micclk1_hog { gpio-hog; gpios = <46 0>; output-high; };
             uart0_14_15: rp1_uart0_14_15 {
@@ -114,16 +122,17 @@ fn clean_lab_profile_passes() {
 
 #[test]
 fn gpio_hog_on_reserved_line_is_rejected() {
-    // The generated overlay disables the stock hog; a later overlay re-enabling it is caught.
+    // GPIO 28..53 are Linux's (stock hog on 46, PWR LED on 44): no conflict.
+    assert!(conflicts("", "", &[]).is_empty());
+    // A hog or consumer on a header line withheld from Linux (GPIO5) is caught.
     let c = conflicts(
         "",
         "",
-        &[r#"&rp1_gpio { micclk1_hog { status = "okay"; }; };"#],
+        &[r#"&rp1_gpio { bad_hog { gpio-hog; gpios = <5 0>; output-high; }; };"#],
     );
-    assert!(c.iter().any(|c| c.contains("GPIO46")), "{c:?}");
-    // Same for a consumer of a withheld line (the stock PWR LED on GPIO44).
-    let c = conflicts("", "", &[r#"&led_pwr { status = "okay"; };"#]);
-    assert!(c.iter().any(|c| c.contains("GPIO44")), "{c:?}");
+    assert!(c.iter().any(|c| c.contains("GPIO5")), "{c:?}");
+    let c = conflicts("", "", &[r#"&led_pwr { gpios = <&rp1_gpio 6 1>; };"#]);
+    assert!(c.iter().any(|c| c.contains("GPIO6")), "{c:?}");
     // GPIO0/1 stay Linux's.
     let c = conflicts(
         "",
@@ -169,10 +178,13 @@ fn i2c_overlay_and_later_linux_conflict() {
     let base = dtc(
         tmp.path(),
         "base",
-        &BASE.replace("@EXTRA_RESERVED@", "").replace(
-            "@EXTRA_RP1@",
-            r#"rp1_i2c1: i2c@74000 { status = "okay"; };"#,
-        ),
+        &BASE
+            .replace("@EXTRA_RESERVED@", "")
+            .replace("@EXTRA_RP1@", "")
+            .replace(
+                r#"rp1_i2c1: i2c@74000 { status = "disabled"; };"#,
+                r#"rp1_i2c1: i2c@74000 { status = "okay"; };"#,
+            ),
     );
     let a = generate("i2c", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
     let app = dtc(tmp.path(), "app", &a.dts);
@@ -224,7 +236,7 @@ fn reservation_overlap_is_rejected() {
 }
 
 #[test]
-fn present_openamp_and_hogs_are_disabled() {
+fn present_openamp_is_disabled_and_board_hogs_stay() {
     let tmp = tempfile::tempdir().unwrap();
     let base = BASE
         .replace("@EXTRA_RESERVED@", "")
@@ -239,9 +251,6 @@ fn present_openamp_and_hogs_are_disabled() {
     let hog = fdt
         .child(fdt.label("rp1_gpio").unwrap(), "micclk1_hog")
         .unwrap();
-    assert!(!fdt.enabled(hog));
-    assert!(
-        fdt.prop(hog, "gpio-hog").is_some(),
-        "existing hog is kept, only disabled"
-    );
+    // GPIO46 is a board line Linux keeps: the stock hog is untouched.
+    assert!(fdt.enabled(hog));
 }

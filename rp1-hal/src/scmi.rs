@@ -1,8 +1,7 @@
 //! SCMI 2.0 server (Base + Clock protocols) for `clock.authority = "rp1"`.
 //!
-//! Linux sees the RP1 clocks through `arm,scmi` instead of clk-rp1. Transport is the board's
-//! fixed one (scmi_linux.dtb): rp1-mailbox channel 0 + an `arm,scmi-shmem` area at shared SRAM
-//! `0x2000_d7c0` (256 bytes, kept out of the link page by rp1-build). Same message layout as the
+//! Linux sees the RP1 clocks through `arm,scmi` instead of clk-rp1. Transport: rp1-mailbox
+//! channel 0 + an `arm,scmi-shmem` area at shared SRAM `0x2000_d7c0` (256 bytes, kept out of the link page by rp1-build). Same message layout as the
 //! HW-proven PoC server (PoC HAL `Natsu-B/RP1-hal` `crates/rp1-hal/src/scmi_*.rs`, HW 2026-10-22).
 //!
 //! The table ([`RP1_CLOCKS`]) has two kinds of clock:

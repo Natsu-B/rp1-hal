@@ -40,19 +40,49 @@ pub fn reserved_gpios(dtb: &Path) -> Result<std::collections::BTreeSet<u32>> {
     )?)?)
 }
 
-/// rpi-cm5 profile: Linux keeps only GPIO 0..1 on the RP1 bank (UART1 TX/RX, e.g.
-/// `dtoverlay=uart1-pi5`).
-pub const BOARD_GPIO_RESERVED: std::ops::RangeInclusive<u8> = 2..=53;
-/// Unlabelled RP1 GPIO hogs of the stock bcm2712-rpi-cm5*.dtb (lines 46 and 48).
-pub const BOARD_GPIO_HOGS: &[&str] = &["micclk1_hog", "micdat1_hog"];
-/// Stock-enabled Linux consumers of RP1 lines in the board reservation (PWR LED on GPIO44,
-/// camera regulator enable on GPIO34); they would fail to probe with -EINVAL.
-pub const BOARD_RESERVED_GPIO_USERS: &[&str] = &["led_pwr", "cam0_reg"];
-/// Stock-enabled RP1 nodes that need clk-rp1 or the stock RP1 firmware (disabled when RP1
-/// is the clock authority).
-pub const BOARD_NO_SCMI_CLOCK: &[&str] = &[
-    "rp1_adc", "rp1_eth", "rp1_dma", "rp1_pio", "rp1_usb0", "rp1_usb1",
+/// rpi-cm5 profile: the 40-pin header GPIO 2..27 is RP1's to declare (Linux keeps 0..1 for UART1,
+/// e.g. `dtoverlay=uart1-pi5`). GPIO 28..53 are board lines of Linux-owned blocks (ETH_RST_N 32,
+/// ETH_IRQ_N 37, USB VBUS 42/43, PWR LED 44, fan, camera regulator) and stay Linux's, as in the
+/// stock DT.
+pub const BOARD_GPIO_RESERVED: std::ops::RangeInclusive<u8> = 2..=27;
+/// Stock-enabled RP1 nodes that need the stock RP1 firmware's mailbox service (`rp1_firmware`),
+/// which rp1-hal does not implement (disabled when RP1 is the clock authority).
+pub const BOARD_NEEDS_STOCK_FIRMWARE: &[&str] = &["rp1_pio"];
+/// Consumers of RP1 clocks and the SCMI clock IDs (rp1_hal::scmi::id) for each `clocks` cell, in
+/// the stock order (DOC: bcm2712-rpi-cm5 DT / rp1.dtsi). Nodes whose clocks rp1-hal does not serve
+/// (csi, dsi, vec, dpi, mmc: video PLL, MIPI and SDIO clocks) keep `&rp1_clocks` and cannot probe.
+pub const BOARD_SCMI_CONSUMERS: &[(&str, &[u32])] = &[
+    // pclk, hclk = clk_sys; tsu_clk = clk_eth_tsu; tx_clk = clk_eth.
+    ("rp1_eth", &[2, 2, 6, 5]),
+    // core-clk = clk_dma, cfgr-clk = clk_sys.
+    ("rp1_dma", &[4, 2]),
+    ("rp1_adc", &[7]),
+    ("rp1_pwm0", &[8]),
+    ("rp1_pwm1", &[9]),
+    ("rp1_audio_out", &[10]),
+    ("rp1_i2s0", &[11]),
+    ("rp1_i2s1", &[11]),
+    ("rp1_i2s2", &[11]),
+    ("rp1_i2c0", &[2]),
+    ("rp1_i2c1", &[2]),
+    ("rp1_i2c2", &[2]),
+    ("rp1_i2c3", &[2]),
+    ("rp1_i2c4", &[2]),
+    ("rp1_i2c5", &[2]),
+    ("rp1_i2c6", &[2]),
+    ("rp1_spi0", &[2]),
+    ("rp1_spi1", &[2]),
+    ("rp1_spi2", &[2]),
+    ("rp1_spi3", &[2]),
+    ("rp1_spi4", &[2]),
+    ("rp1_spi5", &[2]),
+    ("rp1_spi6", &[2]),
+    ("rp1_spi7", &[2]),
+    ("rp1_spi8", &[2]),
 ];
+/// Consumers whose stock `assigned-clocks` name an RP1 clock (pwm, audio out): the SCMI ID.
+const BOARD_SCMI_ASSIGNED: &[(&str, u32)] =
+    &[("rp1_pwm0", 8), ("rp1_pwm1", 9), ("rp1_audio_out", 10)];
 
 pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
     let regions = d.regions()?;
@@ -161,20 +191,6 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         "target-path = \"/\"",
         "openamp-address-space { status = \"disabled\"; };",
     );
-    // The stock board DT gives Linux the RP1 GPIO hogs below; their lines are in the board
-    // reservation, and a hog on a reserved line fails the whole RP1 gpiochip (HYP, gpiolib).
-    // A board without them gets an empty disabled child (no gpio-hog: ignored).
-    fragment(
-        "target = <&rp1_gpio>",
-        &BOARD_GPIO_HOGS
-            .iter()
-            .map(|h| format!("{h} {{ status = \"disabled\"; }};"))
-            .collect::<Vec<_>>()
-            .join(" "),
-    );
-    for label in BOARD_RESERVED_GPIO_USERS {
-        fragment(&format!("target = <&{label}>"), "status = \"disabled\";");
-    }
     if d.clock.authority == "rp1" {
         // design §6/§9: RP1 owns its clocks. Linux's clk-rp1 is disabled (otherwise
         // clk_disable_unused stops clocks of RP1-only blocks) and the stock DT gets the SCMI
@@ -211,11 +227,27 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
                 "clocks = <&rp1_scmi_clocks 1>, <&rp1_scmi_clocks 0>; clock-names = \"uartclk\", \"apb_pclk\";",
             );
         }
-        // Enabled stock nodes whose clocks (or firmware) only clk-rp1 / the stock RP1 firmware
-        // provide: rp1-hal serves neither, so Linux must not probe them (the PoC lab DT did the
-        // same). USB has no clocks property but its clocks are set up by the stock RP1 firmware
-        // (HYP), so it is left off as well.
-        for label in BOARD_NO_SCMI_CLOCK {
+        // Every other RP1 clock consumer (rp1_hal::scmi serves the clocks of the blocks Linux
+        // owns; rp1_hal::linux_blocks releases their resets). A consumer the image declares is
+        // already disabled above; retargeting it too is harmless.
+        for (label, ids) in BOARD_SCMI_CONSUMERS {
+            let cells = ids
+                .iter()
+                .map(|i| format!("<&rp1_scmi_clocks {i}>"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            fragment(
+                &format!("target = <&{label}>"),
+                &format!("clocks = {cells};"),
+            );
+        }
+        for (label, id) in BOARD_SCMI_ASSIGNED {
+            fragment(
+                &format!("target = <&{label}>"),
+                &format!("assigned-clocks = <&rp1_scmi_clocks {id}>;"),
+            )
+        }
+        for label in BOARD_NEEDS_STOCK_FIRMWARE {
             fragment(&format!("target = <&{label}>"), "status = \"disabled\";");
         }
         // PoC lab DT (PCIe handoff study, HW 2026-10-08): hold PERST 20 ms with the refclk
