@@ -46,6 +46,10 @@ const USB_CLOCKS: [usize; 4] = [0x4001_80f4, 0x4001_8104, 0x4001_8114, 0x4001_81
 /// - USBHOSTn_CFG +0 = 1. Without it an access to the xHCI (AXI) never completes and wedges the
 ///   RP1 fabric for the M3 and PCIe alike (HW: M3 read of 0x4020_c120 hung).
 /// - VBUSCTRL +0 = 0x1111, +4 = 0x0200_1111.
+/// - ETH_CFG INTE.ETHERNET (+0x20 bit 0). The GEM interrupt reaches the RP1 interrupt
+///   controller (MSI-X vector 6) only through this wrapper enable, and macb does not program
+///   ETH_CFG. Without it frames go out and come back (HW: GEM frame counters, host capture) but
+///   eth0 never takes an interrupt, so ARP never completes.
 const PADS_ETH: usize = 0x400f_c000;
 const PADS_ETH_BIT: u32 = 1 << 25;
 const PAD_ENABLED: u32 = 0x40;
@@ -53,6 +57,8 @@ const USBHOST_CFG: [usize; 2] = [0x4016_0000, 0x4016_4000];
 const VBUSCTRL: usize = 0x4017_0000;
 const VBUSCTRL_BIT: u32 = 1 << 2;
 const VBUSCTRL_STOCK: [u32; 2] = [0x1111, 0x0200_1111];
+const ETH_CFG_INTE: usize = 0x4010_4020;
+const ETH_IP_BIT: u32 = 1 << 5;
 /// SCMI clocks that run before Linux probes, as under the stock firmware.
 const STARTED: [u32; 3] = [
     crate::scmi::id::DMA,
@@ -150,6 +156,12 @@ pub(crate) fn bring_up(r: &mut impl Hardware, blocks: LinuxBlocks) -> Result<Rep
         }
     }
     // After the release: these blocks ignore writes while in reset.
+    if resets[0] & ETH_IP_BIT != 0 {
+        let inte = r.read(ETH_CFG_INTE);
+        if inte & 1 == 0 {
+            r.write(ETH_CFG_INTE, inte | 1);
+        }
+    }
     let mut set = |a: usize, v: u32| {
         if r.read(a) != v {
             r.write(a, v);
@@ -283,7 +295,8 @@ mod tests {
                 (RESETS_CLR + 8, ALLOWED[2])
             ]
         );
-        let after: Vec<_> = f.writes[n + 3..].to_vec();
+        assert_eq!(f.writes[n + 3], (ETH_CFG_INTE, 1));
+        let after: Vec<_> = f.writes[n + 4..].to_vec();
         assert_eq!(after.len(), 15 + 2 + 2);
         assert!(
             after[..15]
