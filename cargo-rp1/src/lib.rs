@@ -163,7 +163,8 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string().into());
     }
-    let exclusive_instructions = check_exclusives(&String::from_utf8(out.stdout)?, |address| {
+    let text = String::from_utf8(out.stdout)?;
+    let read_literal = |address: u32| {
         // Only immutable bytes count as constants: a literal in .data/.shared/.bss has an
         // initial value in the ELF but can be changed at run time (review #2).
         for section in file.sections().filter(|s| literal_section(s)) {
@@ -179,7 +180,11 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
             }
         }
         None
-    })?;
+    };
+    // The linker reserves nothing between the image end and the fixed scratch floor (the link
+    // page): a raw pointer there lands on whatever the next build places there (review 3 #1).
+    check_raw_scratch(&text, read_literal, image_end as u32..rp1_proto::IMAGE_END)?;
+    let exclusive_instructions = check_exclusives(&text, read_literal)?;
     Ok(Report {
         image_bytes: image_end - 0x2000_0000,
         isram_bytes: isram,
@@ -269,6 +274,36 @@ fn validate_regions(note: &Note<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Rejects code that computes a constant address in `gap`: shared SRAM the linker has not
+/// allocated, between the image end and the fixed scratch floor. Constants are followed through
+/// `mov`/`movw`/`movt`/`add`/`sub` and PC-relative literal loads, so `floor - 0x100` is caught as
+/// well as a plain literal. Heuristic, fails open: an address formed in another way (or folded
+/// to a value inside the image) is not seen.
+pub fn check_raw_scratch(
+    text: &str,
+    read_word: impl Fn(u32) -> Option<u32>,
+    gap: core::ops::Range<u32>,
+) -> Result<()> {
+    let mut found = None;
+    propagate(text, read_word, true, |address, state| {
+        if found.is_none()
+            && let Some(v) = state.iter().flatten().find(|v| gap.contains(v))
+        {
+            found = Some((address, *v));
+        }
+    });
+    match found {
+        None => Ok(()),
+        Some((address, v)) => Err(format!(
+            "instruction at 0x{address:08x} computes raw shared-SRAM address 0x{v:08x} between the \
+             image end 0x{:08x} and the fixed scratch floor 0x{:08x}; nothing reserves it, use a \
+             .shared static",
+            gap.start, gap.end
+        )
+        .into()),
+    }
+}
+
 struct Instruction {
     address: u32,
     op: String,
@@ -277,6 +312,10 @@ struct Instruction {
 type State = [Option<u32>; 16];
 fn reg(s: &str) -> Option<usize> {
     match s.trim() {
+        // objdump's aliases for r9..r12 (`sb`, `sl`, `fp`, `ip`).
+        "sb" => Some(9),
+        "sl" => Some(10),
+        "fp" => Some(11),
         "ip" => Some(12),
         "sp" => Some(13),
         "lr" => Some(14),
@@ -323,8 +362,7 @@ fn pc_literal(args: &str) -> bool {
         && p.next().is_none_or(|v| v.trim().starts_with('#'))
         && p.next().is_none()
 }
-/// Conservative control-flow constant propagation. Unknown exclusive targets fail closed.
-pub fn check_exclusives(text: &str, read_word: impl Fn(u32) -> Option<u32>) -> Result<usize> {
+fn parse(text: &str) -> (Vec<Instruction>, Vec<usize>) {
     let mut instructions = Vec::new();
     let mut roots = Vec::new();
     for line in text.lines() {
@@ -356,124 +394,250 @@ pub fn check_exclusives(text: &str, read_word: impl Fn(u32) -> Option<u32>) -> R
                 .to_string(),
         });
     }
+    (instructions, roots)
+}
+/// Registers an instruction the propagation does not model may write. Only used in the
+/// permissive mode, whose result must never be relied on to prove safety.
+fn written(op: &str, args: &str, parts: &[&str]) -> Vec<usize> {
+    let no_dest = [
+        "str", "stm", "push", "cmp", "cmn", "tst", "teq", "it", "dmb", "dsb", "isb", "nop", "cps",
+        "sev", "wfe", "wfi", "clrex", "bkpt", "svc", "pld", "msr",
+    ];
+    if op.starts_with("ldm") || op == "pop" {
+        let list = args.split('{').nth(1).and_then(|l| l.split('}').next());
+        return list
+            .into_iter()
+            .flat_map(|l| l.split(','))
+            .filter_map(reg)
+            .collect();
+    }
+    // (ldrex/strex never get here: the propagation models them.)
+    if no_dest.iter().any(|p| op.starts_with(p)) {
+        return Vec::new();
+    }
+    let n = if matches!(op, "ldrd" | "umull" | "smull" | "umlal" | "smlal") {
+        2
+    } else {
+        1
+    };
+    parts.iter().take(n).filter_map(|p| reg(p)).collect()
+}
+/// Control-flow constant propagation over the disassembly. Calls `visit(address, after)` with
+/// the register state after each processed instruction. `permissive = false` is the fail-closed
+/// mode (an unknown instruction forgets every register); `permissive = true` forgets only the
+/// registers it may write, which finds more constants but proves nothing.
+fn propagate(
+    text: &str,
+    read_word: impl Fn(u32) -> Option<u32>,
+    permissive: bool,
+    mut visit: impl FnMut(u32, &State),
+) -> (Vec<Instruction>, Vec<Option<State>>) {
+    let (instructions, roots) = parse(text);
     let by_address: BTreeMap<_, _> = instructions
         .iter()
         .enumerate()
         .map(|(i, x)| (x.address, i))
         .collect();
     let mut states: Vec<Option<State>> = vec![None; instructions.len()];
+    // Permissive mode only: registers that reached an instruction with two different constants.
+    let mut conflicts = vec![0u16; instructions.len()];
     let mut queue = VecDeque::new();
-    for i in roots
-        .into_iter()
-        .chain(std::iter::once(0))
-        .filter(|i| *i < instructions.len())
+    for &i in roots
+        .iter()
+        .chain(std::iter::once(&0))
+        .filter(|i| **i < instructions.len())
     {
         states[i] = Some([None; 16]);
         queue.push_back(i);
     }
-    while let Some(i) = queue.pop_front() {
-        let ins = &instructions[i];
-        let mut state = states[i].unwrap();
-        let parts: Vec<_> = ins.args.split(',').map(str::trim).collect();
-        let dest = parts.first().and_then(|s| reg(s));
-        let op = ins.op.as_str();
-        let mut successors = Vec::new();
-        match op {
-            "mov" | "movs" | "movw" => {
-                if let Some(r) = dest {
-                    state[r] = parts
-                        .get(1)
-                        .and_then(|s| immediate(s).or_else(|| state[reg(s)?]));
+    loop {
+        while let Some(i) = queue.pop_front() {
+            let ins = &instructions[i];
+            let mut state = states[i].unwrap();
+            let parts: Vec<_> = ins.args.split(',').map(str::trim).collect();
+            let dest = parts.first().and_then(|s| reg(s));
+            let op = ins.op.as_str();
+            let mut successors = Vec::new();
+            match op {
+                "mov" | "movs" | "movw" => {
+                    if let Some(r) = dest {
+                        state[r] = parts
+                            .get(1)
+                            .and_then(|s| immediate(s).or_else(|| state[reg(s)?]));
+                    }
                 }
-            }
-            "movt" => {
-                if let Some(r) = dest {
-                    state[r] = state[r]
-                        .and_then(|lo| Some((lo & 0xffff) | (immediate(parts.get(1)?)? << 16)));
+                "movt" => {
+                    if let Some(r) = dest {
+                        state[r] = state[r]
+                            .and_then(|lo| Some((lo & 0xffff) | (immediate(parts.get(1)?)? << 16)));
+                    }
                 }
-            }
-            "add" | "adds" | "sub" | "subs" => {
-                if let Some(r) = dest {
-                    state[r] = (|| {
-                        let (base, offset) = if parts.len() == 2 {
-                            (state[r]?, immediate(parts[1])?)
+                "add" | "adds" | "sub" | "subs" => {
+                    if let Some(r) = dest {
+                        state[r] = (|| {
+                            let (base, offset) = if parts.len() == 2 {
+                                (state[r]?, immediate(parts[1])?)
+                            } else {
+                                (state[reg(parts[1])?]?, immediate(parts.get(2)?)?)
+                            };
+                            if op.starts_with("add") {
+                                base.checked_add(offset)
+                            } else {
+                                base.checked_sub(offset)
+                            }
+                        })();
+                    }
+                }
+                "ldr" => {
+                    if let Some(r) = dest {
+                        // Fold only PC-relative literal-pool loads. A load through any other register
+                        // reads memory whose run-time value the checker cannot know (review #2).
+                        state[r] = if pc_literal(&ins.args) {
+                            bracket(&ins.args, &state, ins.address).and_then(&read_word)
                         } else {
-                            (state[reg(parts[1])?]?, immediate(parts.get(2)?)?)
+                            None
                         };
-                        if op.starts_with("add") {
-                            base.checked_add(offset)
-                        } else {
-                            base.checked_sub(offset)
-                        }
-                    })();
+                    }
                 }
-            }
-            "ldr" => {
-                if let Some(r) = dest {
-                    // Fold only PC-relative literal-pool loads. A load through any other register
-                    // reads memory whose run-time value the checker cannot know (review #2).
-                    state[r] = if pc_literal(&ins.args) {
-                        bracket(&ins.args, &state, ins.address).and_then(&read_word)
-                    } else {
-                        None
-                    };
+                "bl" | "blx" => {
+                    for r in [0, 1, 2, 3, 12, 14] {
+                        state[r] = None;
+                    }
                 }
-            }
-            "bl" | "blx" => {
-                for r in [0, 1, 2, 3, 12, 14] {
-                    state[r] = None;
+                "b" => {
+                    if let Some(j) = target(&ins.args).and_then(|a| by_address.get(&a)).copied() {
+                        successors.push(j);
+                    }
                 }
-            }
-            "b" => {
-                if let Some(j) = target(&ins.args).and_then(|a| by_address.get(&a)).copied() {
-                    successors.push(j);
-                }
-            }
-            "bx" | "tbb" | "tbh" => {}
-            op if op.starts_with('b') && !matches!(op, "bic" | "bics" | "bfi" | "bfc" | "bkpt") => {
-                if let Some(j) = target(&ins.args).and_then(|a| by_address.get(&a)).copied() {
-                    successors.push(j);
-                }
-            }
-            "cbz" | "cbnz" => {
-                if let Some(j) = parts
-                    .get(1)
-                    .and_then(|a| target(a))
-                    .and_then(|a| by_address.get(&a))
-                    .copied()
+                "bx" | "tbb" | "tbh" => {}
+                op if op.starts_with('b')
+                    && !matches!(op, "bic" | "bics" | "bfi" | "bfc" | "bkpt") =>
                 {
-                    successors.push(j);
+                    if let Some(j) = target(&ins.args).and_then(|a| by_address.get(&a)).copied() {
+                        successors.push(j);
+                    }
+                }
+                "cbz" | "cbnz" => {
+                    if let Some(j) = parts
+                        .get(1)
+                        .and_then(|a| target(a))
+                        .and_then(|a| by_address.get(&a))
+                        .copied()
+                    {
+                        successors.push(j);
+                    }
+                }
+                "cmp" | "cmn" | "tst" | "teq" | "str" | "strb" | "strh" | "dmb" | "dsb" | "isb"
+                | "nop" | "cpsid" | "cpsie" | "sev" | "wfe" | "wfi" | "clrex" => {}
+                op if op.starts_with("ldrex") || op.starts_with("strex") => {
+                    if let Some(r) = dest {
+                        state[r] = None;
+                    }
+                }
+                _ if permissive => {
+                    for r in written(op, &ins.args, &parts) {
+                        state[r] = None;
+                    }
+                }
+                _ => state.fill(None),
+            }
+            if ins.args.contains('!') || ins.args.contains("],") {
+                let base = ins.args.split('[').nth(1).unwrap_or(&ins.args);
+                match base.split([',', '!', ']']).next().and_then(reg) {
+                    Some(r) if permissive => state[r] = None,
+                    _ => state.fill(None),
                 }
             }
-            "cmp" | "cmn" | "tst" | "teq" | "str" | "strb" | "strh" | "dmb" | "dsb" | "isb"
-            | "nop" | "cpsid" | "cpsie" | "sev" | "wfe" | "wfi" | "clrex" => {}
-            op if op.starts_with("ldrex") || op.starts_with("strex") => {
-                if let Some(r) = dest {
-                    state[r] = None;
+            visit(ins.address, &state);
+            let is_return =
+                matches!(op, "bx" | "tbb" | "tbh") || (op == "pop" && ins.args.contains("pc"));
+            // Permissive: no fall-through into the next function (after a no-return call).
+            if op != "b"
+                && !is_return
+                && i + 1 < instructions.len()
+                && !(permissive && roots.binary_search(&(i + 1)).is_ok())
+            {
+                successors.push(i + 1);
+            }
+            // A register written with a constant here is no longer a merge conflict.
+            let mask = (0..16)
+                .filter(|r| conflicts[i] & (1 << r) != 0 && state[*r].is_none())
+                .fold(0u16, |m, r| m | (1 << r));
+            for next in successors {
+                let (merged, merged_mask) = match states[next] {
+                    None => (state, mask),
+                    // Must analysis: a value survives only if every path agrees.
+                    Some(old) if !permissive => (
+                        core::array::from_fn(|r| if old[r] == state[r] { old[r] } else { None }),
+                        0,
+                    ),
+                    // May analysis: keep a constant that some path computes, unless two paths
+                    // compute different ones (then the register stays a conflict for good).
+                    Some(old) => {
+                        let mut m = conflicts[next] | mask;
+                        for r in 0..16 {
+                            if matches!((old[r], state[r]), (Some(a), Some(b)) if a != b) {
+                                m |= 1 << r;
+                            }
+                        }
+                        let merged = core::array::from_fn(|r| {
+                            if m & (1 << r) != 0 {
+                                None
+                            } else {
+                                old[r].or(state[r])
+                            }
+                        });
+                        (merged, m)
+                    }
+                };
+                if states[next] != Some(merged) || conflicts[next] != merged_mask {
+                    states[next] = Some(merged);
+                    conflicts[next] = merged_mask;
+                    queue.push_back(next);
                 }
             }
-            _ => state.fill(None),
         }
-        if ins.args.contains('!') || ins.args.contains("],") {
-            state.fill(None);
+        if !permissive {
+            break;
         }
-        let is_return =
-            matches!(op, "bx" | "tbb" | "tbh") || (op == "pop" && ins.args.contains("pc"));
-        if op != "b" && !is_return && i + 1 < instructions.len() {
-            successors.push(i + 1);
-        }
-        for next in successors {
-            let merged = if let Some(old) = states[next] {
-                core::array::from_fn(|r| if old[r] == state[r] { old[r] } else { None })
-            } else {
-                state
-            };
-            if states[next] != Some(merged) {
-                states[next] = Some(merged);
-                queue.push_back(next);
+        // Jump tables (`tbb`/`tbh`) are not decoded, so their case blocks look unreachable. In the
+        // permissive mode, enter every unreached instruction of a function with the merged state of
+        // that function's reached table jumps (the registers do not change across the jump).
+        let mut bounds: Vec<usize> = roots.clone();
+        bounds.insert(0, 0);
+        bounds.push(instructions.len());
+        for w in bounds.windows(2) {
+            let range = w[0]..w[1];
+            let mut table: Option<State> = None;
+            for i in range.clone() {
+                if let (true, Some(s)) = (
+                    matches!(instructions[i].op.as_str(), "tbb" | "tbh"),
+                    states[i],
+                ) {
+                    table = Some(match table {
+                        None => s,
+                        Some(t) => core::array::from_fn(|r| if t[r] == s[r] { t[r] } else { None }),
+                    });
+                }
             }
+            if let Some(t) = table {
+                for i in range {
+                    if states[i].is_none() {
+                        states[i] = Some(t);
+                        queue.push_back(i);
+                    }
+                }
+            }
+        }
+        if queue.is_empty() {
+            break;
         }
     }
+    (instructions, states)
+}
+/// Conservative control-flow constant propagation. Unknown exclusive targets fail closed.
+pub fn check_exclusives(text: &str, read_word: impl Fn(u32) -> Option<u32>) -> Result<usize> {
+    let (instructions, states) = propagate(text, read_word, false, |_, _| {});
     let mut count = 0;
     for (i, ins) in instructions.iter().enumerate() {
         if ins.op.starts_with("ldrex") || ins.op.starts_with("strex") {
@@ -507,6 +671,69 @@ mod tests {
         assert!(check_exclusives(bypass, |_| Some(0x1000_2000)).is_err());
         let call = "1000: ldr r1, [pc, #12]\n1002: bl 2000\n1006: ldrex r0, [r1]\n100a: bx lr";
         assert!(check_exclusives(call, |_| Some(0x1000_2000)).is_err());
+    }
+    /// Review 3 #1: a fixed SRAM scratch just below the link page, above the image end.
+    #[test]
+    fn raw_scratch_in_unallocated_sram_is_rejected() {
+        let gap = 0x2000_be20..0x2000_c000;
+        let movw = "00001000 <f>:\n1000: movw r0, #0xbf00\n1004: ldr r1, [r2]\n1006: movt r0, #0x2000\n100a: bx lr\n";
+        let e = check_raw_scratch(movw, |_| None, gap.clone()).unwrap_err();
+        assert!(e.to_string().contains("0x2000bf00"), "{e}");
+        let literal = "00001000 <f>:\n1000: ldr r1, [pc, #12]\n1002: bx lr\n";
+        assert!(
+            check_raw_scratch(
+                literal,
+                |a| (a == 0x1010).then_some(0x2000_bf00),
+                gap.clone()
+            )
+            .is_err()
+        );
+        // Inside the image (a symbol), the link page and other registers' halves are fine.
+        for v in [0x2000_be10u32, 0x2000_c028, 0x2000_d7c0] {
+            let ok = format!(
+                "00001000 <f>:\n1000: movw r0, #0x{:x}\n1004: movt r0, #0x{:x}\n",
+                v & 0xffff,
+                v >> 16
+            );
+            check_raw_scratch(&ok, |_| None, gap.clone()).unwrap();
+            assert!(check_raw_scratch(literal, |_| Some(v), gap.clone()).is_ok());
+        }
+        // The shape LLVM emitted for the lab profile: floor in a callee-saved register, then
+        // `sub` across a call and an unmodelled store.
+        let derived = "00001000 <f>:\n1000: movw r11, #0xc000\n1004: movt r11, #0x2000\n1008: strd r9, r0, [sp, #280]\n100c: bl 3000\n1010: sub.w r4, r11, #256\n1014: bx lr\n";
+        let e = check_raw_scratch(derived, |_| None, gap.clone()).unwrap_err();
+        assert!(e.to_string().contains("0x2000bf00"), "{e}");
+        // ...but a register reloaded from memory, or written by an unmodelled op, is forgotten.
+        let reload = "00001000 <f>:\n1000: movw r4, #0xbf00\n1004: movt r4, #0x2000\n";
+        for clobber in [
+            "ldr r4, [sp, #4]",
+            "ldmia sp!, {r4, r5}",
+            "mul r4, r4, r5",
+            "ldr r1, [r4], #4",
+        ] {
+            let text = format!("{reload}1008: {clobber}\n");
+            assert!(
+                check_raw_scratch(&text, |_| None, gap.clone()).is_err(),
+                "value is live after movt"
+            );
+            let text = format!(
+                "00001000 <f>:\n1000: movw r4, #0xbe00\n1004: movt r4, #0x2000\n1008: {clobber}\n100c: add r4, r4, #0x100\n"
+            );
+            check_raw_scratch(&text, |_| None, gap.clone()).unwrap();
+        }
+        // Through a jump table (case blocks are not decoded as successors) and past a path on
+        // which the register is unknown (here after a no-return call).
+        let table = "00001000 <f>:\n1000: movw fp, #0xc000\n1004: movt fp, #0x2000\n1008: tbh [pc, r0, lsl #1]\n100c: .short 0x0002\n1010: sub.w r4, fp, #256\n1014: bx lr\n";
+        assert!(check_raw_scratch(table, |_| None, gap.clone()).is_err());
+        let join = "00001000 <f>:\n1000: cbz r0, 100c\n1002: movw fp, #0xc000\n1006: movt fp, #0x2000\n100a: b 1010\n100c: bl 3000\n1010: sub.w r4, fp, #256\n1014: bx lr\n";
+        assert!(check_raw_scratch(join, |_| None, gap.clone()).is_err());
+        // Two different constants on two paths: the register is a conflict, not either value.
+        let conflict = "00001000 <f>:\n1000: cbz r0, 100c\n1002: movw r4, #0xc000\n1006: movt r4, #0x2000\n100a: b 1014\n100c: movw r4, #0xd000\n1010: movt r4, #0x2000\n1014: sub.w r4, r4, #0x1000\n1018: bx lr\n";
+        check_raw_scratch(conflict, |_| None, 0x2000_b000..0x2000_c000).unwrap();
+        let split = "00001000 <f>:\n1000: movw r0, #0xbf00\n1004: movt r1, #0x2000\n00002000 <g>:\n2000: movt r0, #0x2000\n";
+        check_raw_scratch(split, |_| None, gap.clone()).unwrap();
+        // An image that fills the window leaves no gap.
+        check_raw_scratch(movw, |_| None, 0x2000_c000..0x2000_c000).unwrap();
     }
     /// Review #2: a literal points at mutable shared SRAM whose *initial* value is a DSRAM
     /// address. The run-time value can differ, so the second load must be unknown.

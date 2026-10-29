@@ -44,4 +44,11 @@ SECTIONS {
 ASSERT(SIZEOF(.isram) <= 8192, "ISRAM budget exceeded")
 ASSERT(__ebss + MAX(__stack_size0, __stack_size1) <= 0x10004000, "DSRAM + stack budget exceeded")
 ASSERT(__image_end <= 0x2000c000, "shared SRAM image exceeds 48 KiB")
+/* Fixed-address scratch: every raw shared-SRAM address the firmware uses (link page, SCMI
+   shmem, lab request words) must be at or above this floor; below it everything belongs to the
+   image, whose size changes with the code. Shared scratch below the floor must be a .shared
+   static so the linker places it. `cargo rp1 check` rejects code constants in the unallocated gap
+   between __image_end and this floor. */
+__rp1_fixed_scratch_floor = ORIGIN(LINK);
+ASSERT(__image_end <= __rp1_fixed_scratch_floor, "image overlaps the fixed-address scratch floor (ORIGIN(LINK))")
 ASSERT(__link_end == 0x2000ff00, "link page overlaps ABI reservation")

@@ -10,8 +10,16 @@ use rp1_proto::shm::{Overflow, RingRx, RingTx};
 const SYST_CSR: *mut u32 = 0xe000_e010usize as _;
 const SYST_RVR: *mut u32 = 0xe000_e014usize as _;
 const SYST_CVR: *mut u32 = 0xe000_e018usize as _;
-/// Shared SRAM scratch above the image (the linker asserts the image ends below 0x2000_c000).
-pub const SRAM_SCRATCH: usize = 0x2000_bf00;
+/// Shared SRAM scratch for the scalar SRAM timings (one 4-word STM/LDM at most), allocated by
+/// the linker inside the image (`.shared`) so it can never overlap code, constants or another
+/// shared object. Only proc1 touches it, and only during command 9. A raw address above
+/// `__image_end` is not reserved by anything (review 3 #1: it overwrote the Logger), so there is
+/// no SRAM ring variant: a ring needs 512 bytes the 48 KiB image cannot spare.
+#[repr(C, align(8))]
+struct SramScratch(UnsafeCell<[u32; 4]>);
+unsafe impl Sync for SramScratch {}
+#[unsafe(link_section = ".shared")]
+static SRAM_SCRATCH: SramScratch = SramScratch(UnsafeCell::new([0; 4]));
 
 pub fn init() {
     unsafe {
@@ -217,7 +225,7 @@ pub fn run(ddr: *mut u32) {
     let (c, u) = (since(t0), super::now().wrapping_sub(u0));
     log!("PROF clock cyc={} us={}\n", c, u).unwrap();
     let local = LOCAL.1.get().cast::<u32>();
-    let sram = SRAM_SCRATCH as *mut u32;
+    let sram = SRAM_SCRATCH.0.get().cast::<u32>();
     let n = 256;
     let r = |name: &str, n: u32, cyc: u32| log!("PROF {} n={} cyc={}\n", name, n, cyc).unwrap();
     r("empty", n, empty(n));
@@ -280,14 +288,6 @@ pub fn run(ddr: *mut u32) {
             pop
         )
         .unwrap();
-        let (push, pop) = ring_pair(sram.cast::<u8>().wrapping_sub(BODY), ctrl, rounds, batch);
-        log!(
-            "PROF ring_data_sram {} push n={} cyc={} pop cyc={}\n",
-            b,
-            m,
-            push,
-            pop
-        )
-        .unwrap();
     }
+    log!("PROF_DONE\n").unwrap();
 }

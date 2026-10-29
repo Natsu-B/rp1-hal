@@ -616,6 +616,11 @@ pub fn serve<H: ClockHardware>(
 
 /// SCMI shmem in shared SRAM (`scmi@d7c0` in scmi_linux.dtb; `rp1_build::metadata::SCMI_OFFSET`).
 pub const SHMEM: usize = 0x2000_d7c0;
+// Fixed-address scratch must sit above the image (rp1-rt link.x `__rp1_fixed_scratch_floor`)
+// and below the ABI reservation.
+const _: () = assert!(
+    SHMEM >= rp1_proto::LINK_START as usize && SHMEM + 256 <= rp1_proto::RESERVED_START as usize
+);
 /// rp1-mailbox channel 0 (`mboxes = <&rp1_mbox 0>`). SYSCFG PROC_EVENTS / HOST_EVENTS, with the
 /// SET (+0x2000) and CLR (+0x3000) aliases as rp1-mailbox.c uses them (PoC, HW).
 const PROC_EVENTS: usize = 0x4000_8008;
