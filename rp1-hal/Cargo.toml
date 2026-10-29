@@ -9,6 +9,8 @@ rp1-pac = { path = "../rp1-pac" }
 rp1-rt = { path = "../rp1-rt" }
 rp1-proto = { path = "../rp1-proto" }
 embedded-hal = "1"
+embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"] }
+nb = "1"
 embedded-io = "0.6"
 
 [dev-dependencies]

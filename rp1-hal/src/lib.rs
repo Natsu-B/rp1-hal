@@ -1,5 +1,6 @@
 #![no_std]
 pub use rp1_pac as pac;
+pub mod adc;
 pub mod clocks;
 pub mod cold;
 pub mod gpio;
@@ -48,7 +49,7 @@ pub(crate) fn poll(address: usize, mask: u32, value: u32) -> Result<(), Error> {
         core::hint::spin_loop();
     }
 }
-const TIMER_RAWL: usize = 0x400a_c028;
+pub(crate) const TIMER_RAWL: usize = 0x400a_c028;
 const POLL_TIMEOUT_US: u32 = 10_000;
 
 /// The calling firmware must declare and initialize the generated `rp1::log` module.
