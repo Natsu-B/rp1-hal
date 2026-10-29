@@ -78,6 +78,34 @@ fn i2c_ownership_and_board_management_pins() {
     d.proc0.pins.push(0);
     assert!(d.validate().is_err(), "Linux UART1 retains GPIO0/1");
 }
+#[test]
+fn adc_ownership_disables_linux_adc_and_keeps_its_reset() {
+    use rp1_build::metadata::{BOARD_LINUX_RESETS, peripheral_id, peripheral_type};
+    assert_eq!(peripheral_id("ADC").unwrap(), (2, 64));
+    assert_eq!(peripheral_type("ADC").unwrap(), "::rp1_hal::adc::Token");
+    assert!(peripheral_type("ADC0").is_err());
+    let mut d = declaration();
+    let a = generate("plain", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    assert!(!a.dts.contains("<&rp1_adc>; __overlay__ { status"));
+    assert_eq!(d.linux_resets()[0] & 1, 1);
+    d.proc0.peripherals.push("ADC".into());
+    d.validate().unwrap();
+    assert_eq!(d.linux_resets()[0], BOARD_LINUX_RESETS[0] & !1);
+    let a = generate("adc", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    assert!(
+        a.dts
+            .contains("target = <&rp1_adc>; __overlay__ { status = \"disabled\"; }")
+    );
+    let note = Note::parse(&a.note).unwrap();
+    assert!(
+        note.get(rp1_proto::note::OWNERSHIP).unwrap().value[4..]
+            .as_chunks::<4>()
+            .0
+            .contains(&[2, 1, 64, 0])
+    );
+    d.proc1.peripherals.push("ADC".into());
+    assert!(d.validate().is_err(), "ADC claimed twice");
+}
 /// Review #7/#9: declarations v0.1 cannot deliver are build errors, not silent no-ops.
 #[test]
 fn rejects_unsupported_clock_authority_and_notify() {

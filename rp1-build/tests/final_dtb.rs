@@ -203,6 +203,32 @@ fn i2c_overlay_and_later_linux_conflict() {
     assert!(bad.iter().any(|c| c.contains("rp1_i2c1")), "{bad:?}");
 }
 
+#[test]
+fn adc_overlay_and_later_linux_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = declaration();
+    d.proc0.peripherals.push("ADC".into());
+    let base = dtc(
+        tmp.path(),
+        "base",
+        &BASE
+            .replace("@EXTRA_RESERVED@", "")
+            .replace("@EXTRA_RP1@", "")
+            .replace("rp1_adc: adc { };", r#"rp1_adc: adc { status = "okay"; };"#),
+    );
+    let a = generate("adc", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    let app = dtc(tmp.path(), "app", &a.dts);
+    let merged = tmp.path().join("merged.dtb");
+    overlay::apply(&base, &app, &merged).unwrap();
+    let mut fdt = rp1_build::fdt::Fdt::parse(&fs::read(&merged).unwrap()).unwrap();
+    assert!(rp1_dt_check(&fdt, &a.note).is_empty());
+    let adc = fdt.label("rp1_adc").unwrap();
+    assert!(!fdt.enabled(adc));
+    fdt.set_prop(adc, "status", b"okay\0".to_vec());
+    let bad = rp1_dt_check(&fdt, &a.note);
+    assert!(bad.iter().any(|c| c.contains("rp1_adc")), "{bad:?}");
+}
+
 fn rp1_dt_check(fdt: &rp1_build::fdt::Fdt, note: &[u8]) -> Vec<String> {
     overlay::final_conflicts(&fdt.to_bytes(), note).unwrap()
 }

@@ -141,6 +141,14 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
             "status = \"disabled\";",
         );
     }
+    if d.proc0
+        .peripherals
+        .iter()
+        .chain(&d.proc1.peripherals)
+        .any(|p| p == "ADC")
+    {
+        fragment("target = <&rp1_adc>", "status = \"disabled\";");
+    }
     for i2c in d
         .proc0
         .peripherals

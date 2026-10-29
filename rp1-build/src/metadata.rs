@@ -145,6 +145,8 @@ pub fn peripheral_type(p: &str) -> Result<String> {
         .filter(|n| *n < 4 && p == format!("I2C{n}"))
     {
         Ok(format!("::rp1_hal::i2c::Token<{n}>"))
+    } else if p == "ADC" {
+        Ok("::rp1_hal::adc::Token".into())
     } else if let Some(n) = p
         .strip_prefix("TIMER.ALARM")
         .and_then(|s| s.parse::<u8>().ok())
@@ -161,6 +163,8 @@ pub fn peripheral_id(p: &str) -> Result<(u8, u16)> {
         (2, n.parse()?)
     } else if let Some(n) = p.strip_prefix("I2C") {
         (2, 32 + n.parse::<u16>()?)
+    } else if p == "ADC" {
+        (2, rp1_proto::BlockId::Adc as u16)
     } else {
         (3, p.strip_prefix("TIMER.ALARM").unwrap().parse()?)
     })
@@ -174,8 +178,9 @@ pub const BOARD_LINUX_RESETS: [u32; 3] = [
     0x7,
 ];
 impl Declaration {
-    /// [`BOARD_LINUX_RESETS`] without the UARTs and I2Cs the image declares (and UART0 with
-    /// `log`): rp1-hal releases these for Linux.
+    /// [`BOARD_LINUX_RESETS`] without the UARTs, I2Cs and ADC the image declares (and UART0
+    /// with `log`): rp1-hal releases these for Linux. A declared ADC also makes rp1-hal hold
+    /// clk_adc (`rp1_hal::linux_blocks::LinuxBlocks::held_clocks`).
     pub fn linux_resets(&self) -> [u32; 3] {
         let mut r = BOARD_LINUX_RESETS;
         for p in self.proc0.peripherals.iter().chain(&self.proc1.peripherals) {
@@ -183,6 +188,8 @@ impl Declaration {
                 r[1] &= !(1 << (26 + n));
             } else if let Some(n) = p.strip_prefix("I2C").and_then(|n| n.parse::<u32>().ok()) {
                 r[0] &= !(1 << (7 + n));
+            } else if p == "ADC" {
+                r[0] &= !1;
             }
         }
         if self.log.is_some() {
