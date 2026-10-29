@@ -37,4 +37,14 @@ locks and must not mmap aliases. Only cold boot is supported; a live PCIe reset 
 For writer=both the lab command handshake transfers writer ownership; the SeqLock alone does
 not arbitrate two writers. Blocks support word sections, so RP1 needs no 1 MiB local copy.
 
+Pass/fail is strict (`lab/check-shm.sh` + `lab/verify-shm.py`): each Linux step has a time
+limit, any non-zero exit or wrong I2C reply prints `CHECK_FAIL`, the script ends with
+`CHECK_SHM_RESULT=PASS|FAIL` then `DDR_INSPECT_END` and exits non-zero on failure. The host
+runs `python3 lab/verify-shm.py --uart0 U0 --uart10 U10 --result OBSERVER_JSON`, which needs
+the capture's `"complete": true`, the UART10 markers in order (`SHM_PASS`, `SHM_RC=0`, both
+doorbells, `I2C_REPLY=0x00000001`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
+`PROF_DONE`, `proc1 shm cmd=9 ... errors=0`, the three `I2C_PASS` lines and
+`I2C_RESULT request=1 Ok`. A boot-marker report (`full_success`) is not a pass for this
+regression. Host tests: `python3 lab/test_verify_shm.py`.
+
 HW results belong in the run notes kept outside this repository; build success alone is STATIC evidence.

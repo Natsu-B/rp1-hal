@@ -73,7 +73,8 @@ The hardware fixture is `lab/shm-firmware/src/i2c_proof.rs` with the dedicated
 0x2e are reads. The peer reloads its reply only after a read that ends in STOP, so the
 proof starts with an unchecked resync read and runs read-then-write last.
 `lab/check-shm.sh` requests the proof after the existing Linux/SHM
-checks. `lab/measure-i2c.py` uses passive ESP32 RMT capture for SCL periods. Its
+checks and fails unless the reply word is 1; `lab/verify-shm.py` also requires the
+three `I2C_PASS` lines and `I2C_RESULT request=1 Ok` on UART0. `lab/measure-i2c.py` uses passive ESP32 RMT capture for SCL periods. Its
 `--self-test` checks extraction without hardware. The peer temporarily replaces the
 general ESP32 trace firmware, retaining CM5 boot controls and leaving other pins as
 inputs; the previous flash must be backed up before deployment.
