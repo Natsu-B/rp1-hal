@@ -154,6 +154,35 @@ fn later_fragments_can_target_added_nodes() {
     }
 }
 
+#[test]
+fn earlier_fragments_see_preserved_phandles_of_later_ones() {
+    // REVIEW4 #2: fragment@0 merges a reference to a node that fragment@1 redefines.
+    // The redefined node keeps the base phandle; the earlier reference must follow it.
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dtc(
+        tmp.path(),
+        "base",
+        "/dts-v1/; / { old: device { phandle = <1>; }; };",
+    );
+    let ov = dtc(
+        tmp.path(),
+        "ov",
+        r#"/dts-v1/; /plugin/; / {
+        fragment@0 { target-path = "/"; __overlay__ { use { link = <&local>; }; }; };
+        fragment@1 { target-path = "/"; __overlay__ { local: device { x = <2>; }; }; };
+        fragment@2 { target = <&local>; __overlay__ { y = <3>; }; };
+    };"#,
+    );
+    same_as_libfdt(&base, &ov);
+    let mut fdt = Fdt::parse(&base).unwrap();
+    rp1_dt::overlay::apply(&mut fdt, &ov).unwrap();
+    let link = fdt.number(fdt.find("/use").unwrap(), "link").unwrap();
+    let device = fdt.find("/device").unwrap();
+    assert_eq!(link, 1);
+    assert_eq!(fdt.phandle(1), Some(device));
+    assert_eq!(fdt.number(device, "y"), Some(3));
+}
+
 fn fdtoverlay_fails(dir: &Path, base: &[u8], ov: &[u8]) -> bool {
     let (b, o, m) = (dir.join("b.dtb"), dir.join("o.dtbo"), dir.join("m.dtb"));
     fs::write(&b, base).unwrap();

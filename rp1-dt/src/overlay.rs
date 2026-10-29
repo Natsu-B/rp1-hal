@@ -143,28 +143,43 @@ fn preserve_phandles(base: &Fdt, target: usize, ov: &mut Fdt, src: usize) -> Res
     Ok(())
 }
 
-fn fragment_target(base: &Fdt, ov: &Fdt, frag: usize) -> Result<usize> {
+/// The base node a fragment targets, or `None` when the target does not exist (yet).
+/// A malformed `target` is an error.
+fn fragment_target(base: &Fdt, ov: &Fdt, frag: usize) -> Result<Option<usize>> {
     if let Some(c) = ov.cells(frag, "target") {
         let [h] = c[..] else {
             return Err(format!("{}: bad target", ov.path(frag)));
         };
-        return base
-            .phandle(h)
-            .ok_or_else(|| format!("{}: target phandle {h:#x} not in the base", ov.path(frag)));
+        return Ok(base.phandle(h));
     }
     let path = ov
         .strings(frag, "target-path")
         .into_iter()
         .next()
         .ok_or_else(|| format!("{}: no target", ov.path(frag)))?;
-    let node = if path.starts_with('/') {
+    Ok(if path.starts_with('/') {
         base.find(&path)
     } else {
         base.find("/aliases")
             .and_then(|a| base.strings(a, &path).into_iter().next())
             .and_then(|p| base.find(&p))
-    };
-    node.ok_or_else(|| format!("{}: target-path {path} not in the base", ov.path(frag)))
+    })
+}
+
+fn require_target(base: &Fdt, ov: &Fdt, frag: usize) -> Result<usize> {
+    fragment_target(base, ov, frag)?.ok_or_else(|| {
+        let what = match ov.cells(frag, "target") {
+            Some(c) => format!("target phandle {:#x}", c.first().copied().unwrap_or(0)),
+            None => format!(
+                "target-path {}",
+                ov.strings(frag, "target-path")
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default()
+            ),
+        };
+        format!("{}: {what} not in the base", ov.path(frag))
+    })
 }
 
 /// Apply `overlay` (a compiled `/plugin/` DTB with `-@` symbols) to `base` in place.
@@ -179,16 +194,26 @@ fn apply_inner(base: &mut Fdt, overlay: &[u8]) -> Result<()> {
     let mut ov = Fdt::parse(overlay)?;
     renumber(&mut ov, base.max_phandle())?;
     resolve(base, &mut ov)?;
-    let mut targets: Vec<(String, String)> = Vec::new();
-    for frag in ov.nodes[0].children.clone() {
-        if special(&ov.nodes[frag].name) {
-            continue;
+    // `(fragment, __overlay__)` pairs, in order.
+    let fragments: Vec<(usize, usize)> = ov.nodes[0]
+        .children
+        .iter()
+        .filter(|&&f| !special(&ov.nodes[f].name))
+        .filter_map(|&f| ov.child(f, "__overlay__").map(|b| (f, b)))
+        .collect();
+    // Like libfdt's `overlay_prevent_phandle_overwrite`: keep every existing node's phandle
+    // and rewrite all local references to it *before* anything is merged, so a fragment
+    // merged early still sees the final number of a node redefined by a later fragment.
+    // Targets are looked up in the unmodified base; a fragment aimed at a node that only
+    // an earlier fragment creates overwrites nothing and is skipped here.
+    for &(frag, body) in &fragments {
+        if let Some(target) = fragment_target(base, &ov, frag)? {
+            preserve_phandles(base, target, &mut ov, body)?;
         }
-        let Some(body) = ov.child(frag, "__overlay__") else {
-            continue;
-        };
-        let target = fragment_target(base, &ov, frag)?;
-        preserve_phandles(base, target, &mut ov, body)?;
+    }
+    let mut targets: Vec<(String, String)> = Vec::new();
+    for &(frag, body) in &fragments {
+        let target = require_target(base, &ov, frag)?;
         merge(base, target, &ov, body);
         targets.push((ov.path(frag), base.path(target)));
     }
