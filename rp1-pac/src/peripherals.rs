@@ -6,9 +6,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
 
-/// RP1 ADC_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// RP1 ADC_RW register block (12-bit SAR ADC: four external inputs and the temperature sensor). Bus=APB. Atomic alias: normal read/write access.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
-/// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
 pub struct ADC {
     _private: (),
@@ -19,6 +18,14 @@ impl ADC {
     #[inline(always)]
     pub const fn ptr() -> *const u8 {
         Self::PTR
+    }
+}
+
+impl core::ops::Deref for ADC {
+    type Target = crate::generated::adc::RegisterBlock;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*(Self::PTR.cast()) }
     }
 }
 

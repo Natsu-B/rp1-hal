@@ -6,12 +6,440 @@ kind = "rp1-native-apb"
 base = 0x400c8000
 size = 0x1000
 ownership = "singleton"
-default_origin = "official"
+default_origin = "linux"
 legacy_svd_name = "ADC_RW"
-note = "RP1 ADC_RW register block. Bus=APB. Atomic alias: normal read/write access."
+note = "RP1 ADC_RW register block (12-bit SAR ADC: four external inputs and the temperature sensor). Bus=APB. Atomic alias: normal read/write access."
 
 [peripheral.atomic_view]
 kind = "rp1-native"
 xor_offset = 0x1000
 set_offset = 0x2000
 clear_offset = 0x3000
+
+[[register]]
+id = "cs"
+name = "CS"
+offset = 0x0
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Control and status. [Source: Linux RP1 ADC hwmon driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "en"
+name = "EN"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Power on the ADC and enable its clock."
+[[register.field]]
+id = "ts_en"
+name = "TS_EN"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Power on the temperature sensor."
+[[register.field]]
+id = "start_once"
+name = "START_ONCE"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "self-clearing"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Start one conversion."
+[[register.field]]
+id = "start_many"
+name = "START_MANY"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Free-running conversions."
+[[register.field]]
+id = "ready"
+name = "READY"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Ready to start a conversion; also set when one completes."
+[[register.field]]
+id = "err"
+name = "ERR"
+lsb = 9
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "The most recent result had a conversion error."
+[[register.field]]
+id = "err_sticky"
+name = "ERR_STICKY"
+lsb = 10
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Some past result had a conversion error."
+[[register.field]]
+id = "ainsel"
+name = "AINSEL"
+lsb = 12
+width = 3
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Input select: 0..3 external inputs, 4 temperature sensor."
+[[register.field]]
+id = "rrobin"
+name = "RROBIN"
+lsb = 16
+width = 5
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Round-robin input mask for free-running conversions."
+
+[[register]]
+id = "result"
+name = "RESULT"
+offset = 0x4
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Result of the most recent conversion. [Source: Linux RP1 ADC hwmon driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "result"
+name = "RESULT"
+lsb = 0
+width = 12
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "12-bit conversion result (full scale 0xfff)."
+
+[[register]]
+id = "fcs"
+name = "FCS"
+offset = 0x8
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "FIFO control and status. [Source: Linux RP1 ADC hwmon driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "en"
+name = "EN"
+lsb = 0
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Write each completed conversion to the FIFO."
+[[register.field]]
+id = "shift"
+name = "SHIFT"
+lsb = 1
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Right-shift FIFO results to 8 bits."
+[[register.field]]
+id = "err"
+name = "ERR"
+lsb = 2
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Include the error flag in FIFO entries."
+[[register.field]]
+id = "dreq_en"
+name = "DREQ_EN"
+lsb = 3
+width = 1
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Enable DMA requests."
+[[register.field]]
+id = "empty"
+name = "EMPTY"
+lsb = 8
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "FIFO empty."
+[[register.field]]
+id = "full"
+name = "FULL"
+lsb = 9
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "FIFO full."
+[[register.field]]
+id = "under"
+name = "UNDER"
+lsb = 10
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "FIFO underflow."
+[[register.field]]
+id = "over"
+name = "OVER"
+lsb = 11
+width = 1
+api_read = "public"
+write_behavior = "write-one-to-clear"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "FIFO overflow."
+[[register.field]]
+id = "level"
+name = "LEVEL"
+lsb = 16
+width = 4
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "FIFO fill level."
+[[register.field]]
+id = "thresh"
+name = "THRESH"
+lsb = 24
+width = 4
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "FIFO threshold for DREQ and interrupt."
+
+[[register]]
+id = "fifo"
+name = "FIFO"
+offset = 0xc
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "fifo"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Conversion result FIFO. [Source: Linux RP1 ADC hwmon driver.]"
+[register.api]
+read = "public"
+[[register.field]]
+id = "val"
+name = "VAL"
+lsb = 0
+width = 12
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Result."
+[[register.field]]
+id = "err"
+name = "ERR"
+lsb = 15
+width = 1
+api_read = "public"
+write_behavior = "read-only"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Conversion error flag of this entry."
+
+[[register]]
+id = "div"
+name = "DIV"
+offset = 0x10
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Free-running sample period divider. [Source: Linux RP1 ADC hwmon driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+[register.atomic]
+kind = "rp1-native"
+set = "unsafe"
+clear = "unsafe"
+xor = "unsafe"
+[[register.field]]
+id = "frac"
+name = "FRAC"
+lsb = 0
+width = 8
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Fractional part."
+[[register.field]]
+id = "int"
+name = "INT"
+lsb = 8
+width = 16
+api_read = "public"
+write_behavior = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Integer part."
+
+[[register]]
+id = "intr"
+name = "INTR"
+offset = 0x14
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Raw interrupts. [Source: Linux RP1 ADC hwmon driver.]"
+[register.api]
+read = "public"
+
+[[register]]
+id = "inte"
+name = "INTE"
+offset = 0x18
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Interrupt enable (Linux writes 0). [Source: Linux RP1 ADC hwmon driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "intf"
+name = "INTF"
+offset = 0x1c
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+origin = "linux"
+note = "Interrupt force. [Source: Linux RP1 ADC hwmon driver.]"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "ints"
+name = "INTS"
+offset = 0x20
+width = 32
+repeat_count = 1
+repeat_stride = 4
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+origin = "linux"
+note = "Interrupt status after masking and forcing. [Source: Linux RP1 ADC hwmon driver.]"
+[register.api]
+read = "public"

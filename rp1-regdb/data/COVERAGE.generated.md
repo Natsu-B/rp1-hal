@@ -3,10 +3,10 @@
 - schema: `rp1-regdb-v3`
 - logical peripherals: 89
 - external-IP instances: 41
-- registers: 335
+- registers: 344
 - hidden registers: 6
-- fields: 1762
-- atomic-enabled registers: 201
+- fields: 1786
+- atomic-enabled registers: 204
 - NVIC external interrupt slots: 64 (IRQn 0..63)
 - named interrupts: 61 (IRQn 0..60)
 - reserved NVIC external interrupt slots: 3 (IRQn 61..63)
@@ -20,7 +20,7 @@
 
 ## Migrated peripherals
 
-- `ADC`: 0 registers (rp1-regdb/data/peripherals/adc.toml)
+- `ADC`: 9 registers (rp1-regdb/data/peripherals/adc.toml)
 - `AUDIO_IN`: 0 registers (rp1-regdb/data/peripherals/audio-in.toml)
 - `AUDIO_OUT`: 0 registers (rp1-regdb/data/peripherals/audio-out.toml)
 - `BUSFABRIC_AXISHIM`: 0 registers (rp1-regdb/data/peripherals/busfabric-axishim.toml)

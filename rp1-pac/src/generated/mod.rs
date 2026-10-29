@@ -1,3 +1,4 @@
+pub mod adc;
 pub mod clocks_main;
 pub mod clocks_video;
 pub mod dma_tick;
