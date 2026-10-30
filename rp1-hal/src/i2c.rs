@@ -411,16 +411,8 @@ impl<const N: u8, const SDA: u8, const SCL: u8> I2c<N, SDA, SCL> {
         }
     }
     pub fn set_speed(&mut self, speed: Speed) -> Result<(), Error> {
-        let mut io = self.io();
-        if !self.usable || !io.sys_current_strict(&self.clocks) {
-            return Err(Error::Precondition);
-        }
-        let counts = timing(self.clocks.sys_hz(), speed)?;
-        self.usable = false;
-        disable(&mut io)?;
-        configure(&mut io, counts);
-        self.usable = true;
-        Ok(())
+        let clocks = self.clocks;
+        set_speed(&mut self.io(), &clocks, &mut self.usable, speed)
     }
 }
 impl<const N: u8, const SDA: u8, const SCL: u8> embedded_hal::i2c::ErrorType for I2c<N, SDA, SCL> {
@@ -441,6 +433,25 @@ impl<const N: u8, const SDA: u8, const SCL: u8> embedded_hal::i2c::I2c for I2c<N
             depth,
         )
     }
+}
+
+/// [`I2c::set_speed`]: the strict clk_sys check and the counts first (nothing written on
+/// error), then disable and reprogram; a failed disable poisons the handle.
+fn set_speed(
+    io: &mut impl Io,
+    clocks: &Clocks,
+    usable: &mut bool,
+    speed: Speed,
+) -> Result<(), Error> {
+    if !*usable || !io.sys_current_strict(clocks) {
+        return Err(Error::Precondition);
+    }
+    let counts = timing(clocks.sys_hz(), speed)?;
+    *usable = false;
+    disable(io)?;
+    configure(io, counts);
+    *usable = true;
+    Ok(())
 }
 
 /// One transaction, one clock check. `Precondition` before any controller access if the
@@ -497,7 +508,11 @@ mod tests {
         writes: usize,
         /// clk_sys as the clock checks see it.
         sys: Option<u32>,
-        checks: u32,
+        /// clk_sys drifted in a way only the strict check sees: the fast check passes.
+        strict_stale: bool,
+        /// Fast (per transaction) and strict (init, set_speed) clock checks made.
+        fast: u32,
+        strict: u32,
         resets: Vec<u32>,
     }
     impl Model {
@@ -514,7 +529,9 @@ mod tests {
                 max_rx: 0,
                 writes: 0,
                 sys: Some(200_000_000),
-                checks: 0,
+                strict_stale: false,
+                fast: 0,
+                strict: 0,
                 resets: Vec::new(),
             }
         }
@@ -559,11 +576,12 @@ mod tests {
             self.tick
         }
         fn sys_current(&mut self, clocks: &Clocks) -> bool {
-            self.checks += 1;
+            self.fast += 1;
             self.sys == Some(clocks.sys_hz())
         }
         fn sys_current_strict(&mut self, clocks: &Clocks) -> bool {
-            self.sys_current(clocks)
+            self.strict += 1;
+            !self.strict_stale && self.sys == Some(clocks.sys_hz())
         }
         fn release_reset(&mut self, bit: u32) -> Result<(), Error> {
             self.resets.push(bit);
@@ -577,6 +595,8 @@ mod tests {
     fn stale_sys_clock_fails_before_the_controller_is_touched() {
         let mut m = Model::new(2);
         m.sys = Some(50_000_000);
+        // Review 8: transactions use the fast check only; the strict one would fail here.
+        m.strict_stale = true;
         let mut usable = true;
         assert_eq!(
             run(
@@ -590,7 +610,7 @@ mod tests {
             Err(Error::Precondition)
         );
         assert!(usable && m.writes == 0 && m.commands.is_empty());
-        assert_eq!(m.checks, 1);
+        assert_eq!((m.fast, m.strict), (1, 0));
         m.sys = Some(200_000_000);
         assert_eq!(
             run(
@@ -606,7 +626,7 @@ mod tests {
         assert!(usable);
         assert_eq!(m.commands, [1 | STOP]);
         // One check for the whole transaction, however many operations it has.
-        let checks = m.checks;
+        let checks = m.fast;
         let mut r = [0; 3];
         run(
             &mut m,
@@ -621,7 +641,7 @@ mod tests {
             2,
         )
         .unwrap();
-        assert_eq!(m.checks, checks + 1);
+        assert_eq!((m.fast, m.strict), (checks + 1, 0));
         let mut poisoned = false;
         assert_eq!(
             run(&mut m, &CLOCKS, &mut poisoned, 0x2d, &mut [], 2),
@@ -680,9 +700,52 @@ mod tests {
             init_model(token, &mut m, pins, &CLOCKS, Speed::Fast, &mut routed).expect("retry");
         assert!(routed && i2c.usable);
         assert_eq!(
-            (m.resets.as_slice(), i2c.rx_depth, m.checks),
-            (&[reset_bit(1)][..], 16, 1)
+            (m.resets.as_slice(), i2c.rx_depth, m.strict, m.fast),
+            (&[reset_bit(1)][..], 16, 1, 0)
         );
+    }
+
+    /// Review 8: init and set_speed use the strict check only. clk_sys drifted in a way only
+    /// it sees (the fast check passes): init fails before the reset is released, without a
+    /// register write or pin routing; set_speed writes nothing and keeps the handle usable.
+    #[test]
+    fn init_and_set_speed_use_the_strict_check() {
+        let mut m = Model::new(16);
+        m.strict_stale = true;
+        assert!(m.sys_current(&CLOCKS));
+        m.fast = 0;
+        let mut routed = false;
+        let pins: Pins = unsafe { (Pin::new(), Pin::new()) };
+        let e = init_model(
+            unsafe { Token::new() },
+            &mut m,
+            pins,
+            &CLOCKS,
+            Speed::Fast,
+            &mut routed,
+        )
+        .err()
+        .expect("strict check must fail");
+        assert_eq!(e.error, Error::Precondition);
+        assert!(m.resets.is_empty() && m.writes == 0 && !routed);
+        assert_eq!((m.strict, m.fast), (1, 0));
+
+        let mut m = Model::new(16);
+        m.strict_stale = true;
+        let mut usable = true;
+        assert_eq!(
+            set_speed(&mut m, &CLOCKS, &mut usable, Speed::Standard),
+            Err(Error::Precondition)
+        );
+        assert!(usable && m.writes == 0);
+        assert_eq!((m.strict, m.fast), (1, 0));
+        m.strict_stale = false;
+        assert_eq!(
+            set_speed(&mut m, &CLOCKS, &mut usable, Speed::Standard),
+            Ok(())
+        );
+        assert!(usable && m.writes > 0);
+        assert_eq!((m.strict, m.fast), (2, 0));
     }
 
     /// `?` on an init error inside a function returning the bus error (compile check).

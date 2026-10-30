@@ -619,17 +619,29 @@ fn wait_idle(io: &mut impl Io) -> Result<(), Error> {
     }
 }
 
+/// A new CTRLR0 / BAUDR: the strict clk_sys check first (`Precondition`, nothing written),
+/// then wait for idle and set the controller up again.
+fn reconfigure(
+    io: &mut impl Io,
+    clocks: &Clocks,
+    cr0: u32,
+    div: u32,
+    rsd: u32,
+) -> Result<(), Error> {
+    if !io.sys_current_strict(clocks) {
+        return Err(Error::Precondition);
+    }
+    wait_idle(io)?;
+    setup(io, cr0, div, rsd);
+    Ok(())
+}
+
 impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOSI, MISO> {
     fn io(&self) -> Mmio {
         Mmio { base: base(N) }
     }
     fn reconfigure(&mut self, cr0: u32, div: u32) -> Result<(), Error> {
-        let mut io = self.io();
-        if !io.sys_current_strict(&self.clocks) {
-            return Err(Error::Precondition);
-        }
-        wait_idle(&mut io)?;
-        setup(&mut io, cr0, div, self.rsd);
+        reconfigure(&mut self.io(), &self.clocks, cr0, div, self.rsd)?;
         self.cr0 = cr0;
         self.div = div;
         Ok(())
@@ -946,8 +958,12 @@ mod tests {
         writes: Vec<(usize, u32)>,
         /// clk_sys as the clock checks see it.
         sys: Option<u32>,
-        /// Clock checks made (fast and strict).
-        checks: u32,
+        /// clk_sys drifted in a way only the strict check sees (CLK_SYS_CTRL, PLL_SYS PWR or
+        /// FBDIV_FRAC): the fast check passes, the strict one fails.
+        strict_stale: bool,
+        /// Fast (per bus call) and strict (init, reconfiguration) clock checks made.
+        fast: u32,
+        strict: u32,
         /// Reset bits released.
         resets: Vec<u32>,
     }
@@ -970,7 +986,9 @@ mod tests {
                 dfs32: true,
                 writes: Vec::new(),
                 sys: Some(200_000_000),
-                checks: 0,
+                strict_stale: false,
+                fast: 0,
+                strict: 0,
                 resets: Vec::new(),
             }
         }
@@ -1030,11 +1048,12 @@ mod tests {
             self.tick
         }
         fn sys_current(&mut self, clocks: &Clocks) -> bool {
-            self.checks += 1;
+            self.fast += 1;
             self.sys == Some(clocks.sys_hz())
         }
         fn sys_current_strict(&mut self, clocks: &Clocks) -> bool {
-            self.sys_current(clocks)
+            self.strict += 1;
+            !self.strict_stale && self.sys == Some(clocks.sys_hz())
         }
         fn release_reset(&mut self, bit: u32) -> Result<(), Error> {
             self.resets.push(bit);
@@ -1308,8 +1327,74 @@ mod tests {
             (SER, 1),
             (SSIENR, 1)
         ]));
-        // One strict clock check per init.
-        assert_eq!(m.checks, 2);
+        // One strict clock check per init, never the fast one.
+        assert_eq!((m.strict, m.fast), (2, 0));
+    }
+
+    /// Review 8: init and reconfiguration use the strict check only. clk_sys drifted in a way
+    /// only it sees (the fast check passes): init fails before the reset is released, without
+    /// a register write or pin routing, and a reconfiguration writes nothing.
+    #[test]
+    fn init_and_reconfigure_use_the_strict_check() {
+        let config = Config::new(10_000_000, embedded_hal::spi::MODE_0);
+        let mut m = Model::new(64);
+        m.strict_stale = true;
+        assert!(m.sys_current(&CLOCKS));
+        m.fast = 0;
+        let mut routed = false;
+        let e = init_model(unsafe { Token::new() }, &mut m, pins(), config, &mut routed)
+            .err()
+            .expect("strict check must fail");
+        assert_eq!(e.error, Error::Precondition);
+        assert!(m.resets.is_empty() && m.writes.is_empty() && !routed);
+        assert_eq!((m.strict, m.fast), (1, 0));
+
+        let mut m = Model::new(64);
+        m.strict_stale = true;
+        assert_eq!(
+            reconfigure(&mut m, &CLOCKS, 15, 20, 0),
+            Err(Error::Precondition)
+        );
+        assert!(m.writes.is_empty());
+        assert_eq!((m.strict, m.fast), (1, 0));
+        m.strict_stale = false;
+        assert_eq!(reconfigure(&mut m, &CLOCKS, 15, 20, 3), Ok(()));
+        assert!(m.writes.ends_with(&[
+            (CTRLR0, 15),
+            (BAUDR, 20),
+            (RX_SAMPLE_DLY, 3),
+            (SER, 1),
+            (SSIENR, 1)
+        ]));
+        assert_eq!((m.strict, m.fast), (2, 0));
+    }
+
+    /// Review 8: the real `Bus` / `SpiBus` impls of [`Spi`] (owned and lent) reject words
+    /// narrower than the frame with `Invalid` before any register access and before CS moves.
+    /// (On the host the controller is not mapped: any access would fault.)
+    #[test]
+    fn spi_bus_rejects_narrow_words_before_cs() {
+        let mut m = Model::new(64);
+        let config = Config::new(10_000_000, embedded_hal::spi::MODE_0).with_frame_bits(16);
+        let mut spi =
+            init_model(unsafe { Token::new() }, &mut m, pins(), config, &mut false).expect("init");
+        let log = core::cell::RefCell::new(Vec::new());
+        let mut cs = |high| log.borrow_mut().push(high);
+        let mut ops = [Operation::<u8>::Write(&[1, 2]), Operation::DelayNs(10)];
+        assert_eq!(
+            transaction(&mut spi, &mut cs, |_| panic!("delay"), &mut ops),
+            Err(Error::Invalid)
+        );
+        assert_eq!(
+            transaction(&mut &mut spi, &mut cs, |_| panic!("delay"), &mut ops),
+            Err(Error::Invalid)
+        );
+        assert!(log.borrow().is_empty(), "CS moved");
+        assert_eq!(SpiBus::<u8>::write(&mut spi, &[1]), Err(Error::Invalid));
+        assert_eq!(
+            SpiBus::<u8>::transfer_in_place(&mut spi, &mut [1]),
+            Err(Error::Invalid)
+        );
     }
 
     /// `?` on an init error inside a function returning the bus error (compile check).
@@ -1410,18 +1495,20 @@ mod tests {
             Ok(())
         }
     }
-    /// (result, event log, clock checks made) of one transaction over a model whose clk_sys
-    /// reads as `sys`.
+    /// (result, event log, (fast, strict) clock checks) of one transaction over a model whose
+    /// clk_sys reads as `sys` to the fast check. The strict check always fails there, so a
+    /// transaction that used it could not pass.
     fn logged_with(
         sys: Option<u32>,
         fail_op: Option<(usize, Error)>,
         fail_flush: Option<Error>,
         ops: &mut [Operation<'_, u8>],
-    ) -> (Result<(), Error>, Vec<String>, u32) {
+    ) -> (Result<(), Error>, Vec<String>, (u32, u32)) {
         let log = core::cell::RefCell::new(Vec::new());
         let mut m = Model::new(4);
         m.hold_busy = 3;
         m.sys = sys;
+        m.strict_stale = true;
         let mut bus = LogBus {
             m,
             log: &log,
@@ -1438,7 +1525,7 @@ mod tests {
             |ns| log.borrow_mut().push(std::format!("delay {ns}")),
             ops,
         );
-        let checks = bus.m.checks;
+        let checks = (bus.m.fast, bus.m.strict);
         drop(bus);
         (r, log.into_inner(), checks)
     }
@@ -1448,7 +1535,7 @@ mod tests {
         ops: &mut [Operation<'_, u8>],
     ) -> (Result<(), Error>, Vec<String>) {
         let (r, log, checks) = logged_with(Some(200_000_000), fail_op, fail_flush, ops);
-        assert_eq!(checks, 1, "one clock check per transaction");
+        assert_eq!(checks, (1, 0), "one fast clock check per transaction");
         (r, log)
     }
 
@@ -1555,7 +1642,7 @@ mod tests {
             );
             assert_eq!(r, Err(Error::Precondition));
             assert_eq!(log, ["admit err"]);
-            assert_eq!(checks, 1);
+            assert_eq!(checks, (1, 0));
         }
     }
 }

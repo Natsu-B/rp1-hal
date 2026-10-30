@@ -601,6 +601,22 @@ mod tests {
         assert!(sys_checks(&xosc_unlocked, XOSC_HZ).0);
     }
 
+    /// Review 8: what only the strict check (init, reconfiguration) reads. One register at a
+    /// time: the fast check still passes, the strict one rejects.
+    #[test]
+    fn only_the_strict_check_sees_ctrl_pwr_and_frac() {
+        for change in [
+            // CTRL asks for XOSC while SEL still shows PLL_SYS (mid-switch).
+            (CLK_SYS_CTRL, 0x800 | SRC_XOSC),
+            (PLL_SYS_PWR, 0),
+            (PLL_SYS_FBDIV_FRAC, 1),
+        ] {
+            let (fast, reads, strict) = sys_checks(&with(&[change]), PLL_SYS_HZ);
+            assert!(fast && !strict, "{change:?}");
+            assert!(!reads.contains(&change.0));
+        }
+    }
+
     #[test]
     fn handoff_is_empty_until_published() {
         let h = Handoff::new();
