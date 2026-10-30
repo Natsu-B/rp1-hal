@@ -1,0 +1,17 @@
+error[E0308]: mismatched types
+ --> tests/ui/uart_wrong_pins.rs:5:33
+  |
+5 |     let _ = token.init(unsafe { Pin::<6>::new() }, unsafe { Pin::<14>::new() }, clocks, 115_200);
+  |                                 ^^^^^^^^^^^^^^^ expected `4`, found `6`
+  |
+  = note: expected struct `Pin<4>`
+             found struct `Pin<6>`
+
+error[E0308]: mismatched types
+ --> tests/ui/uart_wrong_pins.rs:5:61
+  |
+5 |     let _ = token.init(unsafe { Pin::<6>::new() }, unsafe { Pin::<14>::new() }, clocks, 115_200);
+  |                                                             ^^^^^^^^^^^^^^^^ expected `5`, found `14`
+  |
+  = note: expected struct `Pin<5>`
+             found struct `Pin<14>`

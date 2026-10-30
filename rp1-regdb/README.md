@@ -46,8 +46,9 @@ cargo run -p rp1-regdb -- generate-pinmux --check
 ```
 
 DOC: The pin table follows RP1 Peripherals Table 4; SPI signal roles follow
-§3.6.1.1. STATIC: `tests/pinmux.rs` checks generation and the existing HAL
-I2C/SPI routes. Set `RP1_LINUX_PINCTRL` to a local `pinctrl-rp1.c` to also
+§3.6.1.1. The same command writes rp1-hal's UART/I2C/SPI pin-route impls
+(`rp1-hal/src/pinmux.rs`). STATIC: `tests/pinmux.rs` checks both outputs and that
+the HAL routes are exactly the table's cells. Set `RP1_LINUX_PINCTRL` to a local `pinctrl-rp1.c` to also
 compare all bank-0 `PIN()` rows. No Linux driver source is redistributed.
 The dependency-free `rp1-pinmux` crate documents the sources and lookup API.
 

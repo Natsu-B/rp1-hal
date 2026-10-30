@@ -6,8 +6,9 @@ pub struct Unconfigured;
 pub struct Input;
 pub struct Output;
 pub struct Function<const F: u8>;
-/// Muxed to an SPI controller (function 0 or 8, see [`crate::spi`]).
-pub struct SpiFunction;
+/// Muxed to the peripheral signal named by a driver's pin trait (for example [`crate::uart::Tx`]),
+/// with the function select from the bank-0 pin table.
+pub struct Alternate;
 pub struct Pin<const N: u8, Mode = Unconfigured> {
     _mode: PhantomData<Mode>,
 }
@@ -29,28 +30,15 @@ impl<const N: u8> Pin<N> {
         assert!(N < 28);
         Self { _mode: PhantomData }
     }
-    pub(crate) fn into_i2c(self) -> Pin<N, Function<3>> {
+    /// Selects function `fsel` with the pad output disabled (`OD | idle`) while the mux switches,
+    /// then sets the pad to `pad` (PADS_BANK0: OD 7, IE 6, DRIVE 5:4, PUE 3, PDE 2, SCHMITT 1,
+    /// SLEWFAST 0).
+    pub(crate) fn into_alternate(self, fsel: u8, idle: u32, pad: u32) -> Pin<N, Alternate> {
         write(0x4001_7004, 1 << 19);
-        // Disable the pad while switching; only the I2C peripheral may sink the line.
-        write(0x400f_0004 + N as usize * 4, 0xfa);
-        write(0x400e_3004, 1 << N);
-        write(0x400d_0004 + N as usize * 8, 3);
-        // Schmitt, input enable, 12 mA sink, weak pull-up; external pull-ups are required.
-        write(0x400f_0004 + N as usize * 4, 0x7a);
-        Pin { _mode: PhantomData }
-    }
-    /// Selects SPI function `fsel` (0 or 8 on bank 0). The pad output is disabled while the mux
-    /// switches; then outputs get 8 mA fast slew, the input (MISO) a pull-down.
-    pub(crate) fn into_spi(self, fsel: u8, output: bool) -> Pin<N, SpiFunction> {
-        write(0x4001_7004, 1 << 19);
-        write(0x400f_0004 + N as usize * 4, 0xc6);
+        write(0x400f_0004 + N as usize * 4, 0x80 | idle);
         write(0x400e_3004, 1 << N);
         write(0x400d_0004 + N as usize * 8, u32::from(fsel));
-        // IE (6), DRIVE 8 mA (5:4), Schmitt (1), SLEWFAST (0) | IE, PDE (2), Schmitt.
-        write(
-            0x400f_0004 + N as usize * 4,
-            if output { 0x63 } else { 0x46 },
-        );
+        write(0x400f_0004 + N as usize * 4, pad);
         Pin { _mode: PhantomData }
     }
     pub fn into_output(self, high: bool) -> Pin<N, Output> {

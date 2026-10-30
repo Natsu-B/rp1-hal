@@ -9,16 +9,13 @@ error[E0277]: the trait bound `rp1_hal::gpio::Pin<3>: Sda<1>` is not satisfied
   |                   required by a bound introduced by this call
   |
 help: the following other types implement trait `Sda<N>`
- --> src/i2c.rs
+ --> src/pinmux.rs
   |
-  |         impl Sda<$n> for Pin<$sda> {}
-  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |         |
-  |         `rp1_hal::gpio::Pin<10>`
-  |         `rp1_hal::gpio::Pin<2>`
+  | impl i2c::Sda<1> for Pin<2> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::gpio::Pin<2>`
 ...
-  | routes!(1: 2, 3; 10, 11);
-  | ------------------------ in this macro invocation
+  | impl i2c::Sda<1> for Pin<10> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::gpio::Pin<10>`
 note: required by a bound in `rp1_hal::i2c::Token::<N>::init`
  --> src/i2c.rs
   |
@@ -27,7 +24,6 @@ note: required by a bound in `rp1_hal::i2c::Token::<N>::init`
 ...
   |         Pin<SDA>: Sda<N>,
   |                   ^^^^^^ required by this bound in `Token::<N>::init`
-  = note: this error originates in the macro `routes` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `rp1_hal::gpio::Pin<2>: Scl<1>` is not satisfied
  --> tests/ui/i2c_wrong_pins.rs:4:52
@@ -40,16 +36,13 @@ error[E0277]: the trait bound `rp1_hal::gpio::Pin<2>: Scl<1>` is not satisfied
   |                   required by a bound introduced by this call
   |
 help: the following other types implement trait `Scl<N>`
- --> src/i2c.rs
+ --> src/pinmux.rs
   |
-  |         impl Scl<$n> for Pin<$scl> {}
-  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |         |
-  |         `rp1_hal::gpio::Pin<11>`
-  |         `rp1_hal::gpio::Pin<3>`
+  | impl i2c::Scl<1> for Pin<3> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::gpio::Pin<3>`
 ...
-  | routes!(1: 2, 3; 10, 11);
-  | ------------------------ in this macro invocation
+  | impl i2c::Scl<1> for Pin<11> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::gpio::Pin<11>`
 note: required by a bound in `rp1_hal::i2c::Token::<N>::init`
  --> src/i2c.rs
   |
@@ -58,4 +51,3 @@ note: required by a bound in `rp1_hal::i2c::Token::<N>::init`
 ...
   |         Pin<SCL>: Scl<N>,
   |                   ^^^^^^ required by this bound in `Token::<N>::init`
-  = note: this error originates in the macro `routes` (in Nightly builds, run with -Z macro-backtrace for more info)

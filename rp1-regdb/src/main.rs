@@ -25,30 +25,38 @@ fn run() -> Result<()> {
             if check {
                 remaining.remove(0);
             }
-            if remaining.len() > 2 {
-                bail!("usage: rp1-regdb generate-pinmux [--check] [bank TOML] [output Rust]");
+            if remaining.len() > 3 {
+                bail!(
+                    "usage: rp1-regdb generate-pinmux [--check] [bank TOML] [rp1-pinmux Rust] [rp1-hal Rust]"
+                );
             }
             let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let input = remaining
-                .first()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| root.join("data/pinmux/bank0.toml"));
-            let output = remaining
-                .get(1)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| root.join("../rp1-pinmux/src/generated.rs"));
-            let bank = pinmux::load(&input)?;
-            if check {
-                let temporary = tempfile::tempdir()?;
+            let path = |index: usize, default: &str| {
+                remaining
+                    .get(index)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| root.join(default))
+            };
+            let bank = pinmux::load(&path(0, "data/pinmux/bank0.toml"))?;
+            let generators: [fn(&pinmux::Bank0, &Path) -> Result<()>; 2] =
+                [pinmux::generate, pinmux::generate_hal];
+            let outputs = [
+                path(1, "../rp1-pinmux/src/generated.rs"),
+                path(2, "../rp1-hal/src/pinmux.rs"),
+            ];
+            let temporary = tempfile::tempdir()?;
+            for (generate, output) in generators.into_iter().zip(outputs) {
+                if !check {
+                    generate(&bank, &output)?;
+                    continue;
+                }
                 let actual = temporary.path().join("generated.rs");
-                pinmux::generate(&bank, &actual)?;
+                generate(&bank, &actual)?;
                 if fs::read(actual)? != fs::read(&output)? {
                     bail!("generated pin functions are stale: {}", output.display());
                 }
-                Ok(())
-            } else {
-                pinmux::generate(&bank, &output)
             }
+            Ok(())
         }
         "validate" => {
             let device = args

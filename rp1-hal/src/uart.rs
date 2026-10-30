@@ -1,50 +1,151 @@
-use crate::{Error, poll, read, write};
+//! PL011 UARTs 0..4 on their bank-0 pins (DOC: RP1 peripherals §3.5). The baud divisors come
+//! from clk_uart as reported by [`Clocks`]. UART5 has no bank-0 pins. The `log!` sink (UART0 on
+//! GPIO14/15) is configured by [`crate::logging::Logger`], not through a [`Token`].
+use crate::{
+    Error,
+    clocks::Clocks,
+    gpio::{Alternate, Pin},
+    poll, read, write,
+};
 use core::fmt;
 
-pub struct Uart<const N: u8> {
-    _private: (),
+mod sealed {
+    pub trait Pin {}
+    impl<const N: u8> Pin for crate::gpio::Pin<N> {}
 }
+/// TX route of UART N; `FUNC` is the GPIO function select (`crate::pinmux`).
+pub trait Tx<const N: u8>: sealed::Pin {
+    const FUNC: u8;
+}
+/// RX route of UART N.
+pub trait Rx<const N: u8>: sealed::Pin {
+    const FUNC: u8;
+}
+/// Pad while the mux switches (output disabled) and for RX: input enable, pull-up (line idle),
+/// Schmitt. TX: input enable, 8 mA, Schmitt.
+const IDLE_PAD: u32 = 0x4a;
+const TX_PAD: u32 = 0x62;
+
+const fn base(n: u8) -> usize {
+    0x4003_0000 + n as usize * 0x4000
+}
+
 pub struct Token<const N: u8> {
     _private: (),
 }
-impl<const N: u8> Token<N> {
-    /// # Safety
-    /// Generated resources only: exactly one token for the declared UART owner.
-    pub const unsafe fn new() -> Self {
-        assert!(N < 6);
-        Self { _private: () }
-    }
-    /// `Err(Invalid)` (before touching hardware) unless `TX`/`RX`/`F` is UART N's TX/RX pair
-    /// on bank 0 ([`tx_rx_pins`]).
-    pub fn init<const TX: u8, const RX: u8, const F: u8>(
-        self,
-        _tx: crate::gpio::Pin<TX, crate::gpio::Function<F>>,
-        _rx: crate::gpio::Pin<RX, crate::gpio::Function<F>>,
-        clocks: &crate::clocks::Clocks,
-        baud: u32,
-    ) -> Result<Uart<N>, Error> {
-        if tx_rx_pins(N) != Some((TX, RX, F)) {
-            return Err(Error::Invalid);
-        }
-        if !clocks.still_current() {
-            return Err(Error::Precondition);
-        }
-        write(0x4001_7004, 1 << (26 + N));
-        poll(0x4001_401c, 1 << (26 + N), 1 << (26 + N))?;
-        unsafe { Uart::new(clocks.uart_hz(), baud) }
+/// A configured UART that owns its TX and RX pins.
+pub struct Uart<const N: u8, const TX: u8, const RX: u8> {
+    _tx: Pin<TX, Alternate>,
+    _rx: Pin<RX, Alternate>,
+}
+/// [`Token::init`] failed: the error, and the token and pins back (unchanged) for a retry.
+pub struct InitError<const N: u8, const TX: u8, const RX: u8> {
+    pub error: Error,
+    pub token: Token<N>,
+    pub tx: Pin<TX>,
+    pub rx: Pin<RX>,
+}
+impl<const N: u8, const TX: u8, const RX: u8> fmt::Debug for InitError<N, TX, RX> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
     }
 }
-/// Bank-0 (TX, RX, function select) of UART `n` (RP1 pin mux, as Linux `pinctrl-rp1`).
-/// UART5 has no bank-0 pins.
-pub const fn tx_rx_pins(n: u8) -> Option<(u8, u8, u8)> {
-    match n {
-        0 => Some((14, 15, 4)),
-        1 => Some((0, 1, 2)),
-        2 => Some((4, 5, 2)),
-        3 => Some((8, 9, 2)),
-        4 => Some((12, 13, 2)),
-        _ => None,
+impl<const N: u8, const TX: u8, const RX: u8> From<InitError<N, TX, RX>> for Error {
+    fn from(e: InitError<N, TX, RX>) -> Self {
+        e.error
     }
+}
+impl<const N: u8> Token<N> {
+    /// # Safety
+    /// Generated resources only: sole owner of UART N, with Linux's node disabled.
+    ///
+    /// UART5 has no bank-0 pins and is a compile-time error:
+    ///
+    /// ```compile_fail,E0080
+    /// let _ = unsafe { rp1_hal::uart::Token::<5>::new() };
+    /// ```
+    pub const unsafe fn new() -> Self {
+        const { assert!(N < 5) };
+        Self { _private: () }
+    }
+    /// Checks clk_uart and the baud rate, releases only this UART's reset, configures 8N1 with
+    /// FIFOs, then routes the typed pins. On error the token and the pins come back in
+    /// [`InitError`]; the pins are not touched before success.
+    ///
+    /// ```no_run
+    /// # use rp1_hal::{Error, clocks::Clocks, gpio::Pin, uart::{Token, Uart}};
+    /// fn bring_up(token: Token<2>, tx: Pin<4>, rx: Pin<5>, clocks: &Clocks) -> Result<Uart<2, 4, 5>, Error> {
+    ///     Ok(token.init(tx, rx, clocks, 115_200)?)
+    /// }
+    /// ```
+    pub fn init<const TX: u8, const RX: u8>(
+        self,
+        tx: Pin<TX>,
+        rx: Pin<RX>,
+        clocks: &Clocks,
+        baud: u32,
+    ) -> Result<Uart<N, TX, RX>, InitError<N, TX, RX>>
+    where
+        Pin<TX>: Tx<N>,
+        Pin<RX>: Rx<N>,
+    {
+        let started = if clocks.still_current() {
+            start(N, clocks.uart_hz(), baud)
+        } else {
+            Err(Error::Precondition)
+        };
+        match started {
+            Ok(()) => Ok(Uart {
+                _tx: tx.into_alternate(<Pin<TX> as Tx<N>>::FUNC, IDLE_PAD, TX_PAD),
+                _rx: rx.into_alternate(<Pin<RX> as Rx<N>>::FUNC, IDLE_PAD, IDLE_PAD),
+            }),
+            Err(error) => Err(InitError {
+                error,
+                token: self,
+                tx,
+                rx,
+            }),
+        }
+    }
+}
+/// A declared UART N with its pins, as the generated resources hand it out
+/// (`rp1-build`); only routes from the bank-0 pin table can be named.
+pub struct Parts<const N: u8, const TX: u8, const RX: u8>
+where
+    Pin<TX>: Tx<N>,
+    Pin<RX>: Rx<N>,
+{
+    pub token: Token<N>,
+    pub tx: Pin<TX>,
+    pub rx: Pin<RX>,
+}
+impl<const N: u8, const TX: u8, const RX: u8> Parts<N, TX, RX>
+where
+    Pin<TX>: Tx<N>,
+    Pin<RX>: Rx<N>,
+{
+    /// [`Token::init`] with the declared pins.
+    pub fn init(self, clocks: &Clocks, baud: u32) -> Result<Uart<N, TX, RX>, InitError<N, TX, RX>> {
+        self.token.init(self.tx, self.rx, clocks, baud)
+    }
+}
+/// Releases UART `n`'s reset and configures it for 8N1 at `baud`. Nothing is written unless
+/// the divisors are valid.
+pub(crate) fn start(n: u8, clock_hz: u32, baud: u32) -> Result<(), Error> {
+    let (integer, fraction) = divisors(clock_hz, baud)?;
+    write(0x4001_7004, 1 << (26 + n));
+    poll(0x4001_401c, 1 << (26 + n), 1 << (26 + n))?;
+    let base = base(n);
+    poll(base + 0x18, 1 << 3, 0)?;
+    write(base + 0x30, 0);
+    write(base + 0x38, 0);
+    write(base + 0x44, 0x7ff);
+    write(base + 4, 0);
+    write(base + 0x24, integer);
+    write(base + 0x28, fraction);
+    write(base + 0x2c, 0x70);
+    write(base + 0x30, 0x301);
+    Ok(())
 }
 pub fn divisors(clock_hz: u32, baud: u32) -> Result<(u32, u32), Error> {
     if baud == 0 {
@@ -56,34 +157,15 @@ pub fn divisors(clock_hz: u32, baud: u32) -> Result<(u32, u32), Error> {
     }
     Ok(((scaled / 64) as u32, (scaled % 64) as u32))
 }
-impl<const N: u8> Uart<N> {
-    /// # Safety
-    /// Sole declared owner of UART N; its clocks and pin mux are configured and stable.
-    pub unsafe fn new(clock_hz: u32, baud: u32) -> Result<Self, Error> {
-        if N > 5 {
-            return Err(Error::Invalid);
-        }
-        let (integer, fraction) = divisors(clock_hz, baud)?;
-        let base = 0x4003_0000 + N as usize * 0x4000;
-        poll(base + 0x18, 1 << 3, 0)?;
-        write(base + 0x30, 0);
-        write(base + 0x38, 0);
-        write(base + 0x44, 0x7ff);
-        write(base + 4, 0);
-        write(base + 0x24, integer);
-        write(base + 0x28, fraction);
-        write(base + 0x2c, 0x70);
-        write(base + 0x30, 0x301);
-        Ok(Self { _private: () })
-    }
+impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     pub fn write_byte(&mut self, byte: u8) -> Result<(), Error> {
-        let base = 0x4003_0000 + N as usize * 0x4000;
+        let base = base(N);
         poll(base + 0x18, 1 << 5, 0)?;
         write(base, u32::from(byte));
         Ok(())
     }
     pub fn read_byte(&mut self) -> Result<Option<u8>, Error> {
-        let base = 0x4003_0000 + N as usize * 0x4000;
+        let base = base(N);
         if read(base + 0x18) & (1 << 4) != 0 {
             return Ok(None);
         }
@@ -95,10 +177,21 @@ impl<const N: u8> Uart<N> {
         Ok(Some(data as u8))
     }
     pub fn flush(&mut self) -> Result<(), Error> {
-        poll(0x4003_0018 + N as usize * 0x4000, 1 << 3, 0)
+        poll(base(N) + 0x18, 1 << 3, 0)
+    }
+    /// Waits up to 10 ms for the transmitter to drain, disables the UART and gives back the token
+    /// and the (still muxed) pins.
+    pub fn free(self) -> (Token<N>, Pin<TX>, Pin<RX>) {
+        let _ = poll(base(N) + 0x18, 1 << 3, 0);
+        write(base(N) + 0x30, 0);
+        (
+            Token { _private: () },
+            self._tx.release(),
+            self._rx.release(),
+        )
     }
 }
-impl<const N: u8> fmt::Write for Uart<N> {
+impl<const N: u8, const TX: u8, const RX: u8> fmt::Write for Uart<N, TX, RX> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for b in s.bytes() {
             self.write_byte(b).map_err(|_| fmt::Error)?;
@@ -111,10 +204,10 @@ impl embedded_io::Error for Error {
         embedded_io::ErrorKind::Other
     }
 }
-impl<const N: u8> embedded_io::ErrorType for Uart<N> {
+impl<const N: u8, const TX: u8, const RX: u8> embedded_io::ErrorType for Uart<N, TX, RX> {
     type Error = Error;
 }
-impl<const N: u8> embedded_io::Write for Uart<N> {
+impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Write for Uart<N, TX, RX> {
     fn write(&mut self, b: &[u8]) -> Result<usize, Error> {
         for byte in b {
             self.write_byte(*byte)?;
@@ -125,7 +218,7 @@ impl<const N: u8> embedded_io::Write for Uart<N> {
         Uart::flush(self)
     }
 }
-impl<const N: u8> embedded_io::Read for Uart<N> {
+impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Read for Uart<N, TX, RX> {
     fn read(&mut self, b: &mut [u8]) -> Result<usize, Error> {
         if b.is_empty() {
             return Ok(0);
@@ -142,19 +235,6 @@ impl<const N: u8> embedded_io::Read for Uart<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn only_real_tx_rx_pairs_are_accepted() {
-        // REVIEW2 #8: UART0 on GPIO22/27 with function 31 used to type-check and succeed.
-        assert_eq!(tx_rx_pins(0), Some((14, 15, 4)));
-        assert_ne!(tx_rx_pins(0), Some((22, 27, 31)));
-        assert_ne!(tx_rx_pins(0), Some((15, 14, 4)), "TX/RX swapped");
-        assert_ne!(tx_rx_pins(1), Some((0, 1, 4)), "wrong function");
-        assert_eq!(tx_rx_pins(5), None);
-        for n in 0..5 {
-            let (tx, rx, f) = tx_rx_pins(n).unwrap();
-            assert!(tx < 28 && rx < 28 && f <= 31);
-        }
-    }
     #[test]
     fn baud_divisor_and_invalid_inputs() {
         assert_eq!(divisors(50_000_000, 115200), Ok((27, 8)));

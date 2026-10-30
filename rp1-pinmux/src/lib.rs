@@ -13,10 +13,11 @@
 //! `ir`, UART0 modem lines individually, audio as `aaud`/`mic`, SDIO0 as `sd0`,
 //! and MIPI TE as `dsiN_te_ext`; it does not specify individual signal roles.
 //! `rp1-regdb` tests can repeat this comparison with `RP1_LINUX_PINCTRL` set to
-//! the driver source file. Tests also compare the existing HAL I2C/SPI routes.
+//! the driver source file. rp1-hal's UART/I2C/SPI pin routes are generated from the same TOML.
 //! This crate makes no hardware validation claim.
 //!
-//! Regenerate the checked-in table with `cargo run -p rp1-regdb -- generate-pinmux`;
+//! Regenerate the checked-in table (and the rp1-hal routes) with
+//! `cargo run -p rp1-regdb -- generate-pinmux`;
 //! add `--check` to reject stale output. There is no build script or runtime dependency.
 //!
 //! ```

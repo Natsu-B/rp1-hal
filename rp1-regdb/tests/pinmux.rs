@@ -15,22 +15,32 @@ fn bank() -> Bank0 {
 fn generation_is_current_and_check_rejects_stale_output() {
     let temp = tempfile::tempdir().unwrap();
     let output = temp.path().join("generated.rs");
+    let hal = temp.path().join("pinmux.rs");
     pinmux::generate(&bank(), &output).unwrap();
+    pinmux::generate_hal(&bank(), &hal).unwrap();
     assert_eq!(
         fs::read(&output).unwrap(),
         fs::read(root().join("../rp1-pinmux/src/generated.rs")).unwrap()
+    );
+    assert_eq!(
+        fs::read(&hal).unwrap(),
+        fs::read(root().join("../rp1-hal/src/pinmux.rs")).unwrap()
     );
     let check = || {
         Command::new(env!("CARGO_BIN_EXE_rp1-regdb"))
             .args(["generate-pinmux", "--check"])
             .arg(root().join("data/pinmux/bank0.toml"))
-            .arg(&output)
+            .args([&output, &hal])
             .output()
             .unwrap()
     };
     assert!(check().status.success());
-    fs::write(&output, "// stale\n").unwrap();
-    assert!(!check().status.success());
+    for stale in [&output, &hal] {
+        let current = fs::read(stale).unwrap();
+        fs::write(stale, "// stale\n").unwrap();
+        assert!(!check().status.success());
+        fs::write(stale, current).unwrap();
+    }
 }
 
 #[test]
@@ -62,56 +72,69 @@ fn numbers(text: &str) -> Vec<u8> {
         .collect()
 }
 
+/// rp1-hal's generated routes are exactly the UART0..4 TX/RX, I2C0..3 and SPI master
+/// SCLK/MOSI/MISO cells of the table, and include the hardware-tested ones.
 #[test]
-fn existing_hal_i2c_and_spi_routes_agree_in_both_directions() {
-    let i2c = fs::read_to_string(root().join("../rp1-hal/src/i2c.rs")).unwrap();
-    let mut i2c_routes = Vec::new();
-    for line in i2c.lines().filter(|line| line.starts_with("routes!(")) {
-        let nums = numbers(line);
-        let n = nums[0];
-        let (pairs, remainder) = nums[1..].as_chunks::<2>();
-        assert!(remainder.is_empty());
-        for pair in pairs {
-            for (&pin, role) in pair.iter().zip([I2cSignal::Sda, I2cSignal::Scl]) {
-                let signal = Signal::I2c(n, role);
-                assert_eq!(funcsel(pin, signal), Some(3));
-                i2c_routes.push((pin, signal));
-            }
-        }
+fn hal_routes_agree_with_the_table_in_both_directions() {
+    let hal = fs::read_to_string(root().join("../rp1-hal/src/pinmux.rs")).unwrap();
+    let mut routes = Vec::new();
+    for line in hal.lines().filter(|line| line.starts_with("impl ")) {
+        let (route, rest) = line["impl ".len()..].split_once('<').unwrap();
+        let nums = numbers(rest);
+        let (n, pin) = (nums[0], nums[1]);
+        let signal = match route {
+            "uart::Tx" => Signal::Uart(n, UartSignal::Tx),
+            "uart::Rx" => Signal::Uart(n, UartSignal::Rx),
+            "i2c::Sda" => Signal::I2c(n, I2cSignal::Sda),
+            "i2c::Scl" => Signal::I2c(n, I2cSignal::Scl),
+            "spi::Sck" => Signal::Spi(n, SpiSignal::Sclk),
+            "spi::Mosi" => Signal::Spi(n, SpiSignal::Mosi),
+            "spi::Miso" => Signal::Spi(n, SpiSignal::Miso),
+            _ => panic!("{line}"),
+        };
+        routes.push((pin, signal));
     }
-    assert_eq!(i2c_routes.len(), 18);
+    // FUNC is on the line after the impl.
+    let funcs: Vec<u8> = hal
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("const FUNC: u8 = "))
+        .map(|f| f.trim_end_matches(';').parse().unwrap())
+        .collect();
+    assert_eq!(funcs.len(), routes.len());
+    for (&(pin, signal), &func) in routes.iter().zip(&funcs) {
+        assert_eq!(funcsel(pin, signal), Some(func), "GPIO{pin} {signal:?}");
+    }
+    let mut signals = Vec::new();
+    for n in 0..5 {
+        signals.extend([UartSignal::Tx, UartSignal::Rx].map(|r| Signal::Uart(n, r)));
+    }
     for n in 0..4 {
-        for role in [I2cSignal::Sda, I2cSignal::Scl] {
-            let signal = Signal::I2c(n, role);
-            for pin in candidate_pins(signal) {
-                assert!(i2c_routes.contains(&(pin, signal)));
-            }
-        }
+        signals.extend([I2cSignal::Sda, I2cSignal::Scl].map(|r| Signal::I2c(n, r)));
     }
-    let spi = fs::read_to_string(root().join("../rp1-hal/src/spi.rs")).unwrap();
-    let mut spi_routes = Vec::new();
-    for line in spi.lines().filter(|line| line.starts_with("routes!(")) {
-        let nums = numbers(line);
-        assert_eq!(nums.len(), 5);
-        let (n, func) = (nums[0], nums[1]);
-        for (&pin, role) in
-            nums[2..]
-                .iter()
-                .zip([SpiSignal::Sclk, SpiSignal::Mosi, SpiSignal::Miso])
-        {
-            let signal = Signal::Spi(n, role);
-            assert_eq!(funcsel(pin, signal), Some(func));
-            spi_routes.push((pin, signal));
-        }
-    }
-    assert_eq!(spi_routes.len(), 15);
     for n in [0, 1, 2, 3, 5] {
-        for role in [SpiSignal::Sclk, SpiSignal::Mosi, SpiSignal::Miso] {
-            let signal = Signal::Spi(n, role);
-            for pin in candidate_pins(signal) {
-                assert!(spi_routes.contains(&(pin, signal)));
-            }
+        signals
+            .extend([SpiSignal::Sclk, SpiSignal::Mosi, SpiSignal::Miso].map(|r| Signal::Spi(n, r)));
+    }
+    let expected: usize = signals.iter().map(|&s| candidate_pins(s).count()).sum();
+    assert_eq!(routes.len(), expected);
+    assert_eq!(expected, 10 + 18 + 15);
+    for &signal in &signals {
+        for pin in candidate_pins(signal) {
+            assert!(routes.contains(&(pin, signal)), "GPIO{pin} {signal:?}");
         }
+    }
+    // HW: the UART0 log, I2C1 and SPI0 routes of the lab firmware.
+    for (pin, signal, func) in [
+        (14, Signal::Uart(0, UartSignal::Tx), 4),
+        (15, Signal::Uart(0, UartSignal::Rx), 4),
+        (2, Signal::I2c(1, I2cSignal::Sda), 3),
+        (3, Signal::I2c(1, I2cSignal::Scl), 3),
+        (11, Signal::Spi(0, SpiSignal::Sclk), 0),
+        (10, Signal::Spi(0, SpiSignal::Mosi), 0),
+        (9, Signal::Spi(0, SpiSignal::Miso), 0),
+    ] {
+        let i = routes.iter().position(|r| *r == (pin, signal)).unwrap();
+        assert_eq!(funcs[i], func);
     }
 }
 

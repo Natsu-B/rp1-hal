@@ -12,7 +12,7 @@
 //! the DW SSI only shifts with a slave selected, and [`Device`] drives a GPIO as chip select.
 use crate::{
     clocks::Clocks,
-    gpio::{Output, Pin, SpiFunction, Unconfigured},
+    gpio::{Alternate, Output, Pin, Unconfigured},
     read, write,
 };
 use embedded_hal::{
@@ -101,25 +101,10 @@ pub trait Mosi<const N: u8>: sealed::Pin {
 pub trait Miso<const N: u8>: sealed::Pin {
     const FUNC: u8;
 }
-macro_rules! routes {
-    ($n:literal, $f:literal: $sck:literal, $mosi:literal, $miso:literal) => {
-        impl Sck<$n> for Pin<$sck> {
-            const FUNC: u8 = $f;
-        }
-        impl Mosi<$n> for Pin<$mosi> {
-            const FUNC: u8 = $f;
-        }
-        impl Miso<$n> for Pin<$miso> {
-            const FUNC: u8 = $f;
-        }
-    };
-}
-// DOC: RP1 bank-0 function table (SCLK, SIO[0], SIO[1]).
-routes!(0, 0: 11, 10, 9);
-routes!(1, 0: 21, 20, 19);
-routes!(2, 8: 3, 2, 1);
-routes!(3, 8: 7, 6, 5);
-routes!(5, 8: 15, 14, 13);
+/// Outputs: input enable, 8 mA, Schmitt, fast slew. MISO: input enable, pull-down, Schmitt; also
+/// the pad state while the mux switches (output disabled).
+const OUT_PAD: u32 = 0x63;
+const IN_PAD: u32 = 0x46;
 
 /// A frame word: the low `frame_bits` bits are shifted, MSB first.
 pub trait Word: sealed::Word + Copy + 'static {
@@ -268,9 +253,9 @@ pub struct Token<const N: u8> {
 /// Dropping it without [`Spi::free`] leaves the controller enabled
 /// and the pins on the SPI function; the token is gone, so it cannot be initialised again.
 pub struct Spi<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> {
-    _sck: Pin<SCK, SpiFunction>,
-    _mosi: Pin<MOSI, SpiFunction>,
-    _miso: Pin<MISO, SpiFunction>,
+    _sck: Pin<SCK, Alternate>,
+    _mosi: Pin<MOSI, Alternate>,
+    _miso: Pin<MISO, Alternate>,
     clocks: Clocks,
     depth: usize,
     dfs32: bool,
@@ -358,9 +343,9 @@ impl<const N: u8> Token<N> {
             config,
             |(sck, mosi, miso)| {
                 (
-                    sck.into_spi(<Pin<SCK> as Sck<N>>::FUNC, true),
-                    mosi.into_spi(<Pin<MOSI> as Mosi<N>>::FUNC, true),
-                    miso.into_spi(<Pin<MISO> as Miso<N>>::FUNC, false),
+                    sck.into_alternate(<Pin<SCK> as Sck<N>>::FUNC, IN_PAD, OUT_PAD),
+                    mosi.into_alternate(<Pin<MOSI> as Mosi<N>>::FUNC, IN_PAD, OUT_PAD),
+                    miso.into_alternate(<Pin<MISO> as Miso<N>>::FUNC, IN_PAD, IN_PAD),
                 )
             },
         )
@@ -372,7 +357,7 @@ impl<const N: u8> Token<N> {
         pins: Pins<SCK, MOSI, MISO>,
         clocks: &Clocks,
         config: Config,
-        route: impl FnOnce(Pins<SCK, MOSI, MISO>) -> Pins<SCK, MOSI, MISO, SpiFunction>,
+        route: impl FnOnce(Pins<SCK, MOSI, MISO>) -> Pins<SCK, MOSI, MISO, Alternate>,
     ) -> Result<Spi<N, SCK, MOSI, MISO>, InitError<N, SCK, MOSI, MISO>> {
         match start(io, reset_bit(N), clocks, config) {
             Ok((depth, dfs32, cr0, div)) => {
@@ -401,6 +386,34 @@ impl<const N: u8> Token<N> {
                 })
             }
         }
+    }
+}
+/// A declared SPI N with its pins, as the generated resources hand it out (`rp1-build`).
+pub struct Parts<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8>
+where
+    Pin<SCK>: Sck<N>,
+    Pin<MOSI>: Mosi<N>,
+    Pin<MISO>: Miso<N>,
+{
+    pub token: Token<N>,
+    pub sck: Pin<SCK>,
+    pub mosi: Pin<MOSI>,
+    pub miso: Pin<MISO>,
+}
+impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Parts<N, SCK, MOSI, MISO>
+where
+    Pin<SCK>: Sck<N>,
+    Pin<MOSI>: Mosi<N>,
+    Pin<MISO>: Miso<N>,
+{
+    /// [`Token::init`] with the declared pins.
+    pub fn init(
+        self,
+        clocks: &Clocks,
+        config: Config,
+    ) -> Result<Spi<N, SCK, MOSI, MISO>, InitError<N, SCK, MOSI, MISO>> {
+        self.token
+            .init(self.sck, self.mosi, self.miso, clocks, config)
     }
 }
 /// SCK, MOSI and MISO.

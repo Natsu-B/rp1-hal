@@ -78,7 +78,59 @@ pub fn generate(bank: &Bank0, output: &Path) -> Result<()> {
         )?;
     }
     out.push_str("];\n");
-    fs::write(output, out)?;
+    write_rust(output, &out)
+}
+
+/// Write rp1-hal's pin-route impls: one `impl <trait><n> for Pin<gpio>` per bank-0 signal the
+/// HAL drives, with its FUNCSEL.
+pub fn generate_hal(bank: &Bank0, output: &Path) -> Result<()> {
+    bank.validate()?;
+    let mut routes = Vec::new();
+    for pin in &bank.pins {
+        for (func, name) in pin.functions.iter().enumerate() {
+            if let Some((route, n)) = hal_route(name) {
+                routes.push((route, n, pin.gpio, func));
+            }
+        }
+    }
+    routes.sort();
+    let mut out = String::from(
+        "// Generated from rp1-regdb/data/pinmux/bank0.toml; do not edit.\n\
+         //! DOC: bank-0 routes of the signals rp1-hal drives, with their function select\n\
+         //! (RP1 Peripherals Table 4). SPI4 is slave-only and has no driver.\n\
+         use crate::{gpio::Pin, i2c, spi, uart};\n",
+    );
+    for (route, n, gpio, func) in routes {
+        writeln!(
+            out,
+            "impl {route}<{n}> for Pin<{gpio}> {{ const FUNC: u8 = {func}; }}"
+        )?;
+    }
+    write_rust(output, &out)
+}
+
+/// The rp1-hal pin trait and instance of a bank-0 signal name, e.g. `UART2_TX` →
+/// `("uart::Tx", 2)`; `None` for signals the HAL does not route.
+fn hal_route(name: &str) -> Option<(&'static str, u8)> {
+    let (block, role) = name.split_once('_')?;
+    let family = block.trim_end_matches(|c: char| c.is_ascii_digit());
+    let n: u8 = block[family.len()..].parse().ok()?;
+    let route = match (family, role) {
+        ("UART", "TX") => "uart::Tx",
+        ("UART", "RX") => "uart::Rx",
+        ("I2C", "SDA") => "i2c::Sda",
+        ("I2C", "SCL") => "i2c::Scl",
+        ("SPI", _) if n == 4 => return None,
+        ("SPI", "SCLK") => "spi::Sck",
+        ("SPI", "SIO[0]") => "spi::Mosi",
+        ("SPI", "SIO[1]") => "spi::Miso",
+        _ => return None,
+    };
+    Some((route, n))
+}
+
+fn write_rust(output: &Path, text: &str) -> Result<()> {
+    fs::write(output, text)?;
     let status = Command::new("rustfmt")
         .args(["--edition", "2024"])
         .arg(output)
