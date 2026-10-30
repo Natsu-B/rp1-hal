@@ -212,8 +212,7 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
     let before = Fdt::parse(dtb_in)?;
     rp1_dt::overlay::apply(&mut fdt, elf.section(".rp1.dtbo")?)
         .map_err(|e| format!("applying .rp1.dtbo: {e}"))?;
-    let ownership = rp1boot::enforce_linux_ownership(&before, &mut fdt, desc)
-        .map_err(|e| format!("RP1 ownership check: {e}; RP1 not started"))?;
+    let ownership = rp1boot::enforce_linux_ownership(&before, &mut fdt, desc);
     drop(before);
     match ownership {
         Ownership::Applied { markers } => {

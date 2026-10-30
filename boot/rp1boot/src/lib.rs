@@ -266,16 +266,24 @@ fn one_line(s: &str) -> String {
 /// the firmware DTB (`before`). Each disabled node gives
 /// `RP1BOOT_LINUX_DISABLED path=<path> label=<label|-> why=<reason>[; <reason>]...`, then
 /// `RP1BOOT_LINUX_DISABLED_COUNT=<n>` (also for 0). A refusal gives one
-/// `RP1BOOT_LINUX_REFUSED why=<reason>` per reason. `Err` (malformed input, failed recheck)
-/// must stop the boot like a refusal; `after` is unchanged in both cases.
+/// `RP1BOOT_LINUX_REFUSED why=<reason>` per reason; so does an error (malformed input, unknown
+/// policy, failed recheck), which also refuses. `after` is unchanged when refused.
 pub fn enforce_linux_ownership(
     before: &rp1_dt::fdt::Fdt,
     after: &mut rp1_dt::fdt::Fdt,
     note: &[u8],
-) -> Result<Ownership> {
+) -> Ownership {
     use rp1_dt::check::{OnConflict, Plan};
-    let (policy, plan) = rp1_dt::check::enforce(before, after, note)?;
-    Ok(match plan {
+    let (policy, plan) = match rp1_dt::check::enforce(before, after, note) {
+        Ok(result) => result,
+        Err(e) => {
+            return Ownership::Refused {
+                lines: alloc::vec![one_line(&format!("RP1BOOT_LINUX_REFUSED why={e}"))],
+                reason: format!("RP1 ownership check: {e}; RP1 not started"),
+            };
+        }
+    };
+    match plan {
         Plan::Disable(nodes) => {
             let mut markers: Vec<String> = nodes
                 .iter()
@@ -306,7 +314,7 @@ pub fn enforce_linux_ownership(
                 }
             ),
         },
-    })
+    }
 }
 
 /// Fixed 2 MiB-aligned kernel base and the end of the loader's normal-RAM mapping.

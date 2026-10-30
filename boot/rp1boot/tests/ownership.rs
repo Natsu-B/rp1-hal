@@ -95,7 +95,7 @@ fn applied(o: Ownership) -> Vec<String> {
 fn clean_tree_logs_a_zero_count_and_is_unchanged() {
     let (mut fdt, note) = merged("", &[]);
     let before = fdt.clone();
-    let markers = applied(enforce_linux_ownership(&before, &mut fdt, &note).unwrap());
+    let markers = applied(enforce_linux_ownership(&before, &mut fdt, &note));
     assert_eq!(markers, ["RP1BOOT_LINUX_DISABLED_COUNT=0"]);
     assert_eq!(fdt.to_bytes(), before.to_bytes());
 }
@@ -104,7 +104,7 @@ fn clean_tree_logs_a_zero_count_and_is_unchanged() {
 fn default_policy_disables_marks_and_logs_conflicts_and_gpiomem() {
     let (mut fdt, note) = merged(&format!("{UART3}\n{GPIOMEM}"), &[]);
     let before = fdt.clone();
-    let markers = applied(enforce_linux_ownership(&before, &mut fdt, &note).unwrap());
+    let markers = applied(enforce_linux_ownership(&before, &mut fdt, &note));
     assert_eq!(markers.len(), 3, "{markers:?}");
     let uart = format!("RP1BOOT_LINUX_DISABLED path={RP1}/serial@3c000 label=rp1_uart3 why=");
     assert!(
@@ -146,7 +146,7 @@ fn default_policy_disables_marks_and_logs_conflicts_and_gpiomem() {
 fn gpiomem_keep_policy_leaves_it_enabled() {
     let (mut fdt, note) = merged(GPIOMEM, &[("rp1,gpiomem", "keep")]);
     let before = fdt.clone();
-    let markers = applied(enforce_linux_ownership(&before, &mut fdt, &note).unwrap());
+    let markers = applied(enforce_linux_ownership(&before, &mut fdt, &note));
     assert_eq!(markers, ["RP1BOOT_LINUX_DISABLED_COUNT=0"]);
     assert!(fdt.enabled(fdt.find("/gpiomem").unwrap()));
 }
@@ -167,7 +167,7 @@ fn refuse_policy_and_protected_nodes_stop_without_changing_the_dtb() {
     ] {
         let (mut fdt, note) = merged(&extra, policy);
         let before = fdt.clone();
-        match enforce_linux_ownership(&before, &mut fdt, &note).unwrap() {
+        match enforce_linux_ownership(&before, &mut fdt, &note) {
             Ownership::Refused { lines, reason } => {
                 assert!(
                     reason.contains(why) && reason.ends_with("RP1 not started"),
@@ -193,7 +193,13 @@ fn errors_stop_the_boot_without_changing_the_dtb() {
     // Unknown policy value.
     let (mut fdt, note) = merged(UART3, &[("rp1,on-conflict", "ignore")]);
     let before = fdt.clone();
-    assert!(enforce_linux_ownership(&before, &mut fdt, &note).is_err());
+    let (lines, reason) = refused(enforce_linux_ownership(&before, &mut fdt, &note));
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("RP1BOOT_LINUX_REFUSED why=") && lines[0].contains("policy"),
+        "{lines:?}"
+    );
+    assert!(reason.ends_with("RP1 not started"), "{reason}");
     assert_eq!(fdt.to_bytes(), before.to_bytes());
     // The overlay handed a reserved GPIO back to Linux (recheck against the firmware DTB).
     let (mut fdt, note) = merged(UART3, &[]);
@@ -208,8 +214,14 @@ fn errors_stop_the_boot_without_changing_the_dtb() {
             .collect(),
     );
     let original = fdt.to_bytes();
-    let e = enforce_linux_ownership(&firmware_dtb, &mut fdt, &note).unwrap_err();
-    assert!(e.contains("back to Linux"), "{e}");
+    let (lines, reason) = refused(enforce_linux_ownership(&firmware_dtb, &mut fdt, &note));
+    assert!(
+        lines.len() == 1
+            && lines[0].starts_with("RP1BOOT_LINUX_REFUSED why=")
+            && lines[0].contains("back to Linux"),
+        "{lines:?}"
+    );
+    assert!(reason.contains("back to Linux"), "{reason}");
     assert_eq!(fdt.to_bytes(), original);
 }
 
@@ -224,7 +236,7 @@ fn markers_stay_on_one_line() {
         format!("{RP1}/serial@3c000\0").into_bytes(),
     );
     let before = fdt.clone();
-    let markers = applied(enforce_linux_ownership(&before, &mut fdt, &note).unwrap());
+    let markers = applied(enforce_linux_ownership(&before, &mut fdt, &note));
     assert!(markers[0].contains("label=rp1_?X "), "{markers:?}");
     assert!(markers.iter().all(|m| !m.chars().any(char::is_control)));
 }
@@ -235,7 +247,7 @@ fn marker_growth_fits_the_final_dtb_window_and_oversize_is_refused() {
     let (mut fdt, note) = merged(&format!("{UART3}\n{GPIOMEM}"), &[]);
     let before = fdt.clone();
     let size = before.to_bytes().len();
-    applied(enforce_linux_ownership(&before, &mut fdt, &note).unwrap());
+    applied(enforce_linux_ownership(&before, &mut fdt, &note));
     let grown = final_dtb(&fdt).unwrap().len();
     // Per node: status (new or rewritten, <= 12 B header + 12 B "disabled") + empty marker
     // (12 B); the path list (12 B header + NUL-terminated paths, padded) and one new
@@ -251,7 +263,7 @@ fn marker_growth_fits_the_final_dtb_window_and_oversize_is_refused() {
     fdt.set_prop(root, "rp1,pad", vec![0; pad.next_multiple_of(4)]);
     assert!(final_dtb(&fdt).is_ok());
     let before = fdt.clone();
-    applied(enforce_linux_ownership(&before, &mut fdt, &note).unwrap());
+    applied(enforce_linux_ownership(&before, &mut fdt, &note));
     let e = final_dtb(&fdt).unwrap_err();
     assert!(
         e.starts_with("final DTB is ") && e.ends_with("(> 0x200000)"),
@@ -273,7 +285,7 @@ fn real_merged_dtb() {
     let firmware = fdt.find("/rp1-firmware").unwrap();
     let note = fdt.prop(firmware, "rp1,note").unwrap().to_vec();
     let before = fdt.clone();
-    let markers = match enforce_linux_ownership(&before, &mut fdt, &note).unwrap() {
+    let markers = match enforce_linux_ownership(&before, &mut fdt, &note) {
         Ownership::Applied { markers } => markers,
         Ownership::Refused { lines, reason } => panic!("refused: {lines:?} {reason}"),
     };
@@ -307,4 +319,11 @@ fn real_merged_dtb() {
         "final DTB {} -> {size} B (max {DTB_OUT_MAX})",
         before.to_bytes().len()
     );
+}
+
+fn refused(o: Ownership) -> (Vec<String>, String) {
+    match o {
+        Ownership::Refused { lines, reason } => (lines, reason),
+        o => panic!("expected refusal, got {o:?}"),
+    }
 }
