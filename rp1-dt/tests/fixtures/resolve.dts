@@ -27,6 +27,7 @@
             rp1_pio: pio@178000 { status = "disabled"; };
             rp1_gpio: gpio@d0000 {
                 gpio-controller; #gpio-cells = <2>;
+                interrupt-controller; #interrupt-cells = <2>;
                 gpio-reserved-ranges = <8 4 22 1>;
                 uart3_pins: uart3-8-9 {
                     tx { function = "uart3"; pins = "gpio8"; };

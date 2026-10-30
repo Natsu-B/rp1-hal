@@ -354,6 +354,62 @@ fn policy_defaults_explicit_values_and_invalid_values() {
 }
 
 #[test]
+fn interrupt_users_of_rp1_owned_pins_are_disabled() {
+    // Review 11 L1: interrupts on rp1_gpio, direct, inherited and interrupts-extended.
+    let intc = "/ { other_intc: other-intc { interrupt-controller; #interrupt-cells = <1>; }; };";
+    for (extra, path, why) in [
+        (
+            "/ { user { interrupt-parent = <&rp1_gpio>; interrupts = <22 8>; }; };",
+            "/user",
+            "/user interrupts uses GPIO22",
+        ),
+        (
+            "/ { bus { interrupt-parent = <&rp1_gpio>; user { interrupts = <23 8 9 8>; }; }; };",
+            "/bus/user",
+            "/bus/user interrupts uses GPIO9",
+        ),
+        (
+            "/ { user { interrupts-extended = <&other_intc 1 &rp1_gpio 10 8>; }; };",
+            "/user",
+            "/user interrupts-extended uses GPIO10",
+        ),
+    ] {
+        let (fdt, note) = fixture(&format!("{intc} {extra}"));
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{extra}");
+        assert_eq!(nodes[0].path, path);
+        assert!(
+            nodes[0].reasons.iter().any(|r| r.contains(why)),
+            "{nodes:?}"
+        );
+    }
+    for extra in [
+        // Pins Linux keeps, another controller, a disabled user, the extended form winning.
+        "/ { user { interrupt-parent = <&rp1_gpio>; interrupts = <23 8>; }; };",
+        "/ { user { interrupt-parent = <&other_intc>; interrupts = <22>; }; };",
+        "/ { user { status = \"disabled\"; interrupt-parent = <&rp1_gpio>; interrupts = <22 8>; }; };",
+        "/ { user { interrupt-parent = <&rp1_gpio>; interrupts = <22 8>; interrupts-extended = <&other_intc 22>; }; };",
+        "/ { user { interrupts-extended = <0xfffffffe 22 8>; }; };",
+    ] {
+        let (fdt, note) = fixture(&format!("{intc} {extra}"));
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{extra}"
+        );
+    }
+    let (fdt, note) =
+        fixture("/ { user { interrupt-parent = <&rp1_gpio>; interrupts = <22>; }; };");
+    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+    let (fdt, note) =
+        fixture("/ { user { interrupts-extended = <0xfffffffe 0 &rp1_gpio 22 8>; }; };");
+    refusal(
+        resolve(&fdt, &note, Policy::default()).unwrap(),
+        "may name rp1_gpio",
+    );
+}
+
+#[test]
 fn malformed_rp1_data_returns_errors() {
     for extra in [
         "/ { user { gpios = <&rp1_gpio 22>; }; };",

@@ -488,8 +488,121 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                 }
             }
         }
+        // Interrupt users: pinctrl-rp1 rewrites the pin's CTRL event bits when Linux maps
+        // the IRQ, which would clear an RP1 gpio_irq's setup and pending events.
+        for (prop, pin) in rp1_irq_lines(fdt, n, gpio, gpio_handle, &mut out.unresolved)? {
+            if withheld.contains(&pin) {
+                out.add(
+                    n,
+                    format!(
+                        "{} {prop} uses GPIO{pin} that gpio-reserved-ranges withholds from Linux",
+                        fdt.path(n)
+                    ),
+                );
+            }
+        }
     }
     Ok(out)
+}
+
+/// RP1 GPIO lines `n` takes as interrupts: `interrupts-extended` entries on rp1_gpio, or
+/// `interrupts` when the (inherited) `interrupt-parent` is rp1_gpio. Strict for rp1_gpio
+/// specifiers; another controller's entries that cannot be parsed are skipped unless the
+/// rest may name rp1_gpio (then a reason goes to `unresolved`).
+fn rp1_irq_lines(
+    fdt: &Fdt,
+    n: usize,
+    gpio: usize,
+    gpio_handle: Option<u32>,
+    unresolved: &mut Vec<String>,
+) -> Result<Vec<(&'static str, u32)>> {
+    let Some(handle) = gpio_handle else {
+        return Ok(Vec::new()); // nothing can refer to rp1_gpio
+    };
+    let irq_cells = |ctrl: usize| -> Option<usize> {
+        match fdt.cells(ctrl, "#interrupt-cells")?.as_slice() {
+            [c] if *c > 0 => Some(*c as usize),
+            _ => None,
+        }
+    };
+    let rp1_cells = || {
+        irq_cells(gpio)
+            .ok_or_else(|| String::from("rp1_gpio: missing or unsupported #interrupt-cells"))
+    };
+    let mut lines = Vec::new();
+    if fdt.prop(n, "interrupts-extended").is_some() {
+        let prop = "interrupts-extended";
+        let Some(values) = fdt.cells(n, prop) else {
+            let raw = fdt.prop(n, prop).unwrap_or_default();
+            if names_handle(raw.chunks_exact(4).map(be32), Some(handle)) {
+                unresolved.push(format!(
+                    "{} {prop}: malformed list may name rp1_gpio",
+                    fdt.path(n)
+                ));
+            }
+            return Ok(lines);
+        };
+        let mut rest = values.as_slice();
+        while let Some((&h, tail)) = rest.split_first() {
+            let layout = if h == handle {
+                Some((true, rp1_cells()?))
+            } else {
+                fdt.phandle(h).and_then(irq_cells).map(|c| (false, c))
+            };
+            let Some((is_rp1, count)) = layout else {
+                if names_handle(tail.iter().copied(), Some(handle)) {
+                    unresolved.push(format!(
+                        "{} {prop}: phandle {h:#x} cannot be parsed and a later entry may name rp1_gpio",
+                        fdt.path(n)
+                    ));
+                }
+                break;
+            };
+            let Some(spec) = tail.get(..count) else {
+                if is_rp1 {
+                    return Err(format!(
+                        "{} {prop}: truncated rp1_gpio specifier",
+                        fdt.path(n)
+                    ));
+                }
+                break;
+            };
+            if is_rp1 {
+                lines.push((prop, spec[0]));
+            }
+            rest = &tail[count..];
+        }
+        return Ok(lines);
+    }
+    if fdt.prop(n, "interrupts").is_none() {
+        return Ok(lines);
+    }
+    // The nearest interrupt-parent on the node or its ancestors.
+    let mut at = Some(n);
+    let parent = loop {
+        let Some(a) = at else { return Ok(lines) };
+        if let Some(v) = fdt.prop(a, "interrupt-parent") {
+            break v;
+        }
+        at = fdt.nodes[a].parent;
+    };
+    if parent != handle.to_be_bytes() {
+        return Ok(lines);
+    }
+    let count = rp1_cells()?;
+    let values = cells(fdt, n, "interrupts")?;
+    if values.is_empty() || !values.len().is_multiple_of(count) {
+        return Err(format!(
+            "{} interrupts: malformed rp1_gpio specifier",
+            fdt.path(n)
+        ));
+    }
+    lines.extend(
+        values
+            .chunks_exact(count)
+            .map(|spec| ("interrupts", spec[0])),
+    );
+    Ok(lines)
 }
 
 fn be32(word: &[u8]) -> u32 {
