@@ -17,6 +17,8 @@ UART10 = """[t] DOORBELL_BEFORE_RC=0
 [t] DOORBELL_AFTER_RC=0
 [t] I2C_REPLY=0x00000001
 [t] I2C_LINUX_DONE
+[t] ADC_REPLY=0x00000ADC
+[t] ADC_LINUX_DONE
 [t] CHECK_SHM_RESULT=PASS
 [t] DDR_INSPECT_END
 """
@@ -27,6 +29,10 @@ UART0 = """[t] PROF ring_data_ddr batch push n=128 cyc=1 pop cyc=2
 [t] I2C_PASS hz=400000 write16_us=1
 [t] I2C_PASS r64_w16 hz=400000
 [t] I2C_RESULT request=1 Ok(())
+[t] ADC_P1BOOT first=791 temp_mc=70579 PASS
+[t] ADC_RESULT boot Ok(())
+[t] ADC_P1REQ first=778 temp_mc=75809 PASS
+[t] ADC_RESULT request=0xadc Ok(())
 """
 DONE = {"complete": True}
 
@@ -63,6 +69,9 @@ class Verify(unittest.TestCase):
         self.assertTrue(v.verify(UART0, UART10.replace("I2C_REPLY=0x00000001", "I2C_REPLY=0xFFFFFFFF"), DONE))
         self.assertTrue(v.verify(UART0, UART10.replace("PASS\n[t] DDR", "FAIL shm\n[t] DDR"), DONE))
         self.assertTrue(v.verify(UART0, "[t] CHECK_FAIL shm\n" + UART10, DONE))
+        self.assertTrue(v.verify(UART0, UART10.replace("ADC_REPLY=0x00000ADC", "ADC_REPLY=0x00000000"), DONE))
+        self.assertTrue(v.verify(UART0 + "[t] ADC_RESULT request=0xadc Err(Timeout)\n", UART10, DONE))
+        self.assertTrue(v.verify(UART0 + "[t] ADC_RESULT boot Err(Precondition)\n", UART10, DONE))
         self.assertTrue(v.verify(UART0 + "[t] I2C_FAIL Bus(\"read\", Timeout)\n", UART10, DONE))
 
     def test_order_matters(self):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict pass/fail for the Linux SHM / doorbell / I2C regression (`lab/check-shm.sh`).
+"""Strict pass/fail for the Linux SHM / doorbell / I2C / ADC regression (`lab/check-shm.sh`).
 
 Usage: verify-shm.py --uart0 FILE --uart10 FILE --result RESULT_JSON
 
@@ -21,6 +21,7 @@ UART10_ORDERED = [
     ("SHM_RC=0", r"\bSHM_RC=0\b"),
     ("doorbell after", r"\bDOORBELL_AFTER_RC=0\b"),
     ("I2C reply", r"\bI2C_REPLY=0x0*1\b"),
+    ("ADC reply", r"\bADC_REPLY=0x0*[aA][dD][cC]\b"),
     ("script result", r"\bCHECK_SHM_RESULT=PASS\b"),
     ("terminal marker", r"\bDDR_INSPECT_END\b"),
 ]
@@ -33,8 +34,12 @@ UART0_REQUIRED = [
     ("I2C 400 kHz", r"\bI2C_PASS hz=400000\b"),
     ("I2C r64_w16", r"\bI2C_PASS r64_w16\b"),
     ("I2C result", r"\bI2C_RESULT request=1 Ok\b"),
+    ("ADC boot burst", r"\bADC_P1BOOT first=\d+ temp_mc=-?\d+ PASS\b"),
+    ("ADC boot result", r"\bADC_RESULT boot Ok\b"),
+    ("ADC request burst", r"\bADC_P1REQ first=\d+ temp_mc=-?\d+ PASS\b"),
+    ("ADC request result", r"\bADC_RESULT request=0xadc Ok\b"),
 ]
-UART0_FORBIDDEN = [r"\bI2C_FAIL\b", r"\bpanic", r"\bI2C_RESULT request=1 Err\b"]
+UART0_FORBIDDEN = [r"\bI2C_FAIL\b", r"\bpanic", r"\bI2C_RESULT request=1 Err\b", r"\bADC_RESULT\b.*\bErr\b"]
 
 
 def verify(uart0, uart10, result):

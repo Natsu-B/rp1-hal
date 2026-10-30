@@ -42,11 +42,17 @@ limit, any non-zero exit or wrong I2C reply prints `CHECK_FAIL`, the script ends
 `CHECK_SHM_RESULT=PASS|FAIL` then `DDR_INSPECT_END` and exits non-zero on failure. The host
 runs `python3 lab/verify-shm.py --uart0 U0 --uart10 U10 --result OBSERVER_JSON`, which needs
 the capture's `"complete": true`, the UART10 markers in order (`SHM_PASS`, `SHM_RC=0`, both
-doorbells, `I2C_REPLY=0x00000001`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
+doorbells, `I2C_REPLY=0x00000001`, `ADC_REPLY=0x00000ADC`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
 `PROF_DONE`, `proc1 shm cmd=9 ... errors=0`, the three `I2C_PASS` lines and
 `I2C_RESULT request=1 Ok`. The ADC is declared on proc1 in `shm-firmware`: proc1 gets its
 `Clocks` with `Clocks::wait_from_proc0`, runs the boot burst (`proc1 adc init Ok`,
 `ADC_P1BOOT ... PASS`) and answers Linux's 0xadc request (`ADC_P1REQ ... PASS`).
+`check-shm.sh` issues that request itself, after the doorbell, shm and I2C steps (the burst
+blocks proc1's doorbell and command handling for tens of ms, so it must not overlap them), and
+fails unless the reply is 0xadc. `verify-shm.py` requires `ADC_REPLY=0x00000ADC` on UART10 (after
+`I2C_REPLY`) and on UART0 `ADC_P1BOOT ... PASS`, `ADC_RESULT boot Ok`, `ADC_P1REQ ... PASS` and
+`ADC_RESULT request=0xadc Ok`; any `ADC_RESULT ... Err` fails the run. The UART0 boot markers are
+in the boot capture, so pass the boot capture and the observer's UART0 log together.
 A boot-marker report (`full_success`) is not a pass for this regression. Host tests: `python3 lab/test_verify_shm.py`.
 
 HW results belong in the run notes kept outside this repository; build success alone is STATIC evidence.
