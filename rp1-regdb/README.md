@@ -19,6 +19,8 @@ Rust tables were one-time migration inputs and are not build dependencies.
 - `src/model.rs`: strongly typed schema.
 - `src/validate.rs`: safety and layout rules.
 - `src/gen_rust.rs`: deterministic Rust PAC generation.
+- `data/pinmux/bank0.toml`: GPIO 0..27 × FUNCSEL a0..a8, with datasheet signal names.
+- `src/pinmux.rs`: pin-function validation and generation of `rp1-pinmux/src/generated.rs`.
 - `data/COVERAGE.generated.md`: current generated coverage.
 - `SCHEMA.md`: `rp1-regdb-v3` metadata and safety semantics.
 - `MIGRATION-COVERAGE.md`: final legacy migration accounting.
@@ -35,6 +37,19 @@ cargo run -p rp1-regdb -- generate --check
 
 `generate --check` regenerates a temporary `rp1-pac` package layout and fails
 if any checked-in generated Rust file or `rp1-pac/device.x` differs.
+
+The separate bank-0 pin table uses the same checked-in generation workflow:
+
+```bash
+cargo run -p rp1-regdb -- generate-pinmux
+cargo run -p rp1-regdb -- generate-pinmux --check
+```
+
+DOC: The pin table follows RP1 Peripherals Table 4; SPI signal roles follow
+§3.6.1.1. STATIC: `tests/pinmux.rs` checks generation and the existing HAL
+I2C/SPI routes. Set `RP1_LINUX_PINCTRL` to a local `pinctrl-rp1.c` to also
+compare all bank-0 `PIN()` rows. No Linux driver source is redistributed.
+The dependency-free `rp1-pinmux` crate documents the sources and lookup API.
 
 ## Schema
 

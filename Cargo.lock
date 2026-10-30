@@ -404,6 +404,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp1-pinmux"
+version = "0.1.0"
+
+[[package]]
 name = "rp1-proto"
 version = "0.1.0"
 dependencies = [
@@ -415,6 +419,7 @@ name = "rp1-regdb"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "rp1-pinmux",
  "serde",
  "tempfile",
  "toml 0.8.23",

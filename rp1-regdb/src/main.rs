@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use rp1_regdb::{gen_rust, load, model, validate};
+use rp1_regdb::{gen_rust, load, model, pinmux, validate};
 
 fn main() {
     if let Err(error) = run() {
@@ -19,6 +19,37 @@ fn run() -> Result<()> {
     let mut args = env::args().skip(1);
     let command = args.next().unwrap_or_else(|| "help".into());
     match command.as_str() {
+        "generate-pinmux" => {
+            let mut remaining: Vec<_> = args.collect();
+            let check = remaining.first().is_some_and(|arg| arg == "--check");
+            if check {
+                remaining.remove(0);
+            }
+            if remaining.len() > 2 {
+                bail!("usage: rp1-regdb generate-pinmux [--check] [bank TOML] [output Rust]");
+            }
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let input = remaining
+                .first()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root.join("data/pinmux/bank0.toml"));
+            let output = remaining
+                .get(1)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root.join("../rp1-pinmux/src/generated.rs"));
+            let bank = pinmux::load(&input)?;
+            if check {
+                let temporary = tempfile::tempdir()?;
+                let actual = temporary.path().join("generated.rs");
+                pinmux::generate(&bank, &actual)?;
+                if fs::read(actual)? != fs::read(&output)? {
+                    bail!("generated pin functions are stale: {}", output.display());
+                }
+                Ok(())
+            } else {
+                pinmux::generate(&bank, &output)
+            }
+        }
         "validate" => {
             let device = args
                 .next()
@@ -54,7 +85,7 @@ fn run() -> Result<()> {
                 gen_rust::write_coverage(&db, &db.root.join("COVERAGE.generated.md"))
             }
         }
-        _ => bail!("usage: rp1-regdb <validate|generate> ..."),
+        _ => bail!("usage: rp1-regdb <validate|generate|generate-pinmux> ..."),
     }
 }
 
