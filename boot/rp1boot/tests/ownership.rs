@@ -260,7 +260,10 @@ fn marker_growth_fits_the_final_dtb_window_and_oversize_is_refused() {
 }
 
 /// A real merged board DTB (firmware DTB + config.txt overlays + `.rp1.dtbo`), when given
-/// (not committed): print the markers and the final size.
+/// (not committed; the committed stock-tree cases are in `rp1-build/tests/stock_dtb.rs`).
+/// rp1boot must apply its plan, print one marker per disabled node and the count, and keep the
+/// final DTB in the window. `RP1BOOT_TEST_EXPECT_DISABLED` (comma-separated node paths), when
+/// set, must be exactly the disabled set.
 #[test]
 fn real_merged_dtb() {
     let Ok(path) = std::env::var("RP1BOOT_TEST_MERGED_DTB") else {
@@ -270,16 +273,38 @@ fn real_merged_dtb() {
     let firmware = fdt.find("/rp1-firmware").unwrap();
     let note = fdt.prop(firmware, "rp1,note").unwrap().to_vec();
     let before = fdt.clone();
-    let size = before.to_bytes().len();
-    match enforce_linux_ownership(&before, &mut fdt, &note).unwrap() {
-        Ownership::Applied { markers } => markers.iter().for_each(|m| eprintln!("{m}")),
-        Ownership::Refused { lines, reason } => {
-            lines.iter().for_each(|l| eprintln!("{l}"));
-            eprintln!("FAIL: {reason}");
-        }
+    let markers = match enforce_linux_ownership(&before, &mut fdt, &note).unwrap() {
+        Ownership::Applied { markers } => markers,
+        Ownership::Refused { lines, reason } => panic!("refused: {lines:?} {reason}"),
+    };
+    markers.iter().for_each(|m| eprintln!("{m}"));
+    let (count, nodes) = markers.split_last().unwrap();
+    assert_eq!(
+        *count,
+        format!("RP1BOOT_LINUX_DISABLED_COUNT={}", nodes.len())
+    );
+    let mut paths: Vec<&str> = nodes
+        .iter()
+        .map(|m| {
+            m.strip_prefix("RP1BOOT_LINUX_DISABLED path=")
+                .and_then(|m| m.split(' ').next())
+                .unwrap_or_else(|| panic!("bad marker {m}"))
+        })
+        .collect();
+    for p in &paths {
+        let n = fdt.find(p).unwrap();
+        assert!(!fdt.enabled(n), "{p} still enabled");
     }
+    if let Ok(expected) = std::env::var("RP1BOOT_TEST_EXPECT_DISABLED") {
+        let mut expected: Vec<&str> = expected.split(',').filter(|p| !p.is_empty()).collect();
+        expected.sort();
+        paths.sort();
+        assert_eq!(paths, expected);
+    }
+    let size = final_dtb(&fdt).unwrap().len();
+    assert!(size as u64 <= DTB_OUT_MAX, "{size}");
     eprintln!(
-        "final DTB {size} -> {} B (max {DTB_OUT_MAX})",
-        final_dtb(&fdt).unwrap().len()
+        "final DTB {} -> {size} B (max {DTB_OUT_MAX})",
+        before.to_bytes().len()
     );
 }
