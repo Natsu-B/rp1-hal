@@ -1,0 +1,41 @@
+/dts-v1/;
+/ {
+    #address-cells = <2>; #size-cells = <1>;
+    aliases { serial3 = &rp1_uart3; };
+    chosen {};
+    rp1-firmware {};
+    firmware { rp1_scmi: scmi {
+        #address-cells = <1>; #size-cells = <0>;
+        rp1_scmi_clocks: protocol@14 { reg = <0x14>; #clock-cells = <1>; };
+    }; };
+    rp1_scmi_shmem: scmi-shmem { compatible = "arm,scmi-shmem"; };
+    rp1-link@1f0040c000 { reg = <0x1f 0x0040c000 0x4000>; };
+    reserved-memory {
+        #address-cells = <2>; #size-cells = <1>; ranges;
+        scratch@21000000 { reg = <0 0x21000000 0x1000>; };
+    };
+    other_gpio: other-gpio { gpio-controller; #gpio-cells = <3>; };
+    soc-pinctrl { soc_pins: pins { pins = "gpio8", "gpio9"; }; };
+    pcie2: pcie@1000120000 {
+        #address-cells = <2>; #size-cells = <2>;
+        rp1 {
+            #address-cells = <2>; #size-cells = <2>;
+            rp1_eth: ethernet@100000 {};
+            rp1_usb0: usb@200000 {};
+            rp1_usb1: usb@300000 {};
+            rp1_dma: dma@188000 {};
+            rp1_pio: pio@178000 { status = "disabled"; };
+            rp1_gpio: gpio@d0000 {
+                gpio-controller; #gpio-cells = <2>;
+                gpio-reserved-ranges = <8 4 22 1>;
+                uart3_pins: uart3-8-9 {
+                    tx { function = "uart3"; pins = "gpio8"; };
+                    rx { function = "uart3"; pins = "gpio9"; };
+                };
+                legacy_pins: legacy { brcm,pins = <8 9>; };
+            };
+            rp1_uart3: serial@3c000 { status = "disabled"; pinctrl-0 = <&uart3_pins>; };
+            rp1_spi0: spi@50000 { status = "disabled"; };
+        };
+    };
+};
