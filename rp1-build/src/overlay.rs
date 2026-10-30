@@ -110,7 +110,13 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
     // gpio-reserved-ranges is replaced, not merged, by an overlay. Emit the union of the board
     // profile's reservation and the declared pins so Linux never gets more pins than the base DT
     // gives it (`cargo rp1 check --dtb` verifies this against the actual DTB).
-    let mut pins: Vec<_> = d.proc0.pins.iter().chain(&d.proc1.pins).copied().collect();
+    let mut pins: Vec<_> = d
+        .proc0
+        .pins()
+        .iter()
+        .chain(&d.proc1.pins())
+        .copied()
+        .collect();
     if d.log.is_some() {
         pins.extend([14, 15]);
     }
@@ -130,9 +136,9 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
     }
     let mut uarts: Vec<_> = d
         .proc0
-        .peripherals
+        .peripherals()
         .iter()
-        .chain(&d.proc1.peripherals)
+        .chain(&d.proc1.peripherals())
         .filter(|p| p.starts_with("UART"))
         .map(|p| p[4..].parse::<u8>().unwrap())
         .collect();
@@ -146,18 +152,18 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         );
     }
     if d.proc0
-        .peripherals
+        .peripherals()
         .iter()
-        .chain(&d.proc1.peripherals)
+        .chain(&d.proc1.peripherals())
         .any(|p| p == "ADC")
     {
         fragment("target = <&rp1_adc>", "status = \"disabled\";");
     }
     for i2c in d
         .proc0
-        .peripherals
+        .peripherals()
         .iter()
-        .chain(&d.proc1.peripherals)
+        .chain(&d.proc1.peripherals())
         .filter_map(|p| p.strip_prefix("I2C"))
     {
         fragment(
@@ -167,9 +173,9 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
     }
     for spi in d
         .proc0
-        .peripherals
+        .peripherals()
         .iter()
-        .chain(&d.proc1.peripherals)
+        .chain(&d.proc1.peripherals())
         .filter_map(|p| p.strip_prefix("SPI"))
     {
         fragment(

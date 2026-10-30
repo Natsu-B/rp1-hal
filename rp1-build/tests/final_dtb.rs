@@ -1,5 +1,9 @@
 //! Review #3: `cargo rp1 check --dtb` must reject ownership conflicts in the final DTB.
-use rp1_build::{generate, metadata::Declaration, overlay};
+use rp1_build::{
+    generate,
+    metadata::{Declaration, I2cPins, Instance, SpiPins},
+    overlay,
+};
 use std::{fs, path::Path, process::Command};
 
 const BASE: &str = r#"/dts-v1/;
@@ -173,8 +177,13 @@ fn owned_block_or_clocks_re_enabled_by_a_later_overlay_are_rejected() {
 fn i2c_overlay_and_later_linux_conflict() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = declaration();
-    d.proc0.pins.extend([2, 3]);
-    d.proc0.peripherals.push("I2C1".into());
+    d.proc0.instances.insert(
+        "i2c1".into(),
+        Instance::I2c(I2cPins {
+            sda: Some(2),
+            scl: Some(3),
+        }),
+    );
     let base = dtc(
         tmp.path(),
         "base",
@@ -207,7 +216,7 @@ fn i2c_overlay_and_later_linux_conflict() {
 fn adc_overlay_and_later_linux_conflict() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = declaration();
-    d.proc0.peripherals.push("ADC".into());
+    d.proc0.instances.insert("adc".into(), Instance::Adc {});
     let base = dtc(
         tmp.path(),
         "base",
@@ -233,8 +242,14 @@ fn adc_overlay_and_later_linux_conflict() {
 fn spi_overlay_and_later_linux_conflict() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = declaration();
-    d.proc1.pins.extend([9, 10, 11]);
-    d.proc1.peripherals.push("SPI0".into());
+    d.proc1.instances.insert(
+        "spi0".into(),
+        Instance::Spi(SpiPins {
+            sck: Some(11),
+            mosi: Some(10),
+            miso: Some(9),
+        }),
+    );
     let base = dtc(
         tmp.path(),
         "base",

@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+pub mod board;
+mod declaration;
 pub mod metadata;
 pub mod overlay;
 pub mod wire;
@@ -69,7 +71,10 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
     let (name, version, mut d) = declaration(&path)?;
     d.types = types.iter().map(|(n, t)| (n.to_string(), *t)).collect();
     let out = PathBuf::from(env::var("OUT_DIR")?);
-    let declaration_hash: [u8; 32] = Sha256::digest(toml::to_string(&d)?.as_bytes()).into();
+    for warning in d.warnings() {
+        println!("cargo:warning={warning}");
+    }
+    let declaration_hash = d.declaration_hash()?;
     let git = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(&manifest_dir)
@@ -200,12 +205,12 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
         let ty = format!("Proc{index}Resources");
         s.push_str(&format!("pub struct Proc{index}Pins {{\n"));
-        for pin in &c.pins {
+        for pin in &c.pins() {
             s.push_str(&format!("pub gpio{pin}: ::rp1_hal::gpio::Pin<{pin}>,\n"));
         }
         s.push_str("}\n#[allow(non_snake_case)]\n");
         s.push_str(&format!("pub struct {ty} {{ pub pins: Proc{index}Pins,\n"));
-        for p in &c.peripherals {
+        for p in &c.peripherals() {
             s.push_str(&format!(
                 "pub {}: {},\n",
                 p.replace('.', "_"),
@@ -219,13 +224,13 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
             }
         }
         s.push_str(&format!("}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub unsafe fn new() -> Self {{ Self {{ pins: Proc{index}Pins {{\n"));
-        for pin in &c.pins {
+        for pin in &c.pins() {
             s.push_str(&format!(
                 "gpio{pin}: unsafe {{ ::rp1_hal::gpio::Pin::new() }},\n"
             ));
         }
         s.push_str("},\n");
-        for p in &c.peripherals {
+        for p in &c.peripherals() {
             let ty = metadata::peripheral_type(p)?;
             s.push_str(&format!(
                 "{}: unsafe {{ <{ty}>::new() }},\n",
