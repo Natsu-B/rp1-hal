@@ -190,6 +190,32 @@ fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
     d.proc0.peripherals.push("SPI0".into());
     assert!(d.validate().is_err(), "SPI0 claimed twice");
 }
+/// Review 6 #1: an unusable or out-of-range SPI/I2C number fails `validate` and `generate` as
+/// unsupported, never as another block's ownership ID (SPI16 = 16 + 16 would be I2C0's 32).
+#[test]
+fn unusable_bus_numbers_are_rejected_by_name() {
+    use rp1_build::metadata::peripheral_id;
+    for p in [
+        "SPI2", "SPI4", "SPI6", "SPI16", "SPI32", "I2C4", "I2C9", "I2C32",
+    ] {
+        assert!(peripheral_id(p).is_err(), "{p}");
+        for with_i2c0 in [false, true] {
+            let mut d = declaration();
+            if with_i2c0 {
+                d.proc0.peripherals.push("I2C0".into());
+            }
+            d.validate().unwrap();
+            d.proc1.peripherals.push(p.into());
+            let e = d.validate().unwrap_err().to_string();
+            assert!(!e.contains("claimed twice"), "{p}: {e}");
+            assert!(e.contains(p), "{p}: {e}");
+            assert!(
+                generate("bad", "0.1.0", &d, [0; 32], [0; 20]).is_err(),
+                "{p}"
+            );
+        }
+    }
+}
 /// Review #7/#9: declarations v0.1 cannot deliver are build errors, not silent no-ops.
 #[test]
 fn rejects_unsupported_clock_authority_and_notify() {
