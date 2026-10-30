@@ -72,7 +72,7 @@ target/rp1/boot/
 
 | コマンド | すること |
 |---|---|
-| `cargo rp1 check --dtb <file>` | 実際の DTB（例: Linux の `/sys/firmware/fdt` を取ってきたもの）に overlay を当て、ローダーと同じ衝突検査を行う |
+| `cargo rp1 check --dtb <file> [--allow-boot-disable]` | 実際の DTB（ファームが渡す DTB に config.txt の overlay を当てたもの）に overlay を当て、ローダーと同じコード（`rp1_dt::check::enforce`）で起動時に無効化されるノードを予測して表示する。衝突による無効化は既定で失敗（`--allow-boot-disable` で警告）、ローダーが停止する場合（保護ノード・`on_conflict = "refuse"`）は常に失敗。gpiomem 方針だけの無効化は表示のみ。環境変数 `RP1_BOARD_DTB` を与えるとビルド（build.rs）も同じ予測で止まる（STATIC） |
 | `cargo rp1 deploy --tftp <dir>` / `--sd <mount>` | 起動一式を置く。上書き前に退避し、SHA-256 を表示する |
 | `cargo rp1 run` | deploy → 再起動のフック（利用者が設定するコマンド。例: `cm5ctl.py force-boot`）→ UART の表示（`log!` の UART0 と Linux コンソール） |
 | `cargo rp1 size` | ③ の予算表だけを表示 |
