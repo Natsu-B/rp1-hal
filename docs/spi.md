@@ -112,21 +112,25 @@ transaction. `lab/check-shm.sh` and `lab/verify-shm.py` make it part of the regr
 also fail unless Linux's `spi@50000` and `adc@c8000` nodes exist with `status = "disabled"`.
 
 HW (2026-10-30, two cold boots, clk_sys 200 MHz, at boot and on request while Linux runs):
-`init` found FIFO depth 64 and the 32-bit frame field; with loopback off MISO read all zeros;
-every loopback pattern matched at all four rates and three frame sizes, and the u8, in-place
-and transaction checks passed. Measured throughput of 1024 frames in 32-frame `SpiDevice`
-transfers (one boot; the other boot is within 2 %):
+`init` found FIFO depth 64 (the shallower of TX and RX since review 6) and the 32-bit frame
+field; with loopback off MISO read all zeros; every loopback pattern matched at all four rates
+and three frame sizes, and the u8, in-place and transaction checks passed. The same proof
+passed again on two more cold boots after the review 6 changes. Measured throughput of 1024
+frames in 32-frame `SpiDevice` transfers after review 6 (one boot; the other boot is within
+4 %):
 
 | SCLK (BAUDR) | 8-bit | 12-bit | 16-bit |
 |---|---|---|---|
-| 1 MHz (/200) | 0.95 Mbit/s (95 %) | 0.97 Mbit/s (96 %) | 0.98 Mbit/s (97 %) |
-| 10 MHz (/20) | 6.8 Mbit/s (68 %) | 7.7 Mbit/s (76 %) | 8.1 Mbit/s (81 %) |
-| 25 MHz (/8) | 11.3 Mbit/s (45 %) | 14.1 Mbit/s (56 %) | 15.9 Mbit/s (63 %) |
-| 50 MHz (/4) | 12.1 Mbit/s (24 %) | 18.1 Mbit/s (36 %) | 22.7 Mbit/s (45 %) |
+| 1 MHz (/200) | 0.93 Mbit/s (92 %) | 0.95 Mbit/s (95 %) | 0.96 Mbit/s (96 %) |
+| 10 MHz (/20) | 5.8 Mbit/s (57 %) | 6.7 Mbit/s (67 %) | 7.3 Mbit/s (73 %) |
+| 25 MHz (/8) | 8.7 Mbit/s (34 %) | 11.3 Mbit/s (45 %) | 13.1 Mbit/s (52 %) |
+| 50 MHz (/4) | 9.1 Mbit/s (18 %) | 13.7 Mbit/s (27 %) | 17.5 Mbit/s (35 %) |
 
 At 1 MHz the wire dominates; above about 10 MHz the polling loop (one APB FIFO access per
-frame each way, plus the CS and call overhead per 32 frames) is the limit, about 0.66 µs
-per 8-bit frame at 50 MHz. Longer transfers or wider frames get closer to the wire rate.
+frame each way) and the per-call overhead are the limit. Each bus call now first compares the
+clock registers with `Clocks` (clk_sys and clk_uart read twice each): about 7 µs per call,
+which took the 50 MHz 8-bit figure from 12.1 to 9.1 Mbit/s against the first run. Longer
+transfers or wider frames get closer to the wire rate.
 
 The rate is measured on the 1 MHz timer around each 32-frame transfer call (CS handling
 included), so it is a throughput figure, not an SCLK measurement. SCLK itself was not probed
