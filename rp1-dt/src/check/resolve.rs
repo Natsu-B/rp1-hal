@@ -455,18 +455,12 @@ fn protected_nodes(fdt: &Fdt) -> Result<BTreeMap<usize, String>> {
             at = fdt.nodes[n].parent;
         }
     };
-    for label in [
-        "rp1_gpio",
-        "rp1_eth",
-        "rp1_usb0",
-        "rp1_usb1",
-        "rp1_dma",
-        "rp1_pio",
-        "pcie2",
-        "rp1_scmi",
-        "rp1_scmi_clocks",
-        "rp1_scmi_shmem",
-    ] {
+    // The board's Linux blocks (one table with rp1-build's declaration check), plus the RP1
+    // GPIO controller and the SCMI transport the generated overlay depends on.
+    let board = rp1_proto::board::LINUX_BLOCKS
+        .iter()
+        .map(|(_, label)| *label);
+    for label in board.chain(["rp1_gpio", "rp1_scmi", "rp1_scmi_clocks", "rp1_scmi_shmem"]) {
         if let Some(n) = fdt.label(label) {
             protect(n, format!("board Linux block {label}"));
         }

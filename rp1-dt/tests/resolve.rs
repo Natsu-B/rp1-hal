@@ -210,6 +210,25 @@ fn all_design_protected_nodes_and_their_ancestors_refuse() {
 }
 
 #[test]
+fn board_linux_blocks_from_the_shared_table_are_protected() {
+    // rp1-build rejects declaring these; the loader protects the same labels.
+    for (block, label) in rp1_proto::board::LINUX_BLOCKS {
+        let (mut fdt, note) = fixture("");
+        let n = fdt
+            .label(label)
+            .unwrap_or_else(|| panic!("fixture lacks {label} ({block})"));
+        fdt.set_prop(n, "status", b"okay\0".to_vec());
+        let handle = fdt.phandle_of(fdt.label("uart3_pins").unwrap()).unwrap();
+        fdt.set_prop(n, "pinctrl-0", handle.to_be_bytes().to_vec());
+        refusal(
+            resolve(&fdt, &note, Policy::default()).unwrap(),
+            // pcie2 is also the ancestor of the other blocks, so it may carry their reason.
+            "protected: board Linux block rp1_",
+        );
+    }
+}
+
+#[test]
 fn gpiomem_identified_by_compatible_and_reg_not_path() {
     let (mut fdt, note) = fixture(
         "/ { arbitrary-container { #address-cells = <2>; #size-cells = <2>; mapping { compatible = \"vendor,other\", \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0 0x30000>; }; soc-mapping { compatible = \"raspberrypi,gpiomem\"; reg = <0 0x7e200000 0 0x1000>; }; }; };",

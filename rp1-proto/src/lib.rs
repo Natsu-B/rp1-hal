@@ -39,6 +39,20 @@ pub mod link {
     pub const MAGIC: u32 = u32::from_le_bytes(*b"RP1H");
 }
 
+/// rpi-cm5 board table shared by the build (`rp1-build`: a declaration may not own these) and
+/// the loader (`rp1-dt`: their Linux nodes are never disabled; a conflict there refuses).
+pub mod board {
+    /// RP1 blocks Linux needs on rpi-cm5, with the board DT labels of their Linux nodes.
+    pub const LINUX_BLOCKS: &[(&str, &str)] = &[
+        ("ETH", "rp1_eth"),
+        ("USBHOST0", "rp1_usb0"),
+        ("USBHOST1", "rp1_usb1"),
+        ("DMA", "rp1_dma"),
+        ("PCIE", "pcie2"),
+        ("PIO", "rp1_pio"),
+    ];
+}
+
 /// UIO names (`linux,uio-name = "rp1:<name>"`) of the nodes the generated overlay always
 /// creates. A declared shm region becomes `rp1:<region name>`, so regions may not use these.
 pub mod uio {

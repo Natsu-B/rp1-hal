@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
 pub const LINUX_PINS: RangeInclusive<u8> = 28..=53;
-pub const LINUX_BLOCKS: &[&str] = &["ETH", "USBHOST0", "USBHOST1", "DMA", "PCIE", "PIO"];
+/// RP1 blocks Linux needs (shared with the loader's protected-node list).
+pub use rp1_proto::board::LINUX_BLOCKS;
 
 /// Block family of a declarable instance; selects its pin table and HAL token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +74,7 @@ pub(crate) fn find_instance(name: &str) -> Option<&'static BoardInstance> {
 pub(crate) fn undeclarable(name: &str) -> Option<String> {
     let block = name.to_ascii_uppercase();
     Some(match name {
-        _ if LINUX_BLOCKS.contains(&block.as_str()) => {
+        _ if LINUX_BLOCKS.iter().any(|(b, _)| *b == block) => {
             format!("E4: {block} is required by Linux on rpi-cm5")
         }
         "spi4" | "spi7" => format!("E4: {block} is slave-only"),
