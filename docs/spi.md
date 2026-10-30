@@ -6,9 +6,12 @@ adds a GPIO chip select (active low) and owns the bus exclusively, either an own
 lent `&mut Spi` (`Device::new(&mut spi, cs)`; other buses are not accepted).
 
 ```toml
+[package.metadata.rp1]
+schema = 2
+
 [package.metadata.rp1.proc0]
-pins = [8, 9, 10, 11]
-peripherals = ["SPI0"]
+gpio = [8]                                 # chip select, driven as a GPIO
+spi0 = { sck = 11, mosi = 10, miso = 9 }
 ```
 
 ```rust,ignore
@@ -70,9 +73,11 @@ Wrong or swapped pins fail to compile (`tests/ui/spi_wrong_pins.rs`).
 ## Linux
 
 As for I2C: declaring `SPIn` removes CTRL1 bit 10 + n from the resets rp1-hal releases for
-Linux, and the overlay sets `rp1_spiN` to `status = "disabled"`. The final DT check rejects a
-later overlay that enables the node again (e.g. `dtparam=spi=on`) and enabled Linux pinctrl
-users of the declared pins.
+Linux, and the overlay sets `rp1_spiN` to `status = "disabled"`. A later overlay that enables
+the node again (e.g. `dtparam=spi=on`) or a Linux user of a declared pin (e.g.
+`dtoverlay=uart3-pi5` on GPIO 8/9) makes `cargo rp1 check --dtb` fail; at boot rp1boot disables
+that node by default and logs `RP1BOOT_LINUX_DISABLED` (`linux.on_conflict = "refuse"` stops
+instead).
 
 ## Behaviour
 
