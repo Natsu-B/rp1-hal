@@ -68,6 +68,10 @@ mod sealed {
         for super::Spi<N, SCK, MOSI, MISO>
     {
     }
+    impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus
+        for &mut super::Spi<N, SCK, MOSI, MISO>
+    {
+    }
     /// Lets a [`super::Bus::admit`] call through; only `spi` can make one, so code outside
     /// this crate cannot call any [`super::Bus`] method.
     pub struct Key(pub(in crate::spi) ());
@@ -755,9 +759,9 @@ impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> SpiBus
 }
 
 /// The bus side of [`Device`]: one admission (frame size, clk_sys) per transaction, before the
-/// chip select moves, then the operations without a check of their own. Sealed: [`Spi`] only.
-/// The methods take arguments only this crate can make, so they cannot be called from outside
-/// it, neither on [`Spi`] nor through a generic bound:
+/// chip select moves, then the operations without a check of their own. Sealed: [`Spi`] and
+/// `&mut Spi` only. The methods take arguments only this crate can make, so they cannot be
+/// called from outside it, neither on [`Spi`] nor through a generic bound:
 ///
 /// ```compile_fail,E0061
 /// fn skip_the_check<B: rp1_hal::spi::Bus<u8>>(bus: &mut B, rx: &mut [u8], tx: &[u8]) {
@@ -811,8 +815,42 @@ impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
         wait_idle(&mut self.io())
     }
 }
+/// Lends the bus: `Device::new(&mut spi, cs)`, as embedded-hal's `&mut` [`SpiBus`].
+impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
+    for &mut Spi<N, SCK, MOSI, MISO>
+{
+    fn admit(&mut self, key: sealed::Key) -> Result<sealed::Admitted<W>, Error> {
+        Bus::<W>::admit(&mut **self, key)
+    }
+    fn exchange(
+        &mut self,
+        ok: sealed::Admitted<W>,
+        read: &mut [W],
+        write: &[W],
+    ) -> Result<(), Error> {
+        Bus::<W>::exchange(&mut **self, ok, read, write)
+    }
+    fn exchange_in_place(&mut self, ok: sealed::Admitted<W>, words: &mut [W]) -> Result<(), Error> {
+        Bus::<W>::exchange_in_place(&mut **self, ok, words)
+    }
+    fn wait_idle(&mut self, ok: sealed::Admitted<W>) -> Result<(), Error> {
+        Bus::<W>::wait_idle(&mut **self, ok)
+    }
+}
 
 /// An [`Spi`] bus with a GPIO chip select (active low) for one device: [`SpiDevice`].
+/// The bus can be owned or lent (`&mut Spi`):
+///
+/// ```no_run
+/// # use rp1_hal::{gpio::Pin, spi::{Device, Error, Spi}};
+/// use embedded_hal::spi::SpiDevice;
+/// fn lend(spi: &mut Spi<0, 11, 10, 9>, cs: Pin<8>) -> Result<u32, Error> {
+///     let mut dev = Device::new(&mut *spi, cs);
+///     dev.write(&[1u8, 2])?;
+///     drop(dev.free());
+///     spi.set_frequency(1_000_000)
+/// }
+/// ```
 pub struct Device<B, const CS: u8> {
     bus: B,
     cs: Pin<CS, Output>,
