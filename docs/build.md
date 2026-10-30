@@ -78,6 +78,18 @@ target/rp1/boot/
 | `cargo rp1 size` | ③ の予算表だけを表示 |
 | `cargo rp1 note <elf>` | note を人が読める形で表示 |
 
+`check --dtb` に渡す DTB は、ファームが渡す DTB に config.txt の `dtoverlay=` を同じ順で当てたもの。例（CM5 Lite、D0 ステップ、
+Linux の UART1）:
+
+```sh
+fdtoverlay -i bcm2712-rpi-cm5l-cm5io.dtb -o merged.dtb \
+    overlays/bcm2712d0.dtbo overlays/uart1-pi5.dtbo
+cargo rp1 check target/thumbv7m-none-eabi/release/<app> --dtb merged.dtb
+```
+
+起動後の `/sys/firmware/fdt` は rp1boot が overlay と無効化を済ませた後の木なので使えない（`/rp1-firmware` があれば
+`check --dtb` はエラーにする）。
+
 設定（再起動のフック、シリアルポート、TFTP の置き場所）はワークスペースの `.cargo/rp1.toml` に置く（利用者の環境ごとの値で、
 ファームの宣言とは分ける）。
 

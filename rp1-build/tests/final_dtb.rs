@@ -553,3 +553,23 @@ fn board_dtb_check_names_the_file_and_fails_on_conflicts_only() {
     let missing = tmp.path().join("missing.dtb");
     assert!(overlay::board_dtb_check(&missing, &app, &a.note).is_err());
 }
+
+#[test]
+fn prediction_rejects_a_dtb_taken_after_rp1boot() {
+    // Review 11 L4: /sys/firmware/fdt from a previous boot has /rp1-firmware and the disables.
+    let tmp = tempfile::tempdir().unwrap();
+    let source = BASE
+        .replace("@EXTRA_RESERVED@", "")
+        .replace("@EXTRA_RP1@", "");
+    let after = format!("{source}\n/ {{ rp1-firmware {{ }}; }};\n");
+    let a = generate("test", "0.1.0", &declaration(), [0; 32], [0; 20]).unwrap();
+    let app = fs::read(dtc(tmp.path(), "app", &a.dts)).unwrap();
+    let clean = fs::read(dtc(tmp.path(), "clean", &source)).unwrap();
+    assert!(overlay::predict_boot(&clean, &app, &a.note).is_ok());
+    let taken = fs::read(dtc(tmp.path(), "taken", &after)).unwrap();
+    let e = overlay::predict_boot(&taken, &app, &a.note)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("already has /rp1-firmware"), "{e}");
+    assert!(e.contains("fdtoverlay"), "{e}");
+}

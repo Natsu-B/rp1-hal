@@ -270,8 +270,20 @@ pub struct BootPrediction {
 
 /// Apply `dtbo` to `base` with the loader's overlay code and predict the boot-time
 /// enforcement. `Err` means the loader would also stop (malformed input or a failed recheck).
+///
+/// `base` must be what the firmware hands over (its DTB with the config.txt overlays), not a DTB
+/// taken after rp1boot (e.g. `/sys/firmware/fdt`): that one already has `/rp1-firmware` and the
+/// disabled nodes, so the prediction would be wrong. It is rejected.
 pub fn predict_boot(base: &[u8], dtbo: &[u8], note: &[u8]) -> Result<BootPrediction> {
     let before = rp1_dt::fdt::Fdt::parse(base)?;
+    if before.find("/rp1-firmware").is_some() {
+        return Err(
+            "the base DTB already has /rp1-firmware: it was taken after rp1boot \
+             (e.g. /sys/firmware/fdt). Use the firmware DTB with the config.txt overlays \
+             applied (fdtoverlay -i <board>.dtb -o merged.dtb <overlay>.dtbo ...)"
+                .into(),
+        );
+    }
     let mut after = before.clone();
     rp1_dt::overlay::apply(&mut after, dtbo).map_err(|e| format!("applying the overlay: {e}"))?;
     let (policy, plan) = rp1_dt::check::enforce(&before, &mut after, note)?;
