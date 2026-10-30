@@ -651,16 +651,7 @@ fn rp1_irq_lines(
     if fdt.prop(n, "interrupts").is_none() {
         return Ok(lines);
     }
-    // The nearest interrupt-parent on the node or its ancestors.
-    let mut at = Some(n);
-    let parent = loop {
-        let Some(a) = at else { return Ok(lines) };
-        if let Some(v) = fdt.prop(a, "interrupt-parent") {
-            break v;
-        }
-        at = fdt.nodes[a].parent;
-    };
-    if parent != handle.to_be_bytes() {
+    if irq_parent(fdt, n) != Some(gpio) {
         return Ok(lines);
     }
     let count = rp1_cells()?;
@@ -691,6 +682,26 @@ fn signal_block(signal: rp1_pinmux::Signal) -> Option<u16> {
         Signal::Pio(_) => 66,
         _ => return None,
     })
+}
+
+/// The interrupt parent of `n` as Linux's `of_irq_find_parent` finds it: follow the node's
+/// `interrupt-parent` phandle, or else its DT parent, until a node with `#interrupt-cells`.
+/// A dangling phandle means none. A `interrupt-parent` shorter than a cell is read as absent
+/// (`of_property_read_u32` fails), so the walk goes to the DT parent.
+fn irq_parent(fdt: &Fdt, n: usize) -> Option<usize> {
+    let mut child = n;
+    // Bounded: a phandle cycle without #interrupt-cells must not loop forever.
+    for _ in 0..=fdt.nodes.len() {
+        let next = match fdt.prop(child, "interrupt-parent") {
+            Some(v) if v.len() >= 4 => fdt.phandle(u32::from_be_bytes([v[0], v[1], v[2], v[3]]))?,
+            _ => fdt.nodes[child].parent?,
+        };
+        if fdt.prop(next, "#interrupt-cells").is_some() {
+            return Some(next);
+        }
+        child = next;
+    }
+    None
 }
 
 fn be32(word: &[u8; 4]) -> u32 {

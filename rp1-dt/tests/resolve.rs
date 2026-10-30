@@ -551,6 +551,50 @@ fn interrupt_users_of_rp1_owned_pins_are_disabled() {
 }
 
 #[test]
+fn interrupt_parent_is_found_as_linux_of_irq_find_parent_does() {
+    // Review 12 (Claude L4): without its own interrupt-parent, a node's parent is the nearest
+    // ancestor with #interrupt-cells, or the target of the nearest interrupt-parent.
+    let intc = "/ { other_intc: other-intc { interrupt-controller; #interrupt-cells = <1>; }; };";
+    // (a) A child of rp1_gpio inherits rp1_gpio itself, not the bus's interrupt-parent.
+    let (fdt, note) = fixture(&format!(
+        "{intc} / {{ pcie@1000120000 {{ rp1 {{ interrupt-parent = <&other_intc>; \
+         gpio@d0000 {{ user {{ interrupts = <22 8>; }}; }}; }}; }}; }};"
+    ));
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 1, "{nodes:?}");
+    assert_eq!(nodes[0].path, format!("{RP1}/gpio@d0000/user"));
+    assert!(nodes[0].reasons[0].contains("interrupts uses GPIO22"));
+    // (b) An interrupt controller in between (a GPIO expander) is the parent, although an
+    // ancestor names rp1_gpio: one cell, not an rp1_gpio specifier, and no conflict.
+    let expander = format!(
+        "{intc} / {{ bus {{ interrupt-parent = <&rp1_gpio>; \
+         expander {{ interrupt-controller; #interrupt-cells = <1>; user {{ interrupts = <22>; }}; }}; }}; }};"
+    );
+    let (fdt, note) = fixture(&expander);
+    assert!(disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty());
+    // An interrupt-parent pointing at a node without #interrupt-cells continues from there.
+    let (fdt, note) = fixture(&format!(
+        "{intc} / {{ nexus: nexus {{ interrupt-parent = <&rp1_gpio>; }}; user {{ interrupt-parent = <&nexus>; interrupts = <22 8>; }}; }};"
+    ));
+    assert_eq!(
+        disables(&resolve(&fdt, &note, Policy::default()).unwrap())[0].path,
+        "/user"
+    );
+    // A dangling interrupt-parent has no parent, and a phandle cycle terminates.
+    for extra in [
+        "/ { user { interrupt-parent = <0xfffffffe>; interrupts = <22 8>; }; };",
+        "/ { a: a { interrupt-parent = <&b>; }; b: b { interrupt-parent = <&a>; }; user { interrupt-parent = <&a>; interrupts = <22 8>; }; };",
+    ] {
+        let (fdt, note) = fixture(extra);
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{extra}"
+        );
+    }
+}
+
+#[test]
 fn console_on_an_rp1_owned_uart_refuses() {
     // Review 11 L2: the overlay has already disabled the owned UART, so no node has a
     // conflict reason; the console would vanish without a marker.

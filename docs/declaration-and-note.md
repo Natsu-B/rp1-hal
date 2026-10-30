@@ -275,7 +275,8 @@ overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ロ
      （RP1 Peripherals §3.1、DOC）、Linux の別ノードが RP1 の I2C・UART・SPI の入力を乱せる。旧形式の数値 `brcm,function` は
      この判定の対象外
    - `*-gpio(s)` が `gpio-reserved-ranges` の線を指す、予約線の `gpio-hog`
-   - `interrupt-parent` が rp1_gpio の `interrupts`、`interrupts-extended` の rp1_gpio の項目が予約線を使う（pinctrl-rp1 は IRQ の
+   - 割り込みの親が rp1_gpio の `interrupts`（親は Linux の `of_irq_find_parent` と同じ規則: 自分か祖先の `interrupt-parent` の
+     先、または `#interrupt-cells` を持つ最も近い祖先）、`interrupts-extended` の rp1_gpio の項目が予約線を使う（pinctrl-rp1 は IRQ の
      割り当て時にそのピンのイベント設定を書き換える）
    - RP1 所有ブロックのノードが enabled のまま（後の overlay が有効に戻した）
    - `/dev/gpiomem0` のノード（`compatible = "raspberrypi,gpiomem"`、reg が RP1 の `0xc0_400d0000`）。`linux.gpiomem = "disable"`
