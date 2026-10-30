@@ -42,7 +42,7 @@ limit, any non-zero exit or wrong I2C reply prints `CHECK_FAIL`, the script ends
 `CHECK_SHM_RESULT=PASS|FAIL` then `DDR_INSPECT_END` and exits non-zero on failure. The host
 runs `python3 lab/verify-shm.py --uart0 U0 --uart10 U10 --result OBSERVER_JSON`, which needs
 the capture's `"complete": true`, the UART10 markers in order (`SHM_PASS`, `SHM_RC=0`, both
-doorbells, `I2C_REPLY=0x00000001`, `ADC_REPLY=0x00000ADC`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
+doorbells, `I2C_REPLY=0x00000001`, `ADC_REPLY=0x00000ADC`, `SPI_REPLY=0x000005B1`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
 `PROF_DONE`, `proc1 shm cmd=9 ... errors=0`, the three `I2C_PASS` lines and
 `I2C_RESULT request=1 Ok`. The ADC is declared on proc1 in `shm-firmware`: proc1 gets its
 `Clocks` with `Clocks::wait_from_proc0`, runs the boot burst (`proc1 adc init Ok`,
@@ -53,6 +53,16 @@ fails unless the reply is 0xadc. `verify-shm.py` requires `ADC_REPLY=0x00000ADC`
 `I2C_REPLY`) and on UART0 `ADC_P1BOOT ... PASS`, `ADC_RESULT boot Ok`, `ADC_P1REQ ... PASS` and
 `ADC_RESULT request=0xadc Ok`; any `ADC_RESULT ... Err` fails the run. The UART0 boot markers are
 in the boot capture, so pass the boot capture and the observer's UART0 log together.
+SPI0 is also declared on proc1 (GPIO8 chip select as a plain output, GPIO9/10/11 MISO/MOSI/SCLK;
+on the lab board these go to ESP32 inputs only). proc1 runs `spi_proof` at boot and on Linux's
+0x5b1 request, which `check-shm.sh` issues after the ADC request: loopback off first (MISO is
+pulled down, all zeros expected), then the internal loopback (CTRLR0.SRL) at 1, 10, 25 and
+50 MHz with 8-, 12- and 16-bit frames through `SpiDevice`, u8 words on the bus, in-place and a
+write/delay/read transaction. Each rate and size logs `SPI_PASS <tag> hz= div= bits= frames= us=
+kbps= wire_pct=`. `verify-shm.py` requires `SPI_REPLY=0x000005B1`, `SPI_P1BOOT ... PASS`,
+`SPI_RESULT boot Ok`, the 1 MHz and 10 MHz `SPI_PASS P1REQ` lines, `SPI_P1REQ ... PASS` and
+`SPI_RESULT request=0x5b1 Ok`; `SPI_RESULT ... Err` and `spi0 init Err` fail the run. Failures
+print `Display` codes, not `Debug`: the image is near the 48 KiB shared SRAM limit.
 A boot-marker report (`full_success`) is not a pass for this regression. Host tests: `python3 lab/test_verify_shm.py`.
 
 HW results belong in the run notes kept outside this repository; build success alone is STATIC evidence.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict pass/fail for the Linux SHM / doorbell / I2C / ADC regression (`lab/check-shm.sh`).
+"""Strict pass/fail for the Linux SHM / doorbell / I2C / ADC / SPI regression (`lab/check-shm.sh`).
 
 Usage: verify-shm.py --uart0 FILE --uart10 FILE --result RESULT_JSON
 
@@ -22,6 +22,7 @@ UART10_ORDERED = [
     ("doorbell after", r"\bDOORBELL_AFTER_RC=0\b"),
     ("I2C reply", r"\bI2C_REPLY=0x0*1\b"),
     ("ADC reply", r"\bADC_REPLY=0x0*[aA][dD][cC]\b"),
+    ("SPI reply", r"\bSPI_REPLY=0x0*5[bB]1\b"),
     ("script result", r"\bCHECK_SHM_RESULT=PASS\b"),
     ("terminal marker", r"\bDDR_INSPECT_END\b"),
 ]
@@ -38,8 +39,15 @@ UART0_REQUIRED = [
     ("ADC boot result", r"\bADC_RESULT boot Ok\b"),
     ("ADC request burst", r"\bADC_P1REQ first=\d+ temp_mc=-?\d+ PASS\b"),
     ("ADC request result", r"\bADC_RESULT request=0xadc Ok\b"),
+    ("SPI boot proof", r"\bSPI_P1BOOT depth=\d+ .*\bPASS\b"),
+    ("SPI boot result", r"\bSPI_RESULT boot Ok\b"),
+    ("SPI 1 MHz", r"\bSPI_PASS P1REQ hz=1000000 "),
+    ("SPI 10 MHz", r"\bSPI_PASS P1REQ hz=10000000 "),
+    ("SPI request proof", r"\bSPI_P1REQ depth=\d+ .*\bPASS\b"),
+    ("SPI request result", r"\bSPI_RESULT request=0x5b1 Ok\b"),
 ]
-UART0_FORBIDDEN = [r"\bI2C_FAIL\b", r"\bpanic", r"\bI2C_RESULT request=1 Err\b", r"\bADC_RESULT\b.*\bErr\b"]
+UART0_FORBIDDEN = [r"\bI2C_FAIL\b", r"\bpanic", r"\bI2C_RESULT request=1 Err\b", r"\bADC_RESULT\b.*\bErr\b",
+                   r"\bSPI_RESULT\b.*\bErr\b", r"\bspi0 init Err\b"]
 
 
 def verify(uart0, uart10, result):

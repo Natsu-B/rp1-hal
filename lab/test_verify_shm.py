@@ -19,6 +19,8 @@ UART10 = """[t] DOORBELL_BEFORE_RC=0
 [t] I2C_LINUX_DONE
 [t] ADC_REPLY=0x00000ADC
 [t] ADC_LINUX_DONE
+[t] SPI_REPLY=0x000005B1
+[t] SPI_LINUX_DONE
 [t] CHECK_SHM_RESULT=PASS
 [t] DDR_INSPECT_END
 """
@@ -33,6 +35,12 @@ UART0 = """[t] PROF ring_data_ddr batch push n=128 cyc=1 pop cyc=2
 [t] ADC_RESULT boot Ok(())
 [t] ADC_P1REQ first=778 temp_mc=75809 PASS
 [t] ADC_RESULT request=0xadc Ok(())
+[t] SPI_P1BOOT depth=64 dfs32=true loopback_off=zeros u8=ok in_place=ok transaction=ok PASS
+[t] SPI_RESULT boot Ok
+[t] SPI_PASS P1REQ hz=1000000 div=200 bits=8 frames=1024 us=8300 kbps=987 wire_pct=98
+[t] SPI_PASS P1REQ hz=10000000 div=20 bits=8 frames=1024 us=900 kbps=9102 wire_pct=91
+[t] SPI_P1REQ depth=64 dfs32=true loopback_off=zeros u8=ok in_place=ok transaction=ok PASS
+[t] SPI_RESULT request=0x5b1 Ok
 """
 DONE = {"complete": True}
 
@@ -72,6 +80,11 @@ class Verify(unittest.TestCase):
         self.assertTrue(v.verify(UART0, UART10.replace("ADC_REPLY=0x00000ADC", "ADC_REPLY=0x00000000"), DONE))
         self.assertTrue(v.verify(UART0 + "[t] ADC_RESULT request=0xadc Err(Timeout)\n", UART10, DONE))
         self.assertTrue(v.verify(UART0 + "[t] ADC_RESULT boot Err(Precondition)\n", UART10, DONE))
+        self.assertTrue(v.verify(UART0, UART10.replace("SPI_REPLY=0x000005B1", "SPI_REPLY=0xFFFFFFFF"), DONE))
+        self.assertTrue(v.verify(UART0 + "[t] SPI_RESULT request=0x5b1 Err data hz=1000000 bits=8 code=0x3\n", UART10, DONE))
+        self.assertTrue(v.verify(UART0 + "[t] proc1 spi0 init Err 0x102\n", UART10, DONE))
+        # 100 MHz must not satisfy the 10 MHz marker.
+        self.assertTrue(v.verify(UART0.replace("hz=10000000 ", "hz=100000000 "), UART10, DONE))
         self.assertTrue(v.verify(UART0 + "[t] I2C_FAIL Bus(\"read\", Timeout)\n", UART10, DONE))
 
     def test_order_matters(self):

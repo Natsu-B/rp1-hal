@@ -31,9 +31,9 @@ pins = [2, 3, 22]
 peripherals = ["TIMER.ALARM0", "I2C1"]
 
 [package.metadata.rp1.proc1]
-pins = [27]
+pins = [8, 9, 10, 11, 27]
 gpio_irq = [27]
-peripherals = ["TIMER.ALARM1", "ADC"]
+peripherals = ["TIMER.ALARM1", "ADC", "SPI0"]
 
 [[package.metadata.rp1.shm]]
 name = "up"

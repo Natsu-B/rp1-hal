@@ -1,5 +1,5 @@
 #!/bin/sh
-# Linux-side SHM / doorbell / I2C / ADC regression. Strict: every step has a time limit, a non-zero
+# Linux-side SHM / doorbell / I2C / ADC / SPI regression. Strict: every step has a time limit, a non-zero
 # exit code or a missing reply is a failure, and the script ends with exactly one
 # `CHECK_SHM_RESULT=PASS|FAIL`, then `DDR_INSPECT_END`, and exits non-zero on failure.
 # The host decides with `lab/verify-shm.py` (UART0 + UART10 + capture completion); the boot
@@ -71,7 +71,7 @@ echo I2C_REPLY=$reply
 echo I2C_LINUX_DONE
 # request REQ: write it to link+0x28 (reply cleared first), poll link+0x2c up to 20 s and
 # print the reply. Each runs only after the doorbell and shm steps have finished: the
-# proc1 bursts block its doorbell and command handling for tens of ms.
+# proc1 ADC / SPI bursts block its doorbell and command handling for tens of ms.
 request() {
     busybox devmem 0x1f0040c02c 32 0
     busybox devmem 0x1f0040c028 32 "$1"
@@ -93,6 +93,15 @@ request 0xadc
 echo ADC_REPLY=$reply
 [ $((reply)) -eq $((0xadc)) ] || fail adc_reply
 echo ADC_LINUX_DONE
+echo SPI_LINUX_BEGIN
+for path in $(find /sys/firmware/devicetree/base -name spi@50000); do
+    echo SPI_DT="$path" status=$(cat "$path/status")
+done
+# 0x5b1 = proc1's SPI0 loopback proof (lab/shm-firmware/src/spi_proof.rs).
+request 0x5b1
+echo SPI_REPLY=$reply
+[ $((reply)) -eq $((0x5b1)) ] || fail spi_reply
+echo SPI_LINUX_DONE
 if [ -z "$FAILED" ]; then
     echo CHECK_SHM_RESULT=PASS
 else
