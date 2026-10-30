@@ -141,42 +141,51 @@ fn linux_function(signal: Signal) -> String {
     }
 }
 
-/// Optional local source check; no GPL driver code is redistributed.
+/// Rows of `data/pinmux/linux-functions.txt`: GPIO number, then nine function names.
+fn rows(text: &str) -> Vec<Vec<String>> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.split_whitespace().map(String::from).collect())
+        .collect()
+}
+
+fn linux_rows() -> Vec<Vec<String>> {
+    rows(&fs::read_to_string(root().join("data/pinmux/linux-functions.txt")).unwrap())
+}
+
 #[test]
-fn linux_pin_rows_agree_when_source_is_provided() {
+fn table_agrees_with_linux_function_names() {
+    let linux = linux_rows();
+    assert_eq!(linux.len(), 28);
+    for (pin, row) in linux.iter().enumerate() {
+        assert_eq!(row.len(), 10, "GPIO{pin}");
+        assert_eq!(row[0], pin.to_string());
+        for (func, &signal) in rp1_pinmux::BANK0[pin].iter().enumerate() {
+            assert_eq!(linux_function(signal), row[func + 1], "GPIO{pin}/a{func}");
+        }
+    }
+}
+
+/// Optional: re-derive the checked-in names from a local pinctrl-rp1.c.
+#[test]
+fn linux_names_match_the_driver_source_when_provided() {
     let Some(path) = std::env::var_os("RP1_LINUX_PINCTRL") else {
         eprintln!("set RP1_LINUX_PINCTRL to pinctrl-rp1.c to run the Linux source comparison");
         return;
     };
     let source = fs::read_to_string(path).unwrap();
-    let mut seen = [false; 28];
-    for line in source.lines() {
-        let Some(row) = line.trim().strip_prefix("PIN(") else {
-            continue;
-        };
-        let fields: Vec<_> = row
-            .trim_end_matches(',')
-            .trim_end_matches(')')
-            .split(',')
-            .map(str::trim)
-            .collect();
-        assert_eq!(fields.len(), 10);
-        let pin: usize = fields[0].parse().unwrap();
-        if pin >= 28 {
-            continue;
-        }
-        assert!(!seen[pin], "duplicate GPIO{pin}");
-        seen[pin] = true;
-        for (func, &signal) in rp1_pinmux::BANK0[pin].iter().enumerate() {
-            assert_eq!(
-                linux_function(signal),
-                fields[func + 1],
-                "GPIO{pin}/a{func}"
-            );
-        }
-    }
-    assert!(
-        seen.into_iter().all(|present| present),
-        "missing Linux PIN rows"
-    );
+    let derived: Vec<_> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("PIN("))
+        .map(|row| {
+            row.trim_end_matches(',')
+                .trim_end_matches(')')
+                .split(',')
+                .map(|f| f.trim().to_string())
+                .collect::<Vec<_>>()
+        })
+        .filter(|row| row[0].parse::<usize>().is_ok_and(|pin| pin < 28))
+        .collect();
+    assert_eq!(derived, linux_rows());
 }

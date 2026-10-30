@@ -1,0 +1,33 @@
+# RP1 bank-0 function-family names: one row per GPIO 0..27, columns FSEL a0..a8.
+# Derived from the PIN() table of the Linux driver drivers/pinctrl/pinctrl-rp1.c
+# (Copyright (C) 2023 Raspberry Pi Ltd., SPDX-License-Identifier: GPL-2.0).
+# Only these names are reproduced, as reference facts for a cross-check; no driver code.
+# `_` means no function.
+0 spi0 dpi uart1 i2c0 _ gpio proc_rio pio spi2
+1 spi0 dpi uart1 i2c0 _ gpio proc_rio pio spi2
+2 spi0 dpi uart1 i2c1 ir gpio proc_rio pio spi2
+3 spi0 dpi uart1 i2c1 ir gpio proc_rio pio spi2
+4 gpclk0 dpi uart2 i2c2 ri0 gpio proc_rio pio spi3
+5 gpclk1 dpi uart2 i2c2 dtr0 gpio proc_rio pio spi3
+6 gpclk2 dpi uart2 i2c3 dcd0 gpio proc_rio pio spi3
+7 spi0 dpi uart2 i2c3 dsr0 gpio proc_rio pio spi3
+8 spi0 dpi uart3 i2c0 _ gpio proc_rio pio spi4
+9 spi0 dpi uart3 i2c0 _ gpio proc_rio pio spi4
+10 spi0 dpi uart3 i2c1 _ gpio proc_rio pio spi4
+11 spi0 dpi uart3 i2c1 _ gpio proc_rio pio spi4
+12 pwm0 dpi uart4 i2c2 aaud gpio proc_rio pio spi5
+13 pwm0 dpi uart4 i2c2 aaud gpio proc_rio pio spi5
+14 pwm0 dpi uart4 i2c3 uart0 gpio proc_rio pio spi5
+15 pwm0 dpi uart4 i2c3 uart0 gpio proc_rio pio spi5
+16 spi1 dpi dsi0_te_ext _ uart0 gpio proc_rio pio _
+17 spi1 dpi dsi1_te_ext _ uart0 gpio proc_rio pio _
+18 spi1 dpi i2s0 pwm0 i2s1 gpio proc_rio pio gpclk1
+19 spi1 dpi i2s0 pwm0 i2s1 gpio proc_rio pio _
+20 spi1 dpi i2s0 gpclk0 i2s1 gpio proc_rio pio _
+21 spi1 dpi i2s0 gpclk1 i2s1 gpio proc_rio pio _
+22 sd0 dpi i2s0 i2c3 i2s1 gpio proc_rio pio _
+23 sd0 dpi i2s0 i2c3 i2s1 gpio proc_rio pio _
+24 sd0 dpi i2s0 _ i2s1 gpio proc_rio pio spi2
+25 sd0 dpi i2s0 mic i2s1 gpio proc_rio pio spi3
+26 sd0 dpi i2s0 mic i2s1 gpio proc_rio pio spi5
+27 sd0 dpi i2s0 mic i2s1 gpio proc_rio pio spi1
