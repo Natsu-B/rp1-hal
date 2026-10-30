@@ -20,16 +20,19 @@ rp1-proto = { path = "../../rp1-proto" }
 rp1-build = { path = "../../rp1-build" }
 
 [package.metadata.rp1]
-schema = 1
+schema = 2
 board = "rpi-cm5"
 clock = { authority = "rp1", clk_sys_hz = 200000000 }
 log = { sink = "uart0", baudrate = 115200 }
 
 [package.metadata.rp1.proc0]
-pins = [8, 9, 10, 11, 22]
-peripherals = ["TIMER.ALARM0", "SPI0"]
+gpio = [8, 22] # 8 = SPI0 chip select driven as GPIO
+timer = ["ALARM0"]
+spi0 = { sck = 11, mosi = 10, miso = 9 }
 
 [package.metadata.rp1.proc1]
-pins = [2, 3, 27]
+gpio = [27]
 gpio_irq = [27]
-peripherals = ["TIMER.ALARM1", "ADC", "I2C1"]
+timer = ["ALARM1"]
+adc = {}
+i2c1 = { sda = 2, scl = 3 }

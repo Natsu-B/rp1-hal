@@ -126,26 +126,44 @@ fn schema1_unknown_fields_and_duplicate_pins_are_rejected() {
 fn existing_declarations_have_byte_identical_notes_after_conversion() {
     // STATIC: SHA-256 of complete ELF notes captured before schema 2 was added, using the
     // original declaration hash and a zero source commit. Includes ordering, CRC and provenance.
+    // The manifests are schema 2 now; their schema 1 cores are kept here so the frozen notes
+    // stay reproducible.
     let cases = [
         (
             "examples/dual-core/Cargo.toml",
             "38307b294f0e9e14a06e7bd00818e22ccc4391cca9aa8d820d0195dcfc2043a5",
+            "[proc0]\npins=[8,9,10,11,22]\nperipherals=['TIMER.ALARM0','SPI0']\n\
+             [proc1]\npins=[2,3,27]\ngpio_irq=[27]\nperipherals=['TIMER.ALARM1','ADC','I2C1']",
         ),
         (
             "lab/shm-firmware/Cargo.toml",
             "262f81b0ad563985ec1dd6e2c1a79b2e6b56b2148247bb7c3d92fcc1456dd6ba",
+            "[proc0]\npins=[2,3,22]\nperipherals=['TIMER.ALARM0','I2C1']\n\
+             [proc1]\npins=[8,9,10,11,27]\ngpio_irq=[27]\nperipherals=['TIMER.ALARM1','ADC','SPI0']",
         ),
     ];
-    for (manifest, expected) in cases {
+    for (manifest, expected, schema1_cores) in cases {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join(manifest);
-        let (name, version, mut d) = declaration(&path).unwrap();
-        d.types.extend([
-            ("Sample".into(), TypeInfo::of::<[u32; 4]>()),
-            ("Control".into(), TypeInfo::of::<[u32; 16]>()),
-            ("Bulk".into(), TypeInfo::of::<[u32; 262144]>()),
-        ]);
+        let (name, version, mut migrated) = declaration(&path).unwrap();
+        migrated.types.extend(test_types());
+        assert_eq!(migrated.schema, 2);
+        assert!(migrated.warnings().is_empty(), "{manifest}");
+
+        // The schema 1 declaration = the manifest with its cores in the old form.
+        let mut legacy: toml::Table = toml::from_str::<toml::Table>(
+            &std::fs::read_to_string(&path).unwrap(),
+        )
+        .unwrap()["package"]["metadata"]["rp1"]
+            .as_table()
+            .unwrap()
+            .clone();
+        legacy.insert("schema".into(), 1.into());
+        legacy.extend(toml::from_str::<toml::Table>(schema1_cores).unwrap());
+        let mut d: Declaration = toml::Value::Table(legacy).try_into().unwrap();
+        d.validate().unwrap();
+        d.types.extend(test_types());
         let hash = d.declaration_hash().unwrap();
         let note = wire::descriptor(&name, &version, &d, hash, [0; 20]).unwrap();
         assert_eq!(
@@ -154,20 +172,28 @@ fn existing_declarations_have_byte_identical_notes_after_conversion() {
             "{manifest}"
         );
 
-        // Rewriting as schema 2 changes the declaration hash; the rest of the note is identical.
-        let normalized = toml::to_string(&d).unwrap();
-        let mut schema2: Declaration = toml::from_str(&normalized).unwrap();
-        schema2.types = d.types.clone();
-        schema2.validate().unwrap();
-        let hash2 = schema2.declaration_hash().unwrap();
+        // The migrated manifest changes the declaration hash; the rest of the note is identical.
+        let hash2 = migrated.declaration_hash().unwrap();
         assert_ne!(hash2, hash, "{manifest}");
-        let note2 = wire::descriptor(&name, &version, &schema2, hash2, [0; 20]).unwrap();
+        let note2 = wire::descriptor(&name, &version, &migrated, hash2, [0; 20]).unwrap();
         assert_eq!(
             without_hash(&note2, hash2),
             without_hash(&note, hash),
             "{manifest}"
         );
+        // The same holds for the normalized schema 2 form of the converted declaration.
+        let mut normalized: Declaration = toml::from_str(&toml::to_string(&d).unwrap()).unwrap();
+        normalized.types = d.types.clone();
+        normalized.validate().unwrap();
+        assert_eq!(normalized.declaration_hash().unwrap(), hash2, "{manifest}");
     }
+}
+fn test_types() -> [(String, TypeInfo); 3] {
+    [
+        ("Sample".into(), TypeInfo::of::<[u32; 4]>()),
+        ("Control".into(), TypeInfo::of::<[u32; 16]>()),
+        ("Bulk".into(), TypeInfo::of::<[u32; 262144]>()),
+    ]
 }
 /// The note with its declaration hash and the header CRC (which covers it) zeroed.
 fn without_hash(note: &[u8], hash: [u8; 32]) -> Vec<u8> {
