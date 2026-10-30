@@ -68,6 +68,18 @@ mod sealed {
         for super::Spi<N, SCK, MOSI, MISO>
     {
     }
+    /// Lets a [`super::Bus::admit`] call through; only `spi` can make one, so code outside
+    /// this crate cannot call any [`super::Bus`] method.
+    pub struct Key(pub(in crate::spi) ());
+    /// Proof that [`super::Bus::admit`] passed for words `W` (frame size and clk_sys); the
+    /// unchecked operations take it. Only `admit` makes one.
+    pub struct Admitted<W>(pub(in crate::spi) core::marker::PhantomData<W>);
+    impl<W> Clone for Admitted<W> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+    impl<W> Copy for Admitted<W> {}
     pub trait Word {}
     impl Word for u8 {}
     impl Word for u16 {}
@@ -744,29 +756,58 @@ impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> SpiBus
 
 /// The bus side of [`Device`]: one admission (frame size, clk_sys) per transaction, before the
 /// chip select moves, then the operations without a check of their own. Sealed: [`Spi`] only.
+/// The methods take arguments only this crate can make, so they cannot be called from outside
+/// it, neither on [`Spi`] nor through a generic bound:
+///
+/// ```compile_fail,E0061
+/// fn skip_the_check<B: rp1_hal::spi::Bus<u8>>(bus: &mut B, rx: &mut [u8], tx: &[u8]) {
+///     let _ = bus.exchange(rx, tx);
+/// }
+/// ```
+///
+/// ```compile_fail,E0061
+/// fn admit_by_hand(spi: &mut rp1_hal::spi::Spi<0, 11, 10, 9>) {
+///     let _ = rp1_hal::spi::Bus::<u8>::admit(spi);
+/// }
+/// ```
+///
+/// ```compile_fail,E0603
+/// let _ = rp1_hal::spi::sealed::Key(());
+/// ```
 pub trait Bus<W: Word>: sealed::Bus {
     #[doc(hidden)]
-    fn admit(&mut self) -> Result<(), Error>;
+    fn admit(&mut self, key: sealed::Key) -> Result<sealed::Admitted<W>, Error>;
     #[doc(hidden)]
-    fn exchange(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error>;
+    fn exchange(
+        &mut self,
+        ok: sealed::Admitted<W>,
+        read: &mut [W],
+        write: &[W],
+    ) -> Result<(), Error>;
     #[doc(hidden)]
-    fn exchange_in_place(&mut self, words: &mut [W]) -> Result<(), Error>;
+    fn exchange_in_place(&mut self, ok: sealed::Admitted<W>, words: &mut [W]) -> Result<(), Error>;
     #[doc(hidden)]
-    fn wait_idle(&mut self) -> Result<(), Error>;
+    fn wait_idle(&mut self, ok: sealed::Admitted<W>) -> Result<(), Error>;
 }
 impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
     for Spi<N, SCK, MOSI, MISO>
 {
-    fn admit(&mut self) -> Result<(), Error> {
-        self.check(W::BITS)
+    fn admit(&mut self, _: sealed::Key) -> Result<sealed::Admitted<W>, Error> {
+        self.check(W::BITS)?;
+        Ok(sealed::Admitted(core::marker::PhantomData))
     }
-    fn exchange(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error> {
+    fn exchange(
+        &mut self,
+        _: sealed::Admitted<W>,
+        read: &mut [W],
+        write: &[W],
+    ) -> Result<(), Error> {
         self.run(read, write)
     }
-    fn exchange_in_place(&mut self, words: &mut [W]) -> Result<(), Error> {
+    fn exchange_in_place(&mut self, _: sealed::Admitted<W>, words: &mut [W]) -> Result<(), Error> {
         self.run_in_place(words)
     }
-    fn wait_idle(&mut self) -> Result<(), Error> {
+    fn wait_idle(&mut self, _: sealed::Admitted<W>) -> Result<(), Error> {
         wait_idle(&mut self.io())
     }
 }
@@ -821,22 +862,22 @@ fn transaction<W: Word, B: Bus<W>>(
     mut delay: impl FnMut(u32),
     operations: &mut [Operation<'_, W>],
 ) -> Result<(), Error> {
-    bus.admit()?;
+    let ok = bus.admit(sealed::Key(()))?;
     cs(false);
     let mut result = Ok(());
     for op in operations.iter_mut() {
         result = match op {
-            Operation::Read(r) => bus.exchange(r, &[]),
-            Operation::Write(w) => bus.exchange(&mut [], w),
-            Operation::Transfer(r, w) => bus.exchange(r, w),
-            Operation::TransferInPlace(b) => bus.exchange_in_place(b),
-            Operation::DelayNs(ns) => bus.wait_idle().map(|()| delay(*ns)),
+            Operation::Read(r) => bus.exchange(ok, r, &[]),
+            Operation::Write(w) => bus.exchange(ok, &mut [], w),
+            Operation::Transfer(r, w) => bus.exchange(ok, r, w),
+            Operation::TransferInPlace(b) => bus.exchange_in_place(ok, b),
+            Operation::DelayNs(ns) => bus.wait_idle(ok).map(|()| delay(*ns)),
         };
         if result.is_err() {
             break;
         }
     }
-    let flushed = bus.wait_idle();
+    let flushed = bus.wait_idle(ok);
     cs(true);
     result.and(flushed)
 }
@@ -1293,13 +1334,18 @@ mod tests {
         }
     }
     impl Bus<u8> for LogBus<'_> {
-        fn admit(&mut self) -> Result<(), Error> {
+        fn admit(&mut self, _: sealed::Key) -> Result<sealed::Admitted<u8>, Error> {
             let r = admit(&mut self.m, &CLOCKS);
             let name = if r.is_ok() { "admit" } else { "admit err" };
             self.log.borrow_mut().push(name.to_string());
-            r
+            r.map(|()| sealed::Admitted(core::marker::PhantomData))
         }
-        fn exchange(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Error> {
+        fn exchange(
+            &mut self,
+            _: sealed::Admitted<u8>,
+            read: &mut [u8],
+            write: &[u8],
+        ) -> Result<(), Error> {
             let name = match (read.is_empty(), write.is_empty()) {
                 (false, true) => "read",
                 (true, false) => "write",
@@ -1307,11 +1353,15 @@ mod tests {
             };
             self.op(name, read, write)
         }
-        fn exchange_in_place(&mut self, words: &mut [u8]) -> Result<(), Error> {
+        fn exchange_in_place(
+            &mut self,
+            _: sealed::Admitted<u8>,
+            words: &mut [u8],
+        ) -> Result<(), Error> {
             let tx = words.to_vec();
             self.op("in_place", words, &tx)
         }
-        fn wait_idle(&mut self) -> Result<(), Error> {
+        fn wait_idle(&mut self, _: sealed::Admitted<u8>) -> Result<(), Error> {
             if let Some(e) = self.fail_flush {
                 self.log.borrow_mut().push("flush err".to_string());
                 return Err(e);
