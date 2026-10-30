@@ -11,12 +11,12 @@ use alloc::{
 };
 use rp1_dt::fdt::Fdt;
 use rp1_proto::{bundle, note};
-use rp1boot::{Elf, KERNEL_BASE, Range, hex, kernel_header, overlap, verify_bundle};
+use rp1boot::{
+    DTB_OUT, Elf, KERNEL_BASE, Ownership, Range, final_dtb, hex, kernel_header, overlap,
+    verify_bundle,
+};
 use sha2::{Digest, Sha256};
 
-/// Final DTB placement.
-const DTB_OUT: u64 = 0x2020_0000;
-const DTB_OUT_MAX: u64 = 0x0020_0000;
 /// RP1 image window in shared SRAM (rp1-proto: image 48 KiB from 0x2000_0000).
 const RP1_IMAGE_MAX: usize = (rp1_proto::IMAGE_END - rp1_proto::SRAM_START) as usize;
 
@@ -206,24 +206,30 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
         ))
     );
 
-    // 4. Overlay last (after config.txt's), then the same checks as `cargo rp1 check --dtb`.
+    // 4. Overlay last (after config.txt's), then resolve RP1 ownership against Linux: disable
+    //    and mark conflicting nodes (default) or refuse (sharing design §4).
     let t = cpu::ms();
     let before = Fdt::parse(dtb_in)?;
     rp1_dt::overlay::apply(&mut fdt, elf.section(".rp1.dtbo")?)
         .map_err(|e| format!("applying .rp1.dtbo: {e}"))?;
-    let conflicts = rp1_dt::check::check(&before, &fdt, desc)?;
+    let ownership = rp1boot::enforce_linux_ownership(&before, &mut fdt, desc)
+        .map_err(|e| format!("RP1 ownership check: {e}; RP1 not started"))?;
     drop(before);
-    if !conflicts.is_empty() {
-        for c in &conflicts {
-            log!("conflict: {c}");
+    match ownership {
+        Ownership::Applied { markers } => {
+            for m in &markers {
+                log!("{m}");
+            }
         }
-        return Err(format!(
-            "{} conflict(s) between the final DTB and the RP1 note; RP1 not started",
-            conflicts.len()
-        ));
+        Ownership::Refused { lines, reason } => {
+            for l in &lines {
+                log!("{l}");
+            }
+            return Err(reason);
+        }
     }
     log!(
-        "overlay applied, final-DTB checks passed ({} ms)",
+        "overlay applied, ownership resolved, final-DTB checks passed ({} ms)",
         cpu::ms() - t
     );
 
@@ -258,10 +264,7 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
     let copy_end = load
         .checked_add(kernel.len() as u64)
         .ok_or("kernel copy overflow")?;
-    let out = fdt.to_bytes();
-    if out.len() as u64 > DTB_OUT_MAX {
-        return Err(format!("final DTB is {} B (> {DTB_OUT_MAX:#x})", out.len()));
-    }
+    let out = final_dtb(&fdt)?;
     let mut ranges = Vec::from([
         Range {
             name: "rp1boot",
