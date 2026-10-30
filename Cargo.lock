@@ -361,6 +361,7 @@ dependencies = [
 name = "rp1-dt"
 version = "0.1.0"
 dependencies = [
+ "rp1-pinmux",
  "rp1-proto",
  "tempfile",
 ]

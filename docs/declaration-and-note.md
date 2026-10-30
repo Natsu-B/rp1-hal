@@ -270,6 +270,10 @@ overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ロ
    - `pinctrl-N` が RP1 所有のピンを含む rp1_gpio のグループを参照している（BCM2712 側の pinctrl は対象外）。ピンは `brcm,pins`、
      `pins`、`groups`（pinctrl-rp1 のグループは 1 ピンずつで名前は `gpio0`..`gpio53`）のすべてから読む。`gpioN` でないグループ名は
      確かめられないので拒否する
+   - 同じグループの `function`（`uart3`、`i2c1`、`alt0` などの名前）が、RP1 所有ではないピンを RP1 所有インスタンスの信号に
+     mux する（関数名とピンから `rp1_pinmux::linux_signal` で信号を引く）。同じ入力を複数のピンに選ぶと周辺は論理 OR を見るので
+     （RP1 Peripherals §3.1、DOC）、Linux の別ノードが RP1 の I2C・UART・SPI の入力を乱せる。旧形式の数値 `brcm,function` は
+     この判定の対象外
    - `*-gpio(s)` が `gpio-reserved-ranges` の線を指す、予約線の `gpio-hog`
    - `interrupt-parent` が rp1_gpio の `interrupts`、`interrupts-extended` の rp1_gpio の項目が予約線を使う（pinctrl-rp1 は IRQ の
      割り当て時にそのピンのイベント設定を書き換える）
@@ -305,6 +309,8 @@ overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ロ
 | libgpiod などがピンを要求する | 防ぐ（HW 2026-10-30: RP1 所有の GPIO 9/22 の sysfs export は拒否、Linux の GPIO4 は成功） | `gpio-reserved-ranges`（RP1 所有ピンちょうど） |
 | 非 root（gpio グループ）が `/dev/gpiomem0` で IO_BANK0/PADS を直接書く | 防ぐ（既定。HW 2026-10-30: `/dev/gpiomem0` が無い） | `linux.gpiomem = "disable"` でローダーが gpiomem@d0000 を無効化。ページ単位の mmap なのでピン単位では守れない。`"keep"` で残せる |
 | 共有クロック（clk_uart は UART0〜5 共通）を Linux が変える | 条件付き | `clock.authority = "rp1"` なら RP1 が SCMI で変更を拒否できる。`authority = "linux"` で UART0 を RP1、他の UART を Linux が持つ宣言はビルドエラー |
+| 別のノードの pinctrl が、Linux のピンを RP1 所有インスタンスの信号に mux する（`function` 名。STATIC） | 防ぐ（同上） | ローダーの起動時の解決（§3.2） |
+| 同上を旧形式の数値 `brcm,function` で行う | 防がない（STATIC。標準の overlay は RP1 所有インスタンスの関数を他のノードから選ばない） | — |
 | root が `/dev/mem`・`pinctrl` ツールで直接書く、`uio_group` が UIO の `rp1:doorbell`（IO_BANK0 の 16 KiB）を書く | 防がない | DT では不可能（標準カーネルは `STRICT_DEVMEM` 無効）。型や宣言による保護はセキュリティ境界ではない（設計 §1.2） |
 
 同じ考え方は UART0 以外の RP1 専用ブロック（SPI、I2C、PWM など）にも当てはまる。PWM のようにブロック単位で共有されるもの・

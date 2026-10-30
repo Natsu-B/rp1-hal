@@ -188,6 +188,79 @@ fn generic_groups_select_rp1_pins_like_pins() {
 }
 
 #[test]
+fn groups_muxing_an_rp1_instance_onto_linux_pins_conflict() {
+    // Review 12 (Claude L2): GPIO7 is not RP1's, but spi0 (RP1-owned) on it is SPI0 CS1, and
+    // the instance sees inputs selected on several pins ORed.
+    let user = "/ { user { pinctrl-0 = <&grp>; }; };";
+    for group in [
+        "function = \"spi0\"; pins = \"gpio7\";",
+        "function = \"spi0\"; groups = \"gpio7\";",
+        "function = \"alt0\"; pins = \"gpio7\";",
+        "function = \"spi0\"; brcm,pins = <7>;",
+    ] {
+        let (mut fdt, note) = fixture(&format!("&rp1_gpio {{ grp: g {{ {group} }}; }}; {user}"));
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{group}");
+        assert_eq!(nodes[0].path, "/user");
+        assert!(
+            nodes[0].reasons[0].contains("muxes GPIO7 to ")
+                && nodes[0].reasons[0].contains("a signal of RP1-owned rp1_spi0"),
+            "{nodes:?}"
+        );
+        let before = fdt.clone();
+        apply_plan(&before, &mut fdt, &note, Policy::default(), &plan).unwrap();
+        let strict = Policy {
+            on_conflict: OnConflict::Refuse,
+            ..Policy::default()
+        };
+        let (fdt, note) = fixture(&format!("&rp1_gpio {{ grp: g {{ {group} }}; }}; {user}"));
+        refusal(
+            resolve(&fdt, &note, strict).unwrap(),
+            "rp1_spi0; on_conflict=refuse",
+        );
+    }
+    // The review's case: Linux GPIO10/11 as i2c1 while RP1 owns i2c1 on GPIO2/3.
+    let i2c1 = descriptor(&[(1, 2), (1, 3), (2, 33)]);
+    let (mut fdt, _) = fixture(
+        "&rp1_gpio { gpio-reserved-ranges = <2 2>; grp: g { function = \"i2c1\"; pins = \"gpio10\", \"gpio11\"; }; }; \
+         / { user { pinctrl-0 = <&grp>; }; pcie@1000120000 { rp1 { rp1_i2c1: i2c@74000 { status = \"disabled\"; }; }; }; };",
+    );
+    set(&mut fdt, "/rp1-firmware", "rp1,note", i2c1.clone());
+    let plan = resolve(&fdt, &i2c1, Policy::default()).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 1);
+    for pin in ["GPIO10", "GPIO11"] {
+        assert!(
+            nodes[0].reasons.iter().any(|r| r.contains(&format!(
+                "muxes {pin} to i2c1, a signal of RP1-owned rp1_i2c1"
+            ))),
+            "{nodes:?}"
+        );
+    }
+    for group in [
+        // Another instance, a function the pin does not have, plain GPIO, an owned instance's
+        // function on a group of another controller.
+        "&rp1_gpio { grp: g { function = \"uart2\"; pins = \"gpio7\"; }; };",
+        "&rp1_gpio { grp: g { function = \"spi0\"; pins = \"gpio24\"; }; };",
+        "&rp1_gpio { grp: g { function = \"gpio\"; pins = \"gpio7\"; }; };",
+        "&rp1_gpio { grp: g { function = \"alt5\"; pins = \"gpio7\"; }; };",
+        "/ { soc-pinctrl { grp: g { function = \"spi0\"; pins = \"gpio7\"; }; }; };",
+    ] {
+        let (fdt, note) = fixture(&format!("{group} {user}"));
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{group}"
+        );
+    }
+    // A malformed function on an RP1 group cannot be checked.
+    let (fdt, note) = fixture(&format!(
+        "&rp1_gpio {{ grp: g {{ function = [01]; pins = \"gpio7\"; }}; }}; {user}"
+    ));
+    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+}
+
+#[test]
 fn gpio_led_singular_plural_and_mixed_controller_specifiers() {
     for prop in ["gpios", "gpio", "reset-gpios", "enable-gpio"] {
         let (fdt, note) = fixture(&format!(

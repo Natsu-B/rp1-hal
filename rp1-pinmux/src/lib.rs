@@ -145,3 +145,57 @@ pub fn funcsel(pin: u8, signal: Signal) -> Option<u8> {
 pub fn candidate_pins(signal: Signal) -> impl Iterator<Item = u8> {
     (0..28).filter(move |&pin| funcsel(pin, signal).is_some())
 }
+
+/// The signal that Linux's pinctrl-rp1 selects on bank-0 `pin` for the pinmux `function`
+/// name: a family name from its `PIN()` table (`uart3`, `i2c1`, `ir`, `gpio`, ...; the first
+/// FUNCSEL with that family, as the driver's `rp1_pmx_set`) or `alt0`..`alt8` (`alt5` is
+/// named `gpio` there). `None` if the pin has no such function.
+///
+/// ```
+/// use rp1_pinmux::{I2cSignal, Signal, linux_signal};
+/// assert_eq!(linux_signal(10, "i2c1"), Some(Signal::I2c(1, I2cSignal::Sda)));
+/// assert_eq!(linux_signal(10, "alt3"), Some(Signal::I2c(1, I2cSignal::Sda)));
+/// assert_eq!(linux_signal(10, "i2c0"), None);
+/// ```
+pub fn linux_signal(pin: u8, function: &str) -> Option<Signal> {
+    let row = BANK0.get(usize::from(pin))?;
+    if let Some(alt) = function.strip_prefix("alt") {
+        return match alt.as_bytes() {
+            [d @ b'0'..=b'8'] if *d != b'5' => Some(row[usize::from(d - b'0')]),
+            _ => None,
+        }
+        .filter(|s| *s != Signal::None);
+    }
+    row.iter().copied().find(|s| linux_family(*s, function))
+}
+
+/// Whether Linux names `signal`'s function family `name` (it groups roles, not signals).
+fn linux_family(signal: Signal, name: &str) -> bool {
+    let numbered = |prefix: &str, n: u8, suffix: &str| {
+        name.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(suffix))
+            .is_some_and(|d| d.len() == 1 && d.as_bytes()[0] == b'0' + n)
+    };
+    match signal {
+        Signal::None => false,
+        Signal::Uart(0, UartSignal::IrRx | UartSignal::IrTx) => name == "ir",
+        Signal::Uart(0, UartSignal::Ri) => name == "ri0",
+        Signal::Uart(0, UartSignal::Dtr) => name == "dtr0",
+        Signal::Uart(0, UartSignal::Dcd) => name == "dcd0",
+        Signal::Uart(0, UartSignal::Dsr) => name == "dsr0",
+        Signal::Uart(n, _) => numbered("uart", n, ""),
+        Signal::I2c(n, _) => numbered("i2c", n, ""),
+        Signal::Spi(n, _) => numbered("spi", n, ""),
+        Signal::Pwm(n, _) => numbered("pwm", n, ""),
+        Signal::I2s(n, _) => numbered("i2s", n, ""),
+        Signal::Sdio(n, _) => numbered("sd", n, ""),
+        Signal::Dpi(_) => name == "dpi",
+        Signal::Gpclk(n) => numbered("gpclk", n, ""),
+        Signal::MipiDsiTe(n) => numbered("dsi", n, "_te_ext"),
+        Signal::AudioOut(_) => name == "aaud",
+        Signal::AudioIn(_) => name == "mic",
+        Signal::SysRio(_) => name == "gpio",
+        Signal::ProcRio(_) => name == "proc_rio",
+        Signal::Pio(_) => name == "pio",
+    }
+}

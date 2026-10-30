@@ -294,6 +294,8 @@ pub(super) struct Conflicts {
     pub(super) nodes: BTreeMap<usize, Vec<String>>,
     pub(super) unresolved: Vec<String>,
     pins: BTreeSet<u32>,
+    /// OWNERSHIP block ids (`rp1_proto::BlockId`).
+    blocks: BTreeSet<u16>,
     /// Linux nodes of the RP1-owned blocks, enabled or not.
     owned_blocks: BTreeMap<usize, String>,
 }
@@ -310,6 +312,7 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
         nodes: BTreeMap::new(),
         unresolved: Vec::new(),
         pins: BTreeSet::new(),
+        blocks: BTreeSet::new(),
         owned_blocks: BTreeMap::new(),
     };
     for entry in own[4..].as_chunks::<4>().0 {
@@ -319,6 +322,9 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                 out.pins.insert(u32::from(id));
             }
             2 | 5 => {
+                if entry[0] == 2 {
+                    out.blocks.insert(id);
+                }
                 let label = if entry[0] == 5 {
                     String::from("rp1_clocks")
                 } else {
@@ -512,18 +518,39 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                                 }
                             }
                         }
+                        // A pin RP1 does not own, muxed to a signal of an RP1-owned instance,
+                        // still feeds that instance: inputs selected on several pins are ORed
+                        // (RP1 Peripherals §3.1), so e.g. a high GPIO10 as i2c1 holds SDA.
+                        let function = string(fdt, g, "function")?;
                         for pin in pins {
-                            if !out.pins.contains(&pin) {
+                            if out.pins.contains(&pin) {
+                                out.add(
+                                    n,
+                                    format!(
+                                        "{} {name} -> {} configures RP1-owned GPIO{pin}",
+                                        fdt.path(n),
+                                        fdt.path(group)
+                                    ),
+                                );
                                 continue;
                             }
-                            out.add(
-                                n,
-                                format!(
-                                    "{} {name} -> {} configures RP1-owned GPIO{pin}",
-                                    fdt.path(n),
-                                    fdt.path(group)
-                                ),
-                            );
+                            let block = function
+                                .zip(u8::try_from(pin).ok())
+                                .and_then(|(f, pin)| rp1_pinmux::linux_signal(pin, f))
+                                .and_then(signal_block)
+                                .filter(|id| out.blocks.contains(id));
+                            if let Some(id) = block {
+                                out.add(
+                                    n,
+                                    format!(
+                                        "{} {name} -> {} muxes GPIO{pin} to {}, a signal of RP1-owned {}",
+                                        fdt.path(n),
+                                        fdt.path(group),
+                                        function.unwrap_or_default(),
+                                        block_label(id).unwrap_or_default()
+                                    ),
+                                );
+                            }
                         }
                         pending.extend(&fdt.nodes[g].children);
                     }
@@ -645,6 +672,20 @@ fn rp1_irq_lines(
             .map(|spec| ("interrupts", spec[0])),
     );
     Ok(lines)
+}
+
+/// OWNERSHIP block id (`rp1_proto::BlockId`) of the instance a bank-0 signal belongs to.
+fn signal_block(signal: rp1_pinmux::Signal) -> Option<u16> {
+    use rp1_pinmux::Signal;
+    Some(match signal {
+        Signal::Uart(n, _) => u16::from(n),
+        Signal::Spi(n, _) => 16 + u16::from(n),
+        Signal::I2c(n, _) => 32 + u16::from(n),
+        Signal::Pwm(n, _) => 48 + u16::from(n),
+        Signal::I2s(n, _) => 56 + u16::from(n),
+        Signal::Pio(_) => 66,
+        _ => return None,
+    })
 }
 
 fn be32(word: &[u8; 4]) -> u32 {

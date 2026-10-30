@@ -190,6 +190,41 @@ fn table_agrees_with_linux_function_names() {
     }
 }
 
+/// `rp1_pinmux::linux_signal` resolves every Linux name as the driver does: the first FUNCSEL
+/// of that family, or `altN` directly.
+#[test]
+fn linux_signal_follows_the_linux_function_names() {
+    for (pin, row) in linux_rows().iter().enumerate() {
+        let names = &row[1..];
+        for (func, name) in names.iter().enumerate() {
+            let first = names.iter().position(|n| n == name).unwrap();
+            let want = (name != "_").then_some(rp1_pinmux::BANK0[pin][first]);
+            if name != "_" {
+                assert_eq!(
+                    rp1_pinmux::linux_signal(pin as u8, name),
+                    want,
+                    "GPIO{pin} {name}"
+                );
+            }
+            let alt = format!("alt{func}");
+            let want = (func != 5 && name != "_").then_some(rp1_pinmux::BANK0[pin][func]);
+            assert_eq!(
+                rp1_pinmux::linux_signal(pin as u8, &alt),
+                want,
+                "GPIO{pin} {alt}"
+            );
+        }
+        for name in ["_", "", "uart", "uart10", "alt9", "alt", "spi9", "nothing"] {
+            assert_eq!(
+                rp1_pinmux::linux_signal(pin as u8, name),
+                None,
+                "GPIO{pin} {name}"
+            );
+        }
+    }
+    assert_eq!(rp1_pinmux::linux_signal(28, "gpio"), None);
+}
+
 /// Optional: re-derive the checked-in names from a local pinctrl-rp1.c.
 #[test]
 fn linux_names_match_the_driver_source_when_provided() {

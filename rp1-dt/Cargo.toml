@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+rp1-pinmux = { path = "../rp1-pinmux" }
 rp1-proto = { path = "../rp1-proto" }
 
 [dev-dependencies]
