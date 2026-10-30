@@ -90,6 +90,17 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
     fs::create_dir_all(&out)?;
     fs::write(out.join("rp1-app.dts"), &artifacts.dts)?;
     overlay::compile(&out.join("rp1-app.dts"), &out.join("rp1-app.dtbo"))?;
+    // E6 (optional): predict rp1boot on the given board DTB; no host path is assumed.
+    println!("cargo:rerun-if-env-changed=RP1_BOARD_DTB");
+    if let Some(board) = env::var_os("RP1_BOARD_DTB").filter(|p| !p.is_empty()) {
+        let board = PathBuf::from(board);
+        println!("cargo:rerun-if-changed={}", board.display());
+        let dtbo = fs::read(out.join("rp1-app.dtbo"))?;
+        let prediction = overlay::board_dtb_check(&board, &dtbo, &artifacts.note)?;
+        for line in prediction.report() {
+            println!("cargo:warning={line}");
+        }
+    }
     fs::write(out.join("rp1-layout.x"), &artifacts.layout)?;
     // Automatic ISRAM placement (`cargo rp1 build`, second link): the plan is a list of
     // input-section rules included inside `.isram`. Without a plan the include is empty.

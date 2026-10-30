@@ -259,3 +259,94 @@ pub fn final_conflicts(dtb: &[u8], note: &[u8]) -> Result<Vec<String>> {
         note,
     )?)
 }
+
+/// What rp1boot will do at boot with this overlay on `base` (sharing design §2.1): the same
+/// code as the loader ([`rp1_dt::check::enforce`]) run on the host.
+#[derive(Debug)]
+pub struct BootPrediction {
+    pub policy: rp1_dt::check::Policy,
+    pub plan: rp1_dt::check::Plan,
+}
+
+/// Apply `dtbo` to `base` with the loader's overlay code and predict the boot-time
+/// enforcement. `Err` means the loader would also stop (malformed input or a failed recheck).
+pub fn predict_boot(base: &[u8], dtbo: &[u8], note: &[u8]) -> Result<BootPrediction> {
+    let before = rp1_dt::fdt::Fdt::parse(base)?;
+    let mut after = before.clone();
+    rp1_dt::overlay::apply(&mut after, dtbo).map_err(|e| format!("applying the overlay: {e}"))?;
+    let (policy, plan) = rp1_dt::check::enforce(&before, &mut after, note)?;
+    Ok(BootPrediction { policy, plan })
+}
+
+impl BootPrediction {
+    /// Human-readable lines: one per node rp1boot would disable, or per refusal reason.
+    pub fn report(&self) -> Vec<String> {
+        use rp1_dt::check::Plan;
+        match &self.plan {
+            Plan::Disable(nodes) => nodes
+                .iter()
+                .map(|d| {
+                    format!(
+                        "rp1boot would disable {}{}{}: {}",
+                        d.path,
+                        d.label
+                            .as_deref()
+                            .map_or(String::new(), |l| format!(" (&{l})")),
+                        if d.policy_only {
+                            " [gpiomem policy, expected]"
+                        } else {
+                            ""
+                        },
+                        d.reasons.join("; ")
+                    )
+                })
+                .collect(),
+            Plan::Refuse(reasons) => reasons
+                .iter()
+                .map(|r| format!("rp1boot would refuse: {r}"))
+                .collect(),
+        }
+    }
+
+    /// Nodes disabled because of an ownership conflict (not only the gpiomem policy).
+    pub fn conflict_disables(&self) -> usize {
+        match &self.plan {
+            rp1_dt::check::Plan::Disable(nodes) => nodes.iter().filter(|d| !d.policy_only).count(),
+            rp1_dt::check::Plan::Refuse(_) => 0,
+        }
+    }
+
+    /// `Err` when the build or `cargo rp1 check --dtb` must fail: a refusal always, conflict
+    /// disables unless `allow_boot_disable`. The gpiomem policy alone never fails.
+    pub fn verdict(&self, allow_boot_disable: bool) -> std::result::Result<(), String> {
+        let lines = self.report().join("\n  ");
+        if matches!(self.plan, rp1_dt::check::Plan::Refuse(_)) {
+            return Err(format!(
+                "rp1boot would refuse to start RP1 with this DTB:\n  {lines}"
+            ));
+        }
+        let n = self.conflict_disables();
+        if n > 0 && !allow_boot_disable {
+            return Err(format!(
+                "rp1boot would disable {n} Linux node(s) that conflict with RP1 ownership:\n  \
+                 {lines}\nfix the declaration or the config.txt overlays"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// E6 (`RP1_BOARD_DTB`): fail when rp1boot would refuse or disable a conflicting Linux node.
+pub fn board_dtb_check(base: &Path, dtbo: &[u8], note: &[u8]) -> Result<BootPrediction> {
+    let bytes =
+        std::fs::read(base).map_err(|e| format!("RP1_BOARD_DTB {}: {e}", base.display()))?;
+    let prediction = predict_boot(&bytes, dtbo, note)
+        .map_err(|e| format!("RP1_BOARD_DTB {}: {e}", base.display()))?;
+    prediction.verdict(false).map_err(|e| {
+        format!(
+            "RP1_BOARD_DTB {}: {e} (or build without RP1_BOARD_DTB and accept them at boot)",
+            base.display()
+        )
+    })?;
+    Ok(prediction)
+}

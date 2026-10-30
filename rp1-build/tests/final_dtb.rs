@@ -6,56 +6,8 @@ use rp1_build::{
 };
 use std::{fs, path::Path, process::Command};
 
-const BASE: &str = r#"/dts-v1/;
-/ {
-    #address-cells = <2>; #size-cells = <1>;
-    reserved-memory { #address-cells = <2>; #size-cells = <1>; ranges;
-        scratch@21000000 { reg = <0 0x21000000 0x10000>; no-map; };
-        @EXTRA_RESERVED@
-    };
-    openamp-address-space { status = "okay"; };
-    rp1_firmware: rp1_firmware { mboxes = <&rp1_mbox 0>; };
-    pcie2: pcie { };
-    leds { led_pwr: led-pwr { gpios = <&rp1_gpio 44 1>; }; };
-    cam0_reg: cam0_reg { gpio = <&rp1_gpio 34 0>; };
-    soc-gpio { soc22: grp22 { pins = "gpio22"; }; };
-    soc-user { pinctrl-0 = <&soc22>; };
-    rp1 { #address-cells = <1>; #size-cells = <1>;
-        rp1_clocks: clocks { status = "okay"; };
-        rp1_mbox: mailbox@8000 { #mbox-cells = <1>; };
-        sram: sram@400000 { #address-cells = <1>; #size-cells = <1>;
-            rp1_fw_shmem: shmem@ff00 { reg = <0xff00 0x100>; };
-        };
-        rp1_uart1: serial@34000 { status = "disabled"; };
-        rp1_uart2: serial@38000 { status = "disabled"; };
-        rp1_uart3: serial@3c000 { status = "disabled"; };
-        rp1_uart4: serial@40000 { status = "disabled"; };
-        rp1_uart5: serial@44000 { status = "disabled"; };
-        rp1_adc: adc { }; rp1_eth: ethernet { }; rp1_dma: dma { }; rp1_pio: pio { };
-        rp1_usb0: usb0 { }; rp1_usb1: usb1 { };
-        rp1_pwm0: pwm0 { }; rp1_pwm1: pwm1 { }; rp1_audio_out: audio-out { };
-        rp1_i2s0: i2s0 { }; rp1_i2s1: i2s1 { }; rp1_i2s2: i2s2 { };
-        rp1_i2c0: i2c@70000 { }; rp1_i2c1: i2c@74000 { status = "disabled"; };
-        rp1_i2c2: i2c@78000 { }; rp1_i2c3: i2c@7c000 { }; rp1_i2c4: i2c@80000 { };
-        rp1_i2c5: i2c@84000 { }; rp1_i2c6: i2c@88000 { };
-        rp1_spi0: spi0 { }; rp1_spi1: spi1 { }; rp1_spi2: spi2 { }; rp1_spi3: spi3 { };
-        rp1_spi4: spi4 { }; rp1_spi5: spi5 { }; rp1_spi6: spi6 { }; rp1_spi7: spi7 { };
-        rp1_spi8: spi8 { };
-        rp1_gpio: gpio@d0000 { #gpio-cells = <2>;
-            micclk1_hog { gpio-hog; gpios = <46 0>; output-high; };
-            uart0_14_15: rp1_uart0_14_15 {
-                tx { function = "uart0"; pins = "gpio14"; };
-                rx { function = "uart0"; pins = "gpio15"; };
-            };
-            gpio22: rp1_gpio22 { function = "gpio"; pins = "gpio22"; };
-            gpio4: rp1_gpio4 { function = "gpio"; pins = "gpio4"; };
-        };
-        rp1_uart0: serial@30000 { pinctrl-0 = <&uart0_14_15>; status = "okay"; };
-        user4 { pinctrl-0 = <&gpio4>; };
-        @EXTRA_RP1@
-    };
-};
-"#;
+/// Synthetic CM5 board DTB; `@EXTRA_RESERVED@` / `@EXTRA_RP1@` are substitution points.
+const BASE: &str = include_str!("fixtures/board.dts");
 
 fn declaration() -> Declaration {
     toml::from_str(
@@ -483,4 +435,121 @@ fn present_openamp_is_disabled_and_board_hogs_stay() {
         .unwrap();
     // GPIO46 is a board line Linux keeps: the stock hog is untouched.
     assert!(fdt.enabled(hog));
+}
+
+/// T5/E6: what rp1boot would do on `source` (the fixture plus `extra` appended at the root).
+fn predict(d: &Declaration, extra_rp1: &str, extra_root: &str) -> overlay::BootPrediction {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dtc(
+        tmp.path(),
+        "base",
+        &format!(
+            "{}\n{extra_root}\n",
+            BASE.replace("@EXTRA_RESERVED@", "")
+                .replace("@EXTRA_RP1@", extra_rp1)
+        ),
+    );
+    let a = generate("test", "0.1.0", d, [0; 32], [0; 20]).unwrap();
+    let app = dtc(tmp.path(), "app", &a.dts);
+    overlay::predict_boot(&fs::read(base).unwrap(), &fs::read(app).unwrap(), &a.note).unwrap()
+}
+
+const GPIOMEM: &str = r#"/ { gpiomem@c0400d0000 { compatible = "raspberrypi,gpiomem"; reg = <0xc0 0x400d0000 0x30000>; }; };"#;
+
+#[test]
+fn prediction_clean_board_passes_and_gpiomem_policy_is_reported_without_failing() {
+    let p = predict(&declaration(), "", "");
+    assert_eq!(p.plan, rp1_dt::check::Plan::Disable(Vec::new()));
+    assert!(p.report().is_empty());
+    assert_eq!(p.verdict(false), Ok(()));
+
+    let p = predict(&declaration(), "", GPIOMEM);
+    let report = p.report();
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert!(report[0].contains("/gpiomem@c0400d0000"), "{report:?}");
+    assert!(report[0].contains("gpiomem policy"), "{report:?}");
+    assert_eq!(p.conflict_disables(), 0);
+    assert_eq!(p.verdict(false), Ok(()));
+
+    // gpiomem = "keep" leaves it alone.
+    let mut d = declaration();
+    d.linux.gpiomem = rp1_build::board::Gpiomem::Keep;
+    assert!(predict(&d, "", GPIOMEM).report().is_empty());
+}
+
+#[test]
+fn prediction_conflict_fails_by_default_and_warns_when_allowed() {
+    // An enabled Linux node configures the RP1-owned GPIO22 through pinctrl.
+    let p = predict(
+        &declaration(),
+        r#"led { pinctrl-0 = <&gpio22>; };"#,
+        GPIOMEM,
+    );
+    assert_eq!(p.conflict_disables(), 1);
+    let report = p.report();
+    assert_eq!(report.len(), 2, "{report:?}");
+    assert!(
+        report
+            .iter()
+            .any(|l| l.contains("/rp1/led") && l.contains("GPIO22") && !l.contains("policy")),
+        "{report:?}"
+    );
+    let e = p.verdict(false).unwrap_err();
+    assert!(e.contains("would disable 1 Linux node"), "{e}");
+    assert!(e.contains("/rp1/led"), "{e}");
+    assert_eq!(p.verdict(true), Ok(()));
+}
+
+#[test]
+fn prediction_refusals_fail_even_when_disables_are_allowed() {
+    // The console uses the conflicting node: protected, so rp1boot refuses.
+    let p = predict(
+        &declaration(),
+        r#"console: led { pinctrl-0 = <&gpio22>; };"#,
+        r#"/ { chosen { stdout-path = "/rp1/led"; }; };"#,
+    );
+    assert!(matches!(p.plan, rp1_dt::check::Plan::Refuse(_)), "{p:?}");
+    let e = p.verdict(true).unwrap_err();
+    assert!(e.contains("refuse") && e.contains("console"), "{e}");
+
+    // on_conflict = "refuse" in the declaration.
+    let d: Declaration =
+        toml::from_str("schema=2\n[linux]\non_conflict='refuse'\n[proc0]\ngpio=[22]").unwrap();
+    let p = predict(&d, r#"led { pinctrl-0 = <&gpio22>; };"#, "");
+    assert_eq!(p.policy.on_conflict, rp1_dt::check::OnConflict::Refuse);
+    let e = p.verdict(true).unwrap_err();
+    assert!(e.contains("on_conflict=refuse"), "{e}");
+}
+
+#[test]
+fn board_dtb_check_names_the_file_and_fails_on_conflicts_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = declaration();
+    let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    let app = fs::read(dtc(tmp.path(), "app", &a.dts)).unwrap();
+    let board = |name: &str, extra_rp1: &str| {
+        dtc(
+            tmp.path(),
+            name,
+            &format!(
+                "{}\n{GPIOMEM}\n",
+                BASE.replace("@EXTRA_RESERVED@", "")
+                    .replace("@EXTRA_RP1@", extra_rp1)
+            ),
+        )
+    };
+    let clean = board("clean", "");
+    let p = overlay::board_dtb_check(&clean, &app, &a.note).unwrap();
+    assert_eq!(p.report().len(), 1); // gpiomem policy only
+    let bad = board("bad", r#"led { pinctrl-0 = <&gpio22>; };"#);
+    let e = overlay::board_dtb_check(&bad, &app, &a.note)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.starts_with("RP1_BOARD_DTB ") && e.contains("bad.dtb"),
+        "{e}"
+    );
+    assert!(e.contains("GPIO22"), "{e}");
+    let missing = tmp.path().join("missing.dtb");
+    assert!(overlay::board_dtb_check(&missing, &app, &a.note).is_err());
 }

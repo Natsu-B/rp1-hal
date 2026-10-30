@@ -1,11 +1,10 @@
-use object::{Object, ObjectSection};
 use std::path::{Path, PathBuf};
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.first().is_some_and(|s| s == "rp1") {
         args.remove(0);
     }
-    const USAGE: &str = "usage: cargo rp1 check <firmware.elf> [--dtb <base.dtb>]\n       \
+    const USAGE: &str = "usage: cargo rp1 check <firmware.elf> [--dtb <base.dtb> [--allow-boot-disable]]\n       \
         cargo rp1 bundle <firmware.elf> --kernel <Image[.gz]> [--initramfs <file>] \
         [--loader <rp1boot.img>] [--cmdline <args>] [--config-extra <line>]... --out <dir>\n       \
         cargo rp1 isram-plan <firmware.elf> [--out <plan.x>]\n       \
@@ -19,44 +18,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if args.first().is_some_and(|s| s == "bundle") {
         return bundle(&args[1..]).map_err(|e| format!("{e}\n{USAGE}").into());
     }
-    if args.len() < 2 || args[0] != "check" {
+    if args.first().is_none_or(|a| a != "check") {
         return Err(USAGE.into());
     }
-    let elf = PathBuf::from(&args[1]);
-    let base = if args.len() == 4 && args[2] == "--dtb" {
-        Some(PathBuf::from(&args[3]))
-    } else if args.len() == 2 {
-        None
-    } else {
-        return Err("unexpected check arguments".into());
-    };
+    let check = cargo_rp1::parse_check_args(&args[1..]).map_err(|e| format!("{e}\n{USAGE}"))?;
     let objdump = std::env::var_os("RP1_OBJDUMP").unwrap_or_else(|| "arm-none-eabi-objdump".into());
-    let report = cargo_rp1::check(&elf, Path::new(&objdump))?;
-    if let Some(base) = base {
-        let bytes = std::fs::read(&elf)?;
-        let file = object::File::parse(&*bytes)?;
-        // Same code as the loader (rp1boot): libfdt-compatible apply, then the final checks.
-        let base = std::fs::read(&base)?;
-        let before = rp1_dt::fdt::Fdt::parse(&base)?;
-        let mut after = rp1_dt::fdt::Fdt::parse(&base)?;
-        rp1_dt::overlay::apply(
-            &mut after,
-            file.section_by_name(".rp1.dtbo")
-                .ok_or("missing overlay")?
-                .data()?,
-        )?;
-        let note = cargo_rp1::descriptor(
-            file.section_by_name(".note.rp1")
-                .ok_or("missing .note.rp1")?
-                .data()?,
-        )?;
-        let conflicts = rp1_dt::check::check(&before, &after, note)?;
-        if !conflicts.is_empty() {
-            return Err(format!(
-                "final DTB conflicts with the RP1 note:\n  {}",
-                conflicts.join("\n  ")
-            )
-            .into());
+    let report = cargo_rp1::check(&check.elf, Path::new(&objdump))?;
+    if let Some(base) = &check.dtb {
+        // Same code as the loader (rp1boot): apply, resolve, disable, recheck.
+        for line in cargo_rp1::check_dtb(
+            &std::fs::read(&check.elf)?,
+            &std::fs::read(base)?,
+            check.allow_boot_disable,
+        )? {
+            println!("{line}");
         }
     }
     println!(
