@@ -153,6 +153,64 @@ impl Instance {
             Self::Adc {} => &[],
         }
     }
+    /// Schema 1 listed raw pins next to a block name. Infer only the required signals, each
+    /// from exactly one listed pin; optional signals (UART CTS/RTS) and `gpio_irq` pins stay GPIO.
+    fn infer_schema1(
+        &self,
+        name: &str,
+        pins: &[u8],
+        irq: &[u8],
+    ) -> std::result::Result<Self, String> {
+        let mut chosen = BTreeMap::new();
+        for (role, _, signal) in self.signals(Self::number(name)) {
+            if !self.required().contains(&role) {
+                continue;
+            }
+            let listed: Vec<u8> = candidate_pins(signal)
+                .filter(|p| pins.contains(p))
+                .collect();
+            let usable: Vec<u8> = listed
+                .iter()
+                .copied()
+                .filter(|p| !irq.contains(p))
+                .collect();
+            match (usable.as_slice(), listed.as_slice()) {
+                ([pin], _) => {
+                    chosen.insert(role, *pin);
+                }
+                ([], [pin, ..]) => {
+                    return Err(format!(
+                        "GPIO {pin} is in gpio_irq, so it stays GPIO and cannot be {}",
+                        signal_name(signal)
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "cannot infer {} pins from {pins:?}",
+                        name.to_ascii_uppercase()
+                    ));
+                }
+            }
+        }
+        let pin = |role| chosen.get(role).copied();
+        Ok(match self {
+            Self::Uart(_) => Self::Uart(UartPins {
+                tx: pin("tx"),
+                rx: pin("rx"),
+                ..UartPins::default()
+            }),
+            Self::I2c(_) => Self::I2c(I2cPins {
+                sda: pin("sda"),
+                scl: pin("scl"),
+            }),
+            Self::Spi(_) => Self::Spi(SpiPins {
+                sck: pin("sck"),
+                mosi: pin("mosi"),
+                miso: pin("miso"),
+            }),
+            Self::Adc {} => Self::Adc {},
+        })
+    }
     fn number(name: &str) -> u8 {
         board::find_instance(name).map_or(0, |i| i.number)
     }
@@ -164,17 +222,16 @@ impl Instance {
             .filter_map(|(role, pin, _)| pin.map(|pin| (role, pin)))
             .collect()
     }
-    fn validate(&self, name: &str, owner: &str, unrouted: bool) -> Result<()> {
+    fn validate(&self, name: &str, owner: &str) -> Result<()> {
         // Check the key/variant too: callers may construct or mutate the public model in Rust.
         let parsed = Self::parse(name, toml::Value::try_from(self)?, owner)?;
         if std::mem::discriminant(self) != std::mem::discriminant(&parsed) {
             return Err(format!("E0: {owner}.{name}: wrong instance pin table").into());
         }
         let signals = self.signals(Self::number(name));
-        if !unrouted
-            && signals
-                .iter()
-                .any(|(role, pin, _)| self.required().contains(role) && pin.is_none())
+        if signals
+            .iter()
+            .any(|(role, pin, _)| self.required().contains(role) && pin.is_none())
         {
             return Err(format!("E5: {owner}.{name} needs {}", self.required().join(", ")).into());
         }
@@ -219,8 +276,6 @@ pub struct Core {
     pin_order: Vec<u8>,
     #[serde(skip)]
     peripheral_order: Vec<String>,
-    #[serde(skip)]
-    unrouted: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -258,50 +313,22 @@ impl Core {
                     continue;
                 }
                 let name = block.to_ascii_lowercase();
-                let mut instance =
-                    Instance::parse(&name, toml::Value::Table(toml::Table::new()), owner)?;
-                let signals = instance.signals(Instance::number(&name));
-                let candidates: Vec<_> = signals
-                    .iter()
-                    .map(|(_, _, signal)| {
-                        candidate_pins(*signal)
-                            .filter(|p| old.pins.contains(p))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
-                let complete = signals.iter().zip(&candidates).all(|((role, _, _), pins)| {
-                    !instance.required().contains(role) || !pins.is_empty()
-                });
-                if complete && candidates.iter().any(|p| p.len() > 1) {
-                    return Err(format!("schema 1: cannot infer {block} pins from {:?}; write {name} = {{ {} }} (schema 2)", old.pins,
-                        instance.required().iter().map(|r| format!("{r} = ..")).collect::<Vec<_>>().join(", ")).into());
-                }
-                if complete {
-                    let pin = |i: usize| candidates[i].first().copied();
-                    instance = match instance {
-                        Instance::Uart(_) => Instance::Uart(UartPins {
-                            tx: pin(0),
-                            rx: pin(1),
-                            cts: pin(2),
-                            rts: pin(3),
-                        }),
-                        Instance::I2c(_) => Instance::I2c(I2cPins {
-                            sda: pin(0),
-                            scl: pin(1),
-                        }),
-                        Instance::Spi(_) => Instance::Spi(SpiPins {
-                            sck: pin(0),
-                            mosi: pin(1),
-                            miso: pin(2),
-                        }),
-                        Instance::Adc {} => Instance::Adc {},
-                    };
-                    for (_, pin) in instance.pins(&name) {
-                        core.gpio.retain(|p| *p != pin);
-                    }
-                } else {
-                    // Schema 1 allowed block tokens without a pin route; unused pins stay GPIO.
-                    core.unrouted.insert(name.clone());
+                let empty = Instance::parse(&name, toml::Value::Table(toml::Table::new()), owner)?;
+                let instance = empty
+                    .infer_schema1(&name, &old.pins, &core.gpio_irq)
+                    .map_err(|why| {
+                        let fields: Vec<_> = empty
+                            .required()
+                            .iter()
+                            .map(|r| format!("{r} = .."))
+                            .collect();
+                        format!(
+                            "schema 1: {why}; write {name} = {{ {} }} (schema 2)",
+                            fields.join(", ")
+                        )
+                    })?;
+                for (_, pin) in instance.pins(&name) {
+                    core.gpio.retain(|p| *p != pin);
                 }
                 if core.instances.insert(name, instance).is_some() {
                     return Err(format!("E3: {block} is declared twice by {owner}").into());
@@ -396,7 +423,7 @@ impl Declaration {
             ),
         };
         for (name, instance) in &keep {
-            instance.validate(name, "linux.keep", false)?;
+            instance.validate(name, "linux.keep")?;
             if let Some(previous) = blocks.insert(name.clone(), keeper.into()) {
                 return Err(format!(
                     "E3: {} is declared by both {previous} and linux.keep",
@@ -439,11 +466,7 @@ impl Declaration {
                 }
             }
             for (name, instance) in &core.instances {
-                instance.validate(
-                    name,
-                    owner,
-                    core.unrouted.contains(name) && instance.pins(name).is_empty(),
-                )?;
+                instance.validate(name, owner)?;
                 for (role, pin) in instance.pins(name) {
                     claim_pin(&mut pins, pin, format!("{owner}.{name}.{role}"))?;
                 }
