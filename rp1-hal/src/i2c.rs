@@ -3,6 +3,7 @@
 //! (HW: 50 MHz on XOSC, 200 MHz on PLL_SYS); no shared clock or SCMI vote is changed.
 //! External pull-ups are required. Only bank-0 routes are exposed; I2C4..6 are internal.
 use crate::{
+    clocks::Clocks,
     gpio::{Function, Pin},
     read, write,
 };
@@ -115,7 +116,7 @@ pub struct I2c<const N: u8, const SDA: u8, const SCL: u8> {
     _scl: Pin<SCL, Function<3>>,
     rx_depth: usize,
     usable: bool,
-    clocks: crate::clocks::Clocks,
+    clocks: Clocks,
 }
 
 impl<const N: u8> Token<N> {
@@ -125,29 +126,63 @@ impl<const N: u8> Token<N> {
         assert!(N < 7);
         Self { _private: () }
     }
-    /// Checks the clocks and the speed, releases only this controller's reset, then selects the
+    /// Checks clk_sys and the speed, releases only this controller's reset, then selects the
     /// typed SDA/SCL routes. GPIO bank0 and the raw microsecond timer must already be running
     /// (cold bring-up). On error the token and the pins come back in [`InitError`]; the pins
-    /// are not touched before success.
+    /// are not touched before success, and a stale clk_sys or an impossible speed is reported
+    /// before the reset is released.
+    ///
+    /// ```no_run
+    /// # use rp1_hal::{clocks::Clocks, gpio::Pin, i2c::{Error, I2c, Speed, Token}};
+    /// fn bring_up(token: Token<1>, sda: Pin<2>, scl: Pin<3>, clocks: &Clocks) -> Result<I2c<1, 2, 3>, Error> {
+    ///     // Fast mode, else standard mode, else the error through `?`.
+    ///     match token.init(sda, scl, clocks, Speed::Fast) {
+    ///         Ok(i2c) => Ok(i2c),
+    ///         Err(e) => Ok(e.token.init(e.sda, e.scl, clocks, Speed::Standard)?),
+    ///     }
+    /// }
+    /// ```
     pub fn init<const SDA: u8, const SCL: u8>(
         self,
         sda: Pin<SDA>,
         scl: Pin<SCL>,
-        clocks: &crate::clocks::Clocks,
+        clocks: &Clocks,
         speed: Speed,
     ) -> Result<I2c<N, SDA, SCL>, InitError<N, SDA, SCL>>
     where
         Pin<SDA>: Sda<N>,
         Pin<SCL>: Scl<N>,
     {
-        match self.start(clocks, speed) {
-            Ok(rx_depth) => Ok(I2c {
-                _sda: sda.into_i2c(),
-                _scl: scl.into_i2c(),
-                rx_depth,
-                usable: true,
-                clocks: *clocks,
-            }),
+        self.init_on(
+            &mut Mmio {
+                base: 0x4007_0000 + N as usize * 0x4000,
+            },
+            (sda, scl),
+            clocks,
+            speed,
+            |(sda, scl)| (sda.into_i2c(), scl.into_i2c()),
+        )
+    }
+    /// [`Token::init`] on `io`; `route` muxes the pins and runs only once the controller is set up.
+    fn init_on<const SDA: u8, const SCL: u8>(
+        self,
+        io: &mut impl Io,
+        (sda, scl): (Pin<SDA>, Pin<SCL>),
+        clocks: &Clocks,
+        speed: Speed,
+        route: impl FnOnce((Pin<SDA>, Pin<SCL>)) -> (Pin<SDA, Function<3>>, Pin<SCL, Function<3>>),
+    ) -> Result<I2c<N, SDA, SCL>, InitError<N, SDA, SCL>> {
+        match start(io, reset_bit(N), clocks, speed) {
+            Ok(rx_depth) => {
+                let (_sda, _scl) = route((sda, scl));
+                Ok(I2c {
+                    _sda,
+                    _scl,
+                    rx_depth,
+                    usable: true,
+                    clocks: *clocks,
+                })
+            }
             Err(error) => Err(InitError {
                 error,
                 token: self,
@@ -156,28 +191,26 @@ impl<const N: u8> Token<N> {
             }),
         }
     }
-    /// The register part of [`Token::init`]; returns the RX FIFO depth.
-    fn start(&self, clocks: &crate::clocks::Clocks, speed: Speed) -> Result<usize, Error> {
-        if !clocks.still_current() {
-            return Err(Error::Precondition);
-        }
-        let counts = timing(clocks.sys_hz(), speed)?;
-        write(RESETS_CLR0, reset_bit(N));
-        crate::poll(RESETS_DONE0, reset_bit(N), reset_bit(N)).map_err(|_| Error::Timeout)?;
-        let mut io = Mmio {
-            base: 0x4007_0000 + N as usize * 0x4000,
-        };
-        if io.read(TYPE) != 0x4457_0140 {
-            return Err(Error::Precondition);
-        }
-        disable(&mut io)?;
-        io.write(MASK, 0);
-        io.read(CLEAR);
-        io.write(RX_TL, 0);
-        io.write(TX_TL, 0);
-        configure(&mut io, counts);
-        Ok(((io.read(PARAM) >> 8) & 255) as usize + 1)
+}
+
+/// The register part of [`Token::init`]; returns the RX FIFO depth. Nothing is written, and
+/// the reset stays asserted, unless clk_sys matches and the speed is possible at it.
+fn start(io: &mut impl Io, reset: u32, clocks: &Clocks, speed: Speed) -> Result<usize, Error> {
+    if !io.sys_current_strict(clocks) {
+        return Err(Error::Precondition);
     }
+    let counts = timing(clocks.sys_hz(), speed)?;
+    io.release_reset(reset)?;
+    if io.read(TYPE) != 0x4457_0140 {
+        return Err(Error::Precondition);
+    }
+    disable(io)?;
+    io.write(MASK, 0);
+    io.read(CLEAR);
+    io.write(RX_TL, 0);
+    io.write(TX_TL, 0);
+    configure(io, counts);
+    Ok(((io.read(PARAM) >> 8) & 255) as usize + 1)
 }
 
 /// DW spike filter target: the 50 ns of Fm/Fm+ (HW at 50 MHz: 3 cycles = 60 ns).
@@ -243,8 +276,13 @@ trait Io {
     fn read(&mut self, offset: usize) -> u32;
     fn write(&mut self, offset: usize, value: u32);
     fn now(&mut self) -> u32;
-    /// The clock registers still match `clocks` ([`crate::clocks::Clocks::still_current`]).
-    fn clocks_current(&mut self, clocks: &crate::clocks::Clocks) -> bool;
+    /// clk_sys (`ic_clk`) still matches `clocks`, per transaction ([`Clocks::sys_current`]).
+    fn sys_current(&mut self, clocks: &Clocks) -> bool;
+    /// clk_sys still matches `clocks`, at init and speed changes
+    /// ([`Clocks::sys_current_strict`]).
+    fn sys_current_strict(&mut self, clocks: &Clocks) -> bool;
+    /// Releases the controller reset `bit` (RESETS CTRL0) and waits for DONE0.
+    fn release_reset(&mut self, bit: u32) -> Result<(), Error>;
 }
 struct Mmio {
     base: usize,
@@ -262,8 +300,16 @@ impl Io for Mmio {
     fn now(&mut self) -> u32 {
         read(0x400a_c028)
     }
-    fn clocks_current(&mut self, clocks: &crate::clocks::Clocks) -> bool {
-        clocks.still_current()
+    #[inline(always)]
+    fn sys_current(&mut self, clocks: &Clocks) -> bool {
+        clocks.sys_current()
+    }
+    fn sys_current_strict(&mut self, clocks: &Clocks) -> bool {
+        clocks.sys_current_strict()
+    }
+    fn release_reset(&mut self, bit: u32) -> Result<(), Error> {
+        write(RESETS_CLR0, bit);
+        crate::poll(RESETS_DONE0, bit, bit).map_err(|_| Error::Timeout)
     }
 }
 fn disable(io: &mut impl Io) -> Result<(), Error> {
@@ -365,11 +411,11 @@ impl<const N: u8, const SDA: u8, const SCL: u8> I2c<N, SDA, SCL> {
         }
     }
     pub fn set_speed(&mut self, speed: Speed) -> Result<(), Error> {
-        if !self.usable || !self.clocks.still_current() {
+        let mut io = self.io();
+        if !self.usable || !io.sys_current_strict(&self.clocks) {
             return Err(Error::Precondition);
         }
         let counts = timing(self.clocks.sys_hz(), speed)?;
-        let mut io = self.io();
         self.usable = false;
         disable(&mut io)?;
         configure(&mut io, counts);
@@ -397,11 +443,12 @@ impl<const N: u8, const SDA: u8, const SCL: u8> embedded_hal::i2c::I2c for I2c<N
     }
 }
 
-/// One transaction. `Precondition` before any controller access if the handle is poisoned or
-/// clk_sys (`ic_clk`) / clk_uart no longer match `clocks`: the SCL counts were computed for it.
+/// One transaction, one clock check. `Precondition` before any controller access if the
+/// handle is poisoned or clk_sys (`ic_clk`) no longer matches `clocks` ([`Clocks::sys_current`]):
+/// the SCL counts were computed for it. clk_uart is not read.
 fn run(
     io: &mut impl Io,
-    clocks: &crate::clocks::Clocks,
+    clocks: &Clocks,
     usable: &mut bool,
     address: u8,
     ops: &mut [Operation<'_>],
@@ -410,7 +457,7 @@ fn run(
     if address >= 128 {
         return Err(Error::Invalid);
     }
-    if !*usable || !io.clocks_current(clocks) {
+    if !*usable || !io.sys_current(clocks) {
         return Err(Error::Precondition);
     }
     if ops.iter().all(|op| operation_len(op) == 0) {
@@ -448,8 +495,10 @@ mod tests {
         next: u8,
         max_rx: usize,
         writes: usize,
+        /// clk_sys as the clock checks see it.
         sys: Option<u32>,
-        uart: Option<u32>,
+        checks: u32,
+        resets: Vec<u32>,
     }
     impl Model {
         fn new(depth: usize) -> Self {
@@ -465,7 +514,8 @@ mod tests {
                 max_rx: 0,
                 writes: 0,
                 sys: Some(200_000_000),
-                uart: Some(50_000_000),
+                checks: 0,
+                resets: Vec::new(),
             }
         }
     }
@@ -482,6 +532,9 @@ mod tests {
                     }
                 }
                 DATA => u32::from(self.rx.pop_front().expect("RX underflow")),
+                TYPE => 0x4457_0140,
+                // IC_RX_BUFFER_DEPTH - 1 in bits 15:8.
+                PARAM => (self.depth as u32 - 1) << 8,
                 _ => 0,
             }
         }
@@ -505,8 +558,16 @@ mod tests {
             self.tick = self.tick.wrapping_add(1000);
             self.tick
         }
-        fn clocks_current(&mut self, clocks: &crate::clocks::Clocks) -> bool {
-            clocks.matches(self.sys, self.uart)
+        fn sys_current(&mut self, clocks: &Clocks) -> bool {
+            self.checks += 1;
+            self.sys == Some(clocks.sys_hz())
+        }
+        fn sys_current_strict(&mut self, clocks: &Clocks) -> bool {
+            self.sys_current(clocks)
+        }
+        fn release_reset(&mut self, bit: u32) -> Result<(), Error> {
+            self.resets.push(bit);
+            Ok(())
         }
     }
     const CLOCKS: crate::clocks::Clocks = crate::clocks::Clocks::for_test(200_000_000, 50_000_000);
@@ -529,6 +590,7 @@ mod tests {
             Err(Error::Precondition)
         );
         assert!(usable && m.writes == 0 && m.commands.is_empty());
+        assert_eq!(m.checks, 1);
         m.sys = Some(200_000_000);
         assert_eq!(
             run(
@@ -543,6 +605,23 @@ mod tests {
         );
         assert!(usable);
         assert_eq!(m.commands, [1 | STOP]);
+        // One check for the whole transaction, however many operations it has.
+        let checks = m.checks;
+        let mut r = [0; 3];
+        run(
+            &mut m,
+            &CLOCKS,
+            &mut usable,
+            0x2d,
+            &mut [
+                Operation::Write(&[1, 2]),
+                Operation::Read(&mut r),
+                Operation::Write(&[3]),
+            ],
+            2,
+        )
+        .unwrap();
+        assert_eq!(m.checks, checks + 1);
         let mut poisoned = false;
         assert_eq!(
             run(&mut m, &CLOCKS, &mut poisoned, 0x2d, &mut [], 2),
@@ -553,6 +632,69 @@ mod tests {
             Err(Error::Invalid)
         );
     }
+    type Pins = (Pin<2>, Pin<3>);
+    fn init_model(
+        token: Token<1>,
+        m: &mut Model,
+        pins: Pins,
+        clocks: &Clocks,
+        speed: Speed,
+        routed: &mut bool,
+    ) -> Result<I2c<1, 2, 3>, InitError<1, 2, 3>> {
+        token.init_on(m, pins, clocks, speed, |(sda, scl)| {
+            *routed = true;
+            (sda.assume(), scl.assume())
+        })
+    }
+
+    /// Review 7: a stale clk_sys or a speed impossible at it fails before the reset is
+    /// released, without a register write or pin routing; the returned token and pins retry.
+    #[test]
+    fn init_failure_leaves_reset_and_pinmux_untouched_and_retries() {
+        let slow = Clocks::for_test(1_000_000, 50_000_000);
+        let mut token = unsafe { Token::<1>::new() };
+        let mut pins: Pins = unsafe { (Pin::new(), Pin::new()) };
+        for (sys, clocks, speed, want) in [
+            (Some(50_000_000), CLOCKS, Speed::Fast, Error::Precondition),
+            (None, CLOCKS, Speed::Fast, Error::Precondition),
+            (Some(1_000_000), slow, Speed::Standard, Error::Invalid),
+        ] {
+            let mut m = Model::new(16);
+            m.sys = sys;
+            let mut routed = false;
+            let InitError {
+                error,
+                token: t,
+                sda,
+                scl,
+            } = init_model(token, &mut m, pins, &clocks, speed, &mut routed)
+                .err()
+                .expect("init must fail");
+            assert_eq!(error, want);
+            assert!(m.resets.is_empty() && m.writes == 0 && !routed);
+            (token, pins) = (t, (sda, scl));
+        }
+        let mut m = Model::new(16);
+        let mut routed = false;
+        let i2c =
+            init_model(token, &mut m, pins, &CLOCKS, Speed::Fast, &mut routed).expect("retry");
+        assert!(routed && i2c.usable);
+        assert_eq!(
+            (m.resets.as_slice(), i2c.rx_depth, m.checks),
+            (&[reset_bit(1)][..], 16, 1)
+        );
+    }
+
+    /// `?` on an init error inside a function returning the bus error (compile check).
+    #[allow(dead_code)]
+    fn init_with_question_mark(
+        token: Token<1>,
+        (sda, scl): Pins,
+        clocks: &Clocks,
+    ) -> Result<I2c<1, 2, 3>, Error> {
+        Ok(token.init(sda, scl, clocks, Speed::Standard)?)
+    }
+
     #[test]
     fn long_read_small_fifo_and_direction_changes() {
         let mut m = Model::new(2);

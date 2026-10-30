@@ -16,6 +16,11 @@ impl<const N: u8, M> Pin<N, M> {
     pub(crate) fn release(self) -> Pin<N> {
         Pin { _mode: PhantomData }
     }
+    /// Host tests: the state type without touching the registers.
+    #[cfg(test)]
+    pub(crate) fn assume<M2>(self) -> Pin<N, M2> {
+        Pin { _mode: PhantomData }
+    }
 }
 impl<const N: u8> Pin<N> {
     /// # Safety

@@ -11,7 +11,8 @@
 //! The controller's own chip-select outputs are not routed: SER selects CS0 internally because
 //! the DW SSI only shifts with a slave selected, and [`Device`] drives a GPIO as chip select.
 use crate::{
-    gpio::{Output, Pin, SpiFunction},
+    clocks::Clocks,
+    gpio::{Output, Pin, SpiFunction, Unconfigured},
     read, write,
 };
 use embedded_hal::{
@@ -62,6 +63,11 @@ impl embedded_hal::spi::Error for Error {
 mod sealed {
     pub trait Pin {}
     impl<const N: u8> Pin for crate::gpio::Pin<N> {}
+    pub trait Bus {}
+    impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus
+        for super::Spi<N, SCK, MOSI, MISO>
+    {
+    }
     pub trait Word {}
     impl Word for u8 {}
     impl Word for u16 {}
@@ -240,15 +246,20 @@ fn divider(sys_hz: u32, hz: u32) -> Result<u32, Error> {
 pub struct Token<const N: u8> {
     _private: (),
 }
-/// A configured controller. Dropping it without [`Spi::free`] leaves the controller enabled
+/// A configured controller. Each [`SpiBus`] call checks once, before any FIFO access, that
+/// clk_sys still matches the [`Clocks`] it was set up with ([`Error::Precondition`] if not);
+/// `transfer_in_place` checks once for the whole buffer, and [`Device`] once per transaction.
+/// Dropping it without [`Spi::free`] leaves the controller enabled
 /// and the pins on the SPI function; the token is gone, so it cannot be initialised again.
 pub struct Spi<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> {
     _sck: Pin<SCK, SpiFunction>,
     _mosi: Pin<MOSI, SpiFunction>,
     _miso: Pin<MISO, SpiFunction>,
-    clocks: crate::clocks::Clocks,
+    clocks: Clocks,
     depth: usize,
     dfs32: bool,
+    /// Frame size, as encoded in `cr0`.
+    bits: u8,
     cr0: u32,
     div: u32,
     rsd: u32,
@@ -289,17 +300,34 @@ impl<const N: u8> Token<N> {
         const { assert!(matches!(N, 0 | 1 | 2 | 3 | 5)) };
         Self { _private: () }
     }
-    /// Checks the clocks and the configuration, releases only this controller's reset, checks
+    /// Checks clk_sys and the configuration, releases only this controller's reset, checks
     /// the block, detects the FIFO depth and frame field, then routes the typed pins. GPIO bank0
     /// and the raw microsecond timer must already run (cold bring-up); `clocks` may come from
     /// proc0 ([`crate::clocks::Clocks::from_proc0`]). On error the token and the pins come back
-    /// in [`InitError`]; the pins are not touched before success.
+    /// in [`InitError`]; the pins are not touched before success, and a stale clk_sys or an
+    /// invalid frequency / frame size is reported before the reset is released.
+    ///
+    /// ```no_run
+    /// # use rp1_hal::{clocks::Clocks, gpio::Pin, spi::{Config, Error, Spi, Token}};
+    /// fn bring_up(
+    ///     token: Token<0>,
+    ///     (sck, mosi, miso): (Pin<11>, Pin<10>, Pin<9>),
+    ///     clocks: &Clocks,
+    /// ) -> Result<Spi<0, 11, 10, 9>, Error> {
+    ///     let config = Config::new(10_000_000, embedded_hal::spi::MODE_0);
+    ///     // Retry once with 8-bit frames, then give up with `?`.
+    ///     match token.init(sck, mosi, miso, clocks, config.with_frame_bits(32)) {
+    ///         Ok(spi) => Ok(spi),
+    ///         Err(e) => Ok(e.token.init(e.sck, e.mosi, e.miso, clocks, config)?),
+    ///     }
+    /// }
+    /// ```
     pub fn init<const SCK: u8, const MOSI: u8, const MISO: u8>(
         self,
         sck: Pin<SCK>,
         mosi: Pin<MOSI>,
         miso: Pin<MISO>,
-        clocks: &crate::clocks::Clocks,
+        clocks: &Clocks,
         config: Config,
     ) -> Result<Spi<N, SCK, MOSI, MISO>, InitError<N, SCK, MOSI, MISO>>
     where
@@ -307,47 +335,82 @@ impl<const N: u8> Token<N> {
         Pin<MOSI>: Mosi<N>,
         Pin<MISO>: Miso<N>,
     {
-        match self.start(clocks, config) {
-            Ok((depth, dfs32, cr0, div)) => Ok(Spi {
-                _sck: sck.into_spi(<Pin<SCK> as Sck<N>>::FUNC, true),
-                _mosi: mosi.into_spi(<Pin<MOSI> as Mosi<N>>::FUNC, true),
-                _miso: miso.into_spi(<Pin<MISO> as Miso<N>>::FUNC, false),
-                clocks: *clocks,
-                depth,
-                dfs32,
-                cr0,
-                div,
-                rsd: config.rx_sample_dly.into(),
-            }),
-            Err(error) => Err(InitError {
-                error,
-                token: self,
-                sck,
-                mosi,
-                miso,
-            }),
-        }
+        self.init_on(
+            &mut Mmio { base: base(N) },
+            (sck, mosi, miso),
+            clocks,
+            config,
+            |(sck, mosi, miso)| {
+                (
+                    sck.into_spi(<Pin<SCK> as Sck<N>>::FUNC, true),
+                    mosi.into_spi(<Pin<MOSI> as Mosi<N>>::FUNC, true),
+                    miso.into_spi(<Pin<MISO> as Miso<N>>::FUNC, false),
+                )
+            },
+        )
     }
-    /// The register part of [`Token::init`]: (depth, dfs32, CTRLR0, BAUDR).
-    fn start(
-        &self,
-        clocks: &crate::clocks::Clocks,
+    /// [`Token::init`] on `io`; `route` muxes the pins and runs only once the controller is set up.
+    fn init_on<const SCK: u8, const MOSI: u8, const MISO: u8>(
+        self,
+        io: &mut impl Io,
+        pins: Pins<SCK, MOSI, MISO>,
+        clocks: &Clocks,
         config: Config,
-    ) -> Result<(usize, bool, u32, u32), Error> {
-        if !clocks.still_current() {
-            return Err(Error::Precondition);
+        route: impl FnOnce(Pins<SCK, MOSI, MISO>) -> Pins<SCK, MOSI, MISO, SpiFunction>,
+    ) -> Result<Spi<N, SCK, MOSI, MISO>, InitError<N, SCK, MOSI, MISO>> {
+        match start(io, reset_bit(N), clocks, config) {
+            Ok((depth, dfs32, cr0, div)) => {
+                let (_sck, _mosi, _miso) = route(pins);
+                Ok(Spi {
+                    _sck,
+                    _mosi,
+                    _miso,
+                    clocks: *clocks,
+                    depth,
+                    dfs32,
+                    bits: config.frame_bits,
+                    cr0,
+                    div,
+                    rsd: config.rx_sample_dly.into(),
+                })
+            }
+            Err(error) => {
+                let (sck, mosi, miso) = pins;
+                Err(InitError {
+                    error,
+                    token: self,
+                    sck,
+                    mosi,
+                    miso,
+                })
+            }
         }
-        let div = divider(clocks.sys_hz(), config.frequency_hz)?;
-        // The widest frame any instance takes; the instance's own limit is checked after probe.
-        control(config.mode, config.frame_bits, true)?;
-        write(RESETS_CLR1, reset_bit(N));
-        crate::poll(RESETS_DONE1, reset_bit(N), reset_bit(N)).map_err(|_| Error::Timeout)?;
-        let mut io = Mmio { base: base(N) };
-        let (depth, dfs32) = probe(&mut io).ok_or(Error::Precondition)?;
-        let cr0 = control(config.mode, config.frame_bits, dfs32)?;
-        setup(&mut io, cr0, div, config.rx_sample_dly.into());
-        Ok((depth, dfs32, cr0, div))
     }
+}
+/// SCK, MOSI and MISO.
+type Pins<const SCK: u8, const MOSI: u8, const MISO: u8, M = Unconfigured> =
+    (Pin<SCK, M>, Pin<MOSI, M>, Pin<MISO, M>);
+
+/// The register part of [`Token::init`]: (depth, dfs32, CTRLR0, BAUDR). Nothing is written,
+/// and the reset stays asserted, unless clk_sys matches and the frequency and frame size are
+/// possible on some instance.
+fn start(
+    io: &mut impl Io,
+    reset: u32,
+    clocks: &Clocks,
+    config: Config,
+) -> Result<(usize, bool, u32, u32), Error> {
+    if !io.sys_current_strict(clocks) {
+        return Err(Error::Precondition);
+    }
+    let div = divider(clocks.sys_hz(), config.frequency_hz)?;
+    // The widest frame any instance takes; the instance's own limit is checked after probe.
+    control(config.mode, config.frame_bits, true)?;
+    io.release_reset(reset)?;
+    let (depth, dfs32) = probe(io).ok_or(Error::Precondition)?;
+    let cr0 = control(config.mode, config.frame_bits, dfs32)?;
+    setup(io, cr0, div, config.rx_sample_dly.into());
+    Ok((depth, dfs32, cr0, div))
 }
 
 /// Depth of the FIFO behind threshold register `reg` (0..depth-1 read back, as Linux's TXFTLR
@@ -414,8 +477,13 @@ trait Io {
     fn read(&mut self, offset: usize) -> u32;
     fn write(&mut self, offset: usize, value: u32);
     fn now(&mut self) -> u32;
-    /// The clock registers still match `clocks` ([`crate::clocks::Clocks::still_current`]).
-    fn clocks_current(&mut self, clocks: &crate::clocks::Clocks) -> bool;
+    /// clk_sys still matches `clocks`, per bus call ([`Clocks::sys_current`]).
+    fn sys_current(&mut self, clocks: &Clocks) -> bool;
+    /// clk_sys still matches `clocks`, at init and reconfiguration
+    /// ([`Clocks::sys_current_strict`]).
+    fn sys_current_strict(&mut self, clocks: &Clocks) -> bool;
+    /// Releases the controller reset `bit` (RESETS CTRL1) and waits for DONE1.
+    fn release_reset(&mut self, bit: u32) -> Result<(), Error>;
 }
 struct Mmio {
     base: usize,
@@ -438,8 +506,16 @@ impl Io for Mmio {
     fn now(&mut self) -> u32 {
         read(crate::TIMER_RAWL)
     }
-    fn clocks_current(&mut self, clocks: &crate::clocks::Clocks) -> bool {
-        clocks.still_current()
+    #[inline(always)]
+    fn sys_current(&mut self, clocks: &Clocks) -> bool {
+        clocks.sys_current()
+    }
+    fn sys_current_strict(&mut self, clocks: &Clocks) -> bool {
+        clocks.sys_current_strict()
+    }
+    fn release_reset(&mut self, bit: u32) -> Result<(), Error> {
+        write(RESETS_CLR1, bit);
+        crate::poll(RESETS_DONE1, bit, bit).map_err(|_| Error::Timeout)
     }
 }
 
@@ -485,21 +561,27 @@ fn exchange(
     Ok(())
 }
 
-/// One bus call: `Precondition` before any FIFO access if the clocks no longer match
-/// `clocks` (SCLK would not be [`Spi::frequency_hz`]); after a failed exchange the controller
-/// is disabled (both FIFOs flushed, shifter stopped) and set up again unchanged.
+/// The check each public bus call makes once, before any FIFO access: `Precondition` if
+/// clk_sys no longer matches `clocks` (SCLK would not be [`Spi::frequency_hz`]).
+#[inline(always)]
+fn admit(io: &mut impl Io, clocks: &Clocks) -> Result<(), Error> {
+    if io.sys_current(clocks) {
+        Ok(())
+    } else {
+        Err(Error::Precondition)
+    }
+}
+
+/// One exchange of an admitted call (no clock check of its own); after a failed exchange the
+/// controller is disabled (both FIFOs flushed, shifter stopped) and set up again unchanged.
 fn run(
     io: &mut impl Io,
-    clocks: &crate::clocks::Clocks,
     (cr0, div, rsd): (u32, u32, u32),
     bits: u8,
     depth: usize,
     read: Rx<'_>,
     write: Tx<'_>,
 ) -> Result<(), Error> {
-    if !io.clocks_current(clocks) {
-        return Err(Error::Precondition);
-    }
     let mask = u32::MAX >> (32 - u32::from(bits));
     let result = exchange(io, read, write, mask, depth);
     if result.is_err() {
@@ -508,6 +590,7 @@ fn run(
     result
 }
 
+#[inline(never)]
 fn wait_idle(io: &mut impl Io) -> Result<(), Error> {
     let start = io.now();
     loop {
@@ -525,10 +608,10 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
         Mmio { base: base(N) }
     }
     fn reconfigure(&mut self, cr0: u32, div: u32) -> Result<(), Error> {
-        if !self.clocks.still_current() {
+        let mut io = self.io();
+        if !io.sys_current_strict(&self.clocks) {
             return Err(Error::Precondition);
         }
-        let mut io = self.io();
         wait_idle(&mut io)?;
         setup(&mut io, cr0, div, self.rsd);
         self.cr0 = cr0;
@@ -564,15 +647,12 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
             mode.polarity = Polarity::IdleHigh;
         }
         let cr0 = control(mode, bits, self.dfs32)? | (self.cr0 & ctrlr0::SRL);
-        self.reconfigure(cr0, self.div)
+        self.reconfigure(cr0, self.div)?;
+        self.bits = bits;
+        Ok(())
     }
     pub fn frame_bits(&self) -> u8 {
-        let dfs = if self.dfs32 {
-            (self.cr0 & ctrlr0::DFS32_MASK) >> ctrlr0::DFS32_SHIFT
-        } else {
-            self.cr0 & ctrlr0::DFS_MASK
-        };
-        dfs as u8 + 1
+        self.bits
     }
     /// Internal loopback (CTRLR0.SRL): received data is the transmitted data, not MISO.
     pub fn set_loopback(&mut self, on: bool) -> Result<(), Error> {
@@ -590,20 +670,34 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
     pub fn has_32_bit_frames(&self) -> bool {
         self.dfs32
     }
-    fn run<W: Word>(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error> {
-        let bits = self.frame_bits();
-        if bits > W::BITS {
+    /// Once per public call, before any FIFO access: the frame fits `word_bits`
+    /// (`Invalid`) and clk_sys still matches (`Precondition`).
+    fn check(&self, word_bits: u8) -> Result<(), Error> {
+        if self.frame_bits() > word_bits {
             return Err(Error::Invalid);
         }
+        admit(&mut self.io(), &self.clocks)
+    }
+    /// An exchange of an admitted call.
+    fn run<W: Word>(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error> {
         run(
             &mut self.io(),
-            &self.clocks,
             (self.cr0, self.div, self.rsd),
-            bits,
+            self.frame_bits(),
             self.depth,
             W::rx(read),
             W::tx(write),
         )
+    }
+    /// An in-place exchange of an admitted call, 32 frames at a time through a stack copy.
+    fn run_in_place<W: Word>(&mut self, words: &mut [W]) -> Result<(), Error> {
+        let mut tx = [W::from_u32(0); 32];
+        for chunk in words.chunks_mut(tx.len()) {
+            let tx = &mut tx[..chunk.len()];
+            tx.copy_from_slice(chunk);
+            self.run(chunk, tx)?;
+        }
+        Ok(())
     }
     /// Disables the controller and gives back the token and the (still muxed) pins.
     pub fn free(self) -> (Token<N>, Pin<SCK>, Pin<MOSI>, Pin<MISO>) {
@@ -624,24 +718,23 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> ErrorType
 impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> SpiBus<W>
     for Spi<N, SCK, MOSI, MISO>
 {
-    /// Sends zero frames.
+    /// Sends zero frames. Each call checks clk_sys once (see [`Spi`]).
     fn read(&mut self, words: &mut [W]) -> Result<(), Error> {
+        self.check(W::BITS)?;
         self.run(words, &[])
     }
     fn write(&mut self, words: &[W]) -> Result<(), Error> {
+        self.check(W::BITS)?;
         self.run(&mut [], words)
     }
     fn transfer(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error> {
+        self.check(W::BITS)?;
         self.run(read, write)
     }
+    /// One clock check for the whole buffer, then 32-frame chunks.
     fn transfer_in_place(&mut self, words: &mut [W]) -> Result<(), Error> {
-        let mut tx = [W::from_u32(0); 32];
-        for chunk in words.chunks_mut(tx.len()) {
-            let tx = &mut tx[..chunk.len()];
-            tx.copy_from_slice(chunk);
-            self.run(chunk, tx)?;
-        }
-        Ok(())
+        self.check(W::BITS)?;
+        self.run_in_place(words)
     }
     /// Every call returns only after all frames were received, so this waits for BUSY to clear.
     fn flush(&mut self) -> Result<(), Error> {
@@ -649,7 +742,36 @@ impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> SpiBus
     }
 }
 
-/// An [`SpiBus`] with a GPIO chip select (active low) for one device: [`SpiDevice`].
+/// The bus side of [`Device`]: one admission (frame size, clk_sys) per transaction, before the
+/// chip select moves, then the operations without a check of their own. Sealed: [`Spi`] only.
+pub trait Bus<W: Word>: sealed::Bus {
+    #[doc(hidden)]
+    fn admit(&mut self) -> Result<(), Error>;
+    #[doc(hidden)]
+    fn exchange(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error>;
+    #[doc(hidden)]
+    fn exchange_in_place(&mut self, words: &mut [W]) -> Result<(), Error>;
+    #[doc(hidden)]
+    fn wait_idle(&mut self) -> Result<(), Error>;
+}
+impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
+    for Spi<N, SCK, MOSI, MISO>
+{
+    fn admit(&mut self) -> Result<(), Error> {
+        self.check(W::BITS)
+    }
+    fn exchange(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error> {
+        self.run(read, write)
+    }
+    fn exchange_in_place(&mut self, words: &mut [W]) -> Result<(), Error> {
+        self.run_in_place(words)
+    }
+    fn wait_idle(&mut self) -> Result<(), Error> {
+        wait_idle(&mut self.io())
+    }
+}
+
+/// An [`Spi`] bus with a GPIO chip select (active low) for one device: [`SpiDevice`].
 pub struct Device<B, const CS: u8> {
     bus: B,
     cs: Pin<CS, Output>,
@@ -674,9 +796,10 @@ impl<B, const CS: u8> Device<B, CS> {
 impl<B, const CS: u8> ErrorType for Device<B, CS> {
     type Error = Error;
 }
-impl<W: Word, B: SpiBus<W, Error = Error>, const CS: u8> SpiDevice<W> for Device<B, CS> {
-    /// CS low, the operations in order (a delay flushes first), flush, CS high. CS is
-    /// deasserted even when an operation fails; the first error is returned.
+impl<W: Word, B: Bus<W>, const CS: u8> SpiDevice<W> for Device<B, CS> {
+    /// The bus check (frame size, clk_sys) once, before CS moves: if it fails, CS is never
+    /// asserted. Then CS low, the operations in order (a delay flushes first), flush, CS high.
+    /// CS is deasserted even when an operation fails; the first error is returned.
     fn transaction(&mut self, operations: &mut [Operation<'_, W>]) -> Result<(), Error> {
         use embedded_hal::digital::OutputPin;
         let (cs, delay) = (&mut self.cs, &mut self.delay);
@@ -692,27 +815,28 @@ impl<W: Word, B: SpiBus<W, Error = Error>, const CS: u8> SpiDevice<W> for Device
 }
 
 /// [`SpiDevice::transaction`] with the chip select (`cs(high)`) and the delay passed in.
-fn transaction<W: Word, B: SpiBus<W, Error = Error>>(
+fn transaction<W: Word, B: Bus<W>>(
     bus: &mut B,
     mut cs: impl FnMut(bool),
     mut delay: impl FnMut(u32),
     operations: &mut [Operation<'_, W>],
 ) -> Result<(), Error> {
+    bus.admit()?;
     cs(false);
     let mut result = Ok(());
     for op in operations.iter_mut() {
         result = match op {
-            Operation::Read(r) => bus.read(r),
-            Operation::Write(w) => bus.write(w),
-            Operation::Transfer(r, w) => bus.transfer(r, w),
-            Operation::TransferInPlace(b) => bus.transfer_in_place(b),
-            Operation::DelayNs(ns) => bus.flush().map(|()| delay(*ns)),
+            Operation::Read(r) => bus.exchange(r, &[]),
+            Operation::Write(w) => bus.exchange(&mut [], w),
+            Operation::Transfer(r, w) => bus.exchange(r, w),
+            Operation::TransferInPlace(b) => bus.exchange_in_place(b),
+            Operation::DelayNs(ns) => bus.wait_idle().map(|()| delay(*ns)),
         };
         if result.is_err() {
             break;
         }
     }
-    let flushed = bus.flush();
+    let flushed = bus.wait_idle();
     cs(true);
     result.and(flushed)
 }
@@ -741,8 +865,12 @@ mod tests {
         cr0: u32,
         dfs32: bool,
         writes: Vec<(usize, u32)>,
+        /// clk_sys as the clock checks see it.
         sys: Option<u32>,
-        uart: Option<u32>,
+        /// Clock checks made (fast and strict).
+        checks: u32,
+        /// Reset bits released.
+        resets: Vec<u32>,
     }
     impl Model {
         fn new(depth: usize) -> Self {
@@ -763,7 +891,8 @@ mod tests {
                 dfs32: true,
                 writes: Vec::new(),
                 sys: Some(200_000_000),
-                uart: Some(50_000_000),
+                checks: 0,
+                resets: Vec::new(),
             }
         }
     }
@@ -821,8 +950,16 @@ mod tests {
             self.tick = self.tick.wrapping_add(1000);
             self.tick
         }
-        fn clocks_current(&mut self, clocks: &crate::clocks::Clocks) -> bool {
-            clocks.matches(self.sys, self.uart)
+        fn sys_current(&mut self, clocks: &Clocks) -> bool {
+            self.checks += 1;
+            self.sys == Some(clocks.sys_hz())
+        }
+        fn sys_current_strict(&mut self, clocks: &Clocks) -> bool {
+            self.sys_current(clocks)
+        }
+        fn release_reset(&mut self, bit: u32) -> Result<(), Error> {
+            self.resets.push(bit);
+            Ok(())
         }
     }
 
@@ -956,40 +1093,21 @@ mod tests {
         assert_eq!(Error::Overrun.kind(), ErrorKind::Overrun);
     }
 
-    /// Review 6 (Codex #1): PLL_SYS and CLK_UART unchanged but clk_sys elsewhere (e.g. XOSC):
-    /// `Precondition` before DR is touched, and nothing else is written either.
+    /// Review 6 (Codex #1): clk_sys elsewhere (e.g. XOSC) or not decodable: `Precondition`
+    /// from the admission, before DR or any other register is touched.
     #[test]
     fn stale_sys_clock_fails_before_any_fifo_access() {
-        for (sys, uart) in [
-            (Some(50_000_000), Some(50_000_000)),
-            (None, Some(50_000_000)),
-            (Some(200_000_000), None),
-        ] {
+        for sys in [Some(50_000_000), None] {
             let mut m = Model::new(4);
             m.sys = sys;
-            m.uart = uart;
-            assert_eq!(
-                run(
-                    &mut m,
-                    &CLOCKS,
-                    (7, 20, 0),
-                    8,
-                    4,
-                    Rx::U8(&mut [0; 4]),
-                    Tx::U8(&[1, 2, 3, 4])
-                ),
-                Err(Error::Precondition)
-            );
-            assert!(
-                m.writes.is_empty() && m.pushed.is_empty(),
-                "{sys:?} {uart:?}"
-            );
+            assert_eq!(admit(&mut m, &CLOCKS), Err(Error::Precondition));
+            assert!(m.writes.is_empty() && m.pushed.is_empty(), "{sys:?}");
         }
         let mut m = Model::new(4);
+        assert_eq!(admit(&mut m, &CLOCKS), Ok(()));
         let mut rx = [0; 4];
         run(
             &mut m,
-            &CLOCKS,
             (7, 20, 0),
             8,
             4,
@@ -1004,7 +1122,6 @@ mod tests {
         assert_eq!(
             run(
                 &mut m,
-                &CLOCKS,
                 (7, 20, 2),
                 8,
                 4,
@@ -1017,6 +1134,114 @@ mod tests {
             m.writes
                 .ends_with(&[(RX_SAMPLE_DLY, 2), (SER, 1), (SSIENR, 1)])
         );
+    }
+
+    fn pins() -> Pins<11, 10, 9> {
+        unsafe { (Pin::new(), Pin::new(), Pin::new()) }
+    }
+    /// `init_on` over `m` with a route that only records that it ran.
+    fn init_model(
+        token: Token<0>,
+        m: &mut Model,
+        pins: Pins<11, 10, 9>,
+        config: Config,
+        routed: &mut bool,
+    ) -> Result<Spi<0, 11, 10, 9>, InitError<0, 11, 10, 9>> {
+        token.init_on(m, pins, &CLOCKS, config, |(sck, mosi, miso)| {
+            *routed = true;
+            (sck.assume(), mosi.assume(), miso.assume())
+        })
+    }
+
+    /// Review 7: a stale clk_sys or a configuration no instance takes fails before the reset
+    /// is released, without a register write and without routing the pins; the token and the
+    /// pins come back and a retry with them succeeds.
+    #[test]
+    fn init_failure_leaves_reset_and_pinmux_untouched_and_retries() {
+        let config = Config::new(10_000_000, embedded_hal::spi::MODE_0);
+        let mut token = unsafe { Token::<0>::new() };
+        let mut pins = pins();
+        for (sys, config, want) in [
+            (Some(50_000_000), config, Error::Precondition),
+            (None, config, Error::Precondition),
+            (
+                Some(200_000_000),
+                config.with_frequency_hz(0),
+                Error::Invalid,
+            ),
+            (
+                Some(200_000_000),
+                config.with_frequency_hz(3_051),
+                Error::Invalid,
+            ),
+            (Some(200_000_000), config.with_frame_bits(3), Error::Invalid),
+            (
+                Some(200_000_000),
+                config.with_frame_bits(33),
+                Error::Invalid,
+            ),
+        ] {
+            let mut m = Model::new(64);
+            m.sys = sys;
+            let mut routed = false;
+            let InitError {
+                error,
+                token: t,
+                sck,
+                mosi,
+                miso,
+            } = init_model(token, &mut m, pins, config, &mut routed)
+                .err()
+                .expect("init must fail");
+            assert_eq!(error, want, "{sys:?} {config:?}");
+            assert!(m.resets.is_empty() && m.writes.is_empty() && !routed);
+            (token, pins) = (t, (sck, mosi, miso));
+        }
+        // A 16-bit instance asked for 32-bit frames: the reset is released and the block
+        // probed, but the pins are still not routed; the retry with 16 bits succeeds.
+        let mut m = Model::new(8);
+        m.dfs32 = false;
+        let mut routed = false;
+        let e = init_model(token, &mut m, pins, config.with_frame_bits(32), &mut routed)
+            .err()
+            .expect("32 bits on a 16-bit instance");
+        assert_eq!(e.error, Error::Invalid);
+        assert_eq!((m.resets.as_slice(), routed), (&[reset_bit(0)][..], false));
+        let config = config.with_frame_bits(16).with_rx_sample_dly(3);
+        let spi = init_model(
+            e.token,
+            &mut m,
+            (e.sck, e.mosi, e.miso),
+            config,
+            &mut routed,
+        )
+        .expect("retry");
+        assert!(routed);
+        assert_eq!(
+            (spi.fifo_depth(), spi.has_32_bit_frames(), spi.frame_bits()),
+            (8, false, 16)
+        );
+        assert_eq!((spi.divider(), spi.frequency_hz()), (20, 10_000_000));
+        assert!(m.writes.ends_with(&[
+            (CTRLR0, 15),
+            (BAUDR, 20),
+            (RX_SAMPLE_DLY, 3),
+            (SER, 1),
+            (SSIENR, 1)
+        ]));
+        // One strict clock check per init.
+        assert_eq!(m.checks, 2);
+    }
+
+    /// `?` on an init error inside a function returning the bus error (compile check).
+    #[allow(dead_code)]
+    fn init_with_question_mark(
+        token: Token<0>,
+        (sck, mosi, miso): Pins<11, 10, 9>,
+        clocks: &Clocks,
+    ) -> Result<Spi<0, 11, 10, 9>, Error> {
+        let config = Config::new(1_000_000, embedded_hal::spi::MODE_0).with_rx_sample_dly(1);
+        Ok(token.init(sck, mosi, miso, clocks, config)?)
     }
 
     #[test]
@@ -1038,8 +1263,9 @@ mod tests {
         assert_eq!(m.busy_left, 0);
     }
 
-    /// A bus over [`Model`] that records each call in a shared event log; `flush` is logged
-    /// only once the model reports idle.
+    /// A bus over [`Model`] that records each call in a shared event log; `wait_idle` is
+    /// logged as "flush" only once the model reports idle. `admit` is the driver's own
+    /// admission over the model's clk_sys.
     struct LogBus<'a> {
         m: Model,
         log: &'a core::cell::RefCell<Vec<String>>,
@@ -1048,9 +1274,7 @@ mod tests {
         ops: usize,
     }
     use std::string::{String, ToString};
-    impl ErrorType for LogBus<'_> {
-        type Error = Error;
-    }
+    impl sealed::Bus for LogBus<'_> {}
     impl LogBus<'_> {
         fn op(&mut self, name: &str, read: &mut [u8], write: &[u8]) -> Result<(), Error> {
             let n = self.ops;
@@ -1068,21 +1292,26 @@ mod tests {
             Ok(())
         }
     }
-    impl SpiBus<u8> for LogBus<'_> {
-        fn read(&mut self, words: &mut [u8]) -> Result<(), Error> {
-            self.op("read", words, &[])
+    impl Bus<u8> for LogBus<'_> {
+        fn admit(&mut self) -> Result<(), Error> {
+            let r = admit(&mut self.m, &CLOCKS);
+            let name = if r.is_ok() { "admit" } else { "admit err" };
+            self.log.borrow_mut().push(name.to_string());
+            r
         }
-        fn write(&mut self, words: &[u8]) -> Result<(), Error> {
-            self.op("write", &mut [], words)
+        fn exchange(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Error> {
+            let name = match (read.is_empty(), write.is_empty()) {
+                (false, true) => "read",
+                (true, false) => "write",
+                _ => "transfer",
+            };
+            self.op(name, read, write)
         }
-        fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Error> {
-            self.op("transfer", read, write)
-        }
-        fn transfer_in_place(&mut self, words: &mut [u8]) -> Result<(), Error> {
+        fn exchange_in_place(&mut self, words: &mut [u8]) -> Result<(), Error> {
             let tx = words.to_vec();
             self.op("in_place", words, &tx)
         }
-        fn flush(&mut self) -> Result<(), Error> {
+        fn wait_idle(&mut self) -> Result<(), Error> {
             if let Some(e) = self.fail_flush {
                 self.log.borrow_mut().push("flush err".to_string());
                 return Err(e);
@@ -1093,14 +1322,18 @@ mod tests {
             Ok(())
         }
     }
-    fn logged(
+    /// (result, event log, clock checks made) of one transaction over a model whose clk_sys
+    /// reads as `sys`.
+    fn logged_with(
+        sys: Option<u32>,
         fail_op: Option<(usize, Error)>,
         fail_flush: Option<Error>,
         ops: &mut [Operation<'_, u8>],
-    ) -> (Result<(), Error>, Vec<String>) {
+    ) -> (Result<(), Error>, Vec<String>, u32) {
         let log = core::cell::RefCell::new(Vec::new());
         let mut m = Model::new(4);
         m.hold_busy = 3;
+        m.sys = sys;
         let mut bus = LogBus {
             m,
             log: &log,
@@ -1117,11 +1350,22 @@ mod tests {
             |ns| log.borrow_mut().push(std::format!("delay {ns}")),
             ops,
         );
-        (r, log.into_inner())
+        let checks = bus.m.checks;
+        drop(bus);
+        (r, log.into_inner(), checks)
+    }
+    fn logged(
+        fail_op: Option<(usize, Error)>,
+        fail_flush: Option<Error>,
+        ops: &mut [Operation<'_, u8>],
+    ) -> (Result<(), Error>, Vec<String>) {
+        let (r, log, checks) = logged_with(Some(200_000_000), fail_op, fail_flush, ops);
+        assert_eq!(checks, 1, "one clock check per transaction");
+        (r, log)
     }
 
-    /// Review 6 (Codex #2): CS low -> operations -> flush -> CS high, a flush before each
-    /// delay, and on error the flush and CS release still happen with the first error kept.
+    /// Review 6 (Codex #2): admission, CS low -> operations -> flush -> CS high, a flush before
+    /// each delay, and on error the flush and CS release still happen with the first error kept.
     #[test]
     fn device_transaction_orders_cs_flush_and_delay() {
         let mut read = [0u8; 2];
@@ -1134,18 +1378,21 @@ mod tests {
                 Operation::DelayNs(1500),
                 Operation::Read(&mut read),
                 Operation::TransferInPlace(&mut buf),
+                Operation::Transfer(&mut [0; 2], &[3, 4]),
             ],
         );
         assert_eq!(r, Ok(()));
         assert_eq!(
             log,
             [
+                "admit",
                 "cs low",
                 "write",
                 "flush",
                 "delay 1500",
                 "read",
                 "in_place",
+                "transfer",
                 "flush",
                 "cs high"
             ]
@@ -1166,7 +1413,14 @@ mod tests {
         assert_eq!(r, Err(Error::Overrun));
         assert_eq!(
             log,
-            ["cs low", "write", "write err", "flush err", "cs high"]
+            [
+                "admit",
+                "cs low",
+                "write",
+                "write err",
+                "flush err",
+                "cs high"
+            ]
         );
         // The flush before a delay fails: no delay, CS still released, that error returned.
         let (r, log) = logged(
@@ -1181,15 +1435,39 @@ mod tests {
         assert_eq!(r, Err(Error::Timeout));
         assert_eq!(
             log,
-            ["cs low", "write", "flush err", "flush err", "cs high"]
+            [
+                "admit",
+                "cs low",
+                "write",
+                "flush err",
+                "flush err",
+                "cs high"
+            ]
         );
         // Only the final flush fails.
         let (r, log) = logged(None, Some(Error::Timeout), &mut [Operation::Write(&[1])]);
         assert_eq!(r, Err(Error::Timeout));
-        assert_eq!(log, ["cs low", "write", "flush err", "cs high"]);
+        assert_eq!(log, ["admit", "cs low", "write", "flush err", "cs high"]);
         // No operations: still a framed, flushed CS pulse.
         let (r, log) = logged(None, None, &mut []);
         assert_eq!(r, Ok(()));
-        assert_eq!(log, ["cs low", "flush", "cs high"]);
+        assert_eq!(log, ["admit", "cs low", "flush", "cs high"]);
+    }
+
+    /// Review 7: a stale clk_sys fails the transaction before CS is asserted: no CS edge, no
+    /// operation, no flush, no register access.
+    #[test]
+    fn stale_clock_transaction_never_moves_cs() {
+        for sys in [Some(50_000_000), None] {
+            let (r, log, checks) = logged_with(
+                sys,
+                None,
+                None,
+                &mut [Operation::Write(&[1, 2]), Operation::Read(&mut [0; 2])],
+            );
+            assert_eq!(r, Err(Error::Precondition));
+            assert_eq!(log, ["admit err"]);
+            assert_eq!(checks, 1);
+        }
     }
 }
