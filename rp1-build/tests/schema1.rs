@@ -154,16 +154,28 @@ fn existing_declarations_have_byte_identical_notes_after_conversion() {
             "{manifest}"
         );
 
-        // An explicit schema 2 migration has the same note with the same provenance inputs.
+        // Rewriting as schema 2 changes the declaration hash; the rest of the note is identical.
         let normalized = toml::to_string(&d).unwrap();
         let mut schema2: Declaration = toml::from_str(&normalized).unwrap();
         schema2.types = d.types.clone();
         schema2.validate().unwrap();
+        let hash2 = schema2.declaration_hash().unwrap();
+        assert_ne!(hash2, hash, "{manifest}");
+        let note2 = wire::descriptor(&name, &version, &schema2, hash2, [0; 20]).unwrap();
         assert_eq!(
-            wire::descriptor(&name, &version, &schema2, hash, [0; 20]).unwrap(),
-            note
+            without_hash(&note2, hash2),
+            without_hash(&note, hash),
+            "{manifest}"
         );
     }
+}
+/// The note with its declaration hash and the header CRC (which covers it) zeroed.
+fn without_hash(note: &[u8], hash: [u8; 32]) -> Vec<u8> {
+    let mut note = note.to_vec();
+    let at = note.windows(32).position(|w| w == hash).unwrap();
+    note[at..at + 32].fill(0);
+    note[20..24].fill(0);
+    note
 }
 #[test]
 fn converted_models_serialize_to_equivalent_schema2() {

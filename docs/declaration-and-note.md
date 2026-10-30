@@ -183,6 +183,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 - 型 ID: `#[derive(Message)]` が「型名・サイズ・各フィールドのオフセットと型」から計算する 64 bit のハッシュ。
   Linux 側の `fw.channel::<Cmd, Reply>("ctl")` はこれを note と照合し、違えば開けない。
 - note に含めないもの: イメージのハッシュ（ローダーが自分で計算する）、Linux DT のノード名（ビルド時にボード表から overlay に焼き込む）。
+- 宣言の SHA-256 は宣言の書き方で決まる。`schema = 1` のまま読む（ビルド時に schema 2 へ自動変換）と旧来のハッシュを保つので note は変わらない。schema 2 に書き換えると、note はこのハッシュ（と、それを覆うヘッダーの CRC）だけが変わり、ほかは同一（STATIC、`rp1-build` の試験）。
 
 ### 2.3 読み手の動き
 

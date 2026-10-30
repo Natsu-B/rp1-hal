@@ -123,7 +123,11 @@ impl Declaration {
         }
         warnings
     }
-    /// Preserve schema 1 provenance as well as the note ABI during automatic conversion.
+    /// SHA-256 of the declaration, recorded in the note's FIRMWARE record.
+    ///
+    /// A `schema = 1` manifest read through the automatic conversion keeps its legacy hash, so
+    /// its note is unchanged. Rewriting it as schema 2 changes this hash (the text differs);
+    /// the rest of the note stays identical.
     pub fn declaration_hash(&self) -> Result<[u8; 32]> {
         let default_linux = Linux::default();
         if self.schema1
