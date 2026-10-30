@@ -54,7 +54,12 @@ the low period. HW at 200 MHz (2026-10-29, ESP32
 RMT, 100 ns ticks): 100.1 kHz, 400.0 kHz, 1011 kHz (NACK probe only). Actual timing
 depends on pull-ups, capacitance, stretching and FIFO service. No shared clock is
 programmed and SCMI ownership is unchanged. A clock tree that no longer matches the
-`Clocks` value fails with `Precondition`.
+`Clocks` value fails with `Precondition`: `init`, `set_speed` and every transaction compare
+clk_sys and clk_uart with it before touching the controller (STATIC, host model test; the
+transaction check used to cover only PLL_SYS and CLK_UART, so clk_sys moved to XOSC went
+unnoticed). `init` checks the clocks and the speed before it releases the reset; on any
+error it returns `InitError` with the token and the untouched pins, so the caller can retry
+(`?` converts it to `Error`).
 A controller declared under `[proc1]` takes its `Clocks` from
 `Clocks::wait_from_proc0(&core, timeout_us)` (the value proc0's `Authority::init` published;
 see `docs/adc.md`, "Clocks on proc1"). STATIC: compile-checked in `examples/dual-core`.

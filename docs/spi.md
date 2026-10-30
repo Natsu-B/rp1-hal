@@ -47,12 +47,15 @@ Wrong or swapped pins fail to compile (`tests/ui/spi_wrong_pins.rs`).
   clk_sys belongs to RP1 (`clock.authority = "rp1"`): no SCMI clock is held or voted for
   SPI, and `Clocks` comes either from proc0's `Authority::init` or, on proc1, from
   `Clocks::wait_from_proc0`. A clock tree that no longer matches the value returns
-  `Precondition`.
+  `Precondition`: `init`, every reconfiguration and every bus call compare clk_sys and
+  clk_uart with it before the FIFO is touched (STATIC, host model test with PLL_SYS and
+  CLK_UART unchanged and clk_sys on XOSC).
 - Reset: RESETS CTRL1 bit 10 + n, DONE1 the same bit (rp1-regdb `resets.toml`; SPI0 is
   hardware-proven there). `init` releases only that bit and waits for DONE (10 ms bound).
 - Registers: `rp1_pac::dw_ssi` (offsets from Linux `spi-dw.h`), bases from the regdb.
-  `init` detects the FIFO depth (TXFTLR probe) and the 32-bit frame field (CTRLR0 probe) as
-  Linux does.
+  `init` detects the FIFO depths (TXFTLR and RXFTLR probes; DW_apb_ssi sizes them
+  separately) and bounds the frames in flight by the shallower one, and detects the 32-bit
+  frame field (CTRLR0 probe) as Linux does.
 - Pins: outputs (SCLK, MOSI) get 8 mA, fast slew; MISO has input enable and the pad
   pull-down. The pad output is off while the function select changes.
 
@@ -81,6 +84,22 @@ shifts with a slave selected. `Device::transaction` drives CS low, runs the oper
 `set_frequency`, `set_mode`, `set_frame_bits` and `set_loopback` (CTRLR0.SRL internal
 loopback) wait for the bus to be idle and reprogram the disabled controller.
 
+`init` checks the clocks, the rate and the frame size (up to 32 bits; the instance's own
+limit after the probe) before it releases the reset. On any error it returns `InitError`
+with the token and the untouched pins, so the caller can retry (`?` converts it to `Error`).
+`Spi` has no `Drop`: dropping it without `free` leaves the controller enabled and the pins
+on the SPI function, and the token is gone.
+
+`Config::rx_sample_dly` (default 0) is written to RX_SAMPLE_DLY: MISO is sampled that many
+clk_sys cycles later. Only 0 is hardware-tested.
+
+STATIC (host tests): `Device::transaction` drives CS low, runs the operations, flushes, then
+drives CS high; a `DelayNs` flushes before it waits; after a failed operation it skips the
+rest but still flushes and releases CS, and returns the operation's error, not the flush's.
+The model keeps BUSY after the last frame is received, so `flush` must wait it out. The
+delay itself waits at least the requested time (the 1 MHz timer is read for `us + 1` steps,
+since the first step can come right after the start).
+
 There is no interrupt, DMA, dual/quad mode, or slave support.
 
 ## Hardware proof
@@ -89,7 +108,8 @@ There is no interrupt, DMA, dual/quad mode, or slave support.
 and on Linux's request: with loopback off MISO reads all zeros (pad pull-down; the lab wiring
 has only ESP32 inputs on these pins), then internal loopback at 1, 10, 25 and 50 MHz with 8-,
 12- and 16-bit frames through `SpiDevice`, plus u8 words, in-place and a write/delay/read
-transaction. `lab/check-shm.sh` and `lab/verify-shm.py` make it part of the regression.
+transaction. `lab/check-shm.sh` and `lab/verify-shm.py` make it part of the regression; both
+also fail unless Linux's `spi@50000` and `adc@c8000` nodes exist with `status = "disabled"`.
 
 HW (2026-10-30, two cold boots, clk_sys 200 MHz, at boot and on request while Linux runs):
 `init` found FIFO depth 64 and the 32-bit frame field; with loopback off MISO read all zeros;
@@ -111,3 +131,8 @@ per 8-bit frame at 50 MHz. Longer transfers or wider frames get closer to the wi
 The rate is measured on the 1 MHz timer around each 32-frame transfer call (CS handling
 included), so it is a throughput figure, not an SCLK measurement. SCLK itself was not probed
 externally: no SPI peer is wired.
+
+Only the internal loopback is proven, and at 25 and 50 MHz only that: the data never
+crossed the pads, the wiring or a device, and RX_SAMPLE_DLY was 0. An external device may
+need `Config::rx_sample_dly` or a lower SCLK; at 25 MHz and above it is untested (HYP: the
+MISO round trip through pads and wiring takes a large part of a 20–40 ns bit).
