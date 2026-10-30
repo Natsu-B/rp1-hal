@@ -136,3 +136,23 @@ fn bcm2712_pinctrl_groups_named_gpio_n_are_not_rp1_pins() {
     assert_eq!(nodes.len(), 1, "{nodes:?}");
     assert!(nodes[0].1, "{nodes:?}");
 }
+
+#[test]
+fn unresolvable_console_does_not_stop_a_gpiomem_only_boot() {
+    // Review 12 (Claude L3): the stock tree always has gpiomem@d0000, so the default policy
+    // always plans one disable. An unknown console stops the boot only next to a conflict.
+    let console = "&{/chosen} { stdout-path = \"serial9:115200n8\"; };";
+    let nodes = disabled(&predict(&[UART1_PI5, console]));
+    assert_eq!(nodes.len(), 1, "{nodes:?}");
+    assert_eq!(nodes[0].0, format!("{RP1}/gpiomem@d0000"));
+    assert!(nodes[0].1, "{nodes:?}");
+    let p = predict(&[UART1_PI5, UART3_PI5, console]);
+    let Plan::Refuse(why) = &p.plan else {
+        panic!("expected refusal, got {:?}", p.plan);
+    };
+    assert!(
+        why.iter()
+            .any(|w| w.contains("cannot tell whether a disable would remove the Linux console")),
+        "{why:?}"
+    );
+}

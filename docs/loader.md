@@ -127,7 +127,9 @@ v0.1 は「overlay 適用後の検査で衝突が 1 件でもあれば停止（�
 - 停止からの戻し方は config.txt の該当 `dtoverlay=` を外すこと（または宣言を直して作り直す）。停止後の次の起動方法は §3 の
   とおり未実装（理由を出して止まるだけ）。
 - RP1 と無関係な DT の不備（解決できない `stdout-path` の別名、他のコントローラ宛ての壊れた `*-gpios` など）では止めない。
-  Linux も無視して起動できるため。無効化候補があるのにコンソールが分からないときだけ止める。
+  Linux も無視して起動できるため。コンソールが分からないときに止めるのは、gpiomem 方針以外の無効化候補（衝突）があるときだけ。
+  既定の gpiomem 方針では実機の DTB に常に `gpiomem@d0000` の無効化が 1 件あるが、gpiomem は互換と reg で特定でき、コンソールには
+  なり得ないので、それだけでは止めない（STATIC、`stock_dtb.rs` の試験）。
 - HW（2026-10-30、lab ファーム、各 cold boot ×1）: 既定の版で `dtoverlay=uart3-pi5` を足すと serial@3c000（GPIO 8/9 = SPI0 の
   CS/MISO）を無効化して印 2 件（+ gpiomem）、Linux は起動し回帰も合格。`dtoverlay=gpio-led,gpio=22` では leds ノードとその led
   を無効化（印 3 件）。`on_conflict = "refuse"` の版に uart3-pi5 では `RP1BOOT_LINUX_REFUSED` 2 行と `FAIL` で停止し、

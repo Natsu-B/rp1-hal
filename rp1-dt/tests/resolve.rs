@@ -649,6 +649,18 @@ fn unresolvable_console_matters_only_when_something_would_be_disabled() {
             resolve(&fdt, &note, Policy::default()).unwrap(),
             "cannot tell whether a disable would remove the Linux console",
         );
+        // Review 12 (Claude L3): the gpiomem policy disable alone is not a reason to stop.
+        let gpiomem = "/ { gpiomem { compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; }; };";
+        let (fdt, note) = fixture(&format!("{gpiomem} {chosen}"));
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{console}");
+        assert!(nodes[0].policy_only && nodes[0].path == "/gpiomem");
+        let (fdt, note) = fixture(&format!("{gpiomem} {} {chosen}", uart3()));
+        refusal(
+            resolve(&fdt, &note, Policy::default()).unwrap(),
+            "cannot tell whether a disable would remove the Linux console",
+        );
     }
 }
 

@@ -137,13 +137,19 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
             ));
         }
     }
+    // The gpiomem policy is not an ownership conflict: on_conflict=refuse still disables it.
+    let policy_only = |n: &usize, reasons: &Vec<String>| gpiomem.contains(n) && reasons.len() == 1;
     // Only a planned disable needs the protected list: DT defects unrelated to RP1 (e.g. an
-    // unresolvable stdout-path alias) must not stop a boot without conflicts.
+    // unresolvable stdout-path alias) must not stop a boot without conflicts. The gpiomem node
+    // (identified by compatible and reg above) is never the console, so with the default policy
+    // (always one disable) an unknown console stops the boot only next to a real conflict.
     let protected = if conflicts.nodes.is_empty() {
         BTreeMap::new()
     } else {
         let (protected, console) = protected_nodes(after)?;
-        if let Some(why) = console {
+        if let Some(why) = console
+            && conflicts.nodes.iter().any(|(n, r)| !policy_only(n, r))
+        {
             refused.push(format!(
                 "{why}; cannot tell whether a disable would remove the Linux console"
             ));
@@ -152,8 +158,7 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
     };
     let mut disable = Vec::new();
     for (n, reasons) in conflicts.nodes {
-        // The gpiomem policy is not an ownership conflict: on_conflict=refuse still disables it.
-        let policy_only = gpiomem.contains(&n) && reasons.len() == 1;
+        let policy_only = policy_only(&n, &reasons);
         if let Some(why) = protected.get(&n) {
             for reason in reasons {
                 refused.push(format!("{reason}; protected: {why}"));

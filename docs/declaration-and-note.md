@@ -289,7 +289,7 @@ overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ロ
    - `"refuse"`: 理由が 1 件でもあれば停止する（gpiomem 方針だけの無効化は refuse でも行う）。
    - どちらでも、次のときは無効化せずに停止する: 保護ノード（ボード表の Linux 必須ブロック、rp1_gpio、rp1 バス、`pcie*`、
      `/reserved-memory` 配下、overlay 自身の rp1-* ノード、`/chosen/stdout-path` の先とそれぞれの祖先）に理由がある、
-     コンソール（`stdout-path`）が RP1 所有のブロックを指している、無効化候補があるのに `stdout-path` を解決できない。
+     コンソール（`stdout-path`）が RP1 所有のブロックを指している、gpiomem 方針以外の無効化候補があるのに `stdout-path` を解決できない。
    - 停止のときは理由ごとに `RP1BOOT_LINUX_REFUSED why=<理由>` を出し、`FAIL: ... RP1 not started` で止まる（RP1 も Linux も
      起動しない）。DT の不備・不明な方針値・再検査の失敗（エラー）も同じ形で止まる。
    - 無効化の後、元の DTB と比べた検査（予約が減っていない、所有ブロックが disabled、shm の予約）をもう一度行い、残れば停止する。
