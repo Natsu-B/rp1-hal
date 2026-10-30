@@ -28,4 +28,4 @@ Linux 6.12 の SCMI クロック・UIO ドアベル・共有メモリ（ring / b
 | `examples/dual-core`, `examples/linux-doorbell` | 2 コアの `log!`・`Spsc`・ドアベル / UIO でドアベル往復 | HW（p50 約 3〜6 µs） |
 | `lab/shm-firmware`, `lab/shm-linux` | 共有メモリの実機証明（WINDOW / RING / BLOCK / OVERWRITE） | HW（ISRAM 版で RP1→Linux 4.58 MB/s、Linux→RP1 5.30 MB/s、バッチ） |
 
-v0.1 の範囲外（設計 §8.1）: 割り込み駆動（RP1 → Linux 通知、alarm IRQ）、Linux 再起動への追従、DMA / PIO / SPI / I2C 等のドライバ。
+v0.1 の範囲外（設計 §8.1）: 割り込み駆動（RP1 → Linux 通知、alarm IRQ）、Linux 再起動への追従、DMA / PIO / I2S 等のドライバ（I2C・ADC・SPI は v0.1 後に追加: `docs/i2c.md`、`docs/adc.md`、`docs/spi.md`）。
