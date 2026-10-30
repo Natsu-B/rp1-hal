@@ -831,6 +831,29 @@ mod tests {
             Err(Error::Fifo)
         );
     }
+    /// The 64-bit formula before review 7, kept as the reference.
+    fn timing_wide(ic_clk_hz: u32, speed: Speed) -> Result<Counts, Error> {
+        let (mode, high_ns, low_ns) = match speed {
+            Speed::Standard => (1, 4_600, 5_400),
+            Speed::Fast => (2, 900, 1_600),
+            Speed::FastPlus => (2, 400, 600),
+        };
+        let cycles = |ns: u32| (u64::from(ns) * u64::from(ic_clk_hz)).div_ceil(1_000_000_000);
+        let spklen = cycles(SPIKE_NS).max(1);
+        let hcnt = cycles(high_ns).checked_sub(spklen + 7);
+        let lcnt = cycles(low_ns).checked_sub(1 + cycles(RISE_NS));
+        match (hcnt, lcnt) {
+            (Some(h), Some(l)) if h >= spklen + 5 && l >= spklen + 7 && h.max(l) <= 0xffff => {
+                Ok(Counts {
+                    mode,
+                    spklen: spklen as u32,
+                    hcnt: h as u32,
+                    lcnt: l as u32,
+                })
+            }
+            _ => Err(Error::Invalid),
+        }
+    }
     #[test]
     fn timings_and_error_kinds() {
         use embedded_hal::i2c::Error as _;
@@ -867,28 +890,24 @@ mod tests {
         // Too slow a clock for the I2C or DesignWare minimums.
         assert_eq!(timing(5_000_000, Speed::FastPlus), Err(Error::Invalid));
         assert_eq!(timing(1_000_000, Speed::Standard), Err(Error::Invalid));
-        // Review 7: whole MHz only (32-bit math); the 64-bit formula gave the same counts.
-        assert_eq!(timing(50_000_500, Speed::Fast), Err(Error::Invalid));
-        for hz in [
-            1_000_000,
-            50_000_000,
-            125_000_000,
-            200_000_000,
-            4_000_000_000,
-        ] {
-            for speed in [Speed::Standard, Speed::Fast, Speed::FastPlus] {
-                let wide = |ns: u32| (u64::from(ns) * u64::from(hz)).div_ceil(1_000_000_000);
-                if let Ok(t) = timing(hz, speed) {
-                    let (_, high, low) = match speed {
-                        Speed::Standard => (1, 4_600, 5_400),
-                        Speed::Fast => (2, 900, 1_600),
-                        Speed::FastPlus => (2, 400, 600),
-                    };
-                    let spklen = wide(SPIKE_NS).max(1);
-                    assert_eq!(u64::from(t.spklen), spklen);
-                    assert_eq!(u64::from(t.hcnt), wide(high) - spklen - 7);
-                    assert_eq!(u64::from(t.lcnt), wide(low) - 1 - wide(RISE_NS));
-                }
+        // Review 7: whole MHz only (32-bit math). Review 8: the whole Result equals the 64-bit
+        // formula's for every whole-MHz u32 clock, so a new `Invalid` (or a new `Ok`) shows up.
+        let speeds = [Speed::Standard, Speed::Fast, Speed::FastPlus];
+        let mut ok = 0;
+        for mhz in 0..=u32::MAX / 1_000_000 {
+            for speed in speeds {
+                let hz = mhz * 1_000_000;
+                assert_eq!(timing(hz, speed), timing_wide(hz, speed), "{hz} {speed:?}");
+                ok += usize::from(timing(hz, speed).is_ok());
+            }
+        }
+        // Not vacuous: all but the slowest clocks give counts at each speed.
+        assert!(ok > 3 * 4000, "{ok}");
+        // Not whole MHz: `Invalid`, where the 64-bit formula gave counts.
+        for hz in [50_000_500, 199_999_999, 125_000_001] {
+            for speed in speeds {
+                assert_eq!(timing(hz, speed), Err(Error::Invalid), "{hz} {speed:?}");
+                assert!(timing_wide(hz, speed).is_ok(), "{hz} {speed:?}");
             }
         }
         assert_eq!(
