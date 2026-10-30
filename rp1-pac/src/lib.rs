@@ -9,6 +9,7 @@
 
 pub mod core_control;
 pub mod dw_i2c;
+pub mod dw_ssi;
 pub mod generic;
 pub mod pl011;
 pub use generic::{
