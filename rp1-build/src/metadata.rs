@@ -1,4 +1,7 @@
-use crate::Result;
+use crate::{
+    Result,
+    board::{BoardInstance, Kind},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -81,15 +84,12 @@ impl<'de> Deserialize<'de> for Declaration {
     }
 }
 impl Declaration {
-    pub(crate) fn owned_instances(&self) -> impl Iterator<Item = (&'static str, usize, u32)> + '_ {
-        crate::board::INSTANCES
-            .iter()
-            .filter(|(name, _, _, _)| {
-                self.proc0.instances.contains_key(*name)
-                    || self.proc1.instances.contains_key(*name)
-                    || (self.log.is_some() && *name == "uart0")
-            })
-            .map(|&(_, label, bank, mask)| (label, bank, mask))
+    pub(crate) fn owned_instances(&self) -> impl Iterator<Item = &'static BoardInstance> + '_ {
+        crate::board::INSTANCES.iter().filter(|i| {
+            self.proc0.instances.contains_key(i.name)
+                || self.proc1.instances.contains_key(i.name)
+                || (self.log.is_some() && i.name == "uart0")
+        })
     }
 
     fn from_input(input: InputDeclaration) -> Result<Self> {
@@ -261,43 +261,29 @@ pub const fn align(n: usize, a: usize) -> usize {
     (n + a - 1) & !(a - 1)
 }
 
-/// Only canonical names (`UART1`, `I2C1`, `TIMER.ALARM0`) are accepted: `TIMER.ALARM00` or
-/// `UART+1` would otherwise name the same block under a second string and pass the duplicate
-/// check (review 3 #5).
+/// HAL type of a canonical peripheral name (`UART1`, `I2C1`, `ADC`, `TIMER.ALARM0`), from the
+/// board instance table. Non-canonical spellings such as `TIMER.ALARM00` or `UART+1` would
+/// name the same block twice and are rejected (review 3 #5).
 pub fn peripheral_type(p: &str) -> Result<String> {
     if let Some(n) = p
-        .strip_prefix("UART")
-        .and_then(|s| s.parse::<u8>().ok())
-        .filter(|n| *n < 5 && p == format!("UART{n}"))
-    {
-        Ok(format!("::rp1_hal::uart::Token<{n}>"))
-    } else if let Some(n) = p
-        .strip_prefix("I2C")
-        .and_then(|s| s.parse::<u8>().ok())
-        .filter(|n| *n < 4 && p == format!("I2C{n}"))
-    {
-        Ok(format!("::rp1_hal::i2c::Token<{n}>"))
-    } else if let Some(n) = p
-        .strip_prefix("SPI")
-        .and_then(|s| s.parse::<u8>().ok())
-        .filter(|n| p == format!("SPI{n}"))
-    {
-        // SPI4/7 are slave-only and SPI6/8 are not on bank 0. The supported schema 2
-        // instance set is SPI0/1/3/5; releasing Linux UART1 does not add SPI2 support.
-        match n {
-            0 | 1 | 3 | 5 => Ok(format!("::rp1_hal::spi::Token<{n}>")),
-            _ => Err(format!("{p} is not a usable SPI master on rpi-cm5 (SPI0/1/3/5)").into()),
-        }
-    } else if p == "ADC" {
-        Ok("::rp1_hal::adc::Token".into())
-    } else if let Some(n) = p
         .strip_prefix("TIMER.ALARM")
         .and_then(|s| s.parse::<u8>().ok())
         .filter(|n| *n < 4 && p == format!("TIMER.ALARM{n}"))
     {
-        Ok(format!("::rp1_hal::timer::Alarm<{n}>"))
-    } else {
-        Err(format!("unknown or v0.1 unsupported peripheral '{p}'").into())
+        return Ok(format!("::rp1_hal::timer::Alarm<{n}>"));
+    }
+    let name = p.to_ascii_lowercase();
+    match crate::board::find_instance(&name).filter(|_| p == name.to_ascii_uppercase()) {
+        Some(i) => Ok(match i.kind {
+            Kind::Uart => format!("::rp1_hal::uart::Token<{}>", i.number),
+            Kind::I2c => format!("::rp1_hal::i2c::Token<{}>", i.number),
+            Kind::Spi => format!("::rp1_hal::spi::Token<{}>", i.number),
+            Kind::Adc => "::rp1_hal::adc::Token".into(),
+        }),
+        None => Err(crate::board::undeclarable(&name)
+            .filter(|_| p == name.to_ascii_uppercase())
+            .unwrap_or_else(|| format!("unknown or unsupported peripheral '{p}'"))
+            .into()),
     }
 }
 pub fn peripheral_id(p: &str) -> Result<(u8, u16)> {
@@ -328,8 +314,8 @@ impl Declaration {
     /// clk_adc (`rp1_hal::linux_blocks::LinuxBlocks::held_clocks`).
     pub fn linux_resets(&self) -> [u32; 3] {
         let mut r = BOARD_LINUX_RESETS;
-        for (_, bank, mask) in self.owned_instances() {
-            r[bank] &= !mask;
+        for i in self.owned_instances() {
+            r[i.reset_bank] &= !i.reset_mask;
         }
         r
     }

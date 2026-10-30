@@ -125,8 +125,11 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         "target = <&rp1_gpio>",
         &format!("gpio-reserved-ranges = <{ranges}>;"),
     );
-    for (label, _, _) in d.owned_instances() {
-        fragment(&format!("target = <&{label}>"), "status = \"disabled\";");
+    for i in d.owned_instances() {
+        fragment(
+            &format!("target = <&{}>", i.label),
+            "status = \"disabled\";",
+        );
     }
     fragment(
         "target-path = \"/\"",

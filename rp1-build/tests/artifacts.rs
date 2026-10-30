@@ -227,7 +227,7 @@ fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
             format!("::rp1_hal::spi::Token<{n}>")
         );
     }
-    // Slave-only (4, 7), not on bank 0 (6, 8), MISO on Linux's UART1 pin (2), aliases.
+    // Slave-only (4, 7), not on bank 0 (6, 8), not supported yet (2), aliases.
     for p in [
         "SPI2", "SPI4", "SPI6", "SPI7", "SPI8", "SPI9", "SPI00", "SPI+0", "SPI",
     ] {

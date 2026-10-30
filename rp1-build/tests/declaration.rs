@@ -103,6 +103,13 @@ fn board_line_pin() {
         "[proc0]\ngpio=[32]",
         &["E4", "GPIO 32", "ETH_RST_N", "Linux on rpi-cm5"],
     );
+    for (pin, line) in [
+        (42, "USB_VBUS_EN"),
+        (43, "board GPIO"),
+        (44, "RP1_STAT_LED"),
+    ] {
+        error(&format!("[proc0]\ngpio=[{pin}]"), &["E4", line]);
+    }
     for pin in 28..=53 {
         error(&format!("[proc0]\ngpio=[{pin}]"), &["E4", "owned by Linux"]);
     }
@@ -132,6 +139,13 @@ fn spi_slave_only() {
     }
 }
 #[test]
+fn spi2_is_not_supported_yet() {
+    error(
+        "[linux]\nkeep={}\n[proc0]\nspi2={sck=2,mosi=0,miso=1}",
+        &["E4", "SPI2 is not supported yet"],
+    );
+}
+#[test]
 fn missing_signal() {
     error(
         "[proc1]\nspi0={sck=11,mosi=10}",
@@ -155,11 +169,20 @@ fn gpio_irq_not_gpio() {
 fn unknown_keys_and_hardware_cs_are_rejected() {
     error(
         "[proc1]\nuart9={tx=4,rx=5}",
-        &["unknown key 'uart9' in proc1", "instances:"],
+        &["E0", "unknown key 'uart9' in proc1", "instances: uart0, "],
     );
     error(
         "[proc0]\nspi0={sck=11,mosi=10,miso=9,cs0=8}",
-        &["hardware CS is unsupported"],
+        &["E4", "hardware CS is unsupported"],
+    );
+    error(
+        "[proc0]\nadc={pin=22}",
+        &["E0", "proc0.adc must be an empty table"],
+    );
+    error("[proc0]\ngpio=22", &["E0", "proc0.gpio"]);
+    error(
+        "log={sink='uart1',baudrate=115200}",
+        &["E0", "invalid UART0 log"],
     );
     for body in [
         "[proc0]\nuart2={tx=4,rx=5,typo=6}",
@@ -304,6 +327,6 @@ fn instance_declarations_require_tables() {
         "[proc0]\nspi0=[11,10,9]",
         "[linux]\nkeep={uart1=[0,1]}",
     ] {
-        error(body, &["must be a pin table"]);
+        error(body, &["E0", "must be a pin table"]);
     }
 }

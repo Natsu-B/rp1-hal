@@ -1,5 +1,10 @@
+//! Schema 2 ownership model and its validation. Error codes:
+//! E0 malformed declaration (unknown key, wrong value type), E1 pin claimed twice,
+//! E2 pin cannot carry that signal, E3 instance declared twice, E4 not available on the board
+//! (kept for Linux, unsupported), E5 missing signal or `gpio_irq` outside `gpio`.
 use crate::{
-    Result, board,
+    Result,
+    board::{self, Kind},
     metadata::{Declaration, peripheral_type},
 };
 use rp1_pinmux::{I2cSignal, Signal, SpiSignal, UartSignal, candidate_pins, funcsel};
@@ -78,53 +83,46 @@ fn signal_name(signal: Signal) -> String {
 
 fn parse_pin_table<T: serde::de::DeserializeOwned>(value: toml::Value, path: &str) -> Result<T> {
     if !value.is_table() {
-        return Err(format!("{path} must be a pin table").into());
+        return Err(format!("E0: {path} must be a pin table").into());
     }
-    value.try_into().map_err(|e| format!("{path}: {e}").into())
+    value
+        .try_into()
+        .map_err(|e| format!("E0: {path}: {e}").into())
 }
 
-const INSTANCES: &str = "uart0..uart4, i2c0..i2c3, spi0/1/3/5, adc";
 impl Instance {
     pub(crate) fn parse(name: &str, value: toml::Value, owner: &str) -> Result<Self> {
-        let block = name.to_ascii_uppercase();
-        if board::LINUX_BLOCKS.contains(&block.as_str()) {
-            return Err(format!("E4: {block} is required by Linux on rpi-cm5").into());
+        if let Some(why) = board::undeclarable(name) {
+            return Err(why.into());
         }
-        if matches!(name, "spi4" | "spi7") {
-            return Err(format!("E4: {block} is slave-only").into());
-        }
-        if matches!(name, "uart5" | "i2c4" | "i2c5" | "i2c6" | "spi6" | "spi8") {
-            return Err(format!("E2: {block} has no bank-0 pins").into());
-        }
-        let instance = match name {
-            "uart0" | "uart1" | "uart2" | "uart3" | "uart4" => {
-                Self::Uart(parse_pin_table(value, &format!("{owner}.{name}"))?)
-            }
-            "i2c0" | "i2c1" | "i2c2" | "i2c3" => {
-                Self::I2c(parse_pin_table(value, &format!("{owner}.{name}"))?)
-            }
-            "spi0" | "spi1" | "spi3" | "spi5" => {
+        let Some(info) = board::find_instance(name) else {
+            let known: Vec<_> = board::INSTANCES.iter().map(|i| i.name).collect();
+            return Err(format!(
+                "E0: unknown key '{name}' in {owner} (instances: {})",
+                known.join(", ")
+            )
+            .into());
+        };
+        let path = format!("{owner}.{name}");
+        Ok(match info.kind {
+            Kind::Uart => Self::Uart(parse_pin_table(value, &path)?),
+            Kind::I2c => Self::I2c(parse_pin_table(value, &path)?),
+            Kind::Spi => {
                 if let Some(key) = value
                     .as_table()
                     .and_then(|t| t.keys().find(|k| k.starts_with("cs")))
                 {
-                    return Err(format!("{owner}.{name}.{key}: hardware CS is unsupported").into());
+                    return Err(format!("E4: {path}.{key}: hardware CS is unsupported").into());
                 }
-                Self::Spi(parse_pin_table(value, &format!("{owner}.{name}"))?)
+                Self::Spi(parse_pin_table(value, &path)?)
             }
-            "adc" => {
+            Kind::Adc => {
                 if value.as_table().is_none_or(|t| !t.is_empty()) {
-                    return Err(format!("{owner}.adc must be an empty table").into());
+                    return Err(format!("E0: {path} must be an empty table").into());
                 }
                 Self::Adc {}
             }
-            _ => {
-                return Err(
-                    format!("unknown key '{name}' in {owner} (instances: {INSTANCES})").into(),
-                );
-            }
-        };
-        Ok(instance)
+        })
     }
 
     fn signals(&self, n: u8) -> Vec<(&'static str, Option<u8>, Signal)> {
@@ -156,7 +154,7 @@ impl Instance {
         }
     }
     fn number(name: &str) -> u8 {
-        name.bytes().last().unwrap_or(b'0').saturating_sub(b'0')
+        board::find_instance(name).map_or(0, |i| i.number)
     }
 
     /// Declared signal names and GPIOs for an instance key.
@@ -170,7 +168,7 @@ impl Instance {
         // Check the key/variant too: callers may construct or mutate the public model in Rust.
         let parsed = Self::parse(name, toml::Value::try_from(self)?, owner)?;
         if std::mem::discriminant(self) != std::mem::discriminant(&parsed) {
-            return Err(format!("{owner}.{name}: wrong instance pin table").into());
+            return Err(format!("E0: {owner}.{name}: wrong instance pin table").into());
         }
         let signals = self.signals(Self::number(name));
         if !unrouted
@@ -312,14 +310,17 @@ impl Core {
             return Ok(core);
         }
         let mut core = Self::default();
+        fn field<T: serde::de::DeserializeOwned>(v: toml::Value, path: String) -> Result<T> {
+            v.try_into().map_err(|e| format!("E0: {path}: {e}").into())
+        }
         if let Some(v) = values.remove("gpio") {
-            core.gpio = v.try_into()?;
+            core.gpio = field(v, format!("{owner}.gpio"))?;
         }
         if let Some(v) = values.remove("gpio_irq") {
-            core.gpio_irq = v.try_into()?;
+            core.gpio_irq = field(v, format!("{owner}.gpio_irq"))?;
         }
         if let Some(v) = values.remove("timer") {
-            core.timer = v.try_into()?;
+            core.timer = field(v, format!("{owner}.timer"))?;
         }
         for (name, value) in values {
             core.instances
@@ -379,7 +380,7 @@ impl Declaration {
         let mut pins = BTreeMap::new();
         if let Some(log) = &self.log {
             if log.sink != "uart0" || log.baudrate == 0 {
-                return Err("invalid UART0 log declaration".into());
+                return Err("E0: invalid UART0 log declaration".into());
             }
             blocks.insert("uart0".to_string(), "the log sink".to_string());
             pins.insert(14, "log.uart0.tx".to_string());
