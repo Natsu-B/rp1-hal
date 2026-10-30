@@ -86,7 +86,7 @@ linux_map = "uncached"                    # "uncached" | "cached"
 
 [package.metadata.rp1.linux]
 uio_group = "rp1"                         # UIO を開けるグループ（udev ルールを生成）
-keep = { uart1 = { tx = 0, rx = 1 } }     # Linux に残すインスタンスとピン。省略時はボード既定（rpi-cm5 は uart1 0/1）
+keep = { uart1 = { tx = 0, rx = 1 } }     # Linux に残すインスタンスとピン。省略時はボード既定（rpi-cm5 は uart1 0/1）。書くと既定を置き換える
 gpiomem = "disable"                       # "disable"（既定）| "keep"。/dev/gpiomem0 を無効にするか（§3.3）
 on_conflict = "disable"                   # "disable"（既定）| "refuse"。起動時の衝突の扱い（§3.2）
 ```
@@ -99,7 +99,9 @@ on_conflict = "disable"                   # "disable"（既定）| "refuse"。�
 - ピンは「インスタンスの信号への割り当て」から導き、bank 0 の機能表（`rp1-pinmux`、datasheet・pinctrl-rp1・HAL の表と照合）で
   検査する。生成される resources はインスタンスを型付きの `Parts`（例 `i2c::Parts<1, 2, 3>`）で渡し、表に無い組はコンパイルできない。
 - `linux.keep` はピンの保護だけ。Linux 側ノードの有効化は config.txt の `dtoverlay=`（例 `uart1-pi5`）に任せる。
-  `keep` から `uart1` を外すと GPIO 0/1 を RP1 に渡せる（ビルド時に警告）。
+  明示した `keep` はボード既定を置き換える（既定への追加ではない）。既定の UART1 を残したまま追加するなら、同じ table に `uart1` も書く
+  （例 `keep = { uart1 = { tx = 0, rx = 1 }, i2c1 = { sda = 2, scl = 3 } }`）。`keep` から `uart1` を外すと GPIO 0/1 を RP1 に渡せる
+  （ビルド時に警告）。
 
 HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1、UART1 を Linux、cold boot ×3）: Linux の
 `gpio-reserved-ranges` が所有ピンちょうど `<2 2 8 4 14 2 22 1 27 1>`（I2C1 2/3、SPI0 9..11 と CS 8、log 14/15、GPIO 22、27）になり、
@@ -111,9 +113,11 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 - `schema = 1`（`pins = [..]`、`peripherals = ["I2C1", "TIMER.ALARM0", ..]`）は読み続け、ビルド時に schema 2 へ変換する
   （`cargo:warning=schema 1 is deprecated`）。UART/I2C/SPI の割り当ては、そのコアの `pins` から機能表で一意に決まるものを探し、
   残りのピンは `gpio` になる。決まらなければエラー（`schema 1: cannot infer I2C1 pins from [2, 3, 10, 11]; write i2c1 = { .. } (schema 2)`）。
-- 変換しても note は同一（旧来の宣言ハッシュを保つ）。schema 2 に書き換えると宣言の SHA-256（とそれを覆うヘッダーの CRC）だけが
-  変わる。lab の `shm-firmware` と `examples/dual-core` は schema 2 に移した（STATIC: 凍結した schema 1 の note と、ハッシュ以外が
-  一致することを `rp1-build` の試験で確認）。
+- 変換しても note は同一（旧来の宣言ハッシュを保つ）。schema 2 に書き換えると宣言の SHA-256（とそれを覆うヘッダーの CRC）は必ず
+  変わる。ほかは、schema 1 の `pins`・`peripherals` の並びが schema 2 の並び（ピンは昇順、ブロックはタイマーを書いた順の後にインスタンスを名前順）と同じときだけ
+  同一。違う並び（例 `pins = [7, 6, 5, 4, 22]`、`peripherals = ["UART2", "TIMER.ALARM1", "ADC"]`）では、所有の集合は同じでも
+  OWNERSHIP の並びが正規化されてバイト列が変わる。lab の `shm-firmware` と `examples/dual-core` は schema 2 に移した（STATIC: この 2 つは
+  凍結した schema 1 の note と、ハッシュと CRC 以外が一致することを `rp1-build` の試験で確認）。
 - 変わる挙動（BREAKING）: `gpio-reserved-ranges` は以前の「GPIO 2..27 全部」から「RP1 所有ピンちょうど」に縮む。宣言外の
   2..27 は Linux が使える。
 
@@ -126,7 +130,7 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 | ピン | `gpio = [..]`、`gpio_irq = [..]` | ピン単位（funcsel、pad、SYS_RIO、イベント選択） | — |
 | バンク | 自動 | ピンを 1 本でも持つと、そのバンクの電圧設定は読むだけ | — |
 | システム | `log`、`clock.authority = "rp1"` | RP1 全体（コアに属さない） | UART0 と GPIO 14/15 / クロック生成器 |
-| Linux | `linux.keep`（ボード既定 + 追加） | インスタンスとピン | 宣言できない（E3/E4） |
+| Linux | `linux.keep`（省略時はボード既定。書くと既定を置き換える） | インスタンスとピン | 宣言できない（E3/E4） |
 
 PCIe、mailbox ch0（SCMI 用）、共有 SRAM の予約域は、ボード表が「RP1 システム」として固定で持ち、宣言はできない。
 rpi-cm5 のボード表は GPIO 28..53（ETH_RST_N、VBUS など）と Ethernet・USB・DMA・PCIe・PIO を Linux に残す。この「Linux に要る
@@ -221,7 +225,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 - 型 ID: `#[derive(Message)]` が「型名・サイズ・各フィールドのオフセットと型」から計算する 64 bit のハッシュ。
   Linux 側の `fw.channel::<Cmd, Reply>("ctl")` はこれを note と照合し、違えば開けない。
 - note に含めないもの: イメージのハッシュ（ローダーが自分で計算する）、Linux DT のノード名（ビルド時にボード表から overlay に焼き込む）。
-- 宣言の SHA-256 は宣言の書き方で決まる。`schema = 1` のまま読む（ビルド時に schema 2 へ自動変換）と旧来のハッシュを保つので note は変わらない。schema 2 に書き換えると、note はこのハッシュ（と、それを覆うヘッダーの CRC）だけが変わり、ほかは同一（STATIC、`rp1-build` の試験）。
+- 宣言の SHA-256 は宣言の書き方で決まる。`schema = 1` のまま読む（ビルド時に schema 2 へ自動変換）と旧来のハッシュを保つので note は変わらない。schema 2 に書き換えると、note のこのハッシュ（と、それを覆うヘッダーの CRC）は必ず変わる。ほかが同一なのは schema 1 の並びが schema 2 の正規の並びと同じときだけで、そうでなければ OWNERSHIP の並びも変わる（§1.2.1。lab の 2 宣言はハッシュと CRC 以外が同一: STATIC、`rp1-build` の試験）。
 
 ### 2.3 読み手の動き
 
@@ -229,7 +233,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 |---|---|---|
 | ローダー | ENTRY、SHM_AREA（ハンドオフ）、OWNERSHIP（当てた後の DTB の検査、§3.2）。overlay 本体は `.rp1.dtbo` | 知らない critical レコード・CRC 不一致・DTB の印（§3.2）と不一致 → RP1 を起動せず停止（ログに理由） |
 | Linux 側 `rp1-linux` | overlay が載せたコピー（`/rp1-firmware` ノードの `rp1,note` プロパティ）の SHM_*、FIRMWARE | 型 ID 不一致・名前が無い → `Err` |
-| `cargo rp1 check --dtb` | OWNERSHIP、LOG、SHM_AREA/SHM_REGION、note 全体 | Linux DT との衝突を一覧にして失敗（`rp1_build::overlay::final_conflicts`、STATIC）: 有効なノードの `pinctrl-N` が `rp1_gpio` 配下のグループで RP1 所有ピンを設定、所有ブロックのノード（`rp1_uartN` 等）が有効・ラベルが無い、authority=rp1 なのに `rp1_clocks` が有効、`rp1-shm` 予約が SHM_AREA と違う・他の予約や `/memreserve/` と重なる、`rp1:<name>` の UIO が領域と違う、`/rp1-firmware rp1,note` が ELF の note と違う、有効な gpio-hog・`gpio(s)`/`*-gpio(s)` の利用者が `gpio-reserved-ranges` の線を使う |
+| `cargo rp1 check --dtb` | OWNERSHIP、LOG、SHM_AREA/SHM_REGION、note 全体 | ローダーと同じコード（`rp1_dt::check::enforce`）で起動時の結果を予測して表示する（STATIC）。ローダーが停止する場合（保護ノード、`on_conflict = "refuse"`、DT の不備）は失敗。衝突によるノードの無効化は既定で失敗、`--allow-boot-disable` で警告。gpiomem 方針だけの無効化は表示だけ。予測が起動時と一致するのは、渡した DTB がファームの渡す DTB と同じときだけ（[build.md](build.md) §3）。衝突として数えるもの（§3.2 手順 3）: 有効なノードの `pinctrl-N` が `rp1_gpio` 配下のグループで RP1 所有ピンを設定、所有ブロックのノード（`rp1_uartN` 等）が有効・ラベルが無い、authority=rp1 なのに `rp1_clocks` が有効、`rp1-shm` 予約が SHM_AREA と違う・他の予約や `/memreserve/` と重なる、`rp1:<name>` の UIO が領域と違う、`/rp1-firmware rp1,note` が ELF の note と違う、有効な gpio-hog・`gpio(s)`/`*-gpio(s)` の利用者が `gpio-reserved-ranges` の線を使う |
 
 ## 3. Linux 用 DT overlay（`rp1-app.dtbo`）
 
