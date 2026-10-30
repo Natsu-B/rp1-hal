@@ -46,10 +46,17 @@ Wrong or swapped pins fail to compile (`tests/ui/spi_wrong_pins.rs`).
   1 MHz = /200, 10 MHz = /20, 25 MHz = /8, 50 MHz = /4; the lowest rate is about 3.05 kHz.
   clk_sys belongs to RP1 (`clock.authority = "rp1"`): no SCMI clock is held or voted for
   SPI, and `Clocks` comes either from proc0's `Authority::init` or, on proc1, from
-  `Clocks::wait_from_proc0`. A clock tree that no longer matches the value returns
-  `Precondition`: `init`, every reconfiguration and every bus call compare clk_sys and
-  clk_uart with it before the FIFO is touched (STATIC, host model test with PLL_SYS and
-  CLK_UART unchanged and clk_sys on XOSC).
+  `Clocks::wait_from_proc0`. A clk_sys that no longer matches the value returns
+  `Precondition` before the FIFO is touched. SCLK depends on clk_sys only, so clk_uart is
+  not compared. `init` and every reconfiguration read CLK_SYS CTRL/DIV/SEL and the PLL_SYS
+  tuple twice (`Clocks::sys_current_strict`). Each public bus call checks once
+  (`Clocks::sys_current`): CLK_SYS_SEL and DIV_INT once each, plus PLL_SYS CS (lock),
+  FBDIV_INT and PRIM when SEL is PLL_SYS; one copy in ISRAM, shared with I2C.
+  `transfer_in_place` checks once for the whole buffer, `Device::transaction` once before CS
+  goes low (a stale clock never moves CS). A check before a transfer cannot catch a change
+  made during it, and the per-call check does not re-read CTRL, PLL PWR or FBDIV_FRAC,
+  which init verified and nothing in rp1-hal changes later (STATIC, host tests: a clk_uart
+  change does not reject, a SEL/DIV or PLL change does; each register is read once).
 - Reset: RESETS CTRL1 bit 10 + n, DONE1 the same bit (rp1-regdb `resets.toml`; SPI0 is
   hardware-proven there). `init` releases only that bit and waits for DONE (10 ms bound).
 - Registers: `rp1_pac::dw_ssi` (offsets from Linux `spi-dw.h`), bases from the regdb.
@@ -78,23 +85,35 @@ returns `Invalid` if the frame is wider than `W`. The transfer loop runs from IS
 types share it.
 
 The native chip selects are not routed: SER selects CS0 internally because the DW SSI only
-shifts with a slave selected. `Device::transaction` drives CS low, runs the operations
-(`DelayNs` flushes first), flushes, and drives CS high even after an error.
+shifts with a slave selected. `Device::transaction` checks the bus once (frame size,
+clk_sys), then drives CS low, runs the operations (`DelayNs` flushes first), flushes, and
+drives CS high even after an error. A failed check returns before CS moves.
 
 `set_frequency`, `set_mode`, `set_frame_bits` and `set_loopback` (CTRLR0.SRL internal
 loopback) wait for the bus to be idle and reprogram the disabled controller.
 
-`init` checks the clocks, the rate and the frame size (up to 32 bits; the instance's own
+`init` checks clk_sys, the rate and the frame size (up to 32 bits; the instance's own
 limit after the probe) before it releases the reset. On any error it returns `InitError`
 with the token and the untouched pins, so the caller can retry (`?` converts it to `Error`).
+STATIC (host model through an injected register interface): a stale clk_sys, a zero or too
+low rate and 3- or 33-bit frames write no register, leave the reset asserted and route no
+pin; 32-bit frames on a 16-bit instance fail after the probe, still without routing, and the
+destructured `InitError`'s token and pins initialise the controller on retry.
+
+`Config` is `#[non_exhaustive]`: build it with `Config::new(hz, mode)` and the `with_*`
+setters.
 `Spi` has no `Drop`: dropping it without `free` leaves the controller enabled and the pins
 on the SPI function, and the token is gone.
 
 `Config::rx_sample_dly` (default 0) is written to RX_SAMPLE_DLY: MISO is sampled that many
-clk_sys cycles later. Only 0 is hardware-tested.
+clk_sys cycles later. Only 0 is hardware-tested. It is written without a range check or
+read-back, as Linux spi-dw-core does. The usable maximum is the DW_apb_ssi synthesis
+parameter SSI_RX_DLY_SR_DEPTH, which is not known for RP1, and what the block does with a
+larger value is unverified (recalled, not checked: the databook treats it as no delay).
 
-STATIC (host tests): `Device::transaction` drives CS low, runs the operations, flushes, then
-drives CS high; a `DelayNs` flushes before it waits; after a failed operation it skips the
+STATIC (host tests): `Device::transaction` checks clk_sys once, then drives CS low, runs the
+operations, flushes, then drives CS high; with a stale clk_sys it returns `Precondition` with
+no CS edge; a `DelayNs` flushes before it waits; after a failed operation it skips the
 rest but still flushes and releases CS, and returns the operation's error, not the flush's.
 The model keeps BUSY after the last frame is received, so `flush` must wait it out. The
 delay itself waits at least the requested time (the 1 MHz timer is read for `us + 1` steps,
@@ -115,22 +134,23 @@ HW (2026-10-30, two cold boots, clk_sys 200 MHz, at boot and on request while Li
 `init` found FIFO depth 64 (the shallower of TX and RX since review 6) and the 32-bit frame
 field; with loopback off MISO read all zeros; every loopback pattern matched at all four rates
 and three frame sizes, and the u8, in-place and transaction checks passed. The same proof
-passed again on two more cold boots after the review 6 changes. Measured throughput of 1024
-frames in 32-frame `SpiDevice` transfers after review 6 (one boot; the other boot is within
-4 %):
+passed again on two more cold boots after the review 6 changes, and on two more after the
+review 7 changes. Measured throughput of 1024 frames in 32-frame `SpiDevice` transfers after
+review 7 (one boot; the other is within 0.5 %), with the review 6 figure in brackets:
 
 | SCLK (BAUDR) | 8-bit | 12-bit | 16-bit |
 |---|---|---|---|
-| 1 MHz (/200) | 0.93 Mbit/s (92 %) | 0.95 Mbit/s (95 %) | 0.96 Mbit/s (96 %) |
-| 10 MHz (/20) | 5.8 Mbit/s (57 %) | 6.7 Mbit/s (67 %) | 7.3 Mbit/s (73 %) |
-| 25 MHz (/8) | 8.7 Mbit/s (34 %) | 11.3 Mbit/s (45 %) | 13.1 Mbit/s (52 %) |
-| 50 MHz (/4) | 9.1 Mbit/s (18 %) | 13.7 Mbit/s (27 %) | 17.5 Mbit/s (35 %) |
+| 1 MHz (/200) | 0.96 (0.93) Mbit/s, 96 % | 0.97 (0.95) Mbit/s, 96 % | 0.98 (0.96) Mbit/s, 98 % |
+| 10 MHz (/20) | 7.3 (5.8) Mbit/s, 73 % | 8.1 (6.7) Mbit/s, 80 % | 8.4 (7.3) Mbit/s, 84 % |
+| 25 MHz (/8) | 12.9 (8.7) Mbit/s, 51 % | 15.7 (11.3) Mbit/s, 62 % | 17.2 (13.1) Mbit/s, 68 % |
+| 50 MHz (/4) | 13.7 (9.1) Mbit/s, 27 % | 20.5 (13.7) Mbit/s, 40 % | 26.0 (17.5) Mbit/s, 51 % |
 
 At 1 MHz the wire dominates; above about 10 MHz the polling loop (one APB FIFO access per
-frame each way) and the per-call overhead are the limit. Each bus call now first compares the
-clock registers with `Clocks` (clk_sys and clk_uart read twice each): about 7 µs per call,
-which took the 50 MHz 8-bit figure from 12.1 to 9.1 Mbit/s against the first run. Longer
-transfers or wider frames get closer to the wire rate.
+frame each way) and the per-call overhead are the limit. Review 6 compared clk_sys and
+clk_uart (22 register reads, from shared SRAM) on every bus call: about 7 µs per call, 50 MHz
+8-bit 12.1 → 9.1 Mbit/s. Review 7 checks clk_sys only, once per transaction, from ISRAM
+(5 reads): the 32 calls of 32 frames at 50 MHz 8-bit take 600 µs instead of 896 µs, about
+9 µs less per call (HW). Longer transfers or wider frames get closer to the wire rate.
 
 The rate is measured on the 1 MHz timer around each 32-frame transfer call (CS handling
 included), so it is a throughput figure, not an SCLK measurement. SCLK itself was not probed

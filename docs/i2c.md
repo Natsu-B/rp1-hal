@@ -54,12 +54,17 @@ the low period. HW at 200 MHz (2026-10-29, ESP32
 RMT, 100 ns ticks): 100.1 kHz, 400.0 kHz, 1011 kHz (NACK probe only). Actual timing
 depends on pull-ups, capacitance, stretching and FIFO service. No shared clock is
 programmed and SCMI ownership is unchanged. A clock tree that no longer matches the
-`Clocks` value fails with `Precondition`: `init`, `set_speed` and every transaction compare
-clk_sys and clk_uart with it before touching the controller (STATIC, host model test; the
-transaction check used to cover only PLL_SYS and CLK_UART, so clk_sys moved to XOSC went
-unnoticed). `init` checks the clocks and the speed before it releases the reset; on any
-error it returns `InitError` with the token and the untouched pins, so the caller can retry
-(`?` converts it to `Error`).
+`Clocks` value fails with `Precondition` before the controller is touched. `ic_clk` is
+clk_sys, so clk_uart is not compared. `init` and `set_speed` read CLK_SYS CTRL/DIV/SEL and
+the PLL_SYS tuple twice (`Clocks::sys_current_strict`); every transaction checks once with
+`Clocks::sys_current` (CLK_SYS_SEL and DIV_INT, plus PLL_SYS CS/FBDIV_INT/PRIM when SEL is
+PLL_SYS; see `docs/spi.md`) (STATIC, host model tests). The counts are computed in whole MHz
+(32-bit, the same values as the 64-bit formula for the 50 and 200 MHz clk_sys; any other
+`ic_clk` is `Invalid`). `init` checks clk_sys and the speed before it releases the reset; on
+any error it returns `InitError` with the token and the untouched pins, so the caller can
+retry (`?` converts it to `Error`). STATIC (host model through an injected register
+interface): a stale clk_sys or an impossible speed writes no register, leaves the reset
+asserted and routes no pin, and the returned token and pins initialise on retry.
 A controller declared under `[proc1]` takes its `Clocks` from
 `Clocks::wait_from_proc0(&core, timeout_us)` (the value proc0's `Authority::init` published;
 see `docs/adc.md`, "Clocks on proc1"). STATIC: compile-checked in `examples/dual-core`.
