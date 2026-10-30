@@ -278,8 +278,15 @@ fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
 #[test]
 fn unusable_bus_numbers_are_rejected_by_name() {
     use rp1_build::metadata::peripheral_id;
-    for p in [
-        "SPI2", "SPI4", "SPI6", "SPI16", "SPI32", "I2C4", "I2C9", "I2C32",
+    for (p, why) in [
+        ("SPI2", "E4: SPI2 is not supported yet"),
+        ("SPI4", "E4: SPI4 is slave-only"),
+        ("SPI6", "E2: SPI6 has no bank-0 pins"),
+        ("SPI16", "E0: unknown key 'spi16' in proc1"),
+        ("SPI32", "E0: unknown key 'spi32' in proc1"),
+        ("I2C4", "E2: I2C4 has no bank-0 pins"),
+        ("I2C9", "E0: unknown key 'i2c9' in proc1"),
+        ("I2C32", "E0: unknown key 'i2c32' in proc1"),
     ] {
         assert!(peripheral_id(p).is_err(), "{p}");
         let key = p.to_ascii_lowercase();
@@ -299,15 +306,25 @@ fn unusable_bus_numbers_are_rejected_by_name() {
                 );
             }
             d.validate().unwrap();
+            // Complete signals on free pins (SPI1's 21/20/19, I2C1's 2/3), so that only the
+            // bus number can be why validation fails.
             let instance = if p.starts_with("SPI") {
-                Instance::Spi(SpiPins::default())
+                Instance::Spi(SpiPins {
+                    sck: Some(21),
+                    mosi: Some(20),
+                    miso: Some(19),
+                    ..SpiPins::default()
+                })
             } else {
-                Instance::I2c(I2cPins::default())
+                Instance::I2c(I2cPins {
+                    sda: Some(2),
+                    scl: Some(3),
+                })
             };
             d.proc1.instances.insert(key.clone(), instance);
             let e = d.validate().unwrap_err().to_string();
-            assert!(!e.contains("claimed twice"), "{p}: {e}");
-            assert!(e.to_ascii_uppercase().contains(p), "{p}: {e}");
+            assert!(e.starts_with(why), "{p}: {e}");
+            assert!(!e.contains("needs"), "{p}: {e}");
             assert!(
                 generate("bad", "0.1.0", &d, [0; 32], [0; 20]).is_err(),
                 "{p}"
