@@ -156,6 +156,7 @@ VPU ファーム: config.txt / cmdline.txt を処理、rp1-bundle.img を initra
   `device_tree=` は使わない。SCMI の transport・クロック利用者の付け替え・予約は `.rp1.dtbo` が自分で足す
   （declaration-and-note.md §3.1）。標準 DTB の `/chosen/bootargs`（約 150 B）がファームにより cmdline.txt の前に付くが、
   880 B の上限内で収まる（HW: bootargs 568 B）。HW（2026-10-29、cold boot 2 回）。
+- 旧 PoC の基準 DTB（`scmi_linux.dtb`・`rp1-base.dtb`。`gpio-reserved-ranges` で GPIO 2..53 を予約）は、RP1 所有ピンちょうどを予約する今の方針と衝突する（`check` が予約の縮小として停止する）。標準 DTB を使う。
 - 起動時間（電源 → BusyBox の `~ #`、UART の 1 s 精度）: **約 31 s**（PoC 84〜87 s）。内訳: VPU ファーム（束 28.7 MB の
   TFTP 約 10 s を含む）約 26 s、rp1boot 約 1.1 s、Linux 約 3 s。
 - SD 起動の経路は未試験。
