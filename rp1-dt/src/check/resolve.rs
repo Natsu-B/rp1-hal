@@ -394,7 +394,7 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                 // cannot be parsed may still name rp1_gpio.
                 let Some(values) = fdt.cells(n, name) else {
                     let raw = fdt.prop(n, name).unwrap_or_default();
-                    if names_handle(raw.chunks_exact(4).map(be32), gpio_handle) {
+                    if names_handle(raw.as_chunks::<4>().0.iter().map(be32), gpio_handle) {
                         out.unresolved.push(format!(
                             "{} {name}: malformed GPIO list may name rp1_gpio",
                             fdt.path(n)
@@ -448,7 +448,9 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                     None => {
                         let raw = fdt.prop(n, name).unwrap_or_default();
                         if raw
-                            .chunks_exact(4)
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
                             .map(be32)
                             .any(|h| fdt.phandle(h).is_some_and(|g| fdt.is_descendant(g, gpio)))
                         {
@@ -552,7 +554,7 @@ fn rp1_irq_lines(
         let prop = "interrupts-extended";
         let Some(values) = fdt.cells(n, prop) else {
             let raw = fdt.prop(n, prop).unwrap_or_default();
-            if names_handle(raw.chunks_exact(4).map(be32), Some(handle)) {
+            if names_handle(raw.as_chunks::<4>().0.iter().map(be32), Some(handle)) {
                 unresolved.push(format!(
                     "{} {prop}: malformed list may name rp1_gpio",
                     fdt.path(n)
@@ -623,8 +625,8 @@ fn rp1_irq_lines(
     Ok(lines)
 }
 
-fn be32(word: &[u8]) -> u32 {
-    u32::from_be_bytes([word[0], word[1], word[2], word[3]])
+fn be32(word: &[u8; 4]) -> u32 {
+    u32::from_be_bytes(*word)
 }
 
 /// Whether any word may be the phandle `handle` (false when the controller has none).
