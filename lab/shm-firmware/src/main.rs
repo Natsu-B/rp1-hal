@@ -180,13 +180,16 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         log!("ADC_RESULT boot {:?}\n", r).unwrap();
     }
     let spi = match clocks {
-        Ok(c) => p.SPI0.init(
-            p.pins.gpio11,
-            p.pins.gpio10,
-            p.pins.gpio9,
-            &c,
-            rp1_hal::spi::Config::new(1_000_000, embedded_hal::spi::MODE_0),
-        ),
+        Ok(c) => p
+            .SPI0
+            .init(
+                p.pins.gpio11,
+                p.pins.gpio10,
+                p.pins.gpio9,
+                &c,
+                rp1_hal::spi::Config::new(1_000_000, embedded_hal::spi::MODE_0),
+            )
+            .map_err(|e| e.error),
         Err(_) => Err(rp1_hal::spi::Error::Precondition),
     };
     match &spi {
