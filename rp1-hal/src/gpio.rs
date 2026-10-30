@@ -5,7 +5,6 @@ use embedded_hal::digital::{ErrorType, InputPin, OutputPin, StatefulOutputPin};
 pub struct Unconfigured;
 pub struct Input;
 pub struct Output;
-pub struct Function<const F: u8>;
 /// Muxed to the peripheral signal named by a driver's pin trait (for example [`crate::uart::Tx`]),
 /// with the function select from the bank-0 pin table.
 pub struct Alternate;
@@ -53,13 +52,6 @@ impl<const N: u8> Pin<N> {
         write(0x4001_7004, 1 << 19);
         write(0x400e_3004, 1 << N);
         write(0x400d_0004 + N as usize * 8, 5);
-        write(0x400f_0004 + N as usize * 4, 0x46);
-        Pin { _mode: PhantomData }
-    }
-    pub fn into_function<const F: u8>(self) -> Pin<N, Function<F>> {
-        assert!(F <= 31);
-        write(0x4001_7004, 1 << 19);
-        write(0x400d_0004 + N as usize * 8, u32::from(F));
         write(0x400f_0004 + N as usize * 4, 0x46);
         Pin { _mode: PhantomData }
     }
