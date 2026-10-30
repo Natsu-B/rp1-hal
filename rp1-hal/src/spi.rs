@@ -103,17 +103,71 @@ pub trait Word: sealed::Word + Copy + 'static {
     const BITS: u8;
     fn to_u32(self) -> u32;
     fn from_u32(v: u32) -> Self;
+    #[doc(hidden)]
+    fn rx(words: &mut [Self]) -> Rx<'_>;
+    #[doc(hidden)]
+    fn tx(words: &[Self]) -> Tx<'_>;
+}
+/// Receive buffer of any word type: one non-generic transfer loop serves all of them (the
+/// shared-SRAM image is small).
+#[doc(hidden)]
+pub enum Rx<'a> {
+    U8(&'a mut [u8]),
+    U16(&'a mut [u16]),
+    U32(&'a mut [u32]),
+}
+#[doc(hidden)]
+pub enum Tx<'a> {
+    U8(&'a [u8]),
+    U16(&'a [u16]),
+    U32(&'a [u32]),
+}
+impl Rx<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::U8(w) => w.len(),
+            Self::U16(w) => w.len(),
+            Self::U32(w) => w.len(),
+        }
+    }
+    #[inline(always)]
+    fn set(&mut self, i: usize, v: u32) {
+        match self {
+            Self::U8(w) => w.get_mut(i).map(|w| *w = v as u8),
+            Self::U16(w) => w.get_mut(i).map(|w| *w = v as u16),
+            Self::U32(w) => w.get_mut(i).map(|w| *w = v),
+        };
+    }
+}
+impl Tx<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::U8(w) => w.len(),
+            Self::U16(w) => w.len(),
+            Self::U32(w) => w.len(),
+        }
+    }
+    #[inline(always)]
+    fn get(&self, i: usize) -> u32 {
+        match self {
+            Self::U8(w) => w.get(i).map_or(0, |w| u32::from(*w)),
+            Self::U16(w) => w.get(i).map_or(0, |w| u32::from(*w)),
+            Self::U32(w) => w.get(i).copied().unwrap_or(0),
+        }
+    }
 }
 macro_rules! word {
-    ($($t:ty),*) => {$(impl Word for $t {
+    ($($t:ty: $v:ident),*) => {$(impl Word for $t {
         const BITS: u8 = <$t>::BITS as u8;
         #[inline(always)]
         fn to_u32(self) -> u32 { self as u32 }
         #[inline(always)]
         fn from_u32(v: u32) -> Self { v as $t }
+        fn rx(words: &mut [Self]) -> Rx<'_> { Rx::$v(words) }
+        fn tx(words: &[Self]) -> Tx<'_> { Tx::$v(words) }
     })*};
 }
-word!(u8, u16, u32);
+word!(u8: U8, u16: U16, u32: U32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -288,10 +342,10 @@ impl Io for Mmio {
 /// frames beyond `read` are dropped. At most `depth` frames are in flight, so neither FIFO can
 /// overflow; a stall of [`TIMEOUT_US`] without progress fails.
 #[rp1_rt::isram]
-fn exchange<W: Word>(
+fn exchange(
     io: &mut impl Io,
-    read: &mut [W],
-    write: &[W],
+    mut read: Rx<'_>,
+    write: Tx<'_>,
     mask: u32,
     depth: usize,
 ) -> Result<(), Error> {
@@ -302,17 +356,14 @@ fn exchange<W: Word>(
         let mut progress = false;
         let mut ready = (io.read(RXFLR) as usize).min(sent - received);
         while ready > 0 {
-            let v = W::from_u32(io.read(DR) & mask);
-            if let Some(r) = read.get_mut(received) {
-                *r = v;
-            }
+            read.set(received, io.read(DR) & mask);
             received += 1;
             ready -= 1;
             progress = true;
         }
         let mut room = (depth - (sent - received)).min(len - sent);
         while room > 0 {
-            io.write(DR, write.get(sent).map_or(0, |w| w.to_u32() & mask));
+            io.write(DR, write.get(sent) & mask);
             sent += 1;
             room -= 1;
             progress = true;
@@ -421,7 +472,7 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
         }
         let mask = u32::MAX >> (32 - u32::from(bits));
         let mut io = self.io();
-        let result = exchange(&mut io, read, write, mask, self.depth);
+        let result = exchange(&mut io, W::rx(read), W::tx(write), mask, self.depth);
         if result.is_err() {
             // Disabling flushes both FIFOs and stops the shifter; then the same configuration.
             setup(&mut io, self.cr0, self.div);
@@ -656,7 +707,7 @@ mod tests {
         let mut m = Model::new(4);
         let tx: Vec<u16> = (0..37).map(|i| 0xf000 | i).collect();
         let mut rx = [0u16; 40];
-        exchange(&mut m, &mut rx, &tx, 0xfff, 4).unwrap();
+        exchange(&mut m, Rx::U16(&mut rx), Tx::U16(&tx), 0xfff, 4).unwrap();
         for i in 0..37 {
             assert_eq!(rx[i], tx[i] & 0xfff);
         }
@@ -665,11 +716,11 @@ mod tests {
         // Longer write than read: received frames beyond `read` are drained and dropped.
         let mut m = Model::new(2);
         let mut rx = [0u8; 1];
-        exchange(&mut m, &mut rx, &[1u8, 2, 3, 4, 5], 0xff, 2).unwrap();
+        exchange(&mut m, Rx::U8(&mut rx), Tx::U8(&[1, 2, 3, 4, 5]), 0xff, 2).unwrap();
         assert_eq!(rx, [1]);
         assert!(m.rx.is_empty() && m.tx.is_empty());
         let mut m = Model::new(2);
-        exchange::<u8>(&mut m, &mut [], &[], 0xff, 2).unwrap();
+        exchange(&mut m, Rx::U32(&mut []), Tx::U32(&[]), 0xff, 2).unwrap();
         assert!(m.pushed.is_empty());
     }
 
@@ -678,7 +729,7 @@ mod tests {
         let mut m = Model::new(4);
         m.stalled = true;
         assert_eq!(
-            exchange(&mut m, &mut [0u8; 8], &[0u8; 8], 0xff, 4),
+            exchange(&mut m, Rx::U8(&mut [0; 8]), Tx::U8(&[0; 8]), 0xff, 4),
             Err(Error::Timeout)
         );
         assert_eq!(m.pushed.len(), 4);
@@ -686,7 +737,7 @@ mod tests {
         let mut m = Model::new(4);
         m.risr = int::RXOI;
         assert_eq!(
-            exchange(&mut m, &mut [0u8; 8], &[0u8; 8], 0xff, 4),
+            exchange(&mut m, Rx::U8(&mut [0; 8]), Tx::U8(&[0; 8]), 0xff, 4),
             Err(Error::Overrun)
         );
         let mut m = Model::new(4);
