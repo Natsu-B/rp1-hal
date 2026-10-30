@@ -14,4 +14,5 @@ sha2 = "0.10"
 object = { version = "0.36", features = ["read"] }
 
 [dev-dependencies]
+rp1-hal = { path = "../rp1-hal" }
 tempfile = "3"

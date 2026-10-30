@@ -22,6 +22,89 @@ peripherals=["TIMER.ALARM1"]
     )
     .unwrap()
 }
+
+#[test]
+fn reserves_exactly_gpio_signal_and_log_pins_as_contiguous_ranges() {
+    let d: Declaration = toml::from_str(
+        r#"
+schema = 2
+log = { sink = "uart0", baudrate = 115200 }
+[proc0]
+gpio = [22]
+i2c1 = { sda = 2, scl = 3 }
+[proc1]
+gpio = [27, 8]
+spi0 = { sck = 11, mosi = 10, miso = 9 }
+adc = {}
+"#,
+    )
+    .unwrap();
+    let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    assert!(
+        a.dts
+            .contains("gpio-reserved-ranges = <2 2 8 4 14 2 22 1 27 1>;")
+    );
+    assert!(a.dts.contains("rp1,on-conflict = \"disable\";"));
+    assert!(a.dts.contains("rp1,gpiomem = \"disable\";"));
+    assert!(!a.dts.contains("gpiomem@"));
+    let empty = generate("test", "0.1.0", &Declaration::default(), [0; 32], [0; 20]).unwrap();
+    assert!(empty.dts.contains("gpio-reserved-ranges = <>;"));
+}
+
+#[test]
+fn every_owned_instance_disables_its_linux_node_and_keeps_its_reset_and_clock() {
+    use rp1_build::metadata::BOARD_LINUX_RESETS;
+    // Expected reset locations are independent of the generation table.
+    let cases = [
+        ("uart0", "tx=14,rx=15", 1, 26),
+        ("uart1", "tx=0,rx=1", 1, 27),
+        ("uart2", "tx=4,rx=5", 1, 28),
+        ("uart3", "tx=8,rx=9", 1, 29),
+        ("uart4", "tx=12,rx=13", 1, 30),
+        ("i2c0", "sda=0,scl=1", 0, 7),
+        ("i2c1", "sda=2,scl=3", 0, 8),
+        ("i2c2", "sda=4,scl=5", 0, 9),
+        ("i2c3", "sda=6,scl=7", 0, 10),
+        ("spi0", "sck=11,mosi=10,miso=9", 1, 10),
+        ("spi1", "sck=21,mosi=20,miso=19", 1, 11),
+        ("spi3", "sck=7,mosi=6,miso=5", 1, 13),
+        ("spi5", "sck=15,mosi=14,miso=13", 1, 15),
+        ("adc", "", 0, 0),
+    ];
+    for (name, pins, bank, bit) in cases {
+        for core in [0, 1] {
+            let d: Declaration = toml::from_str(&format!(
+                "schema=2\n[linux]\nkeep={{}}\n[proc{core}]\n{name}={{{pins}}}"
+            ))
+            .unwrap();
+            let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+            for (other, _, _, _) in cases {
+                let disabled =
+                    format!("target = <&rp1_{other}>; __overlay__ {{ status = \"disabled\"; }}");
+                assert_eq!(a.dts.contains(&disabled), name == other, "{name}/{other}");
+            }
+            let mut expected = BOARD_LINUX_RESETS;
+            expected[bank] &= !(1 << bit);
+            assert_eq!(d.linux_resets(), expected, "{name}");
+            let blocks = unsafe { rp1_hal::linux_blocks::LinuxBlocks::new(d.linux_resets()) };
+            assert_eq!(
+                blocks.held_clocks(),
+                if name == "adc" {
+                    1 << rp1_hal::scmi::id::ADC
+                } else {
+                    0
+                },
+                "{name}"
+            );
+        }
+    }
+    let d = declaration();
+    let mut expected = BOARD_LINUX_RESETS;
+    expected[1] &= !(1 << 26); // The system log owns UART0 too.
+    assert_eq!(d.linux_resets(), expected);
+    let blocks = unsafe { rp1_hal::linux_blocks::LinuxBlocks::new(d.linux_resets()) };
+    assert_eq!(blocks.held_clocks(), 0);
+}
 #[test]
 fn rejects_mistakes_before_building() {
     let mut d = declaration();
@@ -482,7 +565,7 @@ fn overlay_applies_to_a_copy_of_the_stock_board_dtb() {
     let base_pins = rp1_build::overlay::reserved_gpios(&copy).unwrap();
     let merged_pins = rp1_build::overlay::reserved_gpios(&merged).unwrap();
     assert!(merged_pins.is_superset(&base_pins));
-    assert!([14, 15, 22, 27].iter().all(|p| merged_pins.contains(p)));
+    assert_eq!(merged_pins, [14, 15, 22, 27].into());
     assert!(!merged_pins.contains(&0) && !merged_pins.contains(&1));
 
     let m = rp1_build::fdt::Fdt::parse(&fs::read(&merged).unwrap()).unwrap();

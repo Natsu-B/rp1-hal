@@ -347,6 +347,7 @@ version = "0.1.0"
 dependencies = [
  "object",
  "rp1-dt",
+ "rp1-hal",
  "rp1-pinmux",
  "rp1-proto",
  "serde",

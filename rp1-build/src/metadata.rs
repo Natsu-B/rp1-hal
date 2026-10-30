@@ -81,6 +81,17 @@ impl<'de> Deserialize<'de> for Declaration {
     }
 }
 impl Declaration {
+    pub(crate) fn owned_instances(&self) -> impl Iterator<Item = (&'static str, usize, u32)> + '_ {
+        crate::board::INSTANCES
+            .iter()
+            .filter(|(name, _, _, _)| {
+                self.proc0.instances.contains_key(*name)
+                    || self.proc1.instances.contains_key(*name)
+                    || (self.log.is_some() && *name == "uart0")
+            })
+            .map(|&(_, label, bank, mask)| (label, bank, mask))
+    }
+
     fn from_input(input: InputDeclaration) -> Result<Self> {
         if !matches!(input.schema, 1 | 2) {
             return Err("unsupported schema".into());
@@ -317,24 +328,8 @@ impl Declaration {
     /// clk_adc (`rp1_hal::linux_blocks::LinuxBlocks::held_clocks`).
     pub fn linux_resets(&self) -> [u32; 3] {
         let mut r = BOARD_LINUX_RESETS;
-        for p in self
-            .proc0
-            .peripherals()
-            .iter()
-            .chain(&self.proc1.peripherals())
-        {
-            if let Some(n) = p.strip_prefix("UART").and_then(|n| n.parse::<u32>().ok()) {
-                r[1] &= !(1 << (26 + n));
-            } else if let Some(n) = p.strip_prefix("I2C").and_then(|n| n.parse::<u32>().ok()) {
-                r[0] &= !(1 << (7 + n));
-            } else if let Some(n) = p.strip_prefix("SPI").and_then(|n| n.parse::<u32>().ok()) {
-                r[1] &= !(1 << (10 + n));
-            } else if p == "ADC" {
-                r[0] &= !1;
-            }
-        }
-        if self.log.is_some() {
-            r[1] &= !(1 << 26);
+        for (_, bank, mask) in self.owned_instances() {
+            r[bank] &= !mask;
         }
         r
     }

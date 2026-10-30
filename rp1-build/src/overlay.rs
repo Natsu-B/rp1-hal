@@ -40,11 +40,6 @@ pub fn reserved_gpios(dtb: &Path) -> Result<std::collections::BTreeSet<u32>> {
     )?)?)
 }
 
-/// rpi-cm5 profile: the 40-pin header GPIO 2..27 is RP1's to declare (Linux keeps 0..1 for UART1,
-/// e.g. `dtoverlay=uart1-pi5`). GPIO 28..53 are board lines of Linux-owned blocks (ETH_RST_N 32,
-/// ETH_IRQ_N 37, USB VBUS 42/43, PWR LED 44, fan, camera regulator) and stay Linux's, as in the
-/// stock DT.
-pub const BOARD_GPIO_RESERVED: std::ops::RangeInclusive<u8> = 2..=27;
 /// Stock-enabled RP1 nodes that need the stock RP1 firmware's mailbox service (`rp1_firmware`),
 /// which rp1-hal does not implement (disabled when RP1 is the clock authority).
 pub const BOARD_NEEDS_STOCK_FIRMWARE: &[&str] = &["rp1_pio"];
@@ -107,9 +102,8 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         ));
         n += 1;
     };
-    // gpio-reserved-ranges is replaced, not merged, by an overlay. Emit the union of the board
-    // profile's reservation and the declared pins so Linux never gets more pins than the base DT
-    // gives it (`cargo rp1 check --dtb` verifies this against the actual DTB).
+    // The last overlay replaces the reservation with exactly the RP1-owned pins.
+    // `check` still rejects shrinking any reservation in the supplied base DTB.
     let mut pins: Vec<_> = d
         .proc0
         .pins()
@@ -120,74 +114,26 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
     if d.log.is_some() {
         pins.extend([14, 15]);
     }
-    pins.extend(BOARD_GPIO_RESERVED);
     pins.sort();
     pins.dedup();
     let ranges = pins
-        .iter()
-        .map(|p| format!("{p} 1"))
+        .chunk_by(|a, b| *b == *a + 1)
+        .map(|range| format!("{} {}", range[0], range.len()))
         .collect::<Vec<_>>()
         .join(" ");
-    if !pins.is_empty() {
-        fragment(
-            "target = <&rp1_gpio>",
-            &format!("gpio-reserved-ranges = <{ranges}>;"),
-        );
-    }
-    let mut uarts: Vec<_> = d
-        .proc0
-        .peripherals()
-        .iter()
-        .chain(&d.proc1.peripherals())
-        .filter(|p| p.starts_with("UART"))
-        .map(|p| p[4..].parse::<u8>().unwrap())
-        .collect();
-    if d.log.is_some() {
-        uarts.push(0);
-    }
-    for uart in uarts {
-        fragment(
-            &format!("target = <&rp1_uart{uart}>"),
-            "status = \"disabled\";",
-        );
-    }
-    if d.proc0
-        .peripherals()
-        .iter()
-        .chain(&d.proc1.peripherals())
-        .any(|p| p == "ADC")
-    {
-        fragment("target = <&rp1_adc>", "status = \"disabled\";");
-    }
-    for i2c in d
-        .proc0
-        .peripherals()
-        .iter()
-        .chain(&d.proc1.peripherals())
-        .filter_map(|p| p.strip_prefix("I2C"))
-    {
-        fragment(
-            &format!("target = <&rp1_i2c{i2c}>"),
-            "status = \"disabled\";",
-        );
-    }
-    for spi in d
-        .proc0
-        .peripherals()
-        .iter()
-        .chain(&d.proc1.peripherals())
-        .filter_map(|p| p.strip_prefix("SPI"))
-    {
-        fragment(
-            &format!("target = <&rp1_spi{spi}>"),
-            "status = \"disabled\";",
-        );
+    fragment(
+        "target = <&rp1_gpio>",
+        &format!("gpio-reserved-ranges = <{ranges}>;"),
+    );
+    for (label, _, _) in d.owned_instances() {
+        fragment(&format!("target = <&{label}>"), "status = \"disabled\";");
     }
     fragment(
         "target-path = \"/\"",
         &format!(
             r#"
-        rp1-firmware {{ rp1,note = [{bytes}]; rp1,abi = <2>; rp1,static-only; }};
+        rp1-firmware {{ rp1,note = [{bytes}]; rp1,abi = <2>; rp1,static-only;
+            rp1,on-conflict = "{on_conflict}"; rp1,gpiomem = "{gpiomem}"; }};
         rp1_link: rp1-link@1f0040c000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:{link}";
             reg = <0x1f 0x0040c000 0x4000>; status = "okay"; }};
         rp1-doorbell@1f000d0000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:{doorbell}";
@@ -195,6 +141,14 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         rp1-header@{phys:x} {{ compatible = "generic-uio"; linux,uio-name = "rp1:{header}";
             reg = <0 0x{phys:x} 0x10000>; status = "okay"; }};
     "#,
+            on_conflict = match d.linux.on_conflict {
+                crate::board::OnConflict::Disable => "disable",
+                crate::board::OnConflict::Refuse => "refuse",
+            },
+            gpiomem = match d.linux.gpiomem {
+                crate::board::Gpiomem::Disable => "disable",
+                crate::board::Gpiomem::Keep => "keep",
+            },
             link = rp1_proto::uio::LINK,
             doorbell = rp1_proto::uio::DOORBELL,
             header = rp1_proto::uio::HEADER,

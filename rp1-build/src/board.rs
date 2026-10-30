@@ -9,6 +9,25 @@ use std::{collections::BTreeMap, ops::RangeInclusive};
 pub const LINUX_PINS: RangeInclusive<u8> = 28..=53;
 pub const LINUX_BLOCKS: &[&str] = &["ETH", "USBHOST0", "USBHOST1", "DMA", "PCIE", "PIO"];
 
+/// STATIC: declarable instance, Linux DT label, reset bank and mask (RP1 RESETS).
+/// Held SCMI clocks follow these masks via `LinuxBlocks::held_clocks` (ADC only).
+pub(crate) const INSTANCES: &[(&str, &str, usize, u32)] = &[
+    ("uart0", "rp1_uart0", 1, 1 << 26),
+    ("uart1", "rp1_uart1", 1, 1 << 27),
+    ("uart2", "rp1_uart2", 1, 1 << 28),
+    ("uart3", "rp1_uart3", 1, 1 << 29),
+    ("uart4", "rp1_uart4", 1, 1 << 30),
+    ("i2c0", "rp1_i2c0", 0, 1 << 7),
+    ("i2c1", "rp1_i2c1", 0, 1 << 8),
+    ("i2c2", "rp1_i2c2", 0, 1 << 9),
+    ("i2c3", "rp1_i2c3", 0, 1 << 10),
+    ("spi0", "rp1_spi0", 1, 1 << 10),
+    ("spi1", "rp1_spi1", 1, 1 << 11),
+    ("spi3", "rp1_spi3", 1, 1 << 13),
+    ("spi5", "rp1_spi5", 1, 1 << 15),
+    ("adc", "rp1_adc", 0, 1),
+];
+
 pub fn linux_line(pin: u8) -> Option<&'static str> {
     if !LINUX_PINS.contains(&pin) {
         return None;

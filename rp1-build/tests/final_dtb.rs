@@ -41,7 +41,7 @@ const BASE: &str = r#"/dts-v1/;
         rp1_spi0: spi0 { }; rp1_spi1: spi1 { }; rp1_spi2: spi2 { }; rp1_spi3: spi3 { };
         rp1_spi4: spi4 { }; rp1_spi5: spi5 { }; rp1_spi6: spi6 { }; rp1_spi7: spi7 { };
         rp1_spi8: spi8 { };
-        rp1_gpio: gpio@d0000 { gpio-reserved-ranges = <2 52>; #gpio-cells = <2>;
+        rp1_gpio: gpio@d0000 { #gpio-cells = <2>;
             micclk1_hog { gpio-hog; gpios = <46 0>; output-high; };
             uart0_14_15: rp1_uart0_14_15 {
                 tx { function = "uart0"; pins = "gpio14"; };
@@ -86,6 +86,164 @@ fn dtc(dir: &Path, name: &str, source: &str) -> std::path::PathBuf {
     out
 }
 
+fn apply_declaration(d: &Declaration, source: &str) -> (rp1_build::fdt::Fdt, Vec<u8>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dtc(
+        tmp.path(),
+        "base",
+        &source
+            .replace("@EXTRA_RESERVED@", "")
+            .replace("@EXTRA_RP1@", ""),
+    );
+    let a = generate("test", "0.1.0", d, [0; 32], [0; 20]).unwrap();
+    let app = dtc(tmp.path(), "app", &a.dts);
+    let merged = tmp.path().join("merged.dtb");
+    overlay::apply(&base, &app, &merged).unwrap();
+    (
+        rp1_build::fdt::Fdt::parse(&fs::read(merged).unwrap()).unwrap(),
+        a.note,
+    )
+}
+
+#[test]
+fn schema2_overlay_reserves_exact_ranges_and_disables_only_owned_instances() {
+    let d: Declaration = toml::from_str(
+        r#"
+schema = 2
+log = { sink = "uart0", baudrate = 115200 }
+[proc0]
+gpio = [22]
+i2c1 = { sda = 2, scl = 3 }
+[proc1]
+gpio = [8, 27]
+spi0 = { sck = 11, mosi = 10, miso = 9 }
+adc = {}
+"#,
+    )
+    .unwrap();
+    let (fdt, note) = apply_declaration(&d, BASE);
+    let gpio = fdt.label("rp1_gpio").unwrap();
+    assert_eq!(
+        fdt.cells(gpio, "gpio-reserved-ranges").unwrap(),
+        [2, 2, 8, 4, 14, 2, 22, 1, 27, 1]
+    );
+    assert_eq!(
+        rp1_dt::check::reserved_gpios(&fdt).unwrap(),
+        [2, 3, 8, 9, 10, 11, 14, 15, 22, 27].into()
+    );
+    for label in ["rp1_uart0", "rp1_i2c1", "rp1_spi0", "rp1_adc"] {
+        assert!(!fdt.enabled(fdt.label(label).unwrap()), "{label}");
+    }
+    for label in [
+        "rp1_i2c0", "rp1_i2c2", "rp1_i2c3", "rp1_spi1", "rp1_spi3", "rp1_spi5", "rp1_eth",
+        "rp1_dma",
+    ] {
+        assert!(fdt.enabled(fdt.label(label).unwrap()), "{label}");
+    }
+    assert!(rp1_dt_check(&fdt, &note).is_empty());
+}
+
+#[test]
+fn linux_uart1_keep_preserves_configured_status_and_scmi_clocks() {
+    for enabled in [false, true] {
+        let base = BASE.replace(
+            "rp1_uart1: serial@34000 { status = \"disabled\"; };",
+            &format!(
+                "rp1_uart1: serial@34000 {{ status = \"{}\"; }};",
+                if enabled { "okay" } else { "disabled" }
+            ),
+        );
+        let d = declaration();
+        let (fdt, note) = apply_declaration(&d, &base);
+        let uart1 = fdt.label("rp1_uart1").unwrap();
+        assert_eq!(fdt.enabled(uart1), enabled);
+        assert!(
+            rp1_dt::check::reserved_gpios(&fdt)
+                .unwrap()
+                .is_disjoint(&[0, 1].into())
+        );
+        let clocks = fdt
+            .phandle_of(fdt.label("rp1_scmi_clocks").unwrap())
+            .unwrap();
+        assert_eq!(fdt.cells(uart1, "clocks").unwrap(), [clocks, 1, clocks, 0]);
+        assert_ne!(d.linux_resets()[1] & (1 << 27), 0);
+        assert!(rp1_dt_check(&fdt, &note).is_empty());
+    }
+}
+
+#[test]
+fn releasing_uart1_reserves_its_pins_and_disables_its_linux_node() {
+    let d: Declaration =
+        toml::from_str("schema=2\n[linux]\nkeep={}\n[proc1]\nuart1={tx=0,rx=1}").unwrap();
+    let base = BASE.replace(
+        "rp1_uart1: serial@34000 { status = \"disabled\"; };",
+        "rp1_uart1: serial@34000 { status = \"okay\"; };",
+    );
+    let (fdt, note) = apply_declaration(&d, &base);
+    assert_eq!(rp1_dt::check::reserved_gpios(&fdt).unwrap(), [0, 1].into());
+    assert_eq!(
+        fdt.cells(fdt.label("rp1_gpio").unwrap(), "gpio-reserved-ranges")
+            .unwrap(),
+        [0, 2]
+    );
+    assert!(!fdt.enabled(fdt.label("rp1_uart1").unwrap()));
+    assert_eq!(d.linux_resets()[1] & (1 << 27), 0);
+    assert!(rp1_dt_check(&fdt, &note).is_empty());
+}
+
+#[test]
+fn empty_ownership_replaces_base_reservations_but_check_still_rejects_shrinking_them() {
+    let base = BASE.replace(
+        "#gpio-cells = <2>;",
+        "#gpio-cells = <2>; gpio-reserved-ranges = <5 2>;",
+    );
+    let d = Declaration::default();
+    let (after, note) = apply_declaration(&d, &base);
+    assert!(rp1_dt::check::reserved_gpios(&after).unwrap().is_empty());
+    assert_eq!(
+        after
+            .cells(after.label("rp1_gpio").unwrap(), "gpio-reserved-ranges")
+            .unwrap(),
+        []
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let before = dtc(
+        tmp.path(),
+        "before",
+        &base
+            .replace("@EXTRA_RESERVED@", "")
+            .replace("@EXTRA_RP1@", ""),
+    );
+    let before = rp1_build::fdt::Fdt::parse(&fs::read(before).unwrap()).unwrap();
+    let conflicts = rp1_dt::check::check(&before, &after, &note).unwrap();
+    assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+    assert!(conflicts[0].contains("[5, 6] back to Linux"));
+}
+
+#[test]
+fn policy_properties_survive_overlay_application_without_targeting_gpiomem() {
+    for on_conflict in ["disable", "refuse"] {
+        for gpiomem in ["disable", "keep"] {
+            let d: Declaration = toml::from_str(&format!("schema=2\n[linux]\non_conflict='{on_conflict}'\ngpiomem='{gpiomem}'\n[proc0]\ngpio=[22]")).unwrap();
+            // A DTB without gpiomem must accept the overlay too.
+            for extra in [
+                "",
+                "gpiomem@d0000 { compatible = \"raspberrypi,gpiomem\"; reg = <0xd0000 0x30000>; };",
+            ] {
+                let (fdt, note) = apply_declaration(&d, &BASE.replace("@EXTRA_RP1@", extra));
+                let firmware = fdt.find("/rp1-firmware").unwrap();
+                assert_eq!(fdt.strings(firmware, "rp1,on-conflict"), [on_conflict]);
+                assert_eq!(fdt.strings(firmware, "rp1,gpiomem"), [gpiomem]);
+                assert_eq!(fdt.prop(firmware, "rp1,note").unwrap(), note);
+                assert_eq!(fdt.cells(firmware, "rp1,abi").unwrap(), [2]);
+                if let Some(node) = fdt.find("/rp1/gpiomem@d0000") {
+                    assert!(fdt.enabled(node)); // T4/T6 apply the policy.
+                }
+            }
+        }
+    }
+}
+
 /// Conflicts after applying the generated overlay (and then `later` overlays) to the fixture.
 fn conflicts(extra_reserved: &str, extra_rp1: &str, later: &[&str]) -> Vec<String> {
     let tmp = tempfile::tempdir().unwrap();
@@ -128,19 +286,19 @@ fn clean_lab_profile_passes() {
 fn gpio_hog_on_reserved_line_is_rejected() {
     // GPIO 28..53 are Linux's (stock hog on 46, PWR LED on 44): no conflict.
     assert!(conflicts("", "", &[]).is_empty());
-    // A hog or consumer on a header line withheld from Linux (GPIO5) is caught.
+    // A hog or consumer on an RP1-owned pin is caught.
     let c = conflicts(
         "",
         "",
-        &[r#"&rp1_gpio { bad_hog { gpio-hog; gpios = <5 0>; output-high; }; };"#],
+        &[r#"&rp1_gpio { bad_hog { gpio-hog; gpios = <22 0>; output-high; }; };"#],
     );
-    assert!(c.iter().any(|c| c.contains("GPIO5")), "{c:?}");
-    let c = conflicts("", "", &[r#"&led_pwr { gpios = <&rp1_gpio 6 1>; };"#]);
-    assert!(c.iter().any(|c| c.contains("GPIO6")), "{c:?}");
-    // GPIO0/1 stay Linux's.
+    assert!(c.iter().any(|c| c.contains("GPIO22")), "{c:?}");
+    let c = conflicts("", "", &[r#"&led_pwr { gpios = <&rp1_gpio 27 1>; };"#]);
+    assert!(c.iter().any(|c| c.contains("GPIO27")), "{c:?}");
+    // GPIO0/1 and undeclared header GPIO5/6 stay Linux's.
     let c = conflicts(
         "",
-        r#"user01 { gpios = <&rp1_gpio 0 0 &rp1_gpio 1 0>; };"#,
+        r#"user01 { gpios = <&rp1_gpio 0 0 &rp1_gpio 1 0 &rp1_gpio 5 0 &rp1_gpio 6 0>; };"#,
         &[],
     );
     assert!(c.is_empty(), "{c:?}");
