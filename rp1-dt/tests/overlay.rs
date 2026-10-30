@@ -183,6 +183,69 @@ fn earlier_fragments_see_preserved_phandles_of_later_ones() {
     assert_eq!(fdt.number(device, "y"), Some(3));
 }
 
+#[test]
+fn earlier_fragment_targets_a_node_a_later_fragment_redefines() {
+    // REVIEW5 #6 (i): fragment@0's `target = <&local>` names a node that only fragment@1
+    // defines, redefining the base /device. The preserve pass rewrites the target to the
+    // base phandle, so fragment@0 lands on the base node.
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dtc(
+        tmp.path(),
+        "base",
+        "/dts-v1/; / { old: device { phandle = <1>; x = <1>; }; user { link = <&old>; }; };",
+    );
+    let ov = dtc(
+        tmp.path(),
+        "ov",
+        r#"/dts-v1/; /plugin/; / {
+        fragment@0 { target = <&local>; __overlay__ { y = <3>; }; };
+        fragment@1 { target-path = "/"; __overlay__ { local: device { x = <2>; }; }; };
+    };"#,
+    );
+    same_as_libfdt(&base, &ov);
+    let mut fdt = Fdt::parse(&base).unwrap();
+    rp1_dt::overlay::apply(&mut fdt, &ov).unwrap();
+    let device = fdt.find("/device").unwrap();
+    assert_eq!(fdt.phandle(1), Some(device));
+    assert_eq!(fdt.number(device, "x"), Some(2));
+    assert_eq!(fdt.number(device, "y"), Some(3));
+    assert_eq!(fdt.number(fdt.find("/user").unwrap(), "link"), Some(1));
+}
+
+#[test]
+fn nested_child_keeps_its_base_phandle() {
+    // REVIEW5 #6 (ii): the overlay redefines a child below the target; the base phandle of
+    // /parent/child is kept and both the old and the new consumer point at it.
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dtc(
+        tmp.path(),
+        "base",
+        r#"/dts-v1/; / {
+        parent { old: child { phandle = <5>; x = <1>; }; };
+        user { link = <&old>; };
+    };"#,
+    );
+    let ov = dtc(
+        tmp.path(),
+        "ov",
+        r#"/dts-v1/; /plugin/; / {
+        fragment@0 { target-path = "/"; __overlay__ {
+            parent { local: child { x = <2>; }; };
+            use { link = <&local>; };
+        }; };
+    };"#,
+    );
+    same_as_libfdt(&base, &ov);
+    let mut fdt = Fdt::parse(&base).unwrap();
+    rp1_dt::overlay::apply(&mut fdt, &ov).unwrap();
+    let child = fdt.find("/parent/child").unwrap();
+    assert_eq!(fdt.phandle(5), Some(child));
+    assert_eq!(fdt.number(child, "x"), Some(2));
+    for user in ["/user", "/use"] {
+        assert_eq!(fdt.number(fdt.find(user).unwrap(), "link"), Some(5));
+    }
+}
+
 fn fdtoverlay_fails(dir: &Path, base: &[u8], ov: &[u8]) -> bool {
     let (b, o, m) = (dir.join("b.dtb"), dir.join("o.dtbo"), dir.join("m.dtb"));
     fs::write(&b, base).unwrap();
