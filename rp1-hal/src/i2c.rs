@@ -193,7 +193,8 @@ struct Counts {
     lcnt: u32,
 }
 
-/// Counts for the SCL high/low targets of `speed` at `ic_clk_hz` (= clk_sys).
+/// Counts for the SCL high/low targets of `speed` at `ic_clk_hz` (= clk_sys, a whole number of
+/// MHz: 50 or 200; anything else is `Invalid`).
 /// Targets keep the I2C minimums (Sm 4.0/4.7 us, Fm 0.6/1.3 us, Fm+ 0.26/0.5 us).
 /// HW (DesignWare, measured at 50 MHz): high = HCNT + SPKLEN + 7, low = LCNT + 1 cycles + rise.
 fn timing(ic_clk_hz: u32, speed: Speed) -> Result<Counts, Error> {
@@ -202,7 +203,12 @@ fn timing(ic_clk_hz: u32, speed: Speed) -> Result<Counts, Error> {
         Speed::Fast => (2, 900, 1_600),
         Speed::FastPlus => (2, 400, 600),
     };
-    let cycles = |ns: u32| (u64::from(ns) * u64::from(ic_clk_hz)).div_ceil(1_000_000_000);
+    // Whole MHz only (clk_sys is 50 or 200 MHz): exact in 32 bits, no 64-bit division.
+    if !ic_clk_hz.is_multiple_of(1_000_000) {
+        return Err(Error::Invalid);
+    }
+    let mhz = ic_clk_hz / 1_000_000;
+    let cycles = |ns: u32| (ns * mhz).div_ceil(1_000);
     let spklen = cycles(SPIKE_NS).max(1);
     let hcnt = cycles(high_ns).checked_sub(spklen + 7);
     let lcnt = cycles(low_ns).checked_sub(1 + cycles(RISE_NS));
@@ -211,9 +217,9 @@ fn timing(ic_clk_hz: u32, speed: Speed) -> Result<Counts, Error> {
         (Some(h), Some(l)) if h >= spklen + 5 && l >= spklen + 7 && h.max(l) <= 0xffff => {
             Ok(Counts {
                 mode,
-                spklen: spklen as u32,
-                hcnt: h as u32,
-                lcnt: l as u32,
+                spklen,
+                hcnt: h,
+                lcnt: l,
             })
         }
         _ => Err(Error::Invalid),
@@ -656,6 +662,30 @@ mod tests {
         // Too slow a clock for the I2C or DesignWare minimums.
         assert_eq!(timing(5_000_000, Speed::FastPlus), Err(Error::Invalid));
         assert_eq!(timing(1_000_000, Speed::Standard), Err(Error::Invalid));
+        // Review 7: whole MHz only (32-bit math); the 64-bit formula gave the same counts.
+        assert_eq!(timing(50_000_500, Speed::Fast), Err(Error::Invalid));
+        for hz in [
+            1_000_000,
+            50_000_000,
+            125_000_000,
+            200_000_000,
+            4_000_000_000,
+        ] {
+            for speed in [Speed::Standard, Speed::Fast, Speed::FastPlus] {
+                let wide = |ns: u32| (u64::from(ns) * u64::from(hz)).div_ceil(1_000_000_000);
+                if let Ok(t) = timing(hz, speed) {
+                    let (_, high, low) = match speed {
+                        Speed::Standard => (1, 4_600, 5_400),
+                        Speed::Fast => (2, 900, 1_600),
+                        Speed::FastPlus => (2, 400, 600),
+                    };
+                    let spklen = wide(SPIKE_NS).max(1);
+                    assert_eq!(u64::from(t.spklen), spklen);
+                    assert_eq!(u64::from(t.hcnt), wide(high) - spklen - 7);
+                    assert_eq!(u64::from(t.lcnt), wide(low) - 1 - wide(RISE_NS));
+                }
+            }
+        }
         assert_eq!(
             Error::AddressNack.kind(),
             ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address)
