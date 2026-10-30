@@ -9,6 +9,7 @@ pub mod linux_blocks;
 pub mod logging;
 pub mod scmi;
 pub mod shm;
+pub mod spi;
 pub mod timer;
 pub mod uart;
 

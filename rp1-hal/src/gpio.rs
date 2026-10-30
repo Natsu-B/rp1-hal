@@ -6,8 +6,16 @@ pub struct Unconfigured;
 pub struct Input;
 pub struct Output;
 pub struct Function<const F: u8>;
+/// Muxed to an SPI controller (function 0 or 8, see [`crate::spi`]).
+pub struct SpiFunction;
 pub struct Pin<const N: u8, Mode = Unconfigured> {
     _mode: PhantomData<Mode>,
+}
+impl<const N: u8, M> Pin<N, M> {
+    /// Back to the unconfigured state type (the pad and mux stay as they are).
+    pub(crate) fn release(self) -> Pin<N> {
+        Pin { _mode: PhantomData }
+    }
 }
 impl<const N: u8> Pin<N> {
     /// # Safety
@@ -24,6 +32,20 @@ impl<const N: u8> Pin<N> {
         write(0x400d_0004 + N as usize * 8, 3);
         // Schmitt, input enable, 12 mA sink, weak pull-up; external pull-ups are required.
         write(0x400f_0004 + N as usize * 4, 0x7a);
+        Pin { _mode: PhantomData }
+    }
+    /// Selects SPI function `fsel` (0 or 8 on bank 0). The pad output is disabled while the mux
+    /// switches; then outputs get 8 mA fast slew, the input (MISO) a pull-down.
+    pub(crate) fn into_spi(self, fsel: u8, output: bool) -> Pin<N, SpiFunction> {
+        write(0x4001_7004, 1 << 19);
+        write(0x400f_0004 + N as usize * 4, 0xc6);
+        write(0x400e_3004, 1 << N);
+        write(0x400d_0004 + N as usize * 8, u32::from(fsel));
+        // IE (6), DRIVE 8 mA (5:4), Schmitt (1), SLEWFAST (0) | IE, PDE (2), Schmitt.
+        write(
+            0x400f_0004 + N as usize * 4,
+            if output { 0x63 } else { 0x46 },
+        );
         Pin { _mode: PhantomData }
     }
     pub fn into_output(self, high: bool) -> Pin<N, Output> {
