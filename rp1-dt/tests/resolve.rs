@@ -266,6 +266,33 @@ fn strict_mode_refuses_without_applying_partial_plan() {
 }
 
 #[test]
+fn strict_mode_still_disables_gpiomem_by_policy_only() {
+    // The stock board DTB always has gpiomem@d0000: refuse must not turn the default gpiomem
+    // policy into a refusal, or every refuse build would halt without any conflict.
+    let gpiomem = "/ { gpiomem { compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; }; };";
+    let policy = Policy {
+        on_conflict: OnConflict::Refuse,
+        ..Policy::default()
+    };
+    let (mut fdt, note) = fixture(gpiomem);
+    let plan = resolve(&fdt, &note, policy).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].path, "/gpiomem");
+    assert!(nodes[0].policy_only);
+    let before = fdt.clone();
+    apply_plan(&before, &mut fdt, &note, policy, &plan).unwrap();
+    // A real conflict next to it still refuses the whole boot.
+    let (fdt, note) = fixture(&format!("{} {gpiomem}", uart3()));
+    refusal(resolve(&fdt, &note, policy).unwrap(), "on_conflict=refuse");
+    // A gpiomem node that is also a GPIO consumer is a conflict, so refuse refuses it.
+    let (fdt, note) = fixture(
+        "/ { gpiomem { compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; gpios = <&rp1_gpio 22 0>; }; };",
+    );
+    refusal(resolve(&fdt, &note, policy).unwrap(), "on_conflict=refuse");
+}
+
+#[test]
 fn no_conflicts_and_non_rp1_groups_or_gpios_are_untouched() {
     let (mut fdt, note) = fixture(
         "/ { user { pinctrl-0 = <&soc_pins>; gpios = <&other_gpio 8 0 0 &rp1_gpio 23 0>; }; bus { status = \"disabled\"; child { pinctrl-0 = <&uart3_pins>; }; }; };",

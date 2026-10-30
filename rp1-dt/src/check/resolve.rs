@@ -128,11 +128,13 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
     let mut refused = conflicts.unresolved;
     let mut disable = Vec::new();
     for (n, reasons) in conflicts.nodes {
+        // The gpiomem policy is not an ownership conflict: on_conflict=refuse still disables it.
+        let policy_only = gpiomem.contains(&n) && reasons.len() == 1;
         if let Some(why) = protected.get(&n) {
             for reason in reasons {
                 refused.push(format!("{reason}; protected: {why}"));
             }
-        } else if policy.on_conflict == OnConflict::Refuse {
+        } else if policy.on_conflict == OnConflict::Refuse && !policy_only {
             for reason in reasons {
                 refused.push(format!("{reason}; on_conflict=refuse"));
             }
@@ -148,7 +150,7 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
             disable.push(Disable {
                 path: after.path(n),
                 label,
-                policy_only: gpiomem.contains(&n) && reasons.len() == 1,
+                policy_only,
                 reasons,
             });
         }
