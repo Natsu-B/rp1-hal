@@ -869,11 +869,15 @@ impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
 /// ```no_run
 /// # use rp1_hal::{gpio::Pin, spi::{Device, Error, Spi}};
 /// use embedded_hal::spi::SpiDevice;
-/// fn lend(spi: &mut Spi<0, 11, 10, 9>, cs: Pin<8>) -> Result<u32, Error> {
+/// fn lend(spi: &mut Spi<0, 11, 10, 9>, cs: Pin<8>) -> Result<Pin<8>, Error> {
 ///     let mut dev = Device::new(&mut *spi, cs);
 ///     dev.write(&[1u8, 2])?;
-///     drop(dev.free());
-///     spi.set_frequency(1_000_000)
+///     let (_, cs) = dev.free();
+///     spi.set_frequency(1_000_000)?;
+///     // The chip select comes back as `Pin<8>` and can make a new device.
+///     let mut dev = Device::new(&mut *spi, cs);
+///     dev.write(&[3u8])?;
+///     Ok(dev.free().1)
 /// }
 /// ```
 pub struct Device<B, const CS: u8> {
@@ -893,8 +897,10 @@ impl<B, const CS: u8> Device<B, CS> {
     pub fn bus_mut(&mut self) -> &mut B {
         &mut self.bus
     }
-    pub fn free(self) -> (B, Pin<CS, Output>) {
-        (self.bus, self.cs)
+    /// Returns the bus and the chip select, which stays driven high (deselected). The pin is
+    /// handed back unconfigured, so it can go to [`Device::new`] again or be reconfigured.
+    pub fn free(self) -> (B, Pin<CS>) {
+        (self.bus, self.cs.release())
     }
 }
 impl<B, const CS: u8> ErrorType for Device<B, CS> {
@@ -1438,6 +1444,20 @@ mod tests {
         assert!(m.rx.is_empty() && m.busy_left == 3);
         wait_idle(&mut m).unwrap();
         assert_eq!(m.busy_left, 0);
+    }
+
+    /// Codex review 10 #1: `Device::free` hands back the chip select in the state
+    /// `Device::new` takes (type-level: `new` writes registers, so it is not called here).
+    #[test]
+    fn freed_chip_select_makes_a_new_device() {
+        fn renew<B>(dev: Device<B, 8>) -> Device<B, 8> {
+            let (bus, cs) = dev.free();
+            Device::new(bus, cs)
+        }
+        fn free_twice<B>(dev: Device<B, 8>) -> (B, Pin<8>) {
+            renew(dev).free()
+        }
+        let _ = free_twice::<()>;
     }
 
     /// A bus over [`Model`] that records each call in a shared event log; `wait_idle` is

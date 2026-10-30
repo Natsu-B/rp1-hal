@@ -113,6 +113,8 @@ destructured `InitError`'s token and pins initialise the controller on retry.
 setters.
 `Spi` has no `Drop`: dropping it without `free` leaves the controller enabled and the pins
 on the SPI function, and the token is gone.
+`Device::free` returns the bus and the chip select as an unconfigured `Pin<CS>` (still driven
+high), so the same pin can make a new `Device` (STATIC: a host compile test).
 
 `Config::rx_sample_dly` (default 0) is written to RX_SAMPLE_DLY: MISO is sampled that many
 clk_sys cycles later. Only 0 is hardware-tested. It is written without a range check or
