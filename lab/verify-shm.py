@@ -21,12 +21,16 @@ UART10_ORDERED = [
     ("SHM_RC=0", r"\bSHM_RC=0\b"),
     ("doorbell after", r"\bDOORBELL_AFTER_RC=0\b"),
     ("I2C reply", r"\bI2C_REPLY=0x0*1\b"),
+    ("ADC node disabled", r"\bADC_DT=\S+ status=disabled(?!\S)"),
     ("ADC reply", r"\bADC_REPLY=0x0*[aA][dD][cC]\b"),
+    ("SPI node disabled", r"\bSPI_DT=\S+ status=disabled(?!\S)"),
     ("SPI reply", r"\bSPI_REPLY=0x0*5[bB]1\b"),
     ("script result", r"\bCHECK_SHM_RESULT=PASS\b"),
     ("terminal marker", r"\bDDR_INSPECT_END\b"),
 ]
-UART10_FORBIDDEN = [r"\bCHECK_FAIL\b", r"\bCHECK_SHM_RESULT=FAIL\b", r"Kernel panic", r"\bSError\b"]
+# Linux must not have any node of an RP1-owned block enabled (status other than disabled).
+UART10_FORBIDDEN = [r"\bCHECK_FAIL\b", r"\bCHECK_SHM_RESULT=FAIL\b", r"Kernel panic", r"\bSError\b",
+                    r"\b(ADC|SPI)_DT=(missing\b|\S+ status=(?!disabled(?!\S)))"]
 # UART0 (RP1 firmware log).
 UART0_REQUIRED = [
     ("profile done", r"\bPROF_DONE\b"),

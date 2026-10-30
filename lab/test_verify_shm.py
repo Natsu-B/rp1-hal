@@ -17,8 +17,10 @@ UART10 = """[t] DOORBELL_BEFORE_RC=0
 [t] DOORBELL_AFTER_RC=0
 [t] I2C_REPLY=0x00000001
 [t] I2C_LINUX_DONE
+[t] ADC_DT=/sys/firmware/devicetree/base/axi/pcie@1000120000/rp1/adc@c8000 status=disabled
 [t] ADC_REPLY=0x00000ADC
 [t] ADC_LINUX_DONE
+[t] SPI_DT=/sys/firmware/devicetree/base/axi/pcie@1000120000/rp1/spi@50000 status=disabled
 [t] SPI_REPLY=0x000005B1
 [t] SPI_LINUX_DONE
 [t] CHECK_SHM_RESULT=PASS
@@ -86,6 +88,18 @@ class Verify(unittest.TestCase):
         # 100 MHz must not satisfy the 10 MHz marker.
         self.assertTrue(v.verify(UART0.replace("hz=10000000 ", "hz=100000000 "), UART10, DONE))
         self.assertTrue(v.verify(UART0 + "[t] I2C_FAIL Bus(\"read\", Timeout)\n", UART10, DONE))
+
+    def test_linux_nodes_of_owned_blocks_must_be_disabled(self):
+        # Review 6 #4: an enabled, status-less or missing node is a failure.
+        for block in ("ADC", "SPI"):
+            line = next(l for l in UART10.splitlines() if f"{block}_DT=" in l)
+            for bad in (line.replace("status=disabled", "status=okay"),
+                        line.replace("status=disabled", "status=none"),
+                        line.replace("status=disabled", "status=disabledx"),
+                        f"[t] {block}_DT=missing"):
+                self.assertTrue(v.verify(UART0, UART10.replace(line, bad), DONE), bad)
+                # Also when a second, disabled node line is present.
+                self.assertTrue(v.verify(UART0, UART10.replace(line, line + "\n" + bad), DONE), bad)
 
     def test_order_matters(self):
         swapped = UART10.replace("[t] SHM_PASS\n", "").replace("[t] DDR_INSPECT_END\n", "[t] DDR_INSPECT_END\n[t] SHM_PASS\n")

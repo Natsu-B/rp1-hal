@@ -84,19 +84,27 @@ request() {
         i=$((i + 1))
     done
 }
+# dt_disabled NAME NODE: RP1 owns the block, so Linux's node must exist and be disabled
+# (a missing status property means okay).
+dt_disabled() {
+    found=
+    for path in $(find /sys/firmware/devicetree/base -name "$2"); do
+        st=$(cat "$path/status" 2>/dev/null)
+        echo "$1_DT=$path status=${st:-none}"
+        found=1
+        [ "$st" = disabled ] || fail "$1_dt"
+    done
+    [ -n "$found" ] || { echo "$1_DT=missing"; fail "$1_dt"; }
+}
 echo ADC_LINUX_BEGIN
-for path in $(find /sys/firmware/devicetree/base -name adc@c8000); do
-    echo ADC_DT="$path" status=$(cat "$path/status")
-done
+dt_disabled ADC adc@c8000
 # 0xadc = proc1's ADC burst (lab/shm-firmware/src/adc_proof.rs).
 request 0xadc
 echo ADC_REPLY=$reply
 [ $((reply)) -eq $((0xadc)) ] || fail adc_reply
 echo ADC_LINUX_DONE
 echo SPI_LINUX_BEGIN
-for path in $(find /sys/firmware/devicetree/base -name spi@50000); do
-    echo SPI_DT="$path" status=$(cat "$path/status")
-done
+dt_disabled SPI spi@50000
 # 0x5b1 = proc1's SPI0 loopback proof (lab/shm-firmware/src/spi_proof.rs).
 request 0x5b1
 echo SPI_REPLY=$reply
