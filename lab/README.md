@@ -66,3 +66,17 @@ print `Display` codes, not `Debug`: the image is near the 48 KiB shared SRAM lim
 A boot-marker report (`full_success`) is not a pass for this regression. Host tests: `python3 lab/test_verify_shm.py`.
 
 HW results belong in the run notes kept outside this repository; build success alone is STATIC evidence.
+
+## Linux UART1 next to the RP1 firmware
+
+Linux keeps UART1 on GPIO 0/1 (`dtoverlay=uart1-pi5`, ttyAMA*) while the firmware owns UART0,
+I2C1 and SPI0. `lab/check-uart1.sh` runs on the Linux console with `UART1_NONCE=<hex>` prepended;
+`lab/uart1-peer.py` runs on the host at the same time on the adapter wired to GPIO 0/1 (`--port`
+or `CM5_UART1_PEER`, no default). Linux writes `RP1SHARE_TX_<nonce>_<i>` lines and the peer
+records them; the peer repeats `RP1SHARE_RX_<nonce>` and Linux prints what it read as
+`UART1_RX_GOT=`. `python3 lab/verify-shm.py --uart1-host PEER_OUT --uart1-nonce HEX
+--uart1-console UART10 [--uart1-result OBSERVER_JSON]` prints `UART1_TX_PASS|FAIL` and
+`UART1_RX_PASS|FAIL` (it can run together with the SHM regression arguments). The script also
+prints `UART1_DIAG` lines: GPIO 0/1 CTRL/STATUS/PADS, the PL011 baud and control registers and the
+driver's tx/rx counters, to tell a wiring or pinmux fault from a script fault. It keeps the port
+open while it reads, because closing it shuts the PL011 down and drops received bytes.

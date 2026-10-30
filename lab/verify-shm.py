@@ -2,12 +2,19 @@
 """Strict pass/fail for the Linux SHM / doorbell / I2C / ADC / SPI regression (`lab/check-shm.sh`).
 
 Usage: verify-shm.py --uart0 FILE --uart10 FILE --result RESULT_JSON
+       verify-shm.py --uart1-host FILE --uart1-nonce HEX --uart1-console FILE [--uart1-result JSON]
+       (both groups may be given together)
 
 PASS only if the capture completed (`"complete": true` in the observer's JSON), every required
 marker is present on its UART (UART10 ones in order), and no failure marker appears. A missing
 marker, a non-zero exit code, a timeout (no terminal marker / incomplete capture) is FAIL.
 The generic boot marker report is not evidence for this regression. Exit 0 = PASS, 1 = FAIL,
 2 = usage error. Paths come from the arguments only.
+
+Linux UART1 (`lab/check-uart1.sh` with `lab/uart1-peer.py` on the host): UART1_TX_PASS when the
+console shows `UART1_TX_SENT nonce=<nonce>` and the host capture holds `RP1SHARE_TX_<nonce>_<i>`
+lines; UART1_RX_PASS when the console shows `UART1_RX_GOT=RP1SHARE_RX_<nonce>` (read from the
+wire by Linux). Both need `UART1_CHECK_DONE` and, if given, a complete capture.
 """
 import argparse
 import json
@@ -78,6 +85,27 @@ def verify(uart0, uart10, result):
     return failures
 
 
+def verify_uart1(console, host, nonce, result=None):
+    """Returns (tx_failures, rx_failures) for the Linux UART1 check (empty = PASS)."""
+    common = []
+    if not re.fullmatch(r"[0-9a-f]{8,}", nonce or ""):
+        common.append(f"nonce {nonce!r} is not at least 8 lowercase hex digits")
+    if result is not None and (not isinstance(result, dict) or result.get("complete") is not True):
+        common.append("UART1 capture not complete (timeout or missing terminal marker)")
+    if re.search(r"\bUART1_CHECK_DONE\b", console) is None:
+        common.append("UART1_CHECK_DONE missing")
+    tx, rx = list(common), list(common)
+    n = re.escape(nonce or "")
+    if re.search(rf"\bUART1_TX_SENT nonce={n} ", console) is None:
+        tx.append("Linux did not report UART1_TX_SENT for this nonce")
+    if re.search(rf"^RP1SHARE_TX_{n}_\d+$", host, re.M) is None:
+        tx.append(f"host capture has no RP1SHARE_TX_{nonce}_<i> line")
+    got = re.search(r"\bUART1_RX_GOT=(\S*)", console)
+    if got is None or got.group(1) != f"RP1SHARE_RX_{nonce}":
+        rx.append(f"Linux read {got.group(1) if got else None!r}, not RP1SHARE_RX_{nonce}")
+    return tx, rx
+
+
 def read_text(path):
     with open(path, "rb") as f:
         return f.read().decode("utf-8", errors="replace").replace("\r", "")
@@ -85,21 +113,44 @@ def read_text(path):
 
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--uart0", required=True)
-    p.add_argument("--uart10", required=True)
-    p.add_argument("--result", required=True, help="observer JSON with the `complete` flag")
+    p.add_argument("--uart0")
+    p.add_argument("--uart10")
+    p.add_argument("--result", help="observer JSON with the `complete` flag")
+    p.add_argument("--uart1-host", help="host peer capture (lab/uart1-peer.py --out)")
+    p.add_argument("--uart1-nonce")
+    p.add_argument("--uart1-console", help="UART10 capture of lab/check-uart1.sh")
+    p.add_argument("--uart1-result", help="observer JSON of that capture")
     a = p.parse_args(argv)
+    shm = [a.uart0, a.uart10, a.result]
+    uart1 = [a.uart1_host, a.uart1_nonce, a.uart1_console]
+    if any(shm) and not all(shm) or any(uart1) and not all(uart1) or not any(shm + uart1):
+        p.error("give --uart0/--uart10/--result and/or --uart1-host/--uart1-nonce/--uart1-console")
+    failed = False
+    if all(shm):
+        result = load_result(a.result)
+        failures = verify(read_text(a.uart0), read_text(a.uart10), result)
+        for f in failures:
+            print(f"FAIL {f}")
+        print("SHM_REGRESSION=" + ("FAIL" if failures else "PASS"))
+        failed |= bool(failures)
+    if all(uart1):
+        result = load_result(a.uart1_result) if a.uart1_result else None
+        tx, rx = verify_uart1(read_text(a.uart1_console), read_text(a.uart1_host), a.uart1_nonce, result)
+        for name, failures in (("TX", tx), ("RX", rx)):
+            for f in failures:
+                print(f"FAIL UART1 {name}: {f}")
+            print(f"UART1_{name}_" + ("FAIL" if failures else "PASS"))
+            failed |= bool(failures)
+    return 1 if failed else 0
+
+
+def load_result(path):
     try:
-        with open(a.result) as f:
-            result = json.load(f)
+        with open(path) as f:
+            return json.load(f)
     except (OSError, ValueError) as e:
-        result = None
         print(f"FAIL result JSON unreadable: {e}")
-    failures = verify(read_text(a.uart0), read_text(a.uart10), result)
-    for f in failures:
-        print(f"FAIL {f}")
-    print("SHM_REGRESSION=" + ("FAIL" if failures else "PASS"))
-    return 1 if failures else 0
+        return {}
 
 
 if __name__ == "__main__":

@@ -106,5 +106,71 @@ class Verify(unittest.TestCase):
         self.assertTrue(any("out of order" in f for f in v.verify(UART0, swapped, DONE)))
 
 
+
+NONCE = "12536739b847"
+CONSOLE = f"""[t] UART1_CHECK_BEGIN
+[t] UART1_DEV=/dev/ttyAMA1
+[t] UART1_TX_SENT nonce={NONCE} lines=10
+[t] UART1_RX_BYTES=270
+[t] UART1_RX_GOT=RP1SHARE_RX_{NONCE}
+[t] UART1_CHECK_DONE
+[t] DDR_INSPECT_END
+"""
+HOST = "".join(f"RP1SHARE_TX_{NONCE}_{i}\n" for i in range(10))
+
+
+class Uart1(unittest.TestCase):
+    def test_both_directions_pass(self):
+        self.assertEqual(v.verify_uart1(CONSOLE, HOST, NONCE, DONE), ([], []))
+        self.assertEqual(v.verify_uart1(CONSOLE, HOST, NONCE), ([], []))
+
+    def test_directions_are_judged_separately(self):
+        tx, rx = v.verify_uart1(CONSOLE, "", NONCE, DONE)
+        self.assertTrue(tx)
+        self.assertEqual(rx, [])
+        tx, rx = v.verify_uart1(CONSOLE.replace(f"GOT=RP1SHARE_RX_{NONCE}", "GOT="), HOST, NONCE, DONE)
+        self.assertEqual(tx, [])
+        self.assertTrue(rx)
+
+    def test_other_nonce_or_partial_token_fails(self):
+        other = "0123456789ab"
+        self.assertTrue(all(v.verify_uart1(CONSOLE, HOST, other, DONE)))
+        for got in (f"RP1SHARE_RX_{NONCE[:-1]}", f"RP1SHARE_RX_{NONCE}0", f"RP1SHARE_TX_{NONCE}"):
+            _, rx = v.verify_uart1(CONSOLE.replace(f"RP1SHARE_RX_{NONCE}", got), HOST, NONCE, DONE)
+            self.assertTrue(rx, got)
+        # The host must have received the lines, not merely Linux claiming it sent them.
+        tx, _ = v.verify_uart1(CONSOLE, HOST.replace(NONCE, other), NONCE, DONE)
+        self.assertTrue(tx)
+        tx, _ = v.verify_uart1(CONSOLE.replace("UART1_TX_SENT", "UART1_TX_SKIPPED"), HOST, NONCE, DONE)
+        self.assertTrue(tx)
+
+    def test_incomplete_or_bad_nonce_fails_both(self):
+        for console, nonce, result in ((CONSOLE.replace("UART1_CHECK_DONE", "X"), NONCE, DONE),
+                                       (CONSOLE, NONCE, {"complete": False}),
+                                       (CONSOLE.replace(NONCE, "1234"), "1234", DONE),
+                                       (CONSOLE, "", DONE)):
+            tx, rx = v.verify_uart1(console, HOST, nonce, result)
+            self.assertTrue(tx and rx, (nonce, result))
+
+    def test_cli_prints_markers(self):
+        import contextlib, io, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            c, h = pathlib.Path(d, "c"), pathlib.Path(d, "h")
+            c.write_text(CONSOLE)
+            h.write_text(HOST)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = v.main(["--uart1-host", str(h), "--uart1-nonce", NONCE, "--uart1-console", str(c)])
+            self.assertEqual(rc, 0)
+            self.assertIn("UART1_TX_PASS", out.getvalue())
+            self.assertIn("UART1_RX_PASS", out.getvalue())
+            h.write_text("")
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = v.main(["--uart1-host", str(h), "--uart1-nonce", NONCE, "--uart1-console", str(c)])
+            self.assertEqual(rc, 1)
+            self.assertIn("UART1_TX_FAIL", out.getvalue())
+            self.assertIn("UART1_RX_PASS", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
