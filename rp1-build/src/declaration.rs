@@ -105,7 +105,21 @@ impl Instance {
         };
         let path = format!("{owner}.{name}");
         Ok(match info.kind {
-            Kind::Uart => Self::Uart(parse_pin_table(value, &path)?),
+            Kind::Uart => {
+                // Linux may keep its flow-control pins; RP1 has no flow-control driver, so a
+                // declared CTS/RTS would be a pin nobody can mux.
+                if owner != "linux.keep"
+                    && let Some(key) = value
+                        .as_table()
+                        .and_then(|t| t.keys().find(|k| *k == "cts" || *k == "rts"))
+                {
+                    return Err(format!(
+                        "E4: {path}.{key}: UART flow control is not supported yet (declare the pin in gpio)"
+                    )
+                    .into());
+                }
+                Self::Uart(parse_pin_table(value, &path)?)
+            }
             Kind::I2c => Self::I2c(parse_pin_table(value, &path)?),
             Kind::Spi => {
                 if let Some(key) = value

@@ -329,10 +329,10 @@ mod tests {
             r#"
 schema = 2
 [proc0]
-gpio = [22]
+gpio = [6, 22]
 timer = ["ALARM0"]
 i2c1 = { sda = 2, scl = 3 }
-uart2 = { tx = 4, rx = 5, cts = 6 }
+uart2 = { tx = 4, rx = 5 }
 [proc1]
 gpio = [8, 27]
 adc = {}
@@ -358,7 +358,7 @@ spi0 = { sck = 11, mosi = 10, miso = 9 }
             let body = &s[start..start + s[start..].find('}').unwrap()];
             body.lines().skip(1).collect()
         };
-        // UART2 CTS (GPIO6) has no HAL driver yet and stays a plain pin.
+        // A GPIO next to the instance's pins stays a plain pin.
         assert_eq!(
             pins("Proc0"),
             [

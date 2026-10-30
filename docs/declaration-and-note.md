@@ -48,7 +48,7 @@ link_page = "16KiB"                       # 共有 SRAM の Linux 用ページ�
 gpio = [22]                               # GPIO として使うピン
 timer = ["ALARM0"]                        # タイマーのアラーム
 i2c1 = { sda = 2, scl = 3 }               # インスタンス = { 信号 = ピン }。ピンは機能表で検査（§1.4 E2）
-uart2 = { tx = 4, rx = 5 }                # 任意: cts, rts
+uart2 = { tx = 4, rx = 5 }                # cts/rts は未対応（E4）
 
 [package.metadata.rp1.proc1]
 gpio = [8, 27]                            # 8 = SPI0 のチップセレクト（GPIO で駆動）
@@ -92,8 +92,10 @@ on_conflict = "disable"                   # "disable"（既定）| "refuse"。�
 ```
 
 - 所有は**ブロックのインスタンス単位**で 1 つ（`proc0` / `proc1` / Linux）。宣言に書かれていないインスタンスとピンは Linux のもの。
-- インスタンスのキー: `uart0`..`uart4`、`i2c0`..`i2c3`、`spi0`/`spi1`/`spi3`/`spi5`、`adc`。信号名: UART `tx rx cts rts`、
-  I2C `sda scl`、SPI `sck mosi miso`。必須信号は UART `tx rx`、I2C `sda scl`、SPI `sck mosi miso`。
+- インスタンスのキー: `uart0`..`uart4`、`i2c0`..`i2c3`、`spi0`/`spi1`/`spi3`/`spi5`、`adc`。信号名: UART `tx rx`、
+  I2C `sda scl`、SPI `sck mosi miso`（すべて必須）。UART の `cts`/`rts` は RP1 側のフロー制御が未実装なので、`proc0`/`proc1` では
+  E4（`UART flow control is not supported yet`）。そのピンを GPIO として使うなら `gpio` に書く。`linux.keep` では Linux のフロー制御
+  ピンとして書ける（機能表で検査し、保護する）。
 - ピンは「インスタンスの信号への割り当て」から導き、bank 0 の機能表（`rp1-pinmux`、datasheet・pinctrl-rp1・HAL の表と照合）で
   検査する。生成される resources はインスタンスを型付きの `Parts`（例 `i2c::Parts<1, 2, 3>`）で渡し、表に無い組はコンパイルできない。
 - `linux.keep` はピンの保護だけ。Linux 側ノードの有効化は config.txt の `dtoverlay=`（例 `uart1-pi5`）に任せる。
@@ -138,7 +140,7 @@ rpi-cm5 のボード表は GPIO 28..53（ETH_RST_N、VBUS など）と Ethernet�
 | E1 | 同じピンを 2 回（コア間、機能と `gpio`、log と機能、`linux.keep` と RP1） | `GPIO 10 is claimed by both proc1.spi0.mosi and proc0.gpio` |
 | E2 | ピンがその信号を出せない・bank 0 にピンが無い | `proc0.uart2.tx = 6: GPIO6 is UART2_CTS (alt2), not UART2_TX; UART2_TX is on GPIO4` / `SPI6 has no bank-0 pins` |
 | E3 | 同じインスタンスを 2 回（proc0 と proc1、log と core、RP1 と `linux.keep`） | `I2C1 is declared by both proc0 and proc1` |
-| E4 | ボードが Linux に要るピン・ブロック、未対応のインスタンス | `GPIO 32 is board line ETH_RST_N, owned by Linux on rpi-cm5` / `GPIO 0 is kept for Linux (uart1.tx) by board rpi-cm5` / `ETH is required by Linux on rpi-cm5` / `SPI4 is slave-only` |
+| E4 | ボードが Linux に要るピン・ブロック、未対応のインスタンス | `GPIO 32 is board line ETH_RST_N, owned by Linux on rpi-cm5` / `GPIO 0 is kept for Linux (uart1.tx) by board rpi-cm5` / `ETH is required by Linux on rpi-cm5` / `SPI4 is slave-only` / `proc0.uart2.cts: UART flow control is not supported yet` |
 | E5 | 必須信号の欠落、`gpio_irq` が `gpio` に無い | `proc1.spi0 needs sck, mosi, miso` / `gpio_irq 27 is not in proc1.gpio` |
 | E6 | 環境変数 `RP1_BOARD_DTB` があり、その DTB（config.txt の overlay を当てたもの）で起動時に無効化・拒否が起きる | `RP1_BOARD_DTB <file>: rp1boot would disable 1 Linux node(s) ...`（gpiomem 方針だけなら警告） |
 | — | `log` があるのに UART0 が RP1 の所有になれない | `log sink uart0 requires UART0 to be owned by RP1` |

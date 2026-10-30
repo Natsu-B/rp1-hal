@@ -241,9 +241,24 @@ fn board_defaults_and_explicit_replacement() {
 
 #[test]
 fn optional_signals_and_linux_keep_are_validated() {
+    // Review 12 (Claude N1): RP1 has no flow-control driver, so CTS/RTS cannot be declared.
+    for key in ["cts=6", "rts=7", "cts=7"] {
+        error(
+            &format!("[proc0]\nuart2={{tx=4,rx=5,{key}}}"),
+            &[
+                "E4",
+                &format!("proc0.uart2.{}", &key[..3]),
+                "UART flow control is not supported yet",
+            ],
+        );
+    }
+    // Linux keeps its own flow-control pins; they are still checked against the pin table.
+    parse("[linux]\nkeep={uart1={tx=0,rx=1,cts=2,rts=3}}")
+        .validate()
+        .unwrap();
     error(
-        "[proc0]\nuart2={tx=4,rx=5,cts=7}",
-        &["E2", "proc0.uart2.cts = 7", "UART2_RTS", "UART2_CTS"],
+        "[linux]\nkeep={uart2={tx=4,rx=5,cts=7}}",
+        &["E2", "linux.keep.uart2.cts = 7", "UART2_RTS", "UART2_CTS"],
     );
     error(
         "[linux]\nkeep={i2c1={sda=2}}",
@@ -268,13 +283,13 @@ fn public_model_edits_cannot_bypass_instance_validation() {
 #[test]
 fn schema2_typed_instances_and_roundtrip() {
     let d = parse(
-        "log={sink='uart0',baudrate=115200}\n[proc0]\ngpio=[22]\ntimer=['ALARM0']\ni2c1={sda=2,scl=3}\n[proc1]\ngpio=[8,27]\ngpio_irq=[27]\ntimer=['ALARM1']\nadc={}\nspi0={sck=11,mosi=10,miso=9}\nuart2={tx=4,rx=5,cts=6,rts=7}",
+        "log={sink='uart0',baudrate=115200}\n[proc0]\ngpio=[22]\ntimer=['ALARM0']\ni2c1={sda=2,scl=3}\n[proc1]\ngpio=[8,27]\ngpio_irq=[27]\ntimer=['ALARM1']\nadc={}\nspi0={sck=11,mosi=10,miso=9}\nuart2={tx=4,rx=5}",
     );
     d.validate().unwrap();
     assert!(matches!(d.proc1.instances["uart2"], Instance::Uart(_)));
     assert_eq!(
         d.proc1.instances["uart2"].pins("uart2"),
-        [("tx", 4), ("rx", 5), ("cts", 6), ("rts", 7)]
+        [("tx", 4), ("rx", 5)]
     );
     let serialized = toml::to_string(&d).unwrap();
     let roundtrip: Declaration = toml::from_str(&serialized).unwrap();
@@ -310,7 +325,13 @@ fn all_supported_instances_accept_pin_table_routes() {
     let pin = |s| candidate_pins(s).next().unwrap();
     for n in 0..=4 {
         let d = parse(&format!(
-            "[linux]\nkeep={{}}\n[proc0]\nuart{n}={{tx={},rx={},cts={},rts={}}}",
+            "[linux]\nkeep={{}}\n[proc0]\nuart{n}={{tx={},rx={}}}",
+            pin(Signal::Uart(n, UartSignal::Tx)),
+            pin(Signal::Uart(n, UartSignal::Rx)),
+        ));
+        d.validate().unwrap();
+        let d = parse(&format!(
+            "[proc0]\ngpio=[]\n[linux]\nkeep={{uart{n}={{tx={},rx={},cts={},rts={}}}}}",
             pin(Signal::Uart(n, UartSignal::Tx)),
             pin(Signal::Uart(n, UartSignal::Rx)),
             pin(Signal::Uart(n, UartSignal::Cts)),
