@@ -80,7 +80,10 @@ impl Clocks {
 
 /// [`Authority::init`]'s result for proc1: written by proc0 only (init), read by proc1 only.
 /// Plain acquire/release loads and stores, no LDREX/STREX (shared SRAM). `.shared` is loaded
-/// with the image (`ready` = 0); init clears `ready` before it writes the frequencies again.
+/// with the image (`ready` = 0), and the value is published at most once per image load:
+/// [`Authority::init`] consumes the one `Authority`. The `withdraw` at the start of init is
+/// defensive only; readers do not re-check `ready`, so this is not a protocol for publishing
+/// a second value.
 struct Handoff {
     ready: AtomicU32,
     sys_hz: AtomicU32,
@@ -124,27 +127,67 @@ impl Handoff {
 }
 
 impl Clocks {
-    /// proc1's copy of the [`Clocks`] that proc0's [`Authority::init`] returned, or `None` if
-    /// init has not succeeded yet (or the tree no longer matches it). Takes the proc1 token:
-    /// proc0 already has its own value.
-    pub fn from_proc0(_core: &rp1_rt::Proc1) -> Option<Clocks> {
-        HANDOFF.take().filter(Clocks::still_current)
+    /// proc1's copy of the [`Clocks`] that proc0's [`Authority::init`] returned. Takes the
+    /// proc1 token: proc0 already has its own value.
+    ///
+    /// - [`Error::NotReady`]: init has not succeeded (yet); nothing is published.
+    /// - [`Error::Precondition`]: init published a value, but the clock tree no longer
+    ///   matches it (the same error the drivers return for a stale `Clocks`).
+    pub fn from_proc0(_core: &rp1_rt::Proc1) -> Result<Clocks, Error> {
+        published(&HANDOFF, Clocks::still_current)
     }
 
-    /// [`Clocks::from_proc0`], polled for up to `timeout_us` (raw 1 MHz timer, which runs from
-    /// the cold bring-up on). [`Error::NotReady`] if proc0's init has not published by then.
+    /// [`Clocks::from_proc0`], polled for up to `timeout_us` (64-bit 1 MHz timer, which runs
+    /// from the cold bring-up on). Tries at least once, also with `timeout_us` = 0.
+    /// [`Error::NotReady`] if proc0's init has not published by then; [`Error::Precondition`]
+    /// at once if it has published but the tree no longer matches (waiting cannot fix that).
     pub fn wait_from_proc0(core: &rp1_rt::Proc1, timeout_us: u32) -> Result<Clocks, Error> {
-        let start = read(crate::TIMER_RAWL);
-        loop {
-            if let Some(clocks) = Self::from_proc0(core) {
-                return Ok(clocks);
-            }
-            if read(crate::TIMER_RAWL).wrapping_sub(start) > timeout_us {
-                return Self::from_proc0(core).ok_or(Error::NotReady);
-            }
-            core::hint::spin_loop();
-        }
+        let timer = crate::timer::Timer::new();
+        wait_until(timeout_us, || timer.now(), || Self::from_proc0(core))
     }
+}
+
+/// The published value, checked against the current tree by `current`.
+fn published(handoff: &Handoff, current: impl Fn(&Clocks) -> bool) -> Result<Clocks, Error> {
+    let clocks = handoff.take().ok_or(Error::NotReady)?;
+    if current(&clocks) {
+        Ok(clocks)
+    } else {
+        Err(Error::Precondition)
+    }
+}
+
+/// Retries `attempt` while it reports [`Error::NotReady`], until `now() - start >= timeout_us`;
+/// then one last attempt (a publish that lands at the deadline still counts). The 64-bit
+/// difference cannot wrap within any `u32` timeout, so every timeout up to `u32::MAX` ends.
+fn wait_until(
+    timeout_us: u32,
+    mut now: impl FnMut() -> u64,
+    mut attempt: impl FnMut() -> Result<Clocks, Error>,
+) -> Result<Clocks, Error> {
+    let start = now();
+    loop {
+        match attempt() {
+            Err(Error::NotReady) => {}
+            done => return done,
+        }
+        if now().wrapping_sub(start) >= u64::from(timeout_us) {
+            return attempt();
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// [`Authority::init`]'s publication rule: `ready` is cleared first and the value is published
+/// only if `body` succeeds.
+fn publish_on_success<S>(
+    handoff: &Handoff,
+    body: impl FnOnce() -> Result<(Clocks, S), Error>,
+) -> Result<(Clocks, S), Error> {
+    handoff.withdraw();
+    let (clocks, rest) = body()?;
+    handoff.publish(&clocks);
+    Ok((clocks, rest))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -301,28 +344,29 @@ impl Authority {
     /// (I2C). The returned [`Clocks`] is read back from the registers, not from `sys_hz`.
     /// Already on PLL_SYS (warm restart): nothing is written.
     ///
-    /// On success the same [`Clocks`] is published for proc1 ([`Clocks::from_proc0`]).
+    /// On success, and only then, the same [`Clocks`] is published once for proc1
+    /// ([`Clocks::from_proc0`]); on any error proc1 keeps seeing [`Error::NotReady`].
     pub fn init(self, sys_hz: u32) -> Result<(Clocks, crate::scmi::Service), Error> {
-        HANDOFF.withdraw();
-        if sys_hz != PLL_SYS_HZ {
-            return Err(Error::Invalid);
-        }
-        if !running_tuple_admitted() {
-            return Err(Error::Precondition);
-        }
-        select_pll_sys(&mut Mmio)?;
-        let clocks = Clocks {
-            sys_hz: self::sys_hz().ok_or(Error::Hardware)?,
-            uart_hz: uart_hz().ok_or(Error::Precondition)?,
-        };
-        if clocks.sys_hz != sys_hz {
-            return Err(Error::Hardware);
-        }
-        let linux = crate::linux_blocks::bring_up(&mut crate::linux_blocks::Mmio, self.linux)?;
-        // SAFETY: `self` is the one clock authority, issued to proc0.
-        let scmi = unsafe { crate::scmi::Service::new(linux, self.linux.held_clocks()) };
-        HANDOFF.publish(&clocks);
-        Ok((clocks, scmi))
+        publish_on_success(&HANDOFF, || {
+            if sys_hz != PLL_SYS_HZ {
+                return Err(Error::Invalid);
+            }
+            if !running_tuple_admitted() {
+                return Err(Error::Precondition);
+            }
+            select_pll_sys(&mut Mmio)?;
+            let clocks = Clocks {
+                sys_hz: self::sys_hz().ok_or(Error::Hardware)?,
+                uart_hz: uart_hz().ok_or(Error::Precondition)?,
+            };
+            if clocks.sys_hz != sys_hz {
+                return Err(Error::Hardware);
+            }
+            let linux = crate::linux_blocks::bring_up(&mut crate::linux_blocks::Mmio, self.linux)?;
+            // SAFETY: `self` is the one clock authority, issued to proc0.
+            let scmi = unsafe { crate::scmi::Service::new(linux, self.linux.held_clocks()) };
+            Ok((clocks, scmi))
+        })
     }
 }
 
@@ -402,6 +446,155 @@ mod tests {
         assert_eq!(h.take(), Some(c));
         h.withdraw();
         assert_eq!(h.take(), None);
+    }
+
+    const PUBLISHED: Clocks = Clocks {
+        sys_hz: PLL_SYS_HZ,
+        uart_hz: XOSC_HZ,
+    };
+
+    #[test]
+    fn unpublished_is_not_ready_and_stale_is_precondition() {
+        let h = Handoff::new();
+        assert_eq!(published(&h, |_| true), Err(Error::NotReady));
+        h.publish(&PUBLISHED);
+        assert_eq!(published(&h, |_| true), Ok(PUBLISHED));
+        assert_eq!(published(&h, |_| false), Err(Error::Precondition));
+    }
+
+    /// Runs `wait_until` against a never-published handoff with a timer that starts at
+    /// `start` and advances `step` per read. Returns (result, attempts, elapsed at the end).
+    fn wait_never_ready(
+        timeout_us: u32,
+        start: u64,
+        step: u64,
+    ) -> (Result<Clocks, Error>, u32, u64) {
+        let mut clock = start;
+        let mut attempts = 0;
+        let r = wait_until(
+            timeout_us,
+            || {
+                let t = clock;
+                clock = clock.wrapping_add(step);
+                t
+            },
+            || {
+                attempts += 1;
+                Err(Error::NotReady)
+            },
+        );
+        (r, attempts, clock.wrapping_sub(start).wrapping_sub(step))
+    }
+
+    #[test]
+    fn wait_zero_timeout_still_tries() {
+        let (r, attempts, elapsed) = wait_never_ready(0, 0, 1);
+        assert_eq!(r, Err(Error::NotReady));
+        // One try, the deadline check, the final try.
+        assert_eq!(attempts, 2);
+        assert_eq!(elapsed, 1);
+    }
+
+    #[test]
+    fn wait_normal_timeout_ends_at_the_deadline() {
+        let (r, attempts, elapsed) = wait_never_ready(10_000, 5, 1_000);
+        assert_eq!(r, Err(Error::NotReady));
+        assert_eq!(elapsed, 10_000);
+        assert_eq!(attempts, 11);
+    }
+
+    #[test]
+    fn wait_across_timer_wrap() {
+        // The low word wraps (the case a 32-bit RAWL read had to handle) ...
+        let (r, _, elapsed) = wait_never_ready(10_000, 0xffff_ff00, 1_000);
+        assert_eq!(r, Err(Error::NotReady));
+        assert_eq!(elapsed, 10_000);
+        // ... and so does the full 64-bit counter.
+        let (r, _, elapsed) = wait_never_ready(10_000, u64::MAX - 500, 1_000);
+        assert_eq!(r, Err(Error::NotReady));
+        assert_eq!(elapsed, 10_000);
+    }
+
+    #[test]
+    fn wait_near_max_timeout_cannot_skip_the_deadline() {
+        // Coarse polling steps over the last microseconds before u32::MAX; with a 32-bit
+        // difference the elapsed time would wrap past the deadline and never end.
+        let timeout = u32::MAX - 10;
+        let (r, _, elapsed) = wait_never_ready(timeout, 0x1234, 0x4000_0000);
+        assert_eq!(r, Err(Error::NotReady));
+        assert!(elapsed >= u64::from(timeout) && elapsed < u64::from(timeout) + 0x4000_0000);
+    }
+
+    #[test]
+    fn wait_max_timeout_ends() {
+        let (r, _, elapsed) = wait_never_ready(u32::MAX, 7, 0x1000_0000);
+        assert_eq!(r, Err(Error::NotReady));
+        assert!(elapsed >= u64::from(u32::MAX));
+        let (r, attempts, elapsed) = wait_never_ready(u32::MAX, 0, u64::from(u32::MAX));
+        assert_eq!(
+            (r, attempts, elapsed),
+            (Err(Error::NotReady), 2, u64::from(u32::MAX))
+        );
+    }
+
+    #[test]
+    fn wait_returns_at_once_on_success_or_stale() {
+        for want in [
+            Ok(PUBLISHED),
+            Err(Error::Precondition),
+            Err(Error::Hardware),
+        ] {
+            let mut attempts = 0;
+            let r = wait_until(
+                u32::MAX,
+                || 0,
+                || {
+                    attempts += 1;
+                    want
+                },
+            );
+            assert_eq!((r, attempts), (want, 1));
+        }
+    }
+
+    #[test]
+    fn wait_sees_a_publish_during_the_wait() {
+        let h = Handoff::new();
+        let mut clock = 0u64;
+        let r = wait_until(
+            10_000,
+            || {
+                clock += 100;
+                if clock == 1_000 {
+                    h.publish(&PUBLISHED);
+                }
+                clock
+            },
+            || published(&h, |_| true),
+        );
+        assert_eq!(r, Ok(PUBLISHED));
+    }
+
+    #[test]
+    fn init_publishes_only_on_success() {
+        let h = Handoff::new();
+        for e in [Error::Invalid, Error::Precondition, Error::Hardware] {
+            assert_eq!(publish_on_success::<()>(&h, || Err(e)), Err(e));
+            assert_eq!(h.ready.load(Ordering::Relaxed), 0);
+            assert_eq!(h.take(), None);
+        }
+        assert_eq!(
+            publish_on_success(&h, || Ok((PUBLISHED, 9))),
+            Ok((PUBLISHED, 9))
+        );
+        assert_eq!(h.ready.load(Ordering::Relaxed), READY);
+        assert_eq!(h.take(), Some(PUBLISHED));
+        // A failing init withdraws before it fails (defensive; init runs once per image).
+        assert_eq!(
+            publish_on_success::<()>(&h, || Err(Error::Hardware)),
+            Err(Error::Hardware)
+        );
+        assert_eq!(h.ready.load(Ordering::Relaxed), 0);
     }
 
     #[test]
