@@ -170,16 +170,31 @@ macro_rules! word {
 }
 word!(u8: U8, u16: U16, u32: U32);
 
+/// [`Token::init`] settings: `Config::new(hz, mode)` plus the `with_*` setters (the struct is
+/// `#[non_exhaustive]`, so fields can be added without breaking callers).
+///
+/// ```
+/// use rp1_hal::spi::Config;
+/// let c = Config::new(10_000_000, embedded_hal::spi::MODE_3)
+///     .with_frame_bits(16)
+///     .with_rx_sample_dly(2);
+/// assert_eq!((c.frequency_hz, c.frame_bits, c.rx_sample_dly), (10_000_000, 16, 2));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Config {
     /// Upper bound for SCLK; the rate used is the highest `clk_sys / even divider` not above it.
     pub frequency_hz: u32,
     pub mode: Mode,
-    /// 4..=16, or 4..=32 when the instance has the 32-bit frame field.
+    /// 4..=16, or 4..=32 when the instance has the 32-bit frame field. Default 8.
     pub frame_bits: u8,
     /// RX_SAMPLE_DLY: clk_sys cycles by which MISO sampling is delayed (0 = none, the
-    /// default). STATIC: only 0 is hardware-tested; an external device at high SCLK may need
-    /// a delay (Linux: `rx-sample-delay-ns`) or a lower rate.
+    /// default). Written as given, without a range check or read-back, as Linux spi-dw-core
+    /// does (`rx-sample-delay-ns`). The usable maximum is the DW_apb_ssi synthesis parameter
+    /// SSI_RX_DLY_SR_DEPTH, which is not known for RP1, and what the block does with a larger
+    /// value is not verified (UNVERIFIED: recalled from the DesignWare databook as "no delay").
+    /// STATIC: only 0 is hardware-tested; an external device at high SCLK may need a delay or
+    /// a lower rate.
     pub rx_sample_dly: u8,
 }
 impl Config {
@@ -190,6 +205,23 @@ impl Config {
             frame_bits: 8,
             rx_sample_dly: 0,
         }
+    }
+    pub const fn with_frequency_hz(mut self, frequency_hz: u32) -> Self {
+        self.frequency_hz = frequency_hz;
+        self
+    }
+    pub const fn with_mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
+        self
+    }
+    pub const fn with_frame_bits(mut self, frame_bits: u8) -> Self {
+        self.frame_bits = frame_bits;
+        self
+    }
+    /// See [`Config::rx_sample_dly`] (the upper limit is unverified).
+    pub const fn with_rx_sample_dly(mut self, cycles: u8) -> Self {
+        self.rx_sample_dly = cycles;
+        self
     }
 }
 
