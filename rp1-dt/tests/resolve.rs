@@ -120,6 +120,74 @@ fn uart3_overlay_conflicts_with_spi0_gpio8_gpio9_and_is_marked() {
 }
 
 #[test]
+fn generic_groups_select_rp1_pins_like_pins() {
+    // Review 12 (Codex #1, Claude L1): pinctrl-rp1 falls back to the generic binding, whose
+    // `groups` names the one-pin groups gpio0..gpio53.
+    let direct = "&rp1_gpio { grp: uart3-groups { function = \"uart3\"; groups = \"gpio8\", \"gpio9\"; }; }; \
+        &rp1_uart3 { status = \"okay\"; pinctrl-0 = <&grp>; };";
+    let child = "&rp1_gpio { grp: uart3-groups { tx { function = \"uart3\"; groups = \"gpio8\"; }; \
+        rx { function = \"uart3\"; groups = \"gpio9\"; }; }; }; \
+        &rp1_uart3 { status = \"okay\"; pinctrl-0 = <&grp>; };";
+    for extra in [direct, child] {
+        let (mut fdt, note) = fixture(extra);
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{extra}");
+        assert_eq!(nodes[0].path, format!("{RP1}/serial@3c000"));
+        for pin in ["GPIO8", "GPIO9"] {
+            assert!(
+                nodes[0].reasons.iter().any(|r| r.contains(pin)),
+                "{nodes:?}"
+            );
+        }
+        let before = fdt.clone();
+        apply_plan(&before, &mut fdt, &note, Policy::default(), &plan).unwrap();
+        let uart = fdt.label("rp1_uart3").unwrap();
+        assert_eq!(fdt.prop(uart, "status"), Some(b"disabled\0".as_slice()));
+        assert!(check::check(&before, &fdt, &note).unwrap().is_empty());
+        // Refuse policy: the same conflict refuses, without touching the tree.
+        let (mut fdt, note) = fixture(extra);
+        let strict = Policy {
+            on_conflict: OnConflict::Refuse,
+            ..Policy::default()
+        };
+        let plan = resolve(&fdt, &note, strict).unwrap();
+        refusal(
+            plan.clone(),
+            "configures RP1-owned GPIO9; on_conflict=refuse",
+        );
+        let before = fdt.clone();
+        assert!(apply_plan(&before, &mut fdt, &note, strict, &plan).is_err());
+        assert_eq!(fdt.to_bytes(), before.to_bytes());
+        // The final-DTB check sees it too.
+        assert!(!check::final_conflicts(&fdt, &note).unwrap().is_empty());
+    }
+    for extra in [
+        // Pins Linux keeps, and the same group names on another controller.
+        "&rp1_gpio { grp: g { function = \"gpio\"; groups = \"gpio23\"; }; }; / { user { pinctrl-0 = <&grp>; }; };",
+        "/ { soc-pinctrl { soc_groups: g { function = \"uart3\"; groups = \"gpio8\", \"gpio9\"; }; }; \
+            user { pinctrl-0 = <&soc_groups>; }; };",
+    ] {
+        let (fdt, note) = fixture(extra);
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{extra}"
+        );
+    }
+    // A group name that is not an RP1 pin cannot be checked, so it refuses.
+    let (fdt, note) = fixture(
+        "&rp1_gpio { grp: g { function = \"gpio\"; groups = \"spi0_grp\"; }; }; / { user { pinctrl-0 = <&grp>; }; };",
+    );
+    refusal(
+        resolve(&fdt, &note, Policy::default()).unwrap(),
+        "unknown RP1 pin group spi0_grp",
+    );
+    let (fdt, note) =
+        fixture("&rp1_gpio { grp: g { groups = [01]; }; }; / { user { pinctrl-0 = <&grp>; }; };");
+    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+}
+
+#[test]
 fn gpio_led_singular_plural_and_mixed_controller_specifiers() {
     for prop in ["gpios", "gpio", "reset-gpios", "enable-gpio"] {
         let (fdt, note) = fixture(&format!(

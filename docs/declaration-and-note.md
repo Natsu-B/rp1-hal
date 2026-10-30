@@ -267,7 +267,9 @@ overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ロ
 2. `.rp1.dtbo` を、渡された DTB（ファームの DTB に config.txt の `dtoverlay=` を当てたもの）に最後に当てる。実装は純 Rust の
    `rp1-dt`（`fdtoverlay` と同じ木になることをホストで試験）。参照先のラベルが無い（ボード表とカーネル系列が合わない）場合は停止する。
 3. 当てた後の DTB で、RP1 所有のピン・ブロックを使う **Linux 側の有効なノード** を集める（`rp1_dt::check::resolve`）。理由になるもの:
-   - `pinctrl-N` が RP1 所有のピンを含む rp1_gpio のグループを参照している（BCM2712 側の pinctrl は対象外）
+   - `pinctrl-N` が RP1 所有のピンを含む rp1_gpio のグループを参照している（BCM2712 側の pinctrl は対象外）。ピンは `brcm,pins`、
+     `pins`、`groups`（pinctrl-rp1 のグループは 1 ピンずつで名前は `gpio0`..`gpio53`）のすべてから読む。`gpioN` でないグループ名は
+     確かめられないので拒否する
    - `*-gpio(s)` が `gpio-reserved-ranges` の線を指す、予約線の `gpio-hog`
    - `interrupt-parent` が rp1_gpio の `interrupts`、`interrupts-extended` の rp1_gpio の項目が予約線を使う（pinctrl-rp1 は IRQ の
      割り当て時にそのピンのイベント設定を書き換える）

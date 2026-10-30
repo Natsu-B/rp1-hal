@@ -490,6 +490,28 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                         if fdt.prop(g, "brcm,pins").is_some() {
                             pins.extend(cells(fdt, g, "brcm,pins")?);
                         }
+                        // Generic binding without `pins`: pinctrl-rp1 has one group per pin,
+                        // named gpio0..gpio53, and muxes the group's function onto it. All
+                        // three selectors are read, so the set covers whichever Linux uses.
+                        if let Some(v) = fdt.prop(g, "groups") {
+                            if v.last() != Some(&0) || core::str::from_utf8(v).is_err() {
+                                return Err(format!("{}: malformed groups", fdt.path(g)));
+                            }
+                            for group_name in fdt.strings(g, "groups") {
+                                match group_name
+                                    .strip_prefix("gpio")
+                                    .and_then(|s| s.parse::<u32>().ok())
+                                    .filter(|pin| *pin < 54)
+                                {
+                                    Some(pin) => pins.push(pin),
+                                    None => out.unresolved.push(format!(
+                                        "{} {name} -> {}: unknown RP1 pin group {group_name}",
+                                        fdt.path(n),
+                                        fdt.path(g)
+                                    )),
+                                }
+                            }
+                        }
                         for pin in pins {
                             if !out.pins.contains(&pin) {
                                 continue;
