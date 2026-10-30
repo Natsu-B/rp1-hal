@@ -1,5 +1,5 @@
 #!/bin/sh
-# Linux-side SHM / doorbell / I2C regression. Strict: every step has a time limit, a non-zero
+# Linux-side SHM / doorbell / I2C / ADC / SPI regression. Strict: every step has a time limit, a non-zero
 # exit code or a missing reply is a failure, and the script ends with exactly one
 # `CHECK_SHM_RESULT=PASS|FAIL`, then `DDR_INSPECT_END`, and exits non-zero on failure.
 # The host decides with `lab/verify-shm.py` (UART0 + UART10 + capture completion); the boot
@@ -69,6 +69,47 @@ done
 echo I2C_REPLY=$reply
 [ $((reply)) -eq 1 ] || fail i2c_reply
 echo I2C_LINUX_DONE
+# request REQ: write it to link+0x28 (reply cleared first), poll link+0x2c up to 20 s and
+# print the reply. Each runs only after the doorbell and shm steps have finished: the
+# proc1 ADC / SPI bursts block its doorbell and command handling for tens of ms.
+request() {
+    busybox devmem 0x1f0040c02c 32 0
+    busybox devmem 0x1f0040c028 32 "$1"
+    reply=0
+    i=0
+    while [ $i -lt 20 ]; do
+        sleep 1
+        reply=$(busybox devmem 0x1f0040c02c 32)
+        [ $((reply)) -ne 0 ] && break
+        i=$((i + 1))
+    done
+}
+# dt_disabled NAME NODE: RP1 owns the block, so Linux's node must exist and be disabled
+# (a missing status property means okay).
+dt_disabled() {
+    found=
+    for path in $(find /sys/firmware/devicetree/base -name "$2"); do
+        st=$(cat "$path/status" 2>/dev/null)
+        echo "$1_DT=$path status=${st:-none}"
+        found=1
+        [ "$st" = disabled ] || fail "$1_dt"
+    done
+    [ -n "$found" ] || { echo "$1_DT=missing"; fail "$1_dt"; }
+}
+echo ADC_LINUX_BEGIN
+dt_disabled ADC adc@c8000
+# 0xadc = proc1's ADC burst (lab/shm-firmware/src/adc_proof.rs).
+request 0xadc
+echo ADC_REPLY=$reply
+[ $((reply)) -eq $((0xadc)) ] || fail adc_reply
+echo ADC_LINUX_DONE
+echo SPI_LINUX_BEGIN
+dt_disabled SPI spi@50000
+# 0x5b1 = proc1's SPI0 loopback proof (lab/shm-firmware/src/spi_proof.rs).
+request 0x5b1
+echo SPI_REPLY=$reply
+[ $((reply)) -eq $((0x5b1)) ] || fail spi_reply
+echo SPI_LINUX_DONE
 if [ -z "$FAILED" ]; then
     echo CHECK_SHM_RESULT=PASS
 else

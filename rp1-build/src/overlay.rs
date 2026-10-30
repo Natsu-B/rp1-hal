@@ -165,6 +165,18 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
             "status = \"disabled\";",
         );
     }
+    for spi in d
+        .proc0
+        .peripherals
+        .iter()
+        .chain(&d.proc1.peripherals)
+        .filter_map(|p| p.strip_prefix("SPI"))
+    {
+        fragment(
+            &format!("target = <&rp1_spi{spi}>"),
+            "status = \"disabled\";",
+        );
+    }
     fragment(
         "target-path = \"/\"",
         &format!(

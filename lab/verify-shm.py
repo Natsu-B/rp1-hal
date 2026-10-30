@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict pass/fail for the Linux SHM / doorbell / I2C regression (`lab/check-shm.sh`).
+"""Strict pass/fail for the Linux SHM / doorbell / I2C / ADC / SPI regression (`lab/check-shm.sh`).
 
 Usage: verify-shm.py --uart0 FILE --uart10 FILE --result RESULT_JSON
 
@@ -21,10 +21,16 @@ UART10_ORDERED = [
     ("SHM_RC=0", r"\bSHM_RC=0\b"),
     ("doorbell after", r"\bDOORBELL_AFTER_RC=0\b"),
     ("I2C reply", r"\bI2C_REPLY=0x0*1\b"),
+    ("ADC node disabled", r"\bADC_DT=\S+ status=disabled(?!\S)"),
+    ("ADC reply", r"\bADC_REPLY=0x0*[aA][dD][cC]\b"),
+    ("SPI node disabled", r"\bSPI_DT=\S+ status=disabled(?!\S)"),
+    ("SPI reply", r"\bSPI_REPLY=0x0*5[bB]1\b"),
     ("script result", r"\bCHECK_SHM_RESULT=PASS\b"),
     ("terminal marker", r"\bDDR_INSPECT_END\b"),
 ]
-UART10_FORBIDDEN = [r"\bCHECK_FAIL\b", r"\bCHECK_SHM_RESULT=FAIL\b", r"Kernel panic", r"\bSError\b"]
+# Linux must not have any node of an RP1-owned block enabled (status other than disabled).
+UART10_FORBIDDEN = [r"\bCHECK_FAIL\b", r"\bCHECK_SHM_RESULT=FAIL\b", r"Kernel panic", r"\bSError\b",
+                    r"\b(ADC|SPI)_DT=(missing\b|\S+ status=(?!disabled(?!\S)))"]
 # UART0 (RP1 firmware log).
 UART0_REQUIRED = [
     ("profile done", r"\bPROF_DONE\b"),
@@ -33,8 +39,19 @@ UART0_REQUIRED = [
     ("I2C 400 kHz", r"\bI2C_PASS hz=400000\b"),
     ("I2C r64_w16", r"\bI2C_PASS r64_w16\b"),
     ("I2C result", r"\bI2C_RESULT request=1 Ok\b"),
+    ("ADC boot burst", r"\bADC_P1BOOT first=\d+ temp_mc=-?\d+ PASS\b"),
+    ("ADC boot result", r"\bADC_RESULT boot Ok\b"),
+    ("ADC request burst", r"\bADC_P1REQ first=\d+ temp_mc=-?\d+ PASS\b"),
+    ("ADC request result", r"\bADC_RESULT request=0xadc Ok\b"),
+    ("SPI boot proof", r"\bSPI_P1BOOT depth=\d+ .*\bPASS\b"),
+    ("SPI boot result", r"\bSPI_RESULT boot Ok\b"),
+    ("SPI 1 MHz", r"\bSPI_PASS P1REQ hz=1000000 "),
+    ("SPI 10 MHz", r"\bSPI_PASS P1REQ hz=10000000 "),
+    ("SPI request proof", r"\bSPI_P1REQ depth=\d+ .*\bPASS\b"),
+    ("SPI request result", r"\bSPI_RESULT request=0x5b1 Ok\b"),
 ]
-UART0_FORBIDDEN = [r"\bI2C_FAIL\b", r"\bpanic", r"\bI2C_RESULT request=1 Err\b"]
+UART0_FORBIDDEN = [r"\bI2C_FAIL\b", r"\bpanic", r"\bI2C_RESULT request=1 Err\b", r"\bADC_RESULT\b.*\bErr\b",
+                   r"\bSPI_RESULT\b.*\bErr\b", r"\bspi0 init Err\b"]
 
 
 def verify(uart0, uart10, result):

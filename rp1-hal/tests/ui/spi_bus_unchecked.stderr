@@ -1,0 +1,93 @@
+error[E0603]: module `sealed` is private
+  --> tests/ui/spi_bus_unchecked.rs:12:27
+   |
+12 |     let _ = rp1_hal::spi::sealed::Key(());
+   |                           ^^^^^^  --- tuple struct `Key` is not publicly re-exported
+   |                           |
+   |                           private module
+   |
+note: the module `sealed` is defined here
+  --> src/spi.rs
+   |
+   | mod sealed {
+   | ^^^^^^^^^^
+
+error[E0061]: this method takes 1 argument but 0 arguments were supplied
+ --> tests/ui/spi_bus_unchecked.rs:5:17
+  |
+5 |     let _ = bus.admit();
+  |                 ^^^^^-- argument #1 of type `spi::sealed::Key` is missing
+  |
+note: method defined here
+ --> src/spi.rs
+  |
+  |     fn admit(&mut self, key: sealed::Key) -> Result<sealed::Admitted<W>, Error>;
+  |        ^^^^^
+help: provide the argument
+  |
+5 |     let _ = bus.admit(/* Key */);
+  |                       +++++++++
+
+error[E0061]: this method takes 3 arguments but 2 arguments were supplied
+ --> tests/ui/spi_bus_unchecked.rs:6:17
+  |
+6 |     let _ = bus.exchange(rx, tx);
+  |                 ^^^^^^^^ -- argument #1 of type `spi::sealed::Admitted<u8>` is missing
+  |
+note: method defined here
+ --> src/spi.rs
+  |
+  |     fn exchange(
+  |        ^^^^^^^^
+help: provide the argument
+  |
+6 |     let _ = bus.exchange(/* Admitted<u8> */, rx, tx);
+  |                          +++++++++++++++++++
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+ --> tests/ui/spi_bus_unchecked.rs:7:17
+  |
+7 |     let _ = bus.exchange_in_place(rx);
+  |                 ^^^^^^^^^^^^^^^^^ -- argument #1 of type `spi::sealed::Admitted<u8>` is missing
+  |
+note: method defined here
+ --> src/spi.rs
+  |
+  |     fn exchange_in_place(&mut self, ok: sealed::Admitted<W>, words: &mut [W]) -> Result<(), Error>;
+  |        ^^^^^^^^^^^^^^^^^
+help: provide the argument
+  |
+7 |     let _ = bus.exchange_in_place(/* Admitted<u8> */, rx);
+  |                                   +++++++++++++++++++
+
+error[E0061]: this method takes 1 argument but 0 arguments were supplied
+ --> tests/ui/spi_bus_unchecked.rs:8:17
+  |
+8 |     let _ = bus.wait_idle();
+  |                 ^^^^^^^^^-- argument #1 of type `spi::sealed::Admitted<u8>` is missing
+  |
+note: method defined here
+ --> src/spi.rs
+  |
+  |     fn wait_idle(&mut self, ok: sealed::Admitted<W>) -> Result<(), Error>;
+  |        ^^^^^^^^^
+help: provide the argument
+  |
+8 |     let _ = bus.wait_idle(/* Admitted<u8> */);
+  |                           ++++++++++++++++++
+
+error[E0061]: this function takes 4 arguments but 3 arguments were supplied
+  --> tests/ui/spi_bus_unchecked.rs:11:13
+   |
+11 |     let _ = Bus::<u16>::exchange(spi, rx, tx);
+   |             ^^^^^^^^^^^^^^^^^^^^      -- argument #2 of type `spi::sealed::Admitted<u16>` is missing
+   |
+note: method defined here
+  --> src/spi.rs
+   |
+   |     fn exchange(
+   |        ^^^^^^^^
+help: provide the argument
+   |
+11 |     let _ = Bus::<u16>::exchange(spi, /* Admitted<u16> */, rx, tx);
+   |                                       ++++++++++++++++++++

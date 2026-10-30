@@ -142,6 +142,80 @@ fn adc_ownership_disables_linux_adc_and_keeps_its_reset() {
     d.proc1.peripherals.push("ADC".into());
     assert!(d.validate().is_err(), "ADC claimed twice");
 }
+#[test]
+fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
+    use rp1_build::metadata::{BOARD_LINUX_RESETS, peripheral_id, peripheral_type};
+    for n in [0u16, 1, 3, 5] {
+        assert_eq!(peripheral_id(&format!("SPI{n}")).unwrap(), (2, 16 + n));
+        assert_eq!(
+            peripheral_type(&format!("SPI{n}")).unwrap(),
+            format!("::rp1_hal::spi::Token<{n}>")
+        );
+    }
+    // Slave-only (4, 7), not on bank 0 (6, 8), MISO on Linux's UART1 pin (2), aliases.
+    for p in [
+        "SPI2", "SPI4", "SPI6", "SPI7", "SPI8", "SPI9", "SPI00", "SPI+0", "SPI",
+    ] {
+        assert!(peripheral_type(p).is_err(), "{p}");
+    }
+    let mut d = declaration();
+    let before = d.linux_resets();
+    assert_eq!(
+        before[1] & (0x1ff << 10),
+        BOARD_LINUX_RESETS[1] & (0x1ff << 10)
+    );
+    d.proc1.pins.extend([9, 10, 11]);
+    d.proc1.peripherals.push("SPI0".into());
+    d.validate().unwrap();
+    assert_eq!(
+        d.linux_resets(),
+        [before[0], before[1] & !(1 << 10), before[2]]
+    );
+    let a = generate("spi", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    assert!(
+        a.dts
+            .contains("target = <&rp1_spi0>; __overlay__ { status = \"disabled\"; }")
+    );
+    assert!(
+        !a.dts
+            .contains("target = <&rp1_spi1>; __overlay__ { status = \"disabled\"; }")
+    );
+    let note = Note::parse(&a.note).unwrap();
+    assert!(
+        note.get(rp1_proto::note::OWNERSHIP).unwrap().value[4..]
+            .as_chunks::<4>()
+            .0
+            .contains(&[2, 2, 16, 0])
+    );
+    d.proc0.peripherals.push("SPI0".into());
+    assert!(d.validate().is_err(), "SPI0 claimed twice");
+}
+/// Review 6 #1: an unusable or out-of-range SPI/I2C number fails `validate` and `generate` as
+/// unsupported, never as another block's ownership ID (SPI16 = 16 + 16 would be I2C0's 32).
+#[test]
+fn unusable_bus_numbers_are_rejected_by_name() {
+    use rp1_build::metadata::peripheral_id;
+    for p in [
+        "SPI2", "SPI4", "SPI6", "SPI16", "SPI32", "I2C4", "I2C9", "I2C32",
+    ] {
+        assert!(peripheral_id(p).is_err(), "{p}");
+        for with_i2c0 in [false, true] {
+            let mut d = declaration();
+            if with_i2c0 {
+                d.proc0.peripherals.push("I2C0".into());
+            }
+            d.validate().unwrap();
+            d.proc1.peripherals.push(p.into());
+            let e = d.validate().unwrap_err().to_string();
+            assert!(!e.contains("claimed twice"), "{p}: {e}");
+            assert!(e.contains(p), "{p}: {e}");
+            assert!(
+                generate("bad", "0.1.0", &d, [0; 32], [0; 20]).is_err(),
+                "{p}"
+            );
+        }
+    }
+}
 /// Review #7/#9: declarations v0.1 cannot deliver are build errors, not silent no-ops.
 #[test]
 fn rejects_unsupported_clock_authority_and_notify() {

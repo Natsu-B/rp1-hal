@@ -229,6 +229,37 @@ fn adc_overlay_and_later_linux_conflict() {
     assert!(bad.iter().any(|c| c.contains("rp1_adc")), "{bad:?}");
 }
 
+#[test]
+fn spi_overlay_and_later_linux_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = declaration();
+    d.proc1.pins.extend([9, 10, 11]);
+    d.proc1.peripherals.push("SPI0".into());
+    let base = dtc(
+        tmp.path(),
+        "base",
+        &BASE
+            .replace("@EXTRA_RESERVED@", "")
+            .replace("@EXTRA_RP1@", "")
+            .replace(
+                "rp1_spi0: spi0 { };",
+                r#"rp1_spi0: spi0 { status = "okay"; };"#,
+            ),
+    );
+    let a = generate("spi", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    let app = dtc(tmp.path(), "app", &a.dts);
+    let merged = tmp.path().join("merged.dtb");
+    overlay::apply(&base, &app, &merged).unwrap();
+    let mut fdt = rp1_build::fdt::Fdt::parse(&fs::read(&merged).unwrap()).unwrap();
+    assert!(rp1_dt_check(&fdt, &a.note).is_empty());
+    let spi = fdt.label("rp1_spi0").unwrap();
+    assert!(!fdt.enabled(spi));
+    assert!(fdt.enabled(fdt.label("rp1_spi1").unwrap()));
+    fdt.set_prop(spi, "status", b"okay\0".to_vec());
+    let bad = rp1_dt_check(&fdt, &a.note);
+    assert!(bad.iter().any(|c| c.contains("rp1_spi0")), "{bad:?}");
+}
+
 fn rp1_dt_check(fdt: &rp1_build::fdt::Fdt, note: &[u8]) -> Vec<String> {
     overlay::final_conflicts(&fdt.to_bytes(), note).unwrap()
 }

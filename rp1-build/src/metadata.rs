@@ -148,6 +148,17 @@ pub fn peripheral_type(p: &str) -> Result<String> {
         .filter(|n| *n < 4 && p == format!("I2C{n}"))
     {
         Ok(format!("::rp1_hal::i2c::Token<{n}>"))
+    } else if let Some(n) = p
+        .strip_prefix("SPI")
+        .and_then(|s| s.parse::<u8>().ok())
+        .filter(|n| p == format!("SPI{n}"))
+    {
+        // SPI4/7 are slave-only, SPI6/8 are not on bank 0, SPI2's MISO is GPIO1 (Linux UART1
+        // on rpi-cm5): only SPI0/1/3/5 can be used here.
+        match n {
+            0 | 1 | 3 | 5 => Ok(format!("::rp1_hal::spi::Token<{n}>")),
+            _ => Err(format!("{p} is not a usable SPI master on rpi-cm5 (SPI0/1/3/5)").into()),
+        }
     } else if p == "ADC" {
         Ok("::rp1_hal::adc::Token".into())
     } else if let Some(n) = p
@@ -166,6 +177,8 @@ pub fn peripheral_id(p: &str) -> Result<(u8, u16)> {
         (2, n.parse()?)
     } else if let Some(n) = p.strip_prefix("I2C") {
         (2, 32 + n.parse::<u16>()?)
+    } else if let Some(n) = p.strip_prefix("SPI") {
+        (2, rp1_proto::BlockId::Spi0 as u16 + n.parse::<u16>()?)
     } else if p == "ADC" {
         (2, rp1_proto::BlockId::Adc as u16)
     } else {
@@ -181,7 +194,7 @@ pub const BOARD_LINUX_RESETS: [u32; 3] = [
     0x7,
 ];
 impl Declaration {
-    /// [`BOARD_LINUX_RESETS`] without the UARTs, I2Cs and ADC the image declares (and UART0
+    /// [`BOARD_LINUX_RESETS`] without the UARTs, I2Cs, SPIs and ADC the image declares (and UART0
     /// with `log`): rp1-hal releases these for Linux. A declared ADC also makes rp1-hal hold
     /// clk_adc (`rp1_hal::linux_blocks::LinuxBlocks::held_clocks`).
     pub fn linux_resets(&self) -> [u32; 3] {
@@ -191,6 +204,8 @@ impl Declaration {
                 r[1] &= !(1 << (26 + n));
             } else if let Some(n) = p.strip_prefix("I2C").and_then(|n| n.parse::<u32>().ok()) {
                 r[0] &= !(1 << (7 + n));
+            } else if let Some(n) = p.strip_prefix("SPI").and_then(|n| n.parse::<u32>().ok()) {
+                r[1] &= !(1 << (10 + n));
             } else if p == "ADC" {
                 r[0] &= !1;
             }

@@ -11,6 +11,7 @@ test = false
 bench = false
 
 [dependencies]
+embedded-hal = "1"
 rp1-hal = { path = "../../rp1-hal" }
 rp1-rt = { path = "../../rp1-rt" }
 rp1-proto = { path = "../../rp1-proto" }
@@ -25,8 +26,8 @@ clock = { authority = "rp1", clk_sys_hz = 200000000 }
 log = { sink = "uart0", baudrate = 115200 }
 
 [package.metadata.rp1.proc0]
-pins = [22]
-peripherals = ["TIMER.ALARM0"]
+pins = [8, 9, 10, 11, 22]
+peripherals = ["TIMER.ALARM0", "SPI0"]
 
 [package.metadata.rp1.proc1]
 pins = [2, 3, 27]

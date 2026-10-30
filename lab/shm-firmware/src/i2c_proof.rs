@@ -68,19 +68,19 @@ fn prove(bus: &mut Bus) -> Result<(), Failure> {
         bus.set_speed(speed).map_err(at("set_speed"))?;
         let start = timer.now();
         bus.write(PEER, &frame).map_err(at("write"))?;
-        let write_us = timer.now() - start;
+        let write_us = (timer.now() - start) as u32;
         gap();
         let mut bytes = [0; 64];
         let start = timer.now();
         bus.read(PEER, &mut bytes).map_err(at("read"))?;
-        let read_us = timer.now() - start;
+        let read_us = (timer.now() - start) as u32;
         check("read", &bytes)?;
         gap();
         bytes.fill(0);
         let start = timer.now();
         bus.write_read(PEER, &frame, &mut bytes)
             .map_err(at("write_read"))?;
-        let combined_us = timer.now() - start;
+        let combined_us = (timer.now() - start) as u32;
         check("write_read", &bytes)?;
         gap();
         bytes.fill(0);

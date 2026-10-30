@@ -73,14 +73,48 @@ impl Clocks {
         self.uart_hz
     }
     /// The tree still matches what this value was created from (drivers check before use).
+    #[inline(never)]
     pub(crate) fn still_current(&self) -> bool {
-        sys_hz() == Some(self.sys_hz) && uart_hz() == Some(self.uart_hz)
+        self.sys_current_strict() && uart_hz() == Some(self.uart_hz)
+    }
+    /// clk_sys alone still decodes to [`Clocks::sys_hz`] ([`sys_hz`]: CTRL/DIV/SEL and the
+    /// PLL_SYS tuple, read twice). The SPI and I2C init and reconfiguration check: their SCLK
+    /// and `ic_clk` depend on clk_sys only, so a different clk_uart does not reject them.
+    #[inline(never)]
+    pub(crate) fn sys_current_strict(&self) -> bool {
+        sys_hz() == Some(self.sys_hz)
+    }
+    /// The per-call check of the SPI and I2C bus calls: clk_sys is still [`Clocks::sys_hz`],
+    /// judged from one read each of CLK_SYS_SEL (the source actually selected) and
+    /// CLK_SYS_DIV_INT, plus PLL_SYS CS (lock), FBDIV_INT and PRIM only when SEL is PLL_SYS.
+    /// 2 to 5 register reads; clk_uart is not read. One out-of-line copy for SPI and I2C,
+    /// placed in ISRAM (instruction fetch from shared SRAM is the slow path).
+    ///
+    /// Like any check before a transfer it cannot stop a change made while the transfer runs.
+    /// It also does not re-read what init verified and nothing in this crate changes later:
+    /// CLK_SYS_CTRL (SEL follows it), PLL_SYS PWR and FBDIV_FRAC. [`Clocks::sys_current_strict`]
+    /// at init and reconfiguration reads them.
+    #[rp1_rt::isram]
+    pub(crate) fn sys_current(&self) -> bool {
+        sys_is(self.sys_hz, read)
+    }
+    /// `sys` / `uart` as [`sys_hz`] / [`uart_hz`] read them equal this value.
+    #[cfg(test)]
+    pub(crate) fn matches(&self, sys: Option<u32>, uart: Option<u32>) -> bool {
+        sys == Some(self.sys_hz) && uart == Some(self.uart_hz)
+    }
+    #[cfg(test)]
+    pub(crate) const fn for_test(sys_hz: u32, uart_hz: u32) -> Self {
+        Self { sys_hz, uart_hz }
     }
 }
 
 /// [`Authority::init`]'s result for proc1: written by proc0 only (init), read by proc1 only.
 /// Plain acquire/release loads and stores, no LDREX/STREX (shared SRAM). `.shared` is loaded
-/// with the image (`ready` = 0); init clears `ready` before it writes the frequencies again.
+/// with the image (`ready` = 0), and the value is published at most once per image load:
+/// [`Authority::init`] consumes the one `Authority`. The `withdraw` at the start of init is
+/// defensive only; readers do not re-check `ready`, so this is not a protocol for publishing
+/// a second value.
 struct Handoff {
     ready: AtomicU32,
     sys_hz: AtomicU32,
@@ -124,27 +158,67 @@ impl Handoff {
 }
 
 impl Clocks {
-    /// proc1's copy of the [`Clocks`] that proc0's [`Authority::init`] returned, or `None` if
-    /// init has not succeeded yet (or the tree no longer matches it). Takes the proc1 token:
-    /// proc0 already has its own value.
-    pub fn from_proc0(_core: &rp1_rt::Proc1) -> Option<Clocks> {
-        HANDOFF.take().filter(Clocks::still_current)
+    /// proc1's copy of the [`Clocks`] that proc0's [`Authority::init`] returned. Takes the
+    /// proc1 token: proc0 already has its own value.
+    ///
+    /// - [`Error::NotReady`]: init has not succeeded (yet); nothing is published.
+    /// - [`Error::Precondition`]: init published a value, but the clock tree no longer
+    ///   matches it (the same error the drivers return for a stale `Clocks`).
+    pub fn from_proc0(_core: &rp1_rt::Proc1) -> Result<Clocks, Error> {
+        published(&HANDOFF, Clocks::still_current)
     }
 
-    /// [`Clocks::from_proc0`], polled for up to `timeout_us` (raw 1 MHz timer, which runs from
-    /// the cold bring-up on). [`Error::NotReady`] if proc0's init has not published by then.
+    /// [`Clocks::from_proc0`], polled for up to `timeout_us` (64-bit 1 MHz timer, which runs
+    /// from the cold bring-up on). Tries at least once, also with `timeout_us` = 0.
+    /// [`Error::NotReady`] if proc0's init has not published by then; [`Error::Precondition`]
+    /// at once if it has published but the tree no longer matches (waiting cannot fix that).
     pub fn wait_from_proc0(core: &rp1_rt::Proc1, timeout_us: u32) -> Result<Clocks, Error> {
-        let start = read(crate::TIMER_RAWL);
-        loop {
-            if let Some(clocks) = Self::from_proc0(core) {
-                return Ok(clocks);
-            }
-            if read(crate::TIMER_RAWL).wrapping_sub(start) > timeout_us {
-                return Self::from_proc0(core).ok_or(Error::NotReady);
-            }
-            core::hint::spin_loop();
-        }
+        let timer = crate::timer::Timer::new();
+        wait_until(timeout_us, || timer.now(), || Self::from_proc0(core))
     }
+}
+
+/// The published value, checked against the current tree by `current`.
+fn published(handoff: &Handoff, current: impl Fn(&Clocks) -> bool) -> Result<Clocks, Error> {
+    let clocks = handoff.take().ok_or(Error::NotReady)?;
+    if current(&clocks) {
+        Ok(clocks)
+    } else {
+        Err(Error::Precondition)
+    }
+}
+
+/// Retries `attempt` while it reports [`Error::NotReady`], until `now() - start >= timeout_us`;
+/// then one last attempt (a publish that lands at the deadline still counts). The 64-bit
+/// difference cannot wrap within any `u32` timeout, so every timeout up to `u32::MAX` ends.
+fn wait_until(
+    timeout_us: u32,
+    mut now: impl FnMut() -> u64,
+    mut attempt: impl FnMut() -> Result<Clocks, Error>,
+) -> Result<Clocks, Error> {
+    let start = now();
+    loop {
+        match attempt() {
+            Err(Error::NotReady) => {}
+            done => return done,
+        }
+        if now().wrapping_sub(start) >= u64::from(timeout_us) {
+            return attempt();
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// [`Authority::init`]'s publication rule: `ready` is cleared first and the value is published
+/// only if `body` succeeds.
+fn publish_on_success<S>(
+    handoff: &Handoff,
+    body: impl FnOnce() -> Result<(Clocks, S), Error>,
+) -> Result<(Clocks, S), Error> {
+    handoff.withdraw();
+    let (clocks, rest) = body()?;
+    handoff.publish(&clocks);
+    Ok((clocks, rest))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,6 +232,9 @@ struct Pll {
 
 impl Pll {
     fn take() -> Self {
+        Self::take_with(&mut read)
+    }
+    fn take_with(read: &mut impl FnMut(usize) -> u32) -> Self {
         Self {
             cs: read(PLL_SYS_CS),
             pwr: read(PLL_SYS_PWR),
@@ -169,11 +246,35 @@ impl Pll {
     /// Locked, 50 MHz × 20 = 1 GHz VCO, PRIM /5 /1 (PRI_PH bit 4 either way). The only tuple
     /// written by `cold::clocks` and observed on hardware.
     fn is_200mhz(&self) -> bool {
-        self.cs == 0x8000_0001
+        self.cs == PLL_CS_LOCKED
             && self.pwr == 4
-            && self.fb_int == 20
+            && self.fb_int == PLL_FBDIV_INT
             && self.fb_frac == 0
-            && self.prim & !0x10 == 0x0005_1000
+            && self.prim & !PLL_PRIM_PRI_PH == PLL_PRIM
+    }
+}
+/// PLL_SYS CS locked with REFDIV 1, FBDIV_INT 20, PRIM /5 /1 without PRI_PH (bit 4).
+const PLL_CS_LOCKED: u32 = 0x8000_0001;
+const PLL_FBDIV_INT: u32 = 20;
+const PLL_PRIM: u32 = 0x0005_1000;
+const PLL_PRIM_PRI_PH: u32 = 0x10;
+
+/// [`Clocks::sys_current`] over the register reader `read`: each register is read at most once,
+/// the PLL ones only when CLK_SYS_SEL selects PLL_SYS.
+#[inline(always)]
+fn sys_is(hz: u32, mut read: impl FnMut(usize) -> u32) -> bool {
+    if read(CLK_SYS_DIV_INT) != 1 {
+        return false;
+    }
+    match read(CLK_SYS_SEL) {
+        SEL_XOSC => hz == XOSC_HZ,
+        SEL_PLL_SYS => {
+            hz == PLL_SYS_HZ
+                && read(PLL_SYS_CS) == PLL_CS_LOCKED
+                && read(PLL_SYS_FBDIV_INT) == PLL_FBDIV_INT
+                && read(PLL_SYS_PRIM) & !PLL_PRIM_PRI_PH == PLL_PRIM
+        }
+        _ => false,
     }
 }
 
@@ -189,19 +290,20 @@ fn decode_sys(ctrl: u32, div: u32, sel: u32, pll: &Pll) -> Option<u32> {
     }
 }
 
-fn sys_once() -> Option<u32> {
-    decode_sys(
-        read(CLK_SYS_CTRL),
-        read(CLK_SYS_DIV_INT),
-        read(CLK_SYS_SEL),
-        &Pll::take(),
-    )
+fn sys_once(read: &mut impl FnMut(usize) -> u32) -> Option<u32> {
+    let (ctrl, div, sel) = (read(CLK_SYS_CTRL), read(CLK_SYS_DIV_INT), read(CLK_SYS_SEL));
+    decode_sys(ctrl, div, sel, &Pll::take_with(read))
+}
+
+/// [`sys_hz`] over the register reader `read`.
+fn sys_hz_with(mut read: impl FnMut(usize) -> u32) -> Option<u32> {
+    let a = sys_once(&mut read);
+    (a == sys_once(&mut read)).then_some(a).flatten()
 }
 
 /// Current clk_sys rate from the registers (read twice), `None` if unknown or changing.
 pub fn sys_hz() -> Option<u32> {
-    let a = sys_once();
-    (a == sys_once()).then_some(a).flatten()
+    sys_hz_with(read)
 }
 
 fn decode_uart(ctrl: u32, div: u32, sel: u32) -> Option<u32> {
@@ -301,33 +403,35 @@ impl Authority {
     /// (I2C). The returned [`Clocks`] is read back from the registers, not from `sys_hz`.
     /// Already on PLL_SYS (warm restart): nothing is written.
     ///
-    /// On success the same [`Clocks`] is published for proc1 ([`Clocks::from_proc0`]).
+    /// On success, and only then, the same [`Clocks`] is published once for proc1
+    /// ([`Clocks::from_proc0`]); on any error proc1 keeps seeing [`Error::NotReady`].
     pub fn init(self, sys_hz: u32) -> Result<(Clocks, crate::scmi::Service), Error> {
-        HANDOFF.withdraw();
-        if sys_hz != PLL_SYS_HZ {
-            return Err(Error::Invalid);
-        }
-        if !running_tuple_admitted() {
-            return Err(Error::Precondition);
-        }
-        select_pll_sys(&mut Mmio)?;
-        let clocks = Clocks {
-            sys_hz: self::sys_hz().ok_or(Error::Hardware)?,
-            uart_hz: uart_hz().ok_or(Error::Precondition)?,
-        };
-        if clocks.sys_hz != sys_hz {
-            return Err(Error::Hardware);
-        }
-        let linux = crate::linux_blocks::bring_up(&mut crate::linux_blocks::Mmio, self.linux)?;
-        // SAFETY: `self` is the one clock authority, issued to proc0.
-        let scmi = unsafe { crate::scmi::Service::new(linux, self.linux.held_clocks()) };
-        HANDOFF.publish(&clocks);
-        Ok((clocks, scmi))
+        publish_on_success(&HANDOFF, || {
+            if sys_hz != PLL_SYS_HZ {
+                return Err(Error::Invalid);
+            }
+            if !running_tuple_admitted() {
+                return Err(Error::Precondition);
+            }
+            select_pll_sys(&mut Mmio)?;
+            let clocks = Clocks {
+                sys_hz: self::sys_hz().ok_or(Error::Hardware)?,
+                uart_hz: uart_hz().ok_or(Error::Precondition)?,
+            };
+            if clocks.sys_hz != sys_hz {
+                return Err(Error::Hardware);
+            }
+            let linux = crate::linux_blocks::bring_up(&mut crate::linux_blocks::Mmio, self.linux)?;
+            // SAFETY: `self` is the one clock authority, issued to proc0.
+            let scmi = unsafe { crate::scmi::Service::new(linux, self.linux.held_clocks()) };
+            Ok((clocks, scmi))
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
 
     const LOCKED: Pll = Pll {
@@ -390,6 +494,129 @@ mod tests {
         );
     }
 
+    /// Review 6: PLL_SYS and CLK_UART on the admitted tuple (what `running_tuple_admitted`
+    /// checks) while clk_sys runs from XOSC is not the 200 MHz `Clocks`.
+    #[test]
+    fn sys_on_xosc_with_the_admitted_pll_and_uart_is_stale() {
+        let uart = decode_uart(0x1000_0840, 1, 1);
+        assert!(LOCKED.is_200mhz() && uart == Some(XOSC_HZ));
+        assert!(PUBLISHED.matches(decode_sys(SRC_PLL_SYS, 1, SEL_PLL_SYS, &LOCKED), uart));
+        assert!(!PUBLISHED.matches(decode_sys(SRC_XOSC, 1, SEL_XOSC, &LOCKED), uart));
+        assert!(!PUBLISHED.matches(None, uart));
+        assert!(!PUBLISHED.matches(Some(PLL_SYS_HZ), None));
+    }
+
+    /// clk_sys at 200 MHz from PLL_SYS and clk_uart = XOSC, as `cold::clocks` + init leave them.
+    const TREE: [(usize, u32); 11] = [
+        (CLK_SYS_CTRL, 0x800 | SRC_PLL_SYS),
+        (CLK_SYS_DIV_INT, 1),
+        (CLK_SYS_SEL, SEL_PLL_SYS),
+        (CLK_UART_CTRL, 0x1000_0840),
+        (CLK_UART_DIV_INT, 1),
+        (CLK_UART_SEL, 1),
+        (PLL_SYS_CS, 0x8000_0001),
+        (PLL_SYS_PWR, 4),
+        (PLL_SYS_FBDIV_INT, 20),
+        (PLL_SYS_FBDIV_FRAC, 0),
+        (PLL_SYS_PRIM, 0x0005_1010),
+    ];
+    /// (fast check, addresses it read in order, strict check) for `hz` on `tree`.
+    fn sys_checks(tree: &[(usize, u32)], hz: u32) -> (bool, std::vec::Vec<usize>, bool) {
+        let value = |a: usize| tree.iter().find(|r| r.0 == a).unwrap().1;
+        let mut reads = std::vec::Vec::new();
+        let fast = sys_is(hz, |a| {
+            reads.push(a);
+            value(a)
+        });
+        (fast, reads, sys_hz_with(value) == Some(hz))
+    }
+    fn with(changes: &[(usize, u32)]) -> [(usize, u32); 11] {
+        let mut t = TREE;
+        for &(a, v) in changes {
+            t.iter_mut().find(|r| r.0 == a).unwrap().1 = v;
+        }
+        t
+    }
+
+    /// Review 7: SPI and I2C depend on clk_sys only. A clk_uart change does not reject them;
+    /// a clk_sys SEL or DIV change (or a PLL_SYS change under SEL = PLL_SYS) does. The fast
+    /// check reads each register once and never a clk_uart one.
+    #[test]
+    fn sys_checks_ignore_clk_uart_and_reject_sys_changes() {
+        let (fast, reads, strict) = sys_checks(&TREE, PLL_SYS_HZ);
+        assert!(fast && strict);
+        assert_eq!(
+            reads,
+            [
+                CLK_SYS_DIV_INT,
+                CLK_SYS_SEL,
+                PLL_SYS_CS,
+                PLL_SYS_FBDIV_INT,
+                PLL_SYS_PRIM
+            ]
+        );
+        for uart in [
+            &[(CLK_UART_CTRL, 0)][..],
+            &[(CLK_UART_DIV_INT, 2)],
+            &[(CLK_UART_SEL, 2)],
+            &[(CLK_UART_CTRL, 0x1000_0820), (CLK_UART_SEL, 4)],
+        ] {
+            let (fast, _, strict) = sys_checks(&with(uart), PLL_SYS_HZ);
+            assert!(fast && strict, "{uart:?}");
+            // The full check the other drivers use does see it.
+            let t = with(uart);
+            let u = |a: usize| t.iter().find(|r| r.0 == a).unwrap().1;
+            assert_eq!(
+                decode_uart(u(CLK_UART_CTRL), u(CLK_UART_DIV_INT), u(CLK_UART_SEL)),
+                None
+            );
+        }
+        for sys in [
+            &[(CLK_SYS_SEL, SEL_XOSC)][..],
+            &[(CLK_SYS_SEL, 2)],
+            &[(CLK_SYS_SEL, 0)],
+            &[(CLK_SYS_DIV_INT, 2)],
+            &[(CLK_SYS_DIV_INT, 0)],
+            &[(PLL_SYS_CS, 1)],
+            &[(PLL_SYS_FBDIV_INT, 25)],
+            // PRIM /5 -> /4 under SEL = PLL_SYS: 250 MHz.
+            &[(PLL_SYS_PRIM, 0x0004_1010)],
+        ] {
+            let (fast, _, strict) = sys_checks(&with(sys), PLL_SYS_HZ);
+            assert!(!fast && !strict, "{sys:?}");
+        }
+        // On XOSC: two reads, no PLL register, and only a 50 MHz value matches.
+        let xosc = with(&[(CLK_SYS_CTRL, SRC_XOSC), (CLK_SYS_SEL, SEL_XOSC)]);
+        let (fast, reads, strict) = sys_checks(&xosc, XOSC_HZ);
+        assert!(fast && strict);
+        assert_eq!(reads, [CLK_SYS_DIV_INT, CLK_SYS_SEL]);
+        assert!(!sys_checks(&xosc, PLL_SYS_HZ).0);
+        assert!(!sys_checks(&TREE, XOSC_HZ).0);
+        // XOSC needs no PLL: an unlocked PLL_SYS does not matter there.
+        let xosc_unlocked = with(&[
+            (CLK_SYS_CTRL, SRC_XOSC),
+            (CLK_SYS_SEL, SEL_XOSC),
+            (PLL_SYS_CS, 0),
+        ]);
+        assert!(sys_checks(&xosc_unlocked, XOSC_HZ).0);
+    }
+
+    /// Review 8: what only the strict check (init, reconfiguration) reads. One register at a
+    /// time: the fast check still passes, the strict one rejects.
+    #[test]
+    fn only_the_strict_check_sees_ctrl_pwr_and_frac() {
+        for change in [
+            // CTRL asks for XOSC while SEL still shows PLL_SYS (mid-switch).
+            (CLK_SYS_CTRL, 0x800 | SRC_XOSC),
+            (PLL_SYS_PWR, 0),
+            (PLL_SYS_FBDIV_FRAC, 1),
+        ] {
+            let (fast, reads, strict) = sys_checks(&with(&[change]), PLL_SYS_HZ);
+            assert!(fast && !strict, "{change:?}");
+            assert!(!reads.contains(&change.0));
+        }
+    }
+
     #[test]
     fn handoff_is_empty_until_published() {
         let h = Handoff::new();
@@ -402,6 +629,155 @@ mod tests {
         assert_eq!(h.take(), Some(c));
         h.withdraw();
         assert_eq!(h.take(), None);
+    }
+
+    const PUBLISHED: Clocks = Clocks {
+        sys_hz: PLL_SYS_HZ,
+        uart_hz: XOSC_HZ,
+    };
+
+    #[test]
+    fn unpublished_is_not_ready_and_stale_is_precondition() {
+        let h = Handoff::new();
+        assert_eq!(published(&h, |_| true), Err(Error::NotReady));
+        h.publish(&PUBLISHED);
+        assert_eq!(published(&h, |_| true), Ok(PUBLISHED));
+        assert_eq!(published(&h, |_| false), Err(Error::Precondition));
+    }
+
+    /// Runs `wait_until` against a never-published handoff with a timer that starts at
+    /// `start` and advances `step` per read. Returns (result, attempts, elapsed at the end).
+    fn wait_never_ready(
+        timeout_us: u32,
+        start: u64,
+        step: u64,
+    ) -> (Result<Clocks, Error>, u32, u64) {
+        let mut clock = start;
+        let mut attempts = 0;
+        let r = wait_until(
+            timeout_us,
+            || {
+                let t = clock;
+                clock = clock.wrapping_add(step);
+                t
+            },
+            || {
+                attempts += 1;
+                Err(Error::NotReady)
+            },
+        );
+        (r, attempts, clock.wrapping_sub(start).wrapping_sub(step))
+    }
+
+    #[test]
+    fn wait_zero_timeout_still_tries() {
+        let (r, attempts, elapsed) = wait_never_ready(0, 0, 1);
+        assert_eq!(r, Err(Error::NotReady));
+        // One try, the deadline check, the final try.
+        assert_eq!(attempts, 2);
+        assert_eq!(elapsed, 1);
+    }
+
+    #[test]
+    fn wait_normal_timeout_ends_at_the_deadline() {
+        let (r, attempts, elapsed) = wait_never_ready(10_000, 5, 1_000);
+        assert_eq!(r, Err(Error::NotReady));
+        assert_eq!(elapsed, 10_000);
+        assert_eq!(attempts, 11);
+    }
+
+    #[test]
+    fn wait_across_timer_wrap() {
+        // The low word wraps (the case a 32-bit RAWL read had to handle) ...
+        let (r, _, elapsed) = wait_never_ready(10_000, 0xffff_ff00, 1_000);
+        assert_eq!(r, Err(Error::NotReady));
+        assert_eq!(elapsed, 10_000);
+        // ... and so does the full 64-bit counter.
+        let (r, _, elapsed) = wait_never_ready(10_000, u64::MAX - 500, 1_000);
+        assert_eq!(r, Err(Error::NotReady));
+        assert_eq!(elapsed, 10_000);
+    }
+
+    #[test]
+    fn wait_near_max_timeout_cannot_skip_the_deadline() {
+        // Coarse polling steps over the last microseconds before u32::MAX; with a 32-bit
+        // difference the elapsed time would wrap past the deadline and never end.
+        let timeout = u32::MAX - 10;
+        let (r, _, elapsed) = wait_never_ready(timeout, 0x1234, 0x4000_0000);
+        assert_eq!(r, Err(Error::NotReady));
+        assert!(elapsed >= u64::from(timeout) && elapsed < u64::from(timeout) + 0x4000_0000);
+    }
+
+    #[test]
+    fn wait_max_timeout_ends() {
+        let (r, _, elapsed) = wait_never_ready(u32::MAX, 7, 0x1000_0000);
+        assert_eq!(r, Err(Error::NotReady));
+        assert!(elapsed >= u64::from(u32::MAX));
+        let (r, attempts, elapsed) = wait_never_ready(u32::MAX, 0, u64::from(u32::MAX));
+        assert_eq!(
+            (r, attempts, elapsed),
+            (Err(Error::NotReady), 2, u64::from(u32::MAX))
+        );
+    }
+
+    #[test]
+    fn wait_returns_at_once_on_success_or_stale() {
+        for want in [
+            Ok(PUBLISHED),
+            Err(Error::Precondition),
+            Err(Error::Hardware),
+        ] {
+            let mut attempts = 0;
+            let r = wait_until(
+                u32::MAX,
+                || 0,
+                || {
+                    attempts += 1;
+                    want
+                },
+            );
+            assert_eq!((r, attempts), (want, 1));
+        }
+    }
+
+    #[test]
+    fn wait_sees_a_publish_during_the_wait() {
+        let h = Handoff::new();
+        let mut clock = 0u64;
+        let r = wait_until(
+            10_000,
+            || {
+                clock += 100;
+                if clock == 1_000 {
+                    h.publish(&PUBLISHED);
+                }
+                clock
+            },
+            || published(&h, |_| true),
+        );
+        assert_eq!(r, Ok(PUBLISHED));
+    }
+
+    #[test]
+    fn init_publishes_only_on_success() {
+        let h = Handoff::new();
+        for e in [Error::Invalid, Error::Precondition, Error::Hardware] {
+            assert_eq!(publish_on_success::<()>(&h, || Err(e)), Err(e));
+            assert_eq!(h.ready.load(Ordering::Relaxed), 0);
+            assert_eq!(h.take(), None);
+        }
+        assert_eq!(
+            publish_on_success(&h, || Ok((PUBLISHED, 9))),
+            Ok((PUBLISHED, 9))
+        );
+        assert_eq!(h.ready.load(Ordering::Relaxed), READY);
+        assert_eq!(h.take(), Some(PUBLISHED));
+        // A failing init withdraws before it fails (defensive; init runs once per image).
+        assert_eq!(
+            publish_on_success::<()>(&h, || Err(Error::Hardware)),
+            Err(Error::Hardware)
+        );
+        assert_eq!(h.ready.load(Ordering::Relaxed), 0);
     }
 
     #[test]

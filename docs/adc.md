@@ -45,12 +45,16 @@ Either core may own the ADC. On proc1, `init` needs proc0's clocks: `Clocks::fro
 ## Clocks on proc1
 
 STATIC: only proc0 holds the clock authority, so only proc0's `Authority::init` creates a
-`Clocks`. Just before it returns `Ok`, init stores the same value in a rp1-hal-private
-`.shared` cell (frequencies first, then a ready word with a release store; init clears the
-ready word when it starts). `Clocks::from_proc0(&Proc1)` reads the ready word with an
-acquire load and returns that copy, or `None` before init has succeeded; it also checks
-that the clock tree still matches, as the drivers do. `Clocks::wait_from_proc0(&Proc1,
-timeout_us)` polls it against the raw 1 MHz timer and returns `Error::NotReady` on timeout.
+`Clocks`. Just before it returns `Ok`, and only then, init stores the same value in a
+rp1-hal-private `.shared` cell (frequencies first, then a ready word with a release store).
+The value is published once per image load: `init` consumes the one `Authority`, and
+`.shared` is loaded with the image (ready word 0). A failing init leaves the ready word 0.
+`Clocks::from_proc0(&Proc1)` reads the ready word with an acquire load and returns that
+copy. It returns `Error::NotReady` before init has succeeded, and `Error::Precondition` if
+a value was published but the clock tree no longer matches it (as the drivers do).
+`Clocks::wait_from_proc0(&Proc1, timeout_us)` retries only `NotReady`, against the 64-bit
+1 MHz timer, trying at least once; it returns `Error::NotReady` once `timeout_us` has
+elapsed (any `u32` value ends) and `Precondition` at once.
 Only loads and stores are used (no LDREX/STREX in shared SRAM). Safe code cannot build a
 `Clocks` from arbitrary numbers, so a proc1 `Clocks` still means "proc0's init ran".
 Launching proc1 after init (the usual order) makes the wait return at once.
