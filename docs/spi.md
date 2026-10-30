@@ -144,8 +144,9 @@ HW (2026-10-30, two cold boots, clk_sys 200 MHz, at boot and on request while Li
 `init` found FIFO depth 64 (the shallower of TX and RX since review 6) and the 32-bit frame
 field; with loopback off MISO read all zeros; every loopback pattern matched at all four rates
 and three frame sizes, and the u8, in-place and transaction checks passed. The same proof
-passed again on two more cold boots after the review 6 changes, and on two more after the
-review 7 changes. Measured throughput of 1024 frames in 32-frame `SpiDevice` transfers after
+passed again on two more cold boots after the review 6 changes, on two more after the
+review 7 changes, and on two more after the review 8 changes (50 MHz 8-bit: 600 µs on both,
+the same as review 7). Measured throughput of 1024 frames in 32-frame `SpiDevice` transfers after
 review 7 (one boot; the other is within 0.5 %), with the review 6 figure in brackets:
 
 | SCLK (BAUDR) | 8-bit | 12-bit | 16-bit |
