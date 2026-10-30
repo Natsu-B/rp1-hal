@@ -110,6 +110,19 @@ impl<const N: u8> Token<N> {
 }
 /// A declared UART N with its pins, as the generated resources hand it out
 /// (`rp1-build`); only routes from the bank-0 pin table can be named.
+///
+/// ```no_run
+/// # use rp1_hal::{Error, clocks::Clocks, gpio::Pin, uart::{Parts, Token, Uart}};
+/// // The resource generated for `uart2 = { tx = 4, rx = 5 }`:
+/// let uart2: Parts<2, 4, 5> = Parts {
+///     token: unsafe { Token::new() },
+///     tx: unsafe { Pin::new() },
+///     rx: unsafe { Pin::new() },
+/// };
+/// fn bring_up(uart2: Parts<2, 4, 5>, clocks: &Clocks) -> Result<Uart<2, 4, 5>, Error> {
+///     Ok(uart2.init(clocks, 115_200)?)
+/// }
+/// ```
 pub struct Parts<const N: u8, const TX: u8, const RX: u8>
 where
     Pin<TX>: Tx<N>,

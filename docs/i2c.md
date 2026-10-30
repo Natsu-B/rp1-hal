@@ -14,13 +14,14 @@ peripherals = ["I2C1"]
 
 ```rust,ignore
 use embedded_hal::i2c::I2c;
-let mut bus = p.I2C1.init(p.pins.gpio2, p.pins.gpio3, &clocks,
-    rp1_hal::i2c::Speed::Standard)?;
+// p.i2c1: rp1_hal::i2c::Parts<1, 2, 3>, the token with the declared SDA/SCL pins.
+let mut bus = p.i2c1.init(&clocks, rp1_hal::i2c::Speed::Standard)?;
 bus.write_read(0x2d, &request, &mut response)?;
 ```
 
 STATIC: the generated token has one declared core owner. Initialization consumes
-unconfigured pins and selects function 3; reversed or unrelated pins fail to compile.
+unconfigured pins and selects the function from the bank-0 pin table (3); reversed or
+unrelated pins fail to compile.
 The overlay disables the owned `rp1_i2cN` Linux node and reserves the declared pins.
 The final DT checker rejects a later overlay that re-enables the controller or an
 enabled Linux pinctrl user of an owned pin. GPIO2/3 require I2C1 on the same core;

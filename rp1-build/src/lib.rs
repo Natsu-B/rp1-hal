@@ -215,18 +215,32 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
     ));
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
         let ty = format!("Proc{index}Resources");
+        // Instances come as bundles of their token and pins; `pins` keeps the rest.
+        let parts = c
+            .instances
+            .iter()
+            .map(|(name, instance)| instance_resource(name, instance))
+            .collect::<Result<Vec<_>>>()?;
+        let pins: Vec<u8> = c
+            .pins()
+            .into_iter()
+            .filter(|p| !parts.iter().any(|(_, _, used)| used.contains(p)))
+            .collect();
         s.push_str(&format!("pub struct Proc{index}Pins {{\n"));
-        for pin in &c.pins() {
+        for pin in &pins {
             s.push_str(&format!("pub gpio{pin}: ::rp1_hal::gpio::Pin<{pin}>,\n"));
         }
         s.push_str("}\n#[allow(non_snake_case)]\n");
         s.push_str(&format!("pub struct {ty} {{ pub pins: Proc{index}Pins,\n"));
-        for p in &c.peripherals() {
+        for alarm in &c.timer {
+            let p = format!("TIMER.{alarm}");
             s.push_str(&format!(
-                "pub {}: {},\n",
-                p.replace('.', "_"),
-                metadata::peripheral_type(p)?
+                "pub TIMER_{alarm}: {},\n",
+                metadata::peripheral_type(&p)?
             ));
+        }
+        for (name, (field_ty, _, _)) in c.instances.keys().zip(&parts) {
+            s.push_str(&format!("pub {name}: {field_ty},\n"));
         }
         if index == 0 {
             s.push_str("pub proc1: ::rp1_rt::Proc1Launcher,\n");
@@ -235,18 +249,18 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
             }
         }
         s.push_str(&format!("}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub unsafe fn new() -> Self {{ Self {{ pins: Proc{index}Pins {{\n"));
-        for pin in &c.pins() {
+        for pin in &pins {
             s.push_str(&format!(
                 "gpio{pin}: unsafe {{ ::rp1_hal::gpio::Pin::new() }},\n"
             ));
         }
         s.push_str("},\n");
-        for p in &c.peripherals() {
-            let ty = metadata::peripheral_type(p)?;
-            s.push_str(&format!(
-                "{}: unsafe {{ <{ty}>::new() }},\n",
-                p.replace('.', "_")
-            ));
+        for alarm in &c.timer {
+            let ty = metadata::peripheral_type(&format!("TIMER.{alarm}"))?;
+            s.push_str(&format!("TIMER_{alarm}: unsafe {{ <{ty}>::new() }},\n"));
+        }
+        for (name, (_, init, _)) in c.instances.keys().zip(&parts) {
+            s.push_str(&format!("{name}: {init},\n"));
         }
         if index == 0 {
             s.push_str("proc1: unsafe { ::rp1_rt::Proc1Launcher::new() },\n");
@@ -262,4 +276,102 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
     }
     s.push_str("}\n");
     Ok(s)
+}
+
+/// Field type, initializer and bundled pins of an instance's resource: `uart::Parts<2, 4, 5>`
+/// with the token and the TX/RX pins, and so on; the ADC is a bare token. UART CTS/RTS are not
+/// bundled (rp1-hal has no flow control) and stay in `pins`.
+fn instance_resource(
+    name: &str,
+    instance: &metadata::Instance,
+) -> Result<(String, String, Vec<u8>)> {
+    use metadata::Instance;
+    let n = board::find_instance(name)
+        .ok_or_else(|| format!("unknown instance {name}"))?
+        .number;
+    let (module, signals) = match instance {
+        Instance::Uart(p) => ("uart", [("tx", p.tx), ("rx", p.rx)].to_vec()),
+        Instance::I2c(p) => ("i2c", [("sda", p.sda), ("scl", p.scl)].to_vec()),
+        Instance::Spi(p) => (
+            "spi",
+            [("sck", p.sck), ("mosi", p.mosi), ("miso", p.miso)].to_vec(),
+        ),
+        Instance::Adc {} => {
+            let ty = "::rp1_hal::adc::Token";
+            return Ok((ty.into(), format!("unsafe {{ {ty}::new() }}"), Vec::new()));
+        }
+    };
+    let pins = signals
+        .iter()
+        .map(|(role, pin)| pin.ok_or_else(|| format!("{name}.{role} is missing").into()))
+        .collect::<Result<Vec<u8>>>()?;
+    let numbers: Vec<String> = pins.iter().map(u8::to_string).collect();
+    let ty = format!("::rp1_hal::{module}::Parts<{n}, {}>", numbers.join(", "));
+    let mut init = format!(
+        "::rp1_hal::{module}::Parts {{ token: unsafe {{ ::rp1_hal::{module}::Token::new() }}"
+    );
+    for (role, _) in &signals {
+        init.push_str(&format!(
+            ", {role}: unsafe {{ ::rp1_hal::gpio::Pin::new() }}"
+        ));
+    }
+    init.push_str(" }");
+    Ok((ty, init, pins))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn instances_are_handed_out_as_typed_parts_and_pins_keep_only_the_rest() {
+        let d: metadata::Declaration = toml::from_str(
+            r#"
+schema = 2
+[proc0]
+gpio = [22]
+timer = ["ALARM0"]
+i2c1 = { sda = 2, scl = 3 }
+uart2 = { tx = 4, rx = 5, cts = 6 }
+[proc1]
+gpio = [8, 27]
+adc = {}
+spi0 = { sck = 11, mosi = 10, miso = 9 }
+"#,
+        )
+        .unwrap();
+        d.validate().unwrap();
+        let s = resources(&d, &[]).unwrap();
+        for field in [
+            "pub TIMER_ALARM0: ::rp1_hal::timer::Alarm<0>,",
+            "pub i2c1: ::rp1_hal::i2c::Parts<1, 2, 3>,",
+            "pub uart2: ::rp1_hal::uart::Parts<2, 4, 5>,",
+            "pub adc: ::rp1_hal::adc::Token,",
+            "pub spi0: ::rp1_hal::spi::Parts<0, 11, 10, 9>,",
+            "uart2: ::rp1_hal::uart::Parts { token: unsafe { ::rp1_hal::uart::Token::new() }, \
+             tx: unsafe { ::rp1_hal::gpio::Pin::new() }, rx: unsafe { ::rp1_hal::gpio::Pin::new() } },",
+        ] {
+            assert!(s.contains(field), "{field}\n{s}");
+        }
+        let pins = |core: &str| -> Vec<&str> {
+            let start = s.find(&format!("pub struct {core}Pins {{")).unwrap();
+            let body = &s[start..start + s[start..].find('}').unwrap()];
+            body.lines().skip(1).collect()
+        };
+        // UART2 CTS (GPIO6) has no HAL driver yet and stays a plain pin.
+        assert_eq!(
+            pins("Proc0"),
+            [
+                "pub gpio6: ::rp1_hal::gpio::Pin<6>,",
+                "pub gpio22: ::rp1_hal::gpio::Pin<22>,"
+            ]
+        );
+        assert_eq!(
+            pins("Proc1"),
+            [
+                "pub gpio8: ::rp1_hal::gpio::Pin<8>,",
+                "pub gpio27: ::rp1_hal::gpio::Pin<27>,"
+            ]
+        );
+    }
 }

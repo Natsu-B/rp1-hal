@@ -40,11 +40,8 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     LOCAL.get(&core).set(1);
     // SPI0 on proc0 with its own Clocks: SCLK/MOSI/MISO = GPIO11/10/9, GPIO8 as chip select.
     let bus = p
-        .SPI0
+        .spi0
         .init(
-            p.pins.gpio11,
-            p.pins.gpio10,
-            p.pins.gpio9,
             &clocks,
             rp1_hal::spi::Config::new(10_000_000, embedded_hal::spi::MODE_0),
         )
@@ -99,17 +96,9 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     // ADC and I2C1 are declared on proc1: their drivers take the Clocks that proc0's
     // `clock_authority.init` published (proc0 launches proc1 only after that, so no wait).
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000).unwrap();
-    let mut adc = p.ADC.init(&clocks).unwrap();
+    let mut adc = p.adc.init(&clocks).unwrap();
     log!("proc1 temp_mc={}\n", adc.read_temperature().unwrap()).unwrap();
-    let _i2c = p
-        .I2C1
-        .init(
-            p.pins.gpio2,
-            p.pins.gpio3,
-            &clocks,
-            rp1_hal::i2c::Speed::Standard,
-        )
-        .unwrap();
+    let _i2c = p.i2c1.init(&clocks, rp1_hal::i2c::Speed::Standard).unwrap();
     let mut tx = VALUES.producer(&mut core);
     tx.push(increment(core::hint::black_box(41))).unwrap();
     let mut doorbell = Doorbell::new(p.pins.gpio27);

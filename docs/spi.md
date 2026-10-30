@@ -13,8 +13,8 @@ peripherals = ["SPI0"]
 
 ```rust,ignore
 use embedded_hal::spi::{MODE_0, Operation, SpiDevice};
-let bus = p.SPI0.init(p.pins.gpio11, p.pins.gpio10, p.pins.gpio9, &clocks,
-    rp1_hal::spi::Config::new(10_000_000, MODE_0))?;
+// p.spi0: rp1_hal::spi::Parts<0, 11, 10, 9>; GPIO8 stays a plain declared pin.
+let bus = p.spi0.init(&clocks, rp1_hal::spi::Config::new(10_000_000, MODE_0))?;
 let mut dev = rp1_hal::spi::Device::new(bus, p.pins.gpio8);
 dev.transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])?;
 ```

@@ -10,13 +10,13 @@ peripherals = ["ADC"]
 ```
 
 ```rust,ignore
-let mut adc = p.ADC.init(&clocks)?;          // after clocks::Authority::init
+let mut adc = p.adc.init(&clocks)?;          // after clocks::Authority::init
 let raw: u16 = adc.read(0)?;                 // input 0, 0..=0xfff
 let mc: i32 = adc.read_temperature()?;       // millidegrees Celsius
 
 // Declared under [proc1] instead: proc1 takes the Clocks proc0's Authority::init published.
 let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000)?;   // core: Proc1
-let mut adc = p.ADC.init(&clocks)?;
+let mut adc = p.adc.init(&clocks)?;
 
 // embedded-hal 0.2 (1.0 has no ADC trait):
 use embedded_hal_0_2::adc::OneShot;
