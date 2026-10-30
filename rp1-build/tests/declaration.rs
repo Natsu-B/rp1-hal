@@ -94,8 +94,27 @@ fn log_and_core_uart0() {
 fn instance_vs_linux_keep() {
     error(
         "[proc0]\nuart1={tx=0,rx=1}",
-        &["E3", "UART1", "Linux by board rpi-cm5"],
+        &["E3", "UART1", "Linux by board rpi-cm5 (default linux.keep)"],
     );
+}
+#[test]
+fn explicit_linux_keep_is_not_attributed_to_the_board() {
+    error(
+        "[linux]\nkeep={i2c1={sda=2,scl=3}}\n[proc0]\ni2c1={sda=2,scl=3}",
+        &["E3", "I2C1", "Linux by linux.keep", "proc0"],
+    );
+    let message = toml::from_str::<Declaration>(
+        "schema = 2\n[linux]\nkeep={uart1={tx=0,rx=1}}\n[proc0]\ngpio=[0]",
+    )
+    .unwrap()
+    .validate()
+    .unwrap_err()
+    .to_string();
+    assert!(
+        message.contains("E1: GPIO 0 is claimed by both linux.keep.uart1.tx"),
+        "{message}"
+    );
+    assert!(!message.contains("board"), "{message}");
 }
 #[test]
 fn board_line_pin() {
@@ -202,7 +221,8 @@ fn board_defaults_and_explicit_replacement() {
     let d = parse("");
     assert_eq!(d.linux.on_conflict, OnConflict::Disable);
     assert_eq!(d.linux.gpiomem, Gpiomem::Disable);
-    assert_eq!(d.linux.keep.len(), 1);
+    assert_eq!(d.linux.keep, None);
+    assert_eq!(d.linux.kept().len(), 1);
     assert!(d.warnings().is_empty());
     let with_linux = parse("[linux]\nuio_group='gpio'");
     assert_eq!(with_linux.linux.keep, d.linux.keep);
@@ -216,7 +236,7 @@ fn board_defaults_and_explicit_replacement() {
     d.validate().unwrap();
     let d = parse("[linux]\nkeep={i2c1={sda=2,scl=3}}\n[proc0]\ngpio=[0,1]");
     d.validate().unwrap();
-    assert!(!d.linux.keep.contains_key("uart1"));
+    assert!(!d.linux.kept().contains_key("uart1"));
 }
 
 #[test]

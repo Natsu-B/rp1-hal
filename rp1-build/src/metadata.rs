@@ -118,7 +118,7 @@ impl Declaration {
         if self.schema1 {
             warnings.push("schema 1 is deprecated; use schema 2");
         }
-        if !self.linux.keep.contains_key("uart1") {
+        if !self.linux.kept().contains_key("uart1") {
             warnings.push("linux.keep omits uart1: GPIO 0/1 are available to RP1 on rpi-cm5");
         }
         warnings

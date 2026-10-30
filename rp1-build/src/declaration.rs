@@ -386,9 +386,18 @@ impl Declaration {
             pins.insert(14, "log.uart0.tx".to_string());
             pins.insert(15, "log.uart0.rx".to_string());
         }
-        for (name, instance) in &self.linux.keep {
+        // Attribute the board default to the board and an explicit linux.keep to the user.
+        let (keep, keeper, pin_prefix) = match &self.linux.keep {
+            Some(keep) => (keep.clone(), "Linux by linux.keep", "linux.keep."),
+            None => (
+                board::linux_keep_default(),
+                "Linux by board rpi-cm5 (default linux.keep)",
+                BOARD_KEEP,
+            ),
+        };
+        for (name, instance) in &keep {
             instance.validate(name, "linux.keep", false)?;
-            if let Some(previous) = blocks.insert(name.clone(), "Linux by board rpi-cm5".into()) {
+            if let Some(previous) = blocks.insert(name.clone(), keeper.into()) {
                 return Err(format!(
                     "E3: {} is declared by both {previous} and linux.keep",
                     name.to_ascii_uppercase()
@@ -396,7 +405,7 @@ impl Declaration {
                 .into());
             }
             for (role, pin) in instance.pins(name) {
-                claim_pin(&mut pins, pin, format!("linux.keep.{name}.{role}"))?;
+                claim_pin(&mut pins, pin, format!("{pin_prefix}{name}.{role}"))?;
             }
         }
         for (owner, core) in [("proc0", &self.proc0), ("proc1", &self.proc1)] {
@@ -443,15 +452,13 @@ impl Declaration {
         Ok(())
     }
 }
+/// Claim prefix of pins the board keeps for Linux by default.
+const BOARD_KEEP: &str = "board:";
 fn claim_pin(pins: &mut BTreeMap<u8, String>, pin: u8, owner: String) -> Result<()> {
     if let Some(previous) = pins.insert(pin, owner.clone()) {
-        if matches!(
-            (pin, previous.as_str()),
-            (0, "linux.keep.uart1.tx") | (1, "linux.keep.uart1.rx")
-        ) {
+        if let Some(signal) = previous.strip_prefix(BOARD_KEEP) {
             return Err(format!(
-                "E4: GPIO {pin} is kept for Linux ({}) by board rpi-cm5; claimed by {owner}",
-                previous.trim_start_matches("linux.keep.")
+                "E4: GPIO {pin} is kept for Linux ({signal}) by board rpi-cm5; claimed by {owner}"
             )
             .into());
         }

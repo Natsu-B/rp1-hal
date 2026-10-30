@@ -130,9 +130,13 @@ pub enum Gpiomem {
 #[serde(default, deny_unknown_fields)]
 pub struct Linux {
     pub uio_group: String,
-    /// Omitted: board defaults. An explicit table replaces the defaults; `{}` releases UART1.
-    #[serde(deserialize_with = "parse_keep")]
-    pub keep: BTreeMap<String, Instance>,
+    /// `None` (omitted): the board default, [`linux_keep_default`]. An explicit table
+    /// replaces it; `{}` releases UART1.
+    #[serde(
+        deserialize_with = "parse_keep",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub keep: Option<BTreeMap<String, Instance>>,
     pub gpiomem: Gpiomem,
     pub on_conflict: OnConflict,
 }
@@ -140,15 +144,21 @@ impl Default for Linux {
     fn default() -> Self {
         Self {
             uio_group: "rp1".into(),
-            keep: linux_keep_default(),
+            keep: None,
             gpiomem: Gpiomem::Disable,
             on_conflict: OnConflict::Disable,
         }
     }
 }
+impl Linux {
+    /// The instances kept for Linux: the explicit `keep`, or the board default.
+    pub fn kept(&self) -> BTreeMap<String, Instance> {
+        self.keep.clone().unwrap_or_else(linux_keep_default)
+    }
+}
 fn parse_keep<'de, D: serde::Deserializer<'de>>(
     d: D,
-) -> std::result::Result<BTreeMap<String, Instance>, D::Error> {
+) -> std::result::Result<Option<BTreeMap<String, Instance>>, D::Error> {
     let values = BTreeMap::<String, toml::Value>::deserialize(d)?;
     values
         .into_iter()
@@ -158,7 +168,8 @@ fn parse_keep<'de, D: serde::Deserializer<'de>>(
                 .map(|i| (name, i))
                 .map_err(serde::de::Error::custom)
         })
-        .collect()
+        .collect::<std::result::Result<_, _>>()
+        .map(Some)
 }
 
 #[cfg(test)]
