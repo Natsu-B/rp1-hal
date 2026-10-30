@@ -124,9 +124,21 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
             }
         }
     }
+    let mut refused = conflicts.unresolved;
+    // The console must stay Linux's: a stdout-path on an RP1-owned block (which the overlay
+    // has already disabled) would silently remove it (sharing design §7, risk 5).
+    for (prop, found) in console_nodes(after) {
+        if let Ok(n) = found
+            && let Some(label) = conflicts.owned_blocks.get(&n)
+        {
+            refused.push(format!(
+                "console {prop} is {} ({label}), which RP1 owns",
+                after.path(n)
+            ));
+        }
+    }
     // Only a planned disable needs the protected list: DT defects unrelated to RP1 (e.g. an
     // unresolvable stdout-path alias) must not stop a boot without conflicts.
-    let mut refused = conflicts.unresolved;
     let protected = if conflicts.nodes.is_empty() {
         BTreeMap::new()
     } else {
@@ -282,6 +294,8 @@ pub(super) struct Conflicts {
     pub(super) nodes: BTreeMap<usize, Vec<String>>,
     pub(super) unresolved: Vec<String>,
     pins: BTreeSet<u32>,
+    /// Linux nodes of the RP1-owned blocks, enabled or not.
+    owned_blocks: BTreeMap<usize, String>,
 }
 impl Conflicts {
     fn add(&mut self, n: usize, reason: String) {
@@ -296,6 +310,7 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
         nodes: BTreeMap::new(),
         unresolved: Vec::new(),
         pins: BTreeSet::new(),
+        owned_blocks: BTreeMap::new(),
     };
     for entry in own[4..].as_chunks::<4>().0 {
         let id = u16::from_le_bytes([entry[2], entry[3]]);
@@ -309,6 +324,9 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                 } else {
                     block_label(id).ok_or_else(|| format!("unknown OWNERSHIP block id {id}"))?
                 };
+                if let Some(n) = fdt.label(&label) {
+                    out.owned_blocks.insert(n, label.clone());
+                }
                 match fdt.label(&label) {
                     Some(n) if fdt.enabled(n) => out.add(
                         n,

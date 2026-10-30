@@ -410,6 +410,26 @@ fn interrupt_users_of_rp1_owned_pins_are_disabled() {
 }
 
 #[test]
+fn console_on_an_rp1_owned_uart_refuses() {
+    // Review 11 L2: the overlay has already disabled the owned UART, so no node has a
+    // conflict reason; the console would vanish without a marker.
+    let owned = descriptor(&[(1, 8), (1, 9), (1, 10), (1, 11), (1, 22), (2, 16), (2, 3)]);
+    for console in ["serial3:115200n8", "/pcie@1000120000/rp1/serial@3c000"] {
+        let (mut fdt, _) = fixture(&format!(
+            "/ {{ chosen {{ stdout-path = \"{console}\"; }}; }};"
+        ));
+        set(&mut fdt, "/rp1-firmware", "rp1,note", owned.clone());
+        refusal(
+            resolve(&fdt, &owned, Policy::default()).unwrap(),
+            "console stdout-path is /pcie@1000120000/rp1/serial@3c000 (rp1_uart3), which RP1 owns",
+        );
+    }
+    // A console on a UART RP1 does not own is fine.
+    let (fdt, note) = fixture("/ { chosen { stdout-path = \"serial3:115200n8\"; }; };");
+    assert!(disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty());
+}
+
+#[test]
 fn malformed_rp1_data_returns_errors() {
     for extra in [
         "/ { user { gpios = <&rp1_gpio 22>; }; };",
