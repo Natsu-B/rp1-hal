@@ -313,7 +313,6 @@ fn unusable_bus_numbers_are_rejected_by_name() {
                     sck: Some(21),
                     mosi: Some(20),
                     miso: Some(19),
-                    ..SpiPins::default()
                 })
             } else {
                 Instance::I2c(I2cPins {
