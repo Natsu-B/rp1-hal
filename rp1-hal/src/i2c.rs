@@ -93,6 +93,23 @@ routes!(3: 6, 7; 14, 15; 22, 23);
 pub struct Token<const N: u8> {
     _private: (),
 }
+/// [`Token::init`] failed: the error, and the token and pins back (unchanged) for a retry.
+pub struct InitError<const N: u8, const SDA: u8, const SCL: u8> {
+    pub error: Error,
+    pub token: Token<N>,
+    pub sda: Pin<SDA>,
+    pub scl: Pin<SCL>,
+}
+impl<const N: u8, const SDA: u8, const SCL: u8> core::fmt::Debug for InitError<N, SDA, SCL> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+impl<const N: u8, const SDA: u8, const SCL: u8> From<InitError<N, SDA, SCL>> for Error {
+    fn from(e: InitError<N, SDA, SCL>) -> Self {
+        e.error
+    }
+}
 pub struct I2c<const N: u8, const SDA: u8, const SCL: u8> {
     _sda: Pin<SDA, Function<3>>,
     _scl: Pin<SCL, Function<3>>,
@@ -108,19 +125,39 @@ impl<const N: u8> Token<N> {
         assert!(N < 7);
         Self { _private: () }
     }
-    /// Selects the typed SDA/SCL routes and releases only this controller's reset.
-    /// GPIO bank0 and the raw microsecond timer must already be running (cold bring-up).
+    /// Checks the clocks and the speed, releases only this controller's reset, then selects the
+    /// typed SDA/SCL routes. GPIO bank0 and the raw microsecond timer must already be running
+    /// (cold bring-up). On error the token and the pins come back in [`InitError`]; the pins
+    /// are not touched before success.
     pub fn init<const SDA: u8, const SCL: u8>(
         self,
         sda: Pin<SDA>,
         scl: Pin<SCL>,
         clocks: &crate::clocks::Clocks,
         speed: Speed,
-    ) -> Result<I2c<N, SDA, SCL>, Error>
+    ) -> Result<I2c<N, SDA, SCL>, InitError<N, SDA, SCL>>
     where
         Pin<SDA>: Sda<N>,
         Pin<SCL>: Scl<N>,
     {
+        match self.start(clocks, speed) {
+            Ok(rx_depth) => Ok(I2c {
+                _sda: sda.into_i2c(),
+                _scl: scl.into_i2c(),
+                rx_depth,
+                usable: true,
+                clocks: *clocks,
+            }),
+            Err(error) => Err(InitError {
+                error,
+                token: self,
+                sda,
+                scl,
+            }),
+        }
+    }
+    /// The register part of [`Token::init`]; returns the RX FIFO depth.
+    fn start(&self, clocks: &crate::clocks::Clocks, speed: Speed) -> Result<usize, Error> {
         if !clocks.still_current() {
             return Err(Error::Precondition);
         }
@@ -139,14 +176,7 @@ impl<const N: u8> Token<N> {
         io.write(RX_TL, 0);
         io.write(TX_TL, 0);
         configure(&mut io, counts);
-        let rx_depth = ((io.read(PARAM) >> 8) & 255) as usize + 1;
-        Ok(I2c {
-            _sda: sda.into_i2c(),
-            _scl: scl.into_i2c(),
-            rx_depth,
-            usable: true,
-            clocks: *clocks,
-        })
+        Ok(((io.read(PARAM) >> 8) & 255) as usize + 1)
     }
 }
 
@@ -207,6 +237,8 @@ trait Io {
     fn read(&mut self, offset: usize) -> u32;
     fn write(&mut self, offset: usize, value: u32);
     fn now(&mut self) -> u32;
+    /// The clock registers still match `clocks` ([`crate::clocks::Clocks::still_current`]).
+    fn clocks_current(&mut self, clocks: &crate::clocks::Clocks) -> bool;
 }
 struct Mmio {
     base: usize,
@@ -223,6 +255,9 @@ impl Io for Mmio {
     #[inline(always)]
     fn now(&mut self) -> u32 {
         read(0x400a_c028)
+    }
+    fn clocks_current(&mut self, clocks: &crate::clocks::Clocks) -> bool {
+        clocks.still_current()
     }
 }
 fn disable(io: &mut impl Io) -> Result<(), Error> {
@@ -344,31 +379,51 @@ impl<const N: u8, const SDA: u8, const SCL: u8> embedded_hal::i2c::I2c for I2c<N
     /// without a restart; direction changes restart, and only the final byte gets STOP.
     /// A 100ms interval without progress times out. Failed disable poisons this handle.
     fn transaction(&mut self, address: u8, ops: &mut [Operation<'_>]) -> Result<(), Error> {
-        if address >= 128 {
-            return Err(Error::Invalid);
-        }
-        if !self.usable || !crate::clocks::running_tuple_admitted() {
-            return Err(Error::Precondition);
-        }
-        if ops.iter().all(|op| operation_len(op) == 0) {
-            return Ok(());
-        }
-        let mut io = self.io();
-        self.usable = false;
-        disable(&mut io)?;
-        io.read(CLEAR);
-        io.write(TAR, u32::from(address));
-        io.write(ENABLE, 1);
-        let result = transfer(&mut io, ops, self.rx_depth);
-        if result.is_err() {
-            // Request a STOP/flush before disabling, including when a slave stretches forever.
-            io.write(ENABLE, 3);
-        }
-        let cleanup = disable(&mut io);
-        self.usable = cleanup.is_ok();
-        io.read(CLEAR);
-        result.and(cleanup)
+        let (clocks, depth) = (self.clocks, self.rx_depth);
+        run(
+            &mut self.io(),
+            &clocks,
+            &mut self.usable,
+            address,
+            ops,
+            depth,
+        )
     }
+}
+
+/// One transaction. `Precondition` before any controller access if the handle is poisoned or
+/// clk_sys (`ic_clk`) / clk_uart no longer match `clocks`: the SCL counts were computed for it.
+fn run(
+    io: &mut impl Io,
+    clocks: &crate::clocks::Clocks,
+    usable: &mut bool,
+    address: u8,
+    ops: &mut [Operation<'_>],
+    depth: usize,
+) -> Result<(), Error> {
+    if address >= 128 {
+        return Err(Error::Invalid);
+    }
+    if !*usable || !io.clocks_current(clocks) {
+        return Err(Error::Precondition);
+    }
+    if ops.iter().all(|op| operation_len(op) == 0) {
+        return Ok(());
+    }
+    *usable = false;
+    disable(io)?;
+    io.read(CLEAR);
+    io.write(TAR, u32::from(address));
+    io.write(ENABLE, 1);
+    let result = transfer(io, ops, depth);
+    if result.is_err() {
+        // Request a STOP/flush before disabling, including when a slave stretches forever.
+        io.write(ENABLE, 3);
+    }
+    let cleanup = disable(io);
+    *usable = cleanup.is_ok();
+    io.read(CLEAR);
+    result.and(cleanup)
 }
 
 #[cfg(test)]
@@ -386,6 +441,9 @@ mod tests {
         stalled: bool,
         next: u8,
         max_rx: usize,
+        writes: usize,
+        sys: Option<u32>,
+        uart: Option<u32>,
     }
     impl Model {
         fn new(depth: usize) -> Self {
@@ -399,6 +457,9 @@ mod tests {
                 stalled: false,
                 next: 0,
                 max_rx: 0,
+                writes: 0,
+                sys: Some(200_000_000),
+                uart: Some(50_000_000),
             }
         }
     }
@@ -419,6 +480,7 @@ mod tests {
             }
         }
         fn write(&mut self, offset: usize, value: u32) {
+            self.writes += 1;
             if offset != DATA {
                 return;
             }
@@ -437,6 +499,53 @@ mod tests {
             self.tick = self.tick.wrapping_add(1000);
             self.tick
         }
+        fn clocks_current(&mut self, clocks: &crate::clocks::Clocks) -> bool {
+            clocks.matches(self.sys, self.uart)
+        }
+    }
+    const CLOCKS: crate::clocks::Clocks = crate::clocks::Clocks::for_test(200_000_000, 50_000_000);
+    /// Review 6: PLL_SYS / CLK_UART unchanged but clk_sys elsewhere fails before any
+    /// controller access, and the handle stays usable.
+    #[test]
+    fn stale_sys_clock_fails_before_the_controller_is_touched() {
+        let mut m = Model::new(2);
+        m.sys = Some(50_000_000);
+        let mut usable = true;
+        assert_eq!(
+            run(
+                &mut m,
+                &CLOCKS,
+                &mut usable,
+                0x2d,
+                &mut [Operation::Write(&[1])],
+                2
+            ),
+            Err(Error::Precondition)
+        );
+        assert!(usable && m.writes == 0 && m.commands.is_empty());
+        m.sys = Some(200_000_000);
+        assert_eq!(
+            run(
+                &mut m,
+                &CLOCKS,
+                &mut usable,
+                0x2d,
+                &mut [Operation::Write(&[1])],
+                2
+            ),
+            Ok(())
+        );
+        assert!(usable);
+        assert_eq!(m.commands, [1 | STOP]);
+        let mut poisoned = false;
+        assert_eq!(
+            run(&mut m, &CLOCKS, &mut poisoned, 0x2d, &mut [], 2),
+            Err(Error::Precondition)
+        );
+        assert_eq!(
+            run(&mut m, &CLOCKS, &mut usable, 0x80, &mut [], 2),
+            Err(Error::Invalid)
+        );
     }
     #[test]
     fn long_read_small_fifo_and_direction_changes() {

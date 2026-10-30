@@ -73,8 +73,17 @@ impl Clocks {
         self.uart_hz
     }
     /// The tree still matches what this value was created from (drivers check before use).
+    #[inline(never)]
     pub(crate) fn still_current(&self) -> bool {
-        sys_hz() == Some(self.sys_hz) && uart_hz() == Some(self.uart_hz)
+        self.matches(sys_hz(), uart_hz())
+    }
+    /// `sys` / `uart` as [`sys_hz`] / [`uart_hz`] read them equal this value.
+    pub(crate) fn matches(&self, sys: Option<u32>, uart: Option<u32>) -> bool {
+        sys == Some(self.sys_hz) && uart == Some(self.uart_hz)
+    }
+    #[cfg(test)]
+    pub(crate) const fn for_test(sys_hz: u32, uart_hz: u32) -> Self {
+        Self { sys_hz, uart_hz }
     }
 }
 
@@ -432,6 +441,18 @@ mod tests {
             decode_sys(0, 1, 1, &Pll { cs: 0, ..LOCKED }),
             Some(50_000_000)
         );
+    }
+
+    /// Review 6: PLL_SYS and CLK_UART on the admitted tuple (what `running_tuple_admitted`
+    /// checks) while clk_sys runs from XOSC is not the 200 MHz `Clocks`.
+    #[test]
+    fn sys_on_xosc_with_the_admitted_pll_and_uart_is_stale() {
+        let uart = decode_uart(0x1000_0840, 1, 1);
+        assert!(LOCKED.is_200mhz() && uart == Some(XOSC_HZ));
+        assert!(PUBLISHED.matches(decode_sys(SRC_PLL_SYS, 1, SEL_PLL_SYS, &LOCKED), uart));
+        assert!(!PUBLISHED.matches(decode_sys(SRC_XOSC, 1, SEL_XOSC, &LOCKED), uart));
+        assert!(!PUBLISHED.matches(None, uart));
+        assert!(!PUBLISHED.matches(Some(PLL_SYS_HZ), None));
     }
 
     #[test]
