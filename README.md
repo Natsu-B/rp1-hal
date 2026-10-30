@@ -1,31 +1,35 @@
 # rp1-hal
 
-Raspberry Pi CM5 の RP1 にある 2 つの Cortex-M3（proc0 / proc1）向けの、rp-hal 風の Rust HAL と、
-BCM2712 上の Linux との AMP 連携、および RP1 ファームを載せる BCM2712 側の third stage loader をまとめたリポジトリ。
+[日本語](#日本語) | [English](#english)
 
-状態: **v0.1 完成**（main）。実機（CM5 Lite 1 台、cold boot）で v0.1 一式が通った: ローダー `rp1boot` → RP1 2 コア →
-Linux 6.12 の SCMI クロック・UIO ドアベル・共有メモリ（ring / block）。ライブラリのホットパスは ISRAM に置く。
-設計は [docs/design.md](docs/design.md)（§9 が決定の記録）、ローダーは [docs/loader.md](docs/loader.md)、共有メモリは [docs/protocol.md](docs/protocol.md)。
+## 日本語
+
+Raspberry Pi CM5 の RP1 にある 2 つの Cortex-M3（proc0 / proc1）向けの rp-hal 風 Rust HAL です。
+BCM2712 上の Linux との AMP 連携と、RP1 ファームを載せる BCM2712 側の third stage loader（`rp1boot`）も含みます。
+
+- 各版の実装状況と実機での確認範囲: [Releases](https://github.com/Natsu-B/rp1-hal/releases)
+- 設計: [docs/design.md](docs/design.md)（§9 が決定の記録）
+- ローダー: [docs/loader.md](docs/loader.md)
+- 共有メモリ: [docs/protocol.md](docs/protocol.md)
+- ビルドと宣言: [docs/build.md](docs/build.md)、[docs/declaration-and-note.md](docs/declaration-and-note.md)
 
 根拠の区分: **HW** = 実機で観測、**STATIC** = ホスト試験・ビルド・ELF 検査、**未検証** = どちらでも確かめていない。
-実機の生ログはリポジトリの外に置き、文書には日付と条件（例: HW、2026-10-29、cold boot ×2）だけを書く。HW の主張は「その時の固定の起動一式（boot set）と、そこで動かした経路」に限る。
+実機の生ログはリポジトリの外に置き、文書には日付と条件（例: HW、2026-10-29、cold boot ×2）だけを書きます。
+HW の主張は、その時の固定の起動一式（boot set）と、そこで動かした経路に限ります。
 
-旧資産（参照のみ、ここへは段階的に移植する）: 旧スタンドアロン系列（regdb / PAC 生成器 / rt）、PoC HAL（OpenAMP 系）と診断ブランチ群、PoC chainboot loader。
+## English
 
-## v0.1 の実装状況
+An rp-hal style Rust HAL for the two Cortex-M3 cores (proc0 / proc1) in the RP1 chip of the Raspberry Pi CM5.
+It also covers AMP with Linux on the BCM2712, and a BCM2712 third-stage loader (`rp1boot`) that loads the RP1 firmware.
 
-| crate | 内容 | 状態 |
-|---|---|---|
-| `rp1-regdb` / `rp1-pac` | レジスタ DB・PAC 生成器・検証器 / 生成 PAC（`Peripherals::take()` は `unsafe`） | STATIC |
-| `rp1-macros` / `rp1-rt` | 2 コア 1 イメージ起動、`#[entry(proc0/1)]`、proc1 起動、`#[shared]`+`SharedSafe`、`#[isram]`、`#[proc0]`/`#[proc1]`、`Spsc` | HW（両コア起動、.bss 初期化、`Spsc` 受け渡し、2026-10-29）。割り込みハンドラ登録（`#[interrupt]`）は未実装（v0.2） |
-| `rp1-hal` | GPIO / UART / timer（alarm はポーリング専用）+ embedded-hal 1.0、`cold`（冷起動と PCIe エンドポイント再設定）、clocks（`init` で clk_sys を公式の 200 MHz へ、HW）、`log!`（UART0）、SCMI クロックサーバー（Base+Clock 2.0、ポーリング）、shm の RP1 側 | HW: UART0 ログ、ドアベル、SCMI probe・clk_disable_unused 後も UART0 継続（2026-10-28）、shm（2026-10-29）。STATIC のみ: SCMI RATE_SET 拒否、PCIe 再設定の故障経路、UART1 の外部送受信は未検証 |
-| `rp1-proto` | `.note.rp1` v2、link ページ、SPSC ring（reject / overwrite、バッチ）、block、世代番号、起動束（bundle） | HW: ring 双方向 10^6 件欠落・破損 0、overwrite の Lost、block 1 MiB 一致（ポーリング）。STATIC のみ: 待機（通知）ハンドシェイク、overwrite の 2^32 周回（レビュー 2 #4） |
-| `rp1-linux` | UIO 経由の共有メモリクライアント（uncached） | HW（lab/shm-linux） |
-| `rp1-dt` | 純 Rust の FDT と overlay 適用（libfdt `fdtoverlay` と同じ結果を目標）、最終 DTB の衝突検査 | HW: lab の base DTB + app overlay（`fdtoverlay` と一致、STATIC でも比較）。一般の overlay は fixture とレビュー 2 #1/#3/#7 の反例を `fdtoverlay` と比較した範囲（STATIC） |
-| `rp1-build` | 宣言 → linker script・note・DT overlay・資源型の生成、source commit の記録 | STATIC（生成物を HW の起動一式で使用） |
-| `cargo-rp1` | ELF 検査（共有 SRAM 上の LDREX/STREX、予算、note）、`--dtb` で overlay 適用と衝突確認、`bundle`、`build`（ISRAM 自動配置） | STATIC（生成した束で HW 起動） |
-| `boot/rp1boot` | BCM2712 の third stage loader（stable Rust）: 束の SHA-256 検証、overlay 適用、RP1 の I2C 起動、EL2 で Linux へ | HW: cold boot 2 回で `~ #`（電源から約 31 s）、1 bit 破損した束を拒否（2026-10-29）。STATIC のみ: 異常な Image ヘッダーの配置拒否（レビュー 2 #2）、I2C の short read（#10） |
-| `examples/dual-core`, `examples/linux-doorbell` | 2 コアの `log!`・`Spsc`・ドアベル / UIO でドアベル往復 | HW（p50 約 3〜6 µs） |
-| `lab/shm-firmware`, `lab/shm-linux` | 共有メモリの実機証明（WINDOW / RING / BLOCK / OVERWRITE） | HW（ISRAM 版で RP1→Linux 4.58 MB/s、Linux→RP1 5.30 MB/s、バッチ） |
+- Status of each release and what was verified on hardware: [Releases](https://github.com/Natsu-B/rp1-hal/releases)
+- Design: [docs/design.md](docs/design.md) (§9 records the decisions)
+- Loader: [docs/loader.md](docs/loader.md)
+- Shared memory: [docs/protocol.md](docs/protocol.md)
+- Build and declarations: [docs/build.md](docs/build.md), [docs/declaration-and-note.md](docs/declaration-and-note.md)
 
-v0.1 の範囲外（設計 §8.1）: 割り込み駆動（RP1 → Linux 通知、alarm IRQ）、Linux 再起動への追従、DMA / PIO / SPI / I2C 等のドライバ。
+Evidence: **HW** = observed on hardware, **STATIC** = host tests, builds and ELF checks, **unverified** = neither.
+Raw hardware logs are kept outside the repository; documents give only the date and conditions (e.g. HW, 2026-10-29, cold boot ×2).
+A HW claim covers only the fixed boot set and the paths exercised at that time.
+
+The documents under `docs/` are written in Japanese.
