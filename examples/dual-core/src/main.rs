@@ -26,7 +26,7 @@ fn bss_check(marker: u32) -> u32 {
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     // After a loader reset RP1 is at cold defaults: lock PLL_SYS, then select clk_sys = 200 MHz.
     let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
-    let (_clocks, mut scmi) = p.clock_authority.init(200_000_000).unwrap();
+    let (clocks, mut scmi) = p.clock_authority.init(200_000_000).unwrap();
     rp1::log::init(&mut core).unwrap();
     log!("proc0 clocks programmed={}\n", programmed).unwrap();
     // The host is waiting for the PCIe link; bring the endpoint up before anything slow.
@@ -38,6 +38,32 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let bss = bss_check(0xb55_0000 | private);
     log!("proc0 ready private={} bss=0x{:x}\n", private, bss).unwrap();
     LOCAL.get(&core).set(1);
+    // SPI0 on proc0 with its own Clocks: SCLK/MOSI/MISO = GPIO11/10/9, GPIO8 as chip select.
+    let bus = p
+        .SPI0
+        .init(
+            p.pins.gpio11,
+            p.pins.gpio10,
+            p.pins.gpio9,
+            &clocks,
+            rp1_hal::spi::Config::new(10_000_000, embedded_hal::spi::MODE_0),
+        )
+        .unwrap();
+    let mut device = rp1_hal::spi::Device::new(bus, p.pins.gpio8);
+    let mut id = [0u8; 2];
+    {
+        use embedded_hal::spi::{Operation, SpiDevice};
+        // A typical register read: command byte out, two bytes back, one CS assertion.
+        device
+            .transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])
+            .unwrap();
+    }
+    log!(
+        "proc0 spi0 {} Hz id={:x?}\n",
+        device.bus_mut().frequency_hz(),
+        id
+    )
+    .unwrap();
     p.proc1.launch(&mut core).unwrap();
     let mut rx = VALUES.consumer(&mut core);
     // Linux resets the endpoint (PERSTn) when it probes PCIe; re-apply the endpoint config in

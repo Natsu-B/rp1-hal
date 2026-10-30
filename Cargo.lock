@@ -138,6 +138,7 @@ dependencies = [
 name = "dual-core"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal 1.0.0",
  "rp1-build",
  "rp1-hal",
  "rp1-proto",
