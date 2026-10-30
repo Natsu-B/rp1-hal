@@ -3,7 +3,7 @@ use crate::{Result, fdt::Fdt};
 use alloc::{collections::BTreeSet, format, string::String, vec::Vec};
 
 mod resolve;
-pub use resolve::{Disable, Gpiomem, OnConflict, Plan, Policy, apply_plan, resolve};
+pub use resolve::{Disable, Gpiomem, OnConflict, Plan, Policy, apply_plan, enforce, resolve};
 
 /// RP1 GPIO numbers that `fdt` withholds from Linux (`gpio-reserved-ranges` of the node
 /// labelled `rp1_gpio`). No label or no property means none.

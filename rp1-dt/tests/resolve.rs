@@ -455,3 +455,80 @@ fn dt_symbols_aliases_and_overlay_parameters_are_not_gpio_consumers() {
     );
     assert!(disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty());
 }
+
+#[test]
+fn gpiomem_only_disables_are_policy_only_and_conflicts_are_not() {
+    let (fdt, note) = fixture(&format!(
+        "{} / {{ gpiomem {{ compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; }}; }};",
+        uart3()
+    ));
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 2, "{nodes:?}");
+    let gpiomem = nodes.iter().find(|n| n.path == "/gpiomem").unwrap();
+    assert!(gpiomem.policy_only);
+    let uart = nodes
+        .iter()
+        .find(|n| n.path.ends_with("/serial@3c000"))
+        .unwrap();
+    assert!(!uart.policy_only);
+    // A gpiomem node that is also a GPIO consumer is a conflict, not only policy.
+    let (fdt, note) = fixture(
+        "/ { gpiomem { compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; gpios = <&rp1_gpio 22 0>; }; };",
+    );
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    assert_eq!(disables(&plan).len(), 1);
+    assert!(!disables(&plan)[0].policy_only);
+}
+
+#[test]
+fn enforce_reads_policy_applies_or_refuses_without_mutation() {
+    // Default policy: disable, mark, and leave a clean tree.
+    let (mut fdt, note) = fixture(uart3());
+    let before = fdt.clone();
+    let (policy, plan) = check::enforce(&before, &mut fdt, &note).unwrap();
+    assert_eq!(policy, Policy::default());
+    assert_eq!(disables(&plan).len(), 1);
+    let uart = fdt.label("rp1_uart3").unwrap();
+    assert!(!fdt.enabled(uart));
+    assert!(fdt.prop(uart, "rp1,loader-disabled").is_some());
+    assert!(check::check(&before, &fdt, &note).unwrap().is_empty());
+    // Policy from /rp1-firmware: refuse leaves the tree untouched.
+    let (mut fdt, note) = fixture(uart3());
+    set(
+        &mut fdt,
+        "/rp1-firmware",
+        "rp1,on-conflict",
+        b"refuse\0".to_vec(),
+    );
+    let before = fdt.clone();
+    let (policy, plan) = check::enforce(&before, &mut fdt, &note).unwrap();
+    assert_eq!(policy.on_conflict, OnConflict::Refuse);
+    refusal(plan, "on_conflict=refuse");
+    assert_eq!(fdt.to_bytes(), before.to_bytes());
+    // A post-disable check failure (reservation shrink) is an error, also without mutation.
+    let (mut fdt, note) = fixture(uart3());
+    let mut base = fdt.clone();
+    let n = base.label("rp1_gpio").unwrap();
+    base.set_prop(
+        n,
+        "gpio-reserved-ranges",
+        [8u32, 4, 22, 2]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    let original = fdt.to_bytes();
+    assert!(check::enforce(&base, &mut fdt, &note).is_err());
+    assert_eq!(fdt.to_bytes(), original);
+    // Unknown policy values fail closed.
+    let (mut fdt, note) = fixture("");
+    set(
+        &mut fdt,
+        "/rp1-firmware",
+        "rp1,on-conflict",
+        b"ignore\0".to_vec(),
+    );
+    let before = fdt.clone();
+    assert!(check::enforce(&before, &mut fdt, &note).is_err());
+}

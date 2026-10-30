@@ -67,6 +67,9 @@ pub struct Disable {
     pub path: String,
     pub label: Option<String>,
     pub reasons: Vec<String>,
+    /// Disabled only by the gpiomem policy (the expected default), not by an ownership
+    /// conflict. Host checks report these without failing.
+    pub policy_only: bool,
 }
 
 /// A refusal never authorizes partial application of the disable list.
@@ -89,6 +92,7 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
         .ok_or("note has no OWNERSHIP")?
         .value;
     let mut conflicts = node_conflicts(after, own)?;
+    let mut gpiomem = BTreeSet::new();
     if !conflicts.pins.is_empty() && policy.gpiomem == Gpiomem::Disable {
         for n in (0..after.nodes.len()).filter(|n| after.enabled(*n)) {
             if after
@@ -108,6 +112,7 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
                     .first()
                     .ok_or_else(|| format!("{}: empty gpiomem reg", after.path(n)))?;
                 if *address == 0xc0_400d0000 {
+                    gpiomem.insert(n);
                     conflicts.add(
                         n,
                         format!(
@@ -143,6 +148,7 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
             disable.push(Disable {
                 path: after.path(n),
                 label,
+                policy_only: gpiomem.contains(&n) && reasons.len() == 1,
                 reasons,
             });
         }
@@ -185,6 +191,23 @@ pub fn apply_plan(
     }
     *after = candidate;
     Ok(())
+}
+
+/// The loader's step after applying `.rp1.dtbo` (sharing design §4, 4b..4e), shared with the
+/// host predictions (`cargo rp1 check --dtb`, `RP1_BOARD_DTB`): read the policy from
+/// `/rp1-firmware`, [`resolve`], and apply a disable plan with [`apply_plan`] (which
+/// rechecks against `before`).
+///
+/// `Ok(Plan::Disable(nodes))`: `after` now has `nodes` disabled and marked.
+/// `Ok(Plan::Refuse(reasons))`: RP1 must not start; `after` is unchanged.
+/// `Err`: malformed input or a failed post-disable check; `after` is unchanged.
+pub fn enforce(before: &Fdt, after: &mut Fdt, note: &[u8]) -> Result<(Policy, Plan)> {
+    let policy = Policy::from_fdt(after)?;
+    let plan = resolve(after, note, policy)?;
+    if matches!(plan, Plan::Disable(_)) {
+        apply_plan(before, after, note, policy, &plan)?;
+    }
+    Ok((policy, plan))
 }
 
 fn with_disables(fdt: &Fdt, disable: &[Disable]) -> Result<Fdt> {
