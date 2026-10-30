@@ -87,6 +87,9 @@ fdtoverlay -i bcm2712-rpi-cm5l-cm5io.dtb -o merged.dtb \
 cargo rp1 check target/thumbv7m-none-eabi/release/<app> --dtb merged.dtb
 ```
 
+予測はローダーと同じコードなので起動時の結果と一致する（HW 2026-10-30、各 cold boot ×1: lab ファームに `uart3-pi5` → serial@3c000
+と gpiomem、`gpio-led,gpio=22` → leds ノード・led・gpiomem を、予測どおり rp1boot が無効化した）。
+
 起動後の `/sys/firmware/fdt` は rp1boot が overlay と無効化を済ませた後の木なので使えない（`/rp1-firmware` があれば
 `check --dtb` はエラーにする）。
 
