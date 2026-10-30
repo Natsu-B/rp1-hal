@@ -354,22 +354,84 @@ fn policy_defaults_explicit_values_and_invalid_values() {
 }
 
 #[test]
-fn malformed_specifiers_and_console_return_errors() {
+fn malformed_rp1_data_returns_errors() {
     for extra in [
         "/ { user { gpios = <&rp1_gpio 22>; }; };",
-        "/ { user { gpios = [01]; }; };",
-        "/ { user { gpios = <0xfffffffe 22 0>; }; };",
-        "/ { user { pinctrl-0 = <0xfffffffe>; }; };",
-        "/ { user { pinctrl-0 = [01]; }; };",
         "&rp1_gpio { #gpio-cells = <0xffffffff>; };",
         "&rp1_gpio { gpio-reserved-ranges = <0 0xffffffff>; };",
         "&rp1_gpio { gpio-reserved-ranges = [01]; };",
-        "/ { chosen { stdout-path = \"missing-alias\"; }; };",
-        "/ { chosen { stdout-path = \"/missing\"; }; };",
         "/ { mapping { compatible = \"raspberrypi,gpiomem\"; reg = [01]; }; };",
     ] {
         let (fdt, note) = fixture(extra);
         assert!(resolve(&fdt, &note, Policy::default()).is_err(), "{extra}");
+    }
+}
+
+#[test]
+fn dt_defects_unrelated_to_rp1_do_not_stop_the_boot() {
+    // Review 11 M1: Linux ignores these, so the loader must not halt on them.
+    for extra in [
+        "/ { user { gpios = [01]; }; };",
+        "/ { user { gpios = <0xfffffffe 22 0>; }; };",
+        "/ { bad_gpio: bad-gpio { gpio-controller; }; user { gpios = <&bad_gpio 1 2>; }; };",
+        "/ { bad_gpio: bad-gpio { gpio-controller; #gpio-cells = <0>; }; user { reset-gpios = <&bad_gpio 1 2>; }; };",
+        "/ { user { cs-gpios = <&other_gpio 1 2>; }; };",
+        "/ { user { pinctrl-0 = <0xfffffffe>; }; };",
+        "/ { user { pinctrl-0 = [01]; }; };",
+    ] {
+        let (fdt, note) = fixture(extra);
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{extra}"
+        );
+        // Next to a real conflict they are still ignored: only the conflict is disabled.
+        let (fdt, note) = fixture(&format!("{} {extra}", uart3()));
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{extra}");
+        assert_eq!(nodes[0].path, format!("{RP1}/serial@3c000"), "{extra}");
+    }
+}
+
+#[test]
+fn unparseable_lists_that_may_name_rp1_gpio_refuse() {
+    for (extra, why) in [
+        (
+            "/ { user { gpios = <0xfffffffe 0 &rp1_gpio 22 0>; }; };",
+            "may name rp1_gpio",
+        ),
+        (
+            "/ { bad_gpio: bad-gpio { gpio-controller; }; user { gpios = <&bad_gpio 1 &rp1_gpio 22 0>; }; };",
+            "may name rp1_gpio",
+        ),
+        (
+            "/ { user { gpios = <&rp1_gpio 22 0>, [01]; }; };",
+            "malformed GPIO list may name rp1_gpio",
+        ),
+        (
+            "/ { user { pinctrl-0 = <&uart3_pins>, [01]; }; };",
+            "malformed pinctrl list names an RP1 pin group",
+        ),
+    ] {
+        let (fdt, note) = fixture(extra);
+        refusal(resolve(&fdt, &note, Policy::default()).unwrap(), why);
+    }
+}
+
+#[test]
+fn unresolvable_console_matters_only_when_something_would_be_disabled() {
+    for console in ["missing-alias", "/missing", "serial9:115200n8"] {
+        let chosen = format!("/ {{ chosen {{ stdout-path = \"{console}\"; }}; }};");
+        let (fdt, note) = fixture(&chosen);
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{console}"
+        );
+        let (fdt, note) = fixture(&format!("{} {chosen}", uart3()));
+        refusal(
+            resolve(&fdt, &note, Policy::default()).unwrap(),
+            "cannot tell whether a disable would remove the Linux console",
+        );
     }
 }
 

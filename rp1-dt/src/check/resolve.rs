@@ -124,8 +124,20 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
             }
         }
     }
-    let protected = protected_nodes(after)?;
+    // Only a planned disable needs the protected list: DT defects unrelated to RP1 (e.g. an
+    // unresolvable stdout-path alias) must not stop a boot without conflicts.
     let mut refused = conflicts.unresolved;
+    let protected = if conflicts.nodes.is_empty() {
+        BTreeMap::new()
+    } else {
+        let (protected, console) = protected_nodes(after)?;
+        if let Some(why) = console {
+            refused.push(format!(
+                "{why}; cannot tell whether a disable would remove the Linux console"
+            ));
+        }
+        protected
+    };
     let mut disable = Vec::new();
     for (n, reasons) in conflicts.nodes {
         // The gpiomem policy is not an ownership conflict: on_conflict=refuse still disables it.
@@ -331,6 +343,7 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
     if args != 2 {
         return Err("rp1_gpio must have #gpio-cells = <2>".into());
     }
+    let gpio_handle = fdt.phandle_of(gpio);
     for n in (0..fdt.nodes.len()).filter(|n| fdt.enabled(*n) && !metadata_node(fdt, *n)) {
         let hog = fdt.prop(n, "gpio-hog").is_some();
         if hog && fdt.nodes[n].parent == Some(gpio) {
@@ -358,20 +371,47 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                     || name.ends_with("-gpio")
                     || name.ends_with("-gpios"))
             {
-                let values = cells(fdt, n, name)?;
+                // Strict only for rp1_gpio specifiers. Linux ignores a malformed list on another
+                // controller, so it must not stop the boot; it refuses only when the part that
+                // cannot be parsed may still name rp1_gpio.
+                let Some(values) = fdt.cells(n, name) else {
+                    let raw = fdt.prop(n, name).unwrap_or_default();
+                    if names_handle(raw.chunks_exact(4).map(be32), gpio_handle) {
+                        out.unresolved.push(format!(
+                            "{} {name}: malformed GPIO list may name rp1_gpio",
+                            fdt.path(n)
+                        ));
+                    }
+                    continue;
+                };
                 let mut rest = values.as_slice();
                 while let Some((&handle, tail)) = rest.split_first() {
                     if handle == 0 {
                         rest = tail;
                         continue;
                     }
-                    let ctrl = fdt.phandle(handle).ok_or_else(|| {
-                        format!("{} {name}: GPIO phandle {handle:#x} not found", fdt.path(n))
-                    })?;
-                    let count = gpio_cells(fdt, ctrl)?;
-                    let spec = tail.get(..count).ok_or_else(|| {
-                        format!("{} {name}: truncated GPIO specifier", fdt.path(n))
-                    })?;
+                    let layout = fdt
+                        .phandle(handle)
+                        .and_then(|ctrl| Some((ctrl, gpio_cells(fdt, ctrl).ok()?)));
+                    let Some((ctrl, count)) = layout else {
+                        // Unknown controller or #gpio-cells: the rest cannot be split.
+                        if names_handle(tail.iter().copied(), gpio_handle) {
+                            out.unresolved.push(format!(
+                                "{} {name}: GPIO phandle {handle:#x} cannot be parsed and a later entry may name rp1_gpio",
+                                fdt.path(n)
+                            ));
+                        }
+                        break;
+                    };
+                    let Some(spec) = tail.get(..count) else {
+                        if ctrl == gpio {
+                            return Err(format!(
+                                "{} {name}: truncated GPIO specifier",
+                                fdt.path(n)
+                            ));
+                        }
+                        break;
+                    };
                     if ctrl == gpio && withheld.contains(&spec[0]) {
                         out.add(n, format!("{} {name} uses GPIO{} that gpio-reserved-ranges withholds from Linux", fdt.path(n), spec[0]));
                     }
@@ -382,10 +422,30 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                 .strip_prefix("pinctrl-")
                 .is_some_and(|state| state.parse::<u32>().is_ok())
             {
-                for handle in cells(fdt, n, name)? {
-                    let group = fdt.phandle(handle).ok_or_else(|| {
-                        format!("{} {name}: phandle {handle:#x} not found", fdt.path(n))
-                    })?;
+                // A dangling or malformed pinctrl entry cannot select an RP1 group: Linux fails
+                // that device's pinctrl, nothing more. A malformed list that has an RP1 group's
+                // phandle in it cannot be checked, so it refuses.
+                let words: Vec<u32> = match fdt.cells(n, name) {
+                    Some(words) => words,
+                    None => {
+                        let raw = fdt.prop(n, name).unwrap_or_default();
+                        if raw
+                            .chunks_exact(4)
+                            .map(be32)
+                            .any(|h| fdt.phandle(h).is_some_and(|g| fdt.is_descendant(g, gpio)))
+                        {
+                            out.unresolved.push(format!(
+                                "{} {name}: malformed pinctrl list names an RP1 pin group",
+                                fdt.path(n)
+                            ));
+                        }
+                        continue;
+                    }
+                };
+                for handle in words {
+                    let Some(group) = fdt.phandle(handle) else {
+                        continue;
+                    };
                     if !fdt.is_descendant(group, gpio) {
                         continue;
                     }
@@ -432,6 +492,15 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
     Ok(out)
 }
 
+fn be32(word: &[u8]) -> u32 {
+    u32::from_be_bytes([word[0], word[1], word[2], word[3]])
+}
+
+/// Whether any word may be the phandle `handle` (false when the controller has none).
+fn names_handle(mut words: impl Iterator<Item = u32>, handle: Option<u32>) -> bool {
+    handle.is_some_and(|h| words.any(|w| w == h))
+}
+
 // Labels, aliases and firmware overlay parameters are not Linux GPIO consumers.
 fn metadata_node(fdt: &Fdt, node: usize) -> bool {
     let mut at = Some(node);
@@ -445,7 +514,8 @@ fn metadata_node(fdt: &Fdt, node: usize) -> bool {
     false
 }
 
-fn protected_nodes(fdt: &Fdt) -> Result<BTreeMap<usize, String>> {
+/// The nodes a disable must not touch, and why the console could not be found, if so.
+fn protected_nodes(fdt: &Fdt) -> Result<(BTreeMap<usize, String>, Option<String>)> {
     let mut protected = BTreeMap::new();
     // Protect ancestors too: disabling a bus would otherwise hide a protected child.
     let mut protect = |n: usize, why: String| {
@@ -465,21 +535,11 @@ fn protected_nodes(fdt: &Fdt) -> Result<BTreeMap<usize, String>> {
             protect(n, format!("board Linux block {label}"));
         }
     }
-    if let Some(chosen) = fdt.find("/chosen") {
-        for prop in ["stdout-path", "linux,stdout-path"] {
-            if let Some(value) = string(fdt, chosen, prop)? {
-                let path = value.split(':').next().ok_or("empty stdout-path")?;
-                let path = if path.starts_with('/') {
-                    String::from(path)
-                } else {
-                    let aliases = fdt
-                        .find("/aliases")
-                        .ok_or("stdout-path alias has no /aliases")?;
-                    String::from(string(fdt, aliases, path)?.ok_or("stdout-path alias not found")?)
-                };
-                let n = fdt.find(&path).ok_or("stdout-path node not found")?;
-                protect(n, format!("console {prop}={value}"));
-            }
+    let mut console_unknown = None;
+    for (prop, found) in console_nodes(fdt) {
+        match found {
+            Ok(n) => protect(n, format!("console {prop}")),
+            Err(why) => console_unknown = Some(why),
         }
     }
     for n in 0..fdt.nodes.len() {
@@ -491,5 +551,37 @@ fn protected_nodes(fdt: &Fdt) -> Result<BTreeMap<usize, String>> {
             protect(n, format!("protected DT node {}", fdt.path(n)));
         }
     }
-    Ok(protected)
+    Ok((protected, console_unknown))
+}
+
+/// The Linux console nodes named by `/chosen` (`stdout-path`, `linux,stdout-path`), each
+/// resolved through `/aliases` if needed, or why it could not be resolved.
+pub(super) fn console_nodes(fdt: &Fdt) -> Vec<(&'static str, core::result::Result<usize, String>)> {
+    let Some(chosen) = fdt.find("/chosen") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for prop in ["stdout-path", "linux,stdout-path"] {
+        let value = match string(fdt, chosen, prop) {
+            Ok(None) => continue,
+            Ok(Some(v)) => v,
+            Err(e) => {
+                out.push((prop, Err(e)));
+                continue;
+            }
+        };
+        let path = value.split(':').next().unwrap_or_default();
+        let node = if path.starts_with('/') {
+            fdt.find(path)
+        } else {
+            fdt.find("/aliases")
+                .and_then(|a| string(fdt, a, path).ok().flatten())
+                .and_then(|p| fdt.find(p))
+        };
+        out.push((
+            prop,
+            node.ok_or_else(|| format!("console {prop}={value} does not resolve to a node")),
+        ));
+    }
+    out
 }
