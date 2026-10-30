@@ -226,8 +226,8 @@ struct Counts {
     lcnt: u32,
 }
 
-/// Counts for the SCL high/low targets of `speed` at `ic_clk_hz` (= clk_sys, a whole number of
-/// MHz: 50 or 200; anything else is `Invalid`).
+/// Counts for the SCL high/low targets of `speed` at `ic_clk_hz` (= clk_sys). `Invalid` if it
+/// is not a whole number of MHz (`Clocks` only gives 50 or 200 MHz) or too slow for `speed`.
 /// Targets keep the I2C minimums (Sm 4.0/4.7 us, Fm 0.6/1.3 us, Fm+ 0.26/0.5 us).
 /// HW (DesignWare, measured at 50 MHz): high = HCNT + SPKLEN + 7, low = LCNT + 1 cycles + rise.
 fn timing(ic_clk_hz: u32, speed: Speed) -> Result<Counts, Error> {
@@ -236,7 +236,7 @@ fn timing(ic_clk_hz: u32, speed: Speed) -> Result<Counts, Error> {
         Speed::Fast => (2, 900, 1_600),
         Speed::FastPlus => (2, 400, 600),
     };
-    // Whole MHz only (clk_sys is 50 or 200 MHz): exact in 32 bits, no 64-bit division.
+    // Whole MHz only (in practice 50 or 200 MHz): exact in 32 bits, no 64-bit division.
     if !ic_clk_hz.is_multiple_of(1_000_000) {
         return Err(Error::Invalid);
     }

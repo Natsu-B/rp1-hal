@@ -58,13 +58,17 @@ programmed and SCMI ownership is unchanged. A clock tree that no longer matches 
 clk_sys, so clk_uart is not compared. `init` and `set_speed` read CLK_SYS CTRL/DIV/SEL and
 the PLL_SYS tuple twice (`Clocks::sys_current_strict`); every transaction checks once with
 `Clocks::sys_current` (CLK_SYS_SEL and DIV_INT, plus PLL_SYS CS/FBDIV_INT/PRIM when SEL is
-PLL_SYS; see `docs/spi.md`) (STATIC, host model tests). The counts are computed in whole MHz
-(32-bit, the same values as the 64-bit formula for the 50 and 200 MHz clk_sys; any other
-`ic_clk` is `Invalid`). `init` checks clk_sys and the speed before it releases the reset; on
-any error it returns `InitError` with the token and the untouched pins, so the caller can
-retry (`?` converts it to `Error`). STATIC (host model through an injected register
-interface): a stale clk_sys or an impossible speed writes no register, leaves the reset
-asserted and routes no pin, and the returned token and pins initialise on retry.
+PLL_SYS; see `docs/spi.md`) (STATIC, host model tests whose fast and strict checks are
+counted apart and can disagree: init and `set_speed` use only the strict one, transactions
+only the fast one). The counts are computed in whole MHz
+in 32-bit arithmetic: an `ic_clk` that is not a whole number of MHz is `Invalid`; for every
+whole-MHz `ic_clk` the result (counts or `Invalid`) equals the earlier 64-bit formula's
+(STATIC, host test over all whole-MHz u32 values). `Clocks` only gives 50 or 200 MHz.
+`init` checks clk_sys and the speed before it releases the reset; on any error it returns
+`InitError` with the token and the untouched pins, so the caller can retry (`?` converts
+it to `Error`). STATIC (host model through an injected register interface): a stale
+clk_sys or an impossible speed writes no register, leaves the reset asserted and routes no
+pin, and the returned token and pins initialise on retry.
 A controller declared under `[proc1]` takes its `Clocks` from
 `Clocks::wait_from_proc0(&core, timeout_us)` (the value proc0's `Authority::init` published;
 see `docs/adc.md`, "Clocks on proc1"). STATIC: compile-checked in `examples/dual-core`.

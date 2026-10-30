@@ -2,7 +2,8 @@
 
 STATIC: `rp1_hal::spi` drives the RP1 DesignWare APB SSI blocks as polling SPI masters:
 embedded-hal 1.0 `SpiBus<u8 | u16 | u32>` on `Spi`, and `SpiDevice` on `spi::Device`, which
-adds a GPIO chip select (active low) and owns the bus exclusively.
+adds a GPIO chip select (active low) and owns the bus exclusively, either an owned `Spi` or a
+lent `&mut Spi` (`Device::new(&mut spi, cs)`; other buses are not accepted).
 
 ```toml
 [package.metadata.rp1.proc0]
@@ -87,7 +88,10 @@ types share it.
 The native chip selects are not routed: SER selects CS0 internally because the DW SSI only
 shifts with a slave selected. `Device::transaction` checks the bus once (frame size,
 clk_sys), then drives CS low, runs the operations (`DelayNs` flushes first), flushes, and
-drives CS high even after an error. A failed check returns before CS moves.
+drives CS high even after an error. A failed check returns before CS moves. The unchecked
+operations behind this (the hidden `spi::Bus` methods) take arguments only rp1-hal can
+make, so code outside the crate cannot call them and skip the check (STATIC, trybuild and
+doctest compile-fail cases, through a generic bound and on `Spi`).
 
 `set_frequency`, `set_mode`, `set_frame_bits` and `set_loopback` (CTRLR0.SRL internal
 loopback) wait for the bus to be idle and reprogram the disabled controller.
@@ -111,7 +115,13 @@ read-back, as Linux spi-dw-core does. The usable maximum is the DW_apb_ssi synth
 parameter SSI_RX_DLY_SR_DEPTH, which is not known for RP1, and what the block does with a
 larger value is unverified (recalled, not checked: the databook treats it as no delay).
 
-STATIC (host tests): `Device::transaction` checks clk_sys once, then drives CS low, runs the
+STATIC (host tests): init, reconfiguration and transactions are checked against a model whose
+fast and strict clock checks are counted apart and can disagree (a drift only the strict
+check sees): init and reconfiguration use only the strict one and fail before the reset,
+the pin mux or any register write; transactions use only the fast one. The real `Spi` bus
+impls (owned and `&mut`) return `Invalid` for words narrower than the frame before any
+register access and before CS moves.
+`Device::transaction` checks clk_sys once, then drives CS low, runs the
 operations, flushes, then drives CS high; with a stale clk_sys it returns `Precondition` with
 no CS edge; a `DelayNs` flushes before it waits; after a failed operation it skips the
 rest but still flushes and releases CS, and returns the operation's error, not the flush's.
@@ -146,11 +156,16 @@ review 7 (one boot; the other is within 0.5 %), with the review 6 figure in brac
 | 50 MHz (/4) | 13.7 (9.1) Mbit/s, 27 % | 20.5 (13.7) Mbit/s, 40 % | 26.0 (17.5) Mbit/s, 51 % |
 
 At 1 MHz the wire dominates; above about 10 MHz the polling loop (one APB FIFO access per
-frame each way) and the per-call overhead are the limit. Review 6 compared clk_sys and
-clk_uart (22 register reads, from shared SRAM) on every bus call: about 7 µs per call, 50 MHz
-8-bit 12.1 → 9.1 Mbit/s. Review 7 checks clk_sys only, once per transaction, from ISRAM
-(5 reads): the 32 calls of 32 frames at 50 MHz 8-bit take 600 µs instead of 896 µs, about
-9 µs less per call (HW). Longer transfers or wider frames get closer to the wire rate.
+frame each way) and the per-call overhead are the limit. HW, the 32 calls of 32 frames at
+50 MHz 8-bit: 676 and 679 µs (12.1 Mbit/s) before review 6, which had no clock check on bus
+calls; 896 and 928 µs (9.1 Mbit/s) with review 6, which compared clk_sys and clk_uart
+(22 register reads, from shared SRAM) on every bus call; 600 µs on both boots (13.7 Mbit/s)
+with review 7, which checks clk_sys only, once per transaction, from ISRAM (5 reads). The
+review 7 time is lower than the time without any check, so the cheaper check does not explain
+the whole gain: review 6 and 7 also changed the transfer path (for example `Device` now
+admits once and calls the exchange directly instead of going through the `SpiBus` methods).
+How the gain splits between those changes was not measured. Longer transfers or wider frames
+get closer to the wire rate.
 
 The rate is measured on the 1 MHz timer around each 32-frame transfer call (CS handling
 included), so it is a throughput figure, not an SCLK measurement. SCLK itself was not probed
