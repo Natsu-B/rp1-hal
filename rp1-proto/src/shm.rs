@@ -775,6 +775,46 @@ impl<T: Message> RingRx<T> {
     }
 }
 
+/// A [`RingRx`] of any message type, for [`wait_any_with`].
+pub trait Waiter {
+    fn available(&self) -> u32;
+    fn prepare_wait(&mut self) -> bool;
+    fn finish_wait(&mut self);
+}
+impl<T: Message> Waiter for RingRx<T> {
+    fn available(&self) -> u32 {
+        RingRx::available(self)
+    }
+    fn prepare_wait(&mut self) -> bool {
+        RingRx::prepare_wait(self)
+    }
+    fn finish_wait(&mut self) {
+        RingRx::finish_wait(self)
+    }
+}
+/// [`RingRx::wait_with`] for several rings whose writers share one notification: arm every
+/// ring (each with its own read back and re-check), sleep once if all are still empty, then
+/// disarm them all. [`Wait::Ready`] means some ring has messages; the caller pops every ring
+/// after each return.
+pub fn wait_any_with(rings: &mut [&mut dyn Waiter], sleep: impl FnOnce() -> bool) -> Wait {
+    if rings.iter().any(|r| r.available() != 0) {
+        return Wait::Ready;
+    }
+    for i in 0..rings.len() {
+        if !rings[i].prepare_wait() {
+            for r in &mut rings[..i] {
+                r.finish_wait();
+            }
+            return Wait::Ready;
+        }
+    }
+    let woke = sleep();
+    for r in rings.iter_mut() {
+        r.finish_wait();
+    }
+    if woke { Wait::Woken } else { Wait::Timeout }
+}
+
 /// A SeqLock-protected block (protocol.md §5): `seq` u32, `flags` u32, then `T`.
 ///
 /// Large `T` (tables, bulk buffers) are accessed word by word through [`BlockWriter`] and
@@ -1247,6 +1287,51 @@ mod tests {
         assert!(tx.wake_needed());
         assert!(!tx.wake_needed());
         rx.finish_wait();
+    }
+
+    /// Two rings, one notification: every ring is armed for the sleep, so either writer
+    /// notifies; data on a later ring cancels the arms of the earlier ones.
+    #[test]
+    fn wait_any_arms_every_ring() {
+        let (mut d0, mut c0) = wait_pair(2);
+        let (mut d1, mut c1) = wait_pair(2);
+        let (d0, c0) = (d0.0.as_mut_ptr(), c0.0.as_mut_ptr());
+        let (d1, c1) = (d1.0.as_mut_ptr(), c1.0.as_mut_ptr());
+        let ow = Overflow::Reject;
+        let mut tx0 = unsafe { RingTx::<u32>::attach(d0, 160, c0, 128, 2, ow) }.unwrap();
+        let mut rx0 = unsafe { RingRx::<u32>::attach(d0, 160, c0, 128, 2, ow) }.unwrap();
+        let mut tx1 = unsafe { RingTx::<u64>::attach(d1, 160, c1, 128, 2, ow) }.unwrap();
+        let mut rx1 = unsafe { RingRx::<u64>::attach(d1, 160, c1, 128, 2, ow) }.unwrap();
+        // The second ring's writer notifies while both are armed.
+        let r = wait_any_with(&mut [&mut rx0, &mut rx1], || {
+            tx1.push(&5).unwrap();
+            tx1.wake_needed()
+        });
+        assert_eq!(r, Wait::Woken);
+        assert!(!tx0.wake_needed() && !tx1.wake_needed(), "all disarmed");
+        assert_eq!(wait_any_with(&mut [&mut rx0, &mut rx1], || unreachable!()), Wait::Ready);
+        assert_eq!(rx1.pop().unwrap(), Some(5));
+        // A message that arrives on ring 1 between the first check and its arm: the re-check
+        // cancels the sleep and ring 0's arm is undone.
+        struct Arrives;
+        impl Waiter for Arrives {
+            fn available(&self) -> u32 {
+                0
+            }
+            fn prepare_wait(&mut self) -> bool {
+                false
+            }
+            fn finish_wait(&mut self) {}
+        }
+        assert_eq!(wait_any_with(&mut [&mut rx0, &mut Arrives], || unreachable!()), Wait::Ready);
+        assert!(!tx0.wake_needed(), "ring 0 disarmed after the cancelled sleep");
+        // Ring 0's writer notifies too.
+        let r = wait_any_with(&mut [&mut rx0, &mut rx1], || {
+            tx0.push(&7).unwrap();
+            tx0.wake_needed()
+        });
+        assert_eq!(r, Wait::Woken);
+        assert_eq!(rx0.pop().unwrap(), Some(7));
     }
 
     /// Counter wrap: after the notified sleep, 2^31 - 1 more sleeps bring the counter back to
