@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# proc1 -> Linux interrupt on RP1 MSI-X vector 57 (`host_irq`). Unstable: the vector's own
+# hardware source (PROC_MISC) is not controlled yet (docs/design.md 6.2).
+unstable-host-irq = []
+
 [dependencies]
 rp1-pac = { path = "../rp1-pac" }
 rp1-rt = { path = "../rp1-rt" }

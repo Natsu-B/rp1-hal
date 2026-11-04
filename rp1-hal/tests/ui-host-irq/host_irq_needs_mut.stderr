@@ -1,0 +1,10 @@
+error[E0596]: cannot borrow `*irq` as mutable, as it is behind a `&` reference
+ --> tests/ui-host-irq/host_irq_needs_mut.rs:4:5
+  |
+4 |     irq.notify_sram();
+  |     ^^^ `irq` is a `&` reference, so it cannot be borrowed as mutable
+  |
+help: consider changing this to be a mutable reference
+  |
+3 | fn shared(irq: &mut HostIrq) {
+  |                 +++

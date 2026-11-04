@@ -197,6 +197,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     }
     VALUES.producer(&mut core).push(42).unwrap();
     let mut doorbell = Doorbell::new(p.pins.gpio27);
+    let mut host_irq = p.host_irq;
     // Linux may ask for an ADC burst before it enables the shm area.
     while link_read(link::SHM_STATUS) != 1 {
         service_doorbell(&mut doorbell);
@@ -211,7 +212,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut last = 0;
     let mut seen = 0;
     loop {
-        let sequence = wait_command(&mut doorbell, &control, seen);
+        let sequence = wait_command(&mut doorbell, &mut host_irq, &control, seen);
         serve_proc1(adc.as_mut(), spi.as_mut());
         if sequence == seen {
             continue;
@@ -475,12 +476,18 @@ unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
 /// or Linux asks for an ADC or SPI burst (returns `seen` then).
 /// Idle cost is one DDR load (not a 17-word read), so the doorbell stays responsive.
 #[rp1_rt::isram]
-fn wait_command(doorbell: &mut Doorbell, control: &rp1_hal::shm::Block<Control>, seen: u32) -> u32 {
+fn wait_command(
+    doorbell: &mut Doorbell,
+    host_irq: &mut rp1_hal::host_irq::HostIrq,
+    control: &rp1_hal::shm::Block<Control>,
+    seen: u32,
+) -> u32 {
     loop {
         // Interrupt to Linux (rp1:irq) after the reply; only here, in ISRAM: the shared SRAM
         // image has no room for it in the pre-shm loop, so Linux uses interrupts after shm enable.
+        // The reply is in the link page (RP1 SRAM), so the SRAM variant is enough.
         if service_doorbell(doorbell) {
-            rp1_hal::host_irq::notify();
+            host_irq.notify_sram();
         }
         let sequence = control.sequence();
         if sequence != seen || proc1_request(i2c_proof::pending()) {
