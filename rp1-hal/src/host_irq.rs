@@ -90,6 +90,10 @@ impl HostIrq {
     /// the reader's sleep counter from the link page: it pulses only for a sleep not yet
     /// notified, so a reader that keeps up costs no interrupts and a sleeping one gets one
     /// (protocol.md §2.3). The readback is one PCIe round trip per call.
+    ///
+    /// Nothing enforces the call: a producer that pushes without it is not an error, but its
+    /// reader finds the data only at its next bounded re-check (`rp1_linux::RECHECK`, 10 ms,
+    /// counted in Linux's `WaitStats::late`). [`HostIrq::push_slice_notify`] does both steps.
     #[inline(always)]
     pub fn notify_ring<T: rp1_proto::Message>(&mut self, ring: &mut crate::shm::RingTx<T>) -> bool {
         if ring.wake_needed() {
@@ -98,6 +102,20 @@ impl HostIrq {
         } else {
             false
         }
+    }
+
+    /// `ring.push_slice(values)` then [`HostIrq::notify_ring`]: publish one batch and wake the
+    /// reader if it sleeps. Returns (messages written, whether it pulsed). It notifies even when
+    /// nothing was written (ring full), because the reader may have gone to sleep since the
+    /// last call; a caller retrying the rest of a batch calls it again.
+    #[inline(always)]
+    pub fn push_slice_notify<T: rp1_proto::Message>(
+        &mut self,
+        ring: &mut crate::shm::RingTx<T>,
+        values: &[T],
+    ) -> (usize, bool) {
+        let n = ring.push_slice(values);
+        (n, self.notify_ring(ring))
     }
 
     /// Set and clear go through the atomic aliases, so they do not race Linux's own ENABLE /
