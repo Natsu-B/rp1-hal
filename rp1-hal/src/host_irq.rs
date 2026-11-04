@@ -6,8 +6,10 @@
 //! **Unstable** (cargo feature `unstable-host-irq`, declaration `host_irq = true`). TEST is ORed
 //! with the vector's own hardware source, TIMER alarm 3 (`TIMER.INTS` bit 3). `host_irq` owns
 //! `TIMER.ALARM3` (the declaration rejects any other owner), and nothing in rp1-hal unmasks or
-//! forces it, so the source stays low (HW 2026-11-05: forcing `TIMER.INTF` bit 3 raises the
-//! vector once and then swallows TEST pulses until released).
+//! forces it. Firmware that ran earlier (or a previous image on this RP1) might have, so
+//! [`HostIrq::new`] takes the source over: it masks and un-forces alarm 3 and clears its raw
+//! flag, leaving TEST as the only thing that can raise the vector (HW 2026-11-05: forcing
+//! `TIMER.INTF` bit 3 raises the vector once and then swallows TEST pulses until released).
 //!
 //! Delivery is a hint, not a message: Linux's receiver must re-check the data it waits for
 //! after every wake and after a bounded timeout. The vector is edge-triggered, so
@@ -18,6 +20,21 @@
 use crate::write;
 use rp1_proto::irq;
 
+// rp1-regdb `timer.toml`: TIMER at 0x400a_c000, atomic clear alias at +0x3000;
+// INTS = (INTR & INTE) | INTF; INTS bit N is alarm N's interrupt (device.toml: TIMER_N = 26 + N).
+const TIMER_BASE: usize = 0x400a_c000;
+const ATOMIC_CLR: usize = 0x3000;
+/// `INTR`: raw alarm flags, write-one-to-clear (regdb: verified_write = "hardware").
+const TIMER_INTR: usize = TIMER_BASE + 0x34;
+/// `INTE`: alarm interrupt enable, plain RW (regdb: write unverified; cleared through the
+/// atomic clear alias, as `timer::Alarm::disable_interrupt` does).
+const TIMER_INTE: usize = TIMER_BASE + 0x38;
+/// `INTF`: alarm interrupt force. regdb marks write semantics unverified; on HW (2026-11-05,
+/// devmem) writing 0x8 forced bit 3 and writing 0 released it, i.e. plain RW. The atomic clear
+/// alias clears bit 3 without touching the other alarms' bits under plain-RW semantics.
+const TIMER_INTF: usize = TIMER_BASE + 0x3c;
+const ALARM_BIT: u32 = 1 << irq::TIMER_ALARM;
+
 /// Sole right to raise the RP1 -> Linux interrupt. The generated resources give it to the core
 /// that declares `host_irq = true`; there is exactly one. Exclusive ownership keeps the
 /// set/clear pair of one pulse from interleaving with another caller's: if a second caller set
@@ -27,9 +44,19 @@ pub struct HostIrq {
 }
 
 impl HostIrq {
+    /// Takes TIMER alarm 3 over as the vector's hardware source, so only TEST pulses raise it:
+    /// mask its interrupt (`INTE` bit 3), release a force (`INTF` bit 3), then clear a latched
+    /// raw flag (`INTR` bit 3). Masking first means a pending raw flag cannot re-raise the
+    /// source between the steps. The alarm itself is not disarmed (`ARMED` W1C is unverified):
+    /// with `INTE` bit 3 clear its firing only sets `INTR`, which does not reach `INTS`.
+    ///
     /// # Safety
-    /// Generated resources only: the single owner of `MSIX_CFG(rp1_proto::irq::VECTOR).TEST`.
-    pub const unsafe fn new() -> Self {
+    /// Generated resources only: the single owner of `MSIX_CFG(rp1_proto::irq::VECTOR).TEST`
+    /// and of `TIMER.ALARM3`.
+    pub unsafe fn new() -> Self {
+        write(TIMER_INTE + ATOMIC_CLR, ALARM_BIT);
+        write(TIMER_INTF + ATOMIC_CLR, ALARM_BIT);
+        write(TIMER_INTR, ALARM_BIT);
         Self { _private: () }
     }
 
@@ -61,5 +88,27 @@ impl HostIrq {
     fn pulse(&mut self) {
         write(irq::MSIX_CFG_SET as usize, irq::MSIX_CFG_TEST);
         write(irq::MSIX_CFG_CLR as usize, irq::MSIX_CFG_TEST);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timer_registers_match_the_pac() {
+        let block = unsafe { &*(TIMER_BASE as *const crate::pac::generated::timer::RegisterBlock) };
+        assert_eq!(crate::pac::TIMER::PTR as usize, TIMER_BASE);
+        assert_eq!(block.intr() as *const _ as usize, TIMER_INTR);
+        assert_eq!(block.inte() as *const _ as usize, TIMER_INTE);
+        assert_eq!(block.intf() as *const _ as usize, TIMER_INTF);
+    }
+
+    /// The alarm taken over is the one whose interrupt is the host vector (rp1-regdb
+    /// `device.toml`: TIMER_3 = 29).
+    #[test]
+    fn takes_over_the_vector_source() {
+        assert_eq!(crate::pac::Interrupt::TIMER_3 as u32, irq::VECTOR);
+        assert_eq!(ALARM_BIT, 1 << 3);
     }
 }
