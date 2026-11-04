@@ -316,6 +316,12 @@ RMW atomic のメソッドは持たない。
     Linux の割り込みは 0.0004/件で、残りは UIO が無効の間にまとまるか、エッジにならない。内訳は未確認）。`RingRx::set_spin` で
     arm の前に短くポーリングすると消える（既定 0）。
   - SHM の回帰（各 10^6 件）・ドアベル・SCMI・UART1 送受信・I2C/ADC/SPI・vector 29 の probe は同じ起動で合格。
+  - 通知が壊れても 10 ms の再確認だけで全件届くので、lab の判定は通知ありの irq 実行に「割り込みで起きた」ことを課す
+    （`woken > 0`、`late` は眠りの 1 % 以下）。通知を止めた実行（`suppressed-irq`、3200 件、1 ms 間隔）は再確認で回復すること
+    （パルス 0、`late > 0`、1 回の待ちは 10 ms + 40 ms 未満）を課す。HW（2026-11-05、cold boot 1 回）: 全実行 `check=ok`、
+    suppressed-irq は眠り 13 回のうち再確認で拾った 12 回、最長の待ち 10.07 ms。
+  - ホストのテスト: `wait_handshake_all_interleavings` は posted 書き込み（相手側のコピーへの着地が遅れる）をモデル化し、
+    push + `wake_needed` と `wait_with` の全インターリーブを列挙する。再確認・どちらかの読み戻しを外すと失敗する。
 - 未測定: M3 から見た Linux DDR の遅延・帯域。
 
 ## 7. BCM2712 third stage loader（`boot/rp1boot`）
