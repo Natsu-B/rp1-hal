@@ -526,8 +526,33 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                         // A pin RP1 does not own, muxed to a signal of an RP1-owned instance,
                         // still feeds that instance: inputs selected on several pins are ORed
                         // (RP1 Peripherals §3.1), so e.g. a high GPIO10 as i2c1 holds SDA.
-                        let function = string(fdt, g, "function")?;
+                        // A malformed `function` must not abort the whole check: treat the
+                        // group as unverifiable instead.
+                        let function = match string(fdt, g, "function") {
+                            Ok(f) => f,
+                            Err(e) => {
+                                if !pins.is_empty() {
+                                    out.unresolved.push(format!(
+                                        "{} {name} -> {}: unverifiable function ({e})",
+                                        fdt.path(n),
+                                        fdt.path(g)
+                                    ));
+                                }
+                                None
+                            }
+                        };
+                        // Legacy numeric `brcm,function` (single value or per-pin array) is not
+                        // translated; refuse it for pins RP1 does not own (owned pins already
+                        // conflict below).
+                        let numeric = fdt.prop(g, "brcm,function").is_some();
                         for pin in pins {
+                            if numeric && !out.pins.contains(&pin) {
+                                out.unresolved.push(format!(
+                                    "{} {name} -> {}: legacy numeric brcm,function on GPIO{pin} cannot be verified",
+                                    fdt.path(n),
+                                    fdt.path(group)
+                                ));
+                            }
                             if out.pins.contains(&pin) {
                                 out.add(
                                     n,

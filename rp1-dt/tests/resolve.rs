@@ -253,11 +253,14 @@ fn groups_muxing_an_rp1_instance_onto_linux_pins_conflict() {
             "{group}"
         );
     }
-    // A malformed function on an RP1 group cannot be checked.
+    // A malformed function on an RP1 group cannot be checked: it refuses, not aborts.
     let (fdt, note) = fixture(&format!(
         "&rp1_gpio {{ grp: g {{ function = [01]; pins = \"gpio7\"; }}; }}; {user}"
     ));
-    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+    refusal(
+        resolve(&fdt, &note, Policy::default()).unwrap(),
+        "unverifiable function",
+    );
 }
 
 #[test]
@@ -651,6 +654,30 @@ fn dt_defects_unrelated_to_rp1_do_not_stop_the_boot() {
         let nodes = disables(&plan);
         assert_eq!(nodes.len(), 1, "{extra}");
         assert_eq!(nodes[0].path, format!("{RP1}/serial@3c000"), "{extra}");
+    }
+}
+
+#[test]
+fn legacy_numeric_function_and_malformed_function_refuse_instead_of_passing() {
+    // Review 13: `brcm,function` numbers are not translated, so a group using them on pins RP1
+    // does not own (GPIO7/12 here) is unverifiable; a malformed `function` must not abort.
+    let user = "/ { user { pinctrl-0 = <&grp>; }; };";
+    for (group, why) in [
+        (
+            "brcm,pins = <7 12>; brcm,function = <2>;",
+            "legacy numeric brcm,function on GPIO7",
+        ),
+        (
+            "brcm,pins = <7 12>; brcm,function = <2 2>;",
+            "legacy numeric brcm,function on GPIO12",
+        ),
+        (
+            "function = [01 02]; pins = \"gpio7\";",
+            "unverifiable function",
+        ),
+    ] {
+        let (fdt, note) = fixture(&format!("&rp1_gpio {{ grp: g {{ {group} }}; }}; {user}"));
+        refusal(resolve(&fdt, &note, Policy::default()).unwrap(), why);
     }
 }
 
