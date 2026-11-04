@@ -246,7 +246,11 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
   既存の `rp1-ddr-scratch@21000000`（64 KiB、`no-map`）と同じやり方を一般化したもの（HW 実績あり）。
 - overlay が `shm` ごとに `generic-uio` ノードを足す（名前 `rp1:<name>`、領域 + 必要なら IRQ）。`/sys/class/uio/uioN/name` で探す。
   標準カーネル（6.12.75-rpt-rpi-2712）は `CONFIG_UIO=m`、`CONFIG_UIO_PDRV_GENIRQ=m`（設定ファイルで確認、実機の動作は未確認）。
-  アクセス権は udev ルールでグループ（例 `rp1`）に与え、root を不要にする。
+  アクセス権は udev ルールでグループ（例 `rp1`）に与え、root を不要にする。rp1-build が `70-rp1.rules`
+  （`SUBSYSTEM=="uio", ATTR{name}=="rp1:*", GROUP="<uio_group>", MODE="0660"`）を書き出す。HW（2026-11-05、cold boot 1 回）:
+  そのルールと同じ所有（root:1000、0660）にした `rp1:*` UIO を uid/gid 1000（補助グループ無し）が開き、mmap・IRQ の
+  read/write(1) まで使えた（`linux-doorbell` IRQ 往復 2000 回 成功）。gid 1001 は EACCES。udev 自体の照合は STATIC
+  （`udevadm verify` 通過）で、initramfs に udev が無いため実機の udev では未試験。
 - **mmap の属性**:
   - `uncached`（既定）: UIO の物理メモリ mmap は arm64 では Device 属性になる（DOC: `uio_mmap_physical` が `pgprot_noncached`）。
     Device 属性ではアラインされていないアクセスと `DC ZVA` がフォルトするため、libc の `memcpy` / `memset` を直接使うと SIGBUS になりうる。
@@ -256,6 +260,10 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
     （読み出し 1.9 GB/s）、非整列は読み書きとも SIGBUS、`memset` は SIGBUS。
   - `cached`（試験的）: `no-map` を外した領域を `/dev/mem`（`O_SYNC` なし）で cacheable に mmap し、読む前・渡す前に `DC CIVAC` を
     ユーザー空間から発行する（標準カーネルは `CONFIG_STRICT_DEVMEM` 無効なので RAM の mmap が可能。root が必要）。
+    HW（2026-11-05）: 今の overlay の `rp1-shm`（`no-map`）を `/dev/mem`（`O_SYNC` なし）で mmap すると Device 属性になる
+    （非整列 `ldr` が SIGBUS、64 bit 読み 705 MB/s ≒ UIO）。arm64 の `phys_mem_access_prot` は線形マップに無い pfn を
+    noncached にするため（DOC）。比較の通常 RAM は cacheable（7.1 GB/s、非整列可）。EL0 の `DC CIVAC` はどちらでも実行できる。
+    よって cached を使うには `no-map` を外した予約が要り、RP1 の書き込みと `DC CIVAC` の正しさは未試験。
     RP1 からの PCIe 書き込みが CPU キャッシュとコヒーレントでない前提での保守。速さと正しさを測ってから採用を決める。
 - 順序: RP1 は payload → head を posted 書き込みし、同じ窓への読み出し 1 回で到達を確定してから通知する（既存の SHM 契約）。
 - 世代: 領域の先頭に magic と世代番号を置き、`Shm::enable` 後に RP1 が書く。Linux 側は世代が一致するまで読まない。
