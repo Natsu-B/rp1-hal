@@ -148,9 +148,11 @@ fn existing_declarations_have_byte_identical_notes_after_conversion() {
             .join(manifest);
         let (name, version, mut migrated) = declaration(&path).unwrap();
         migrated.types.extend(test_types());
-        // Schema 1 has no `host_irq` (added after these notes were frozen): compare without it.
+        // Schema 1 has no `host_irq` and no `notify = "irq"` rings (both added after these
+        // notes were frozen): compare without them.
         migrated.proc0.host_irq = false;
         migrated.proc1.host_irq = false;
+        migrated.shm.retain(|r| r.notify.as_deref() != Some("irq"));
         assert_eq!(migrated.schema, 2);
         assert!(migrated.warnings().is_empty(), "{manifest}");
 
@@ -162,6 +164,9 @@ fn existing_declarations_have_byte_identical_notes_after_conversion() {
             .as_table()
             .unwrap()
             .clone();
+        if let Some(toml::Value::Array(shm)) = legacy.get_mut("shm") {
+            shm.retain(|r| r.get("notify").and_then(|n| n.as_str()) != Some("irq"));
+        }
         legacy.insert("schema".into(), 1.into());
         legacy.extend(toml::from_str::<toml::Table>(schema1_cores).unwrap());
         let mut d: Declaration = toml::Value::Table(legacy).try_into().unwrap();

@@ -1,4 +1,5 @@
 use rp1_linux::{BlockMap, Firmware, Result};
+mod ring_irq;
 use rp1_proto::Error;
 use std::time::{Duration, Instant};
 type Control = [u32; 16];
@@ -129,6 +130,14 @@ fn probe_window() -> Result<()> {
     result
 }
 fn main() -> Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("ring-irq") {
+        let count = std::env::args()
+            .nth(2)
+            .map(|v| v.parse())
+            .transpose()?
+            .unwrap_or(1_000_000);
+        return ring_irq::main(count);
+    }
     let count: u32 = std::env::args()
         .nth(1)
         .map(|v| v.parse())
