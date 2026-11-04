@@ -358,12 +358,19 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
     pwm_consumers(fdt, &mut out)?;
     let reserved = reserved_gpios(fdt)?;
     let withheld: BTreeSet<u32> = reserved.union(&out.pins).copied().collect();
-    if withheld.is_empty() {
+    // An RP1-owned instance with no owned pins still needs the pinctrl check: an enabled
+    // node can mux a pin to one of its signals. Only when nothing is owned or withheld at
+    // all is there nothing to inspect.
+    if withheld.is_empty() && out.blocks.is_empty() {
         return Ok(out);
     }
-    let gpio = fdt
-        .label("rp1_gpio")
-        .ok_or("board DTB has no node labelled rp1_gpio")?;
+    let Some(gpio) = fdt.label("rp1_gpio") else {
+        if withheld.is_empty() {
+            // No pins owned and no pin controller: no node can mux a pin.
+            return Ok(out);
+        }
+        return Err("board DTB has no node labelled rp1_gpio".into());
+    };
     for pin in out.pins.difference(&reserved) {
         out.unresolved.push(format!(
             "RP1-owned GPIO{pin} is not in gpio-reserved-ranges"

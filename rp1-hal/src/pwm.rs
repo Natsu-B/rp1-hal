@@ -159,9 +159,11 @@ impl<const N: u8, const C: u8> Channel<N, C> {
         Ok(())
     }
     /// Native 32-bit compare, 0..=period: zero is low, period is continuously high in normal
-    /// polarity. Latched with SET_UPDATE like the Linux driver, which does not wait for it
-    /// either: the new compare may appear only after the current period ends, not
-    /// necessarily before return.
+    /// polarity. DUTY has its own write strobe and, per the datasheet (Table 26),
+    /// takes effect at the next counter overflow of a running channel (HW 未検証). SET_UPDATE is
+    /// still written like the Linux driver, which does not wait for it either; its completion
+    /// does not mean the compare has been applied, so it may appear only after the current
+    /// period ends, not necessarily before return.
     pub fn set_duty_ticks(&mut self, duty: u32) -> Result<(), Error> {
         set_duty(&mut Mmio, N, C, self.period, duty)
     }

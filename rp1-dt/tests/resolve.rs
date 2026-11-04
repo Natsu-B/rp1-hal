@@ -1033,3 +1033,44 @@ fn pwm_pinmux_on_an_unreserved_channel_still_conflicts_with_block_owner() {
         )
     );
 }
+
+#[test]
+fn pinless_owned_pwm_still_conflicts_with_pinctrl_mux_to_its_signal() {
+    let (mut fdt, _) = fixture(
+        r#"
+/ { rp1_pwm0: pwm { status="disabled"; }; user { pinctrl-0=<&pwm_group>; }; };
+&rp1_gpio { gpio-reserved-ranges = <>; pwm_group: pwm-group { function="pwm0"; pins="gpio12"; }; };
+"#,
+    );
+    let note = descriptor(&[(2, 48)]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    let policy = Policy {
+        gpiomem: Gpiomem::Keep,
+        ..Policy::default()
+    };
+    let plan = resolve(&fdt, &note, policy).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].path, "/user");
+    assert!(
+        nodes[0]
+            .reasons
+            .iter()
+            .any(|r| r.contains("RP1-owned rp1_pwm0"))
+    );
+    let mut after = fdt.clone();
+    apply_plan(&fdt, &mut after, &note, policy, &plan).unwrap();
+    assert!(check::final_conflicts(&after, &note).unwrap().is_empty());
+    refusal(
+        resolve(
+            &fdt,
+            &note,
+            Policy {
+                on_conflict: OnConflict::Refuse,
+                ..policy
+            },
+        )
+        .unwrap(),
+        "muxes GPIO12 to pwm0",
+    );
+}

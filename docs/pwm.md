@@ -45,11 +45,13 @@ for periods larger than 65535. Small periods have correspondingly coarse resolut
 
 STATIC: enable/disable use peripheral SET/CLR aliases; every enable, disable, period and duty
 write is followed by SET_UPDATE (GLOBAL_CTRL bit 31, self-clearing), as the Linux driver does
-after its channel writes. Like Linux (`rp1_pwm_apply_config`), nothing waits for the bit to
-clear: if the latch happens at the end of the running period, a bounded wait would fail for
-long periods (u32::MAX ticks is about 86 s). Whether a new compare appears immediately or at
-the end of the running period is HW 未検証. No synchronous waveform-observation guarantee is
-implied by returning from a setter. Clock checks reject a changed rate or stopped clock before
+after its channel writes. Per the RP1 datasheet (Table 26) DUTY and RANGE have their own write
+strobes and take effect at the next counter overflow for a running channel; SET_UPDATE is
+still written for Linux compatibility, but its completion does not mean DUTY/RANGE have been
+applied. Like Linux (`rp1_pwm_apply_config`), nothing waits for the bit to clear, and a
+bounded wait would not help for long periods (u32::MAX ticks is about 86 s). The exact
+moment a new compare appears on a running channel is HW 未検証. No synchronous
+waveform-observation guarantee is implied by returning from a setter. Clock checks reject a changed rate or stopped clock before
 channel writes; every setter error (`Invalid`, `Enabled`, `Precondition`) is returned before
 any register write, so the cached period always matches RANGE. `Timeout` comes only from the
 reset DONE wait in `init`. `InitError` returns the token; a reset failure may leave partial
