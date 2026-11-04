@@ -711,7 +711,8 @@ fn rp1_irq_lines(
 /// `#pwm-cells` / `#dma-cells`; raw cell matching could mistake an argument (a period, a DREQ
 /// number) for an owned provider's phandle.
 fn provider_consumers(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
-    const KINDS: [(&str, &str, fn(u16) -> bool); 2] = [
+    type Kind = (&'static str, &'static str, fn(u16) -> bool);
+    const KINDS: [Kind; 2] = [
         ("pwms", "#pwm-cells", |id| (48..=49).contains(&id)),
         ("dmas", "#dma-cells", |id| id == 65),
     ];
