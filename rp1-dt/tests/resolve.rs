@@ -1074,3 +1074,37 @@ fn pinless_owned_pwm_still_conflicts_with_pinctrl_mux_to_its_signal() {
         "muxes GPIO12 to pwm0",
     );
 }
+
+#[test]
+fn owned_adc_ignores_unrelated_legacy_numeric_function() {
+    let (mut fdt, _) = fixture(
+        r#"
+/ { rp1_adc: adc { status="disabled"; }; led { pinctrl-0=<&led_group>; }; };
+&rp1_gpio { gpio-reserved-ranges = <>; led_group: led-group { brcm,pins=<22>; brcm,function=<1>; }; };
+"#,
+    );
+    let note = descriptor(&[(2, 64)]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    let policy = Policy {
+        on_conflict: OnConflict::Refuse,
+        gpiomem: Gpiomem::Keep,
+    };
+    let plan = resolve(&fdt, &note, policy).unwrap();
+    assert!(disables(&plan).is_empty());
+}
+
+#[test]
+fn missing_gpio_symbol_fails_closed_for_pinless_pwm_ownership() {
+    let (mut fdt, _) = fixture(
+        r#"
+/ { rp1_pwm0: pwm { status="disabled"; }; user { pinctrl-0=<&pwm_group>; }; };
+&rp1_gpio { gpio-reserved-ranges = <>; pwm_group: pwm-group { function="pwm0"; pins="gpio12"; }; };
+"#,
+    );
+    let note = descriptor(&[(2, 48)]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    let symbols = fdt.find("/__symbols__").unwrap();
+    fdt.remove_prop(symbols, "rp1_gpio");
+    assert!(fdt.label("rp1_gpio").is_none());
+    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+}
