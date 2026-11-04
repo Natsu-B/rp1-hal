@@ -148,6 +148,9 @@ fn existing_declarations_have_byte_identical_notes_after_conversion() {
             .join(manifest);
         let (name, version, mut migrated) = declaration(&path).unwrap();
         migrated.types.extend(test_types());
+        // Schema 1 has no `host_irq` (added after these notes were frozen): compare without it.
+        migrated.proc0.host_irq = false;
+        migrated.proc1.host_irq = false;
         assert_eq!(migrated.schema, 2);
         assert!(migrated.warnings().is_empty(), "{manifest}");
 

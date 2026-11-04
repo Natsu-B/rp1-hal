@@ -57,6 +57,56 @@ fn apply_declaration(d: &Declaration, source: &str) -> (rp1_build::fdt::Fdt, Vec
     )
 }
 
+/// `host_irq = true` adds a UIO child of rp1 on MSI-X vector 57 (edge), not hwirq 58, whose
+/// `reg` decodes with rp1's two-cell bus and whose interrupt parent is rp1 itself.
+#[test]
+fn host_irq_adds_an_rp1_child_uio_on_vector_57() {
+    let d: Declaration = toml::from_str(
+        r#"
+schema = 2
+log = { sink = "uart0", baudrate = 115200 }
+[proc1]
+gpio = [27]
+host_irq = true
+"#,
+    )
+    .unwrap();
+    let (fdt, note) = apply_declaration(&d, BASE);
+    assert!(rp1_dt_check(&fdt, &note).is_empty());
+    let rp1 = fdt.label("rp1").unwrap();
+    let irq = fdt.child(rp1, "rp1-irq@c040108000").unwrap();
+    assert_eq!(fdt.reg(irq).unwrap(), [(0xc0_4010_8000, 0x4000)]);
+    assert_eq!(
+        fdt.cells(irq, "interrupts").unwrap(),
+        [rp1_proto::irq::VECTOR, 1]
+    );
+    // of_irq_find_parent: no interrupt-parent of its own, so the DT parent, which is the
+    // interrupt controller with two cells.
+    assert!(fdt.prop(irq, "interrupt-parent").is_none());
+    assert!(fdt.prop(rp1, "interrupt-controller").is_some());
+    assert_eq!(fdt.cells(rp1, "#interrupt-cells").unwrap(), [2]);
+    assert_eq!(fdt.strings(irq, "linux,uio-name"), ["rp1:irq"]);
+    assert!(fdt.enabled(irq));
+}
+
+#[test]
+fn host_irq_has_one_owner() {
+    let d: Declaration = toml::from_str(
+        r#"
+schema = 2
+[proc0]
+host_irq = true
+[proc1]
+host_irq = true
+"#,
+    )
+    .unwrap();
+    let Err(e) = generate("test", "0.1.0", &d, [0; 32], [0; 20]) else {
+        panic!("two host_irq owners accepted");
+    };
+    assert!(e.to_string().contains("host_irq"), "{e}");
+}
+
 #[test]
 fn schema2_overlay_reserves_exact_ranges_and_disables_only_owned_instances() {
     let d: Declaration = toml::from_str(
@@ -93,15 +143,9 @@ adc = {}
         assert!(fdt.enabled(fdt.label(label).unwrap()), "{label}");
     }
     assert!(rp1_dt_check(&fdt, &note).is_empty());
-    // proc1 -> Linux interrupt: a UIO child of rp1 on MSI-X vector 57 (edge), not hwirq 58.
+    // The unstable RP1 -> Linux interrupt is opt-in: no `host_irq`, no `rp1:irq` node.
     let rp1 = fdt.label("rp1").unwrap();
-    let irq = fdt.child(rp1, "rp1-irq@c040108000").unwrap();
-    assert_eq!(
-        fdt.cells(irq, "interrupts").unwrap(),
-        [rp1_proto::irq::VECTOR, 1]
-    );
-    assert_eq!(fdt.strings(irq, "linux,uio-name"), ["rp1:irq"]);
-    assert!(fdt.enabled(irq));
+    assert!(fdt.child(rp1, "rp1-irq@c040108000").is_none());
 }
 
 #[test]

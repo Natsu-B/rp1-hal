@@ -283,6 +283,10 @@ pub struct Core {
     pub gpio: Vec<u8>,
     pub gpio_irq: Vec<u8>,
     pub timer: Vec<String>,
+    /// `host_irq = true`: this core owns the RP1 -> Linux interrupt (`rp1_hal::host_irq`,
+    /// unstable) and the overlay adds the `rp1:irq` UIO node.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub host_irq: bool,
     #[serde(flatten)]
     pub instances: BTreeMap<String, Instance>,
     // Ordering hints preserve schema 1 note bytes without making the old lists authoritative.
@@ -362,6 +366,9 @@ impl Core {
         }
         if let Some(v) = values.remove("timer") {
             core.timer = field(v, format!("{owner}.timer"))?;
+        }
+        if let Some(v) = values.remove("host_irq") {
+            core.host_irq = field(v, format!("{owner}.host_irq"))?;
         }
         for (name, value) in values {
             core.instances
@@ -468,6 +475,12 @@ impl Declaration {
                     .into());
                 }
             }
+        }
+        if self.proc0.host_irq && self.proc1.host_irq {
+            return Err(
+                "E3: host_irq is declared by both proc0 and proc1 (one core owns the interrupt)"
+                    .into(),
+            );
         }
         for (owner, core) in [("proc0", &self.proc0), ("proc1", &self.proc1)] {
             for pin in &core.gpio {
