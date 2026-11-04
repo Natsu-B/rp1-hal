@@ -148,10 +148,12 @@ fn existing_declarations_have_byte_identical_notes_after_conversion() {
             .join(manifest);
         let (name, version, mut migrated) = declaration(&path).unwrap();
         migrated.types.extend(test_types());
-        // Schema 1 has no `host_irq` and no `notify = "irq"` rings (both added after these
-        // notes were frozen): compare without them.
+        // Schema 1 has no `host_irq`, no `notify = "irq"` rings and no `dma` (all added after
+        // these notes were frozen): compare without them.
         migrated.proc0.host_irq = false;
         migrated.proc1.host_irq = false;
+        migrated.proc0.instances.remove("dma");
+        migrated.proc1.instances.remove("dma");
         migrated.shm.retain(|r| r.notify.as_deref() != Some("irq"));
         assert_eq!(migrated.schema, 2);
         assert!(migrated.warnings().is_empty(), "{manifest}");
