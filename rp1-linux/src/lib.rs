@@ -215,6 +215,7 @@ impl Firmware {
         Ok(RingRx {
             inner,
             notify_irq,
+            spin: Duration::ZERO,
             stats: WaitStats::default(),
             _map: map,
             session: self.session.clone(),
@@ -373,6 +374,7 @@ pub struct WaitStats {
 pub struct RingRx<T> {
     inner: shm::RingRx<T>,
     notify_irq: bool,
+    spin: Duration,
     stats: WaitStats,
     _map: Rc<Mapping>,
     session: Rc<Session>,
@@ -409,6 +411,15 @@ impl<T: Message> RingRx<T> {
             return Err(Error::Invalid.into());
         }
         let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+        if !self.spin.is_zero() {
+            let start = Instant::now();
+            while start.elapsed() < self.spin {
+                if self.inner.available() != 0 {
+                    return Ok(true);
+                }
+                std::hint::spin_loop();
+            }
+        }
         loop {
             self.session.check()?;
             let bound = deadline
@@ -435,6 +446,13 @@ impl<T: Message> RingRx<T> {
                 return Ok(self.inner.available() != 0);
             }
         }
+    }
+    /// Poll for up to `spin` before the first arm of each [`RingRx::wait`] (default zero).
+    /// With a producer that publishes a message every few µs, arming right away is mostly
+    /// cancelled by the re-check, yet RP1 may still see the odd counter and pulse (one PCIe
+    /// round trip each way per arm); a short spin trades consumer CPU for fewer arms.
+    pub fn set_spin(&mut self, spin: Duration) {
+        self.spin = spin;
     }
     pub fn wait_stats(&self) -> WaitStats {
         self.stats
