@@ -7,24 +7,31 @@ direction changes issue repeated START, and the final byte issues STOP. Reads ca
 exceed the RX FIFO depth: outstanding read commands are bounded by its reported size.
 
 ```toml
+[package.metadata.rp1]
+schema = 2
+
 [package.metadata.rp1.proc0]
-pins = [2, 3]
-peripherals = ["I2C1"]
+i2c1 = { sda = 2, scl = 3 }
 ```
 
 ```rust,ignore
 use embedded_hal::i2c::I2c;
-let mut bus = p.I2C1.init(p.pins.gpio2, p.pins.gpio3, &clocks,
-    rp1_hal::i2c::Speed::Standard)?;
+// p.i2c1: rp1_hal::i2c::Parts<1, 2, 3>, the token with the declared SDA/SCL pins.
+let mut bus = p.i2c1.init(&clocks, rp1_hal::i2c::Speed::Standard)?;
 bus.write_read(0x2d, &request, &mut response)?;
 ```
 
 STATIC: the generated token has one declared core owner. Initialization consumes
-unconfigured pins and selects function 3; reversed or unrelated pins fail to compile.
-The overlay disables the owned `rp1_i2cN` Linux node and reserves the declared pins.
-The final DT checker rejects a later overlay that re-enables the controller or an
-enabled Linux pinctrl user of an owned pin. GPIO2/3 require I2C1 on the same core;
-GPIO0/1 remain with Linux UART1 on the CM5 profile.
+unconfigured pins and selects the function from the bank-0 pin table (3); reversed or
+unrelated pins fail to compile.
+The overlay disables the owned `rp1_i2cN` Linux node and reserves exactly the declared pins
+(`gpio-reserved-ranges`). A Linux user of an owned pin from a config.txt overlay (an enabled
+pinctrl group, `*-gpios`, a hog or an rp1_gpio interrupt), or a later overlay that re-enables
+the controller, makes `cargo rp1 check --dtb` fail. At boot, rp1boot disables such a node by
+default and logs `RP1BOOT_LINUX_DISABLED path=... why=...` (`linux.on_conflict = "refuse"`
+stops instead); see [build.md](build.md) and [declaration-and-note.md](declaration-and-note.md).
+GPIO2/3 can only be I2C1 (or GPIO); GPIO0/1 remain with Linux UART1 on the CM5 profile
+unless `linux.keep` leaves out `uart1`.
 
 DOC: the [RP1 GPIO table](https://datasheets.raspberrypi.com/rp1/rp1-peripherals.pdf)
 exposes the following bank-0 routes. SDA and SCL can independently select a listed

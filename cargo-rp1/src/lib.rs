@@ -30,6 +30,74 @@ pub fn descriptor(bytes: &[u8]) -> Result<&[u8]> {
     Note::parse(desc).map_err(|e| format!("invalid note: {e:?}"))?;
     Ok(desc)
 }
+/// Arguments of `cargo rp1 check`: the ELF, an optional board DTB and `--allow-boot-disable`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CheckArgs {
+    pub elf: std::path::PathBuf,
+    pub dtb: Option<std::path::PathBuf>,
+    pub allow_boot_disable: bool,
+}
+
+pub fn parse_check_args(args: &[std::ffi::OsString]) -> Result<CheckArgs> {
+    let (mut elf, mut dtb, mut allow_boot_disable) = (None, None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.to_str() {
+            Some("--dtb") if dtb.is_none() => {
+                dtb = Some(it.next().ok_or("--dtb needs a value")?.into());
+            }
+            Some("--allow-boot-disable") if !allow_boot_disable => allow_boot_disable = true,
+            Some(s) if s.starts_with("--") => {
+                return Err(format!("unexpected check argument {s}").into());
+            }
+            _ if elf.is_none() => elf = Some(a.into()),
+            _ => return Err(format!("unexpected check argument {a:?}").into()),
+        }
+    }
+    if allow_boot_disable && dtb.is_none() {
+        return Err("--allow-boot-disable needs --dtb".into());
+    }
+    Ok(CheckArgs {
+        elf: elf.ok_or("missing firmware ELF")?,
+        dtb,
+        allow_boot_disable,
+    })
+}
+
+/// `cargo rp1 check --dtb`: predict what rp1boot does with this ELF's overlay on `base`
+/// (same code as the loader). `Ok` carries the report lines (warnings included);
+/// `Err` when rp1boot would refuse, or would disable a conflicting Linux node and
+/// `allow_boot_disable` is not set.
+pub fn check_dtb(elf: &[u8], base: &[u8], allow_boot_disable: bool) -> Result<Vec<String>> {
+    let file = object::File::parse(elf)?;
+    let dtbo = file
+        .section_by_name(".rp1.dtbo")
+        .ok_or("missing .rp1.dtbo")?
+        .data()?;
+    let note = descriptor(
+        file.section_by_name(".note.rp1")
+            .ok_or("missing .note.rp1")?
+            .data()?,
+    )?;
+    let prediction = rp1_build::overlay::predict_boot(base, dtbo, note)?;
+    let refused = matches!(prediction.plan, rp1_dt::check::Plan::Refuse(_));
+    prediction.verdict(allow_boot_disable).map_err(|e| {
+        if refused {
+            e
+        } else {
+            format!("{e}, or accept the disables with --allow-boot-disable")
+        }
+    })?;
+    let mut lines = prediction.report();
+    let n = prediction.conflict_disables();
+    if n > 0 {
+        lines.push(format!(
+            "warning: rp1boot will disable {n} conflicting Linux node(s) (--allow-boot-disable)"
+        ));
+    }
+    Ok(lines)
+}
+
 pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
     let bytes = std::fs::read(path)?;
     if bytes.get(..7) != Some(&b"\x7fELF\x01\x01\x01"[..])

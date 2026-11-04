@@ -51,11 +51,11 @@ pub fn descriptor(
     tlv(&mut out, ENTRY, true, &v);
     let mut claims = Vec::new();
     for (core, c) in [(1, &d.proc0), (2, &d.proc1)] {
-        for pin in &c.pins {
+        for pin in &c.pins() {
             claims.extend([1, core]);
             short(&mut claims, u16::from(*pin));
         }
-        for p in &c.peripherals {
+        for p in &c.peripherals() {
             let (kind, id) = peripheral_id(p)?;
             claims.extend([kind, core]);
             short(&mut claims, id);

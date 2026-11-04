@@ -1,0 +1,942 @@
+//! STATIC: synthetic merged DTBs compiled by dtc, with a validated note descriptor.
+use rp1_dt::{
+    check::{self, Gpiomem, OnConflict, Plan, Policy, apply_plan, resolve},
+    fdt::Fdt,
+};
+use rp1_proto::note;
+use std::{fs, process::Command};
+
+const RP1: &str = "/pcie@1000120000/rp1";
+
+fn descriptor(entries: &[(u8, u16)]) -> Vec<u8> {
+    let mut bytes = vec![0; 32];
+    fn record(bytes: &mut Vec<u8>, kind: u16, v: &[u8]) {
+        bytes.extend(kind.to_le_bytes());
+        bytes.extend(1u16.to_le_bytes());
+        bytes.extend((v.len() as u32).to_le_bytes());
+        bytes.extend(v);
+        while !bytes.len().is_multiple_of(4) {
+            bytes.push(0);
+        }
+    }
+    let mut firmware = vec![1, b't', 1, b'1'];
+    firmware.extend([0; 52]);
+    record(&mut bytes, note::FIRMWARE, &firmware);
+    record(&mut bytes, note::ENTRY, &[0; 20]);
+    let mut own = (entries.len() as u32).to_le_bytes().to_vec();
+    for (kind, id) in entries {
+        own.extend([*kind, 1]);
+        own.extend(id.to_le_bytes());
+    }
+    record(&mut bytes, note::OWNERSHIP, &own);
+    record(&mut bytes, note::CLOCK, &[1, 0, 0, 0, 0]);
+    record(&mut bytes, note::BOOT, &[0; 65]);
+    bytes[..8].copy_from_slice(note::MAGIC);
+    bytes[8..12].copy_from_slice(&[2, 0, 32, 0]);
+    let len = bytes.len() as u32;
+    bytes[12..16].copy_from_slice(&len.to_le_bytes());
+    bytes[24] = 1;
+    let crc = note::crc32(&bytes[32..]);
+    bytes[20..24].copy_from_slice(&crc.to_le_bytes());
+    note::Note::parse(&bytes).unwrap();
+    bytes
+}
+
+fn fixture(extra: &str) -> (Fdt, Vec<u8>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dts = tmp.path().join("fixture.dts");
+    let dtb = tmp.path().join("fixture.dtb");
+    fs::write(
+        &dts,
+        format!("{}\n{extra}", include_str!("fixtures/resolve.dts")),
+    )
+    .unwrap();
+    let result = Command::new("dtc")
+        .args(["-@", "-q", "-I", "dts", "-O", "dtb", "-o"])
+        .arg(&dtb)
+        .arg(dts)
+        .output()
+        .expect("dtc required for synthetic DTB tests");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let mut fdt = Fdt::parse(&fs::read(dtb).unwrap()).unwrap();
+    let note = descriptor(&[(1, 8), (1, 9), (1, 10), (1, 11), (1, 22), (2, 16)]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    (fdt, note)
+}
+fn set(fdt: &mut Fdt, path: &str, prop: &str, value: Vec<u8>) {
+    let n = fdt.find(path).unwrap();
+    fdt.set_prop(n, prop, value);
+}
+fn disables(plan: &Plan) -> &[check::Disable] {
+    match plan {
+        Plan::Disable(nodes) => nodes,
+        Plan::Refuse(why) => panic!("unexpected refusal: {why:?}"),
+    }
+}
+fn refusal(plan: Plan, text: &str) {
+    let Plan::Refuse(why) = plan else {
+        panic!("expected refusal, got {plan:?}");
+    };
+    assert!(why.iter().any(|why| why.contains(text)), "{why:?}");
+}
+fn uart3() -> &'static str {
+    "&rp1_uart3 { status = \"okay\"; };"
+}
+
+#[test]
+fn uart3_overlay_conflicts_with_spi0_gpio8_gpio9_and_is_marked() {
+    let (mut fdt, note) = fixture(&format!(
+        "{} / {{ __symbols__ {{ aaa_fragment = \"{RP1}/serial@3c000\"; }}; }};",
+        uart3()
+    ));
+    let original = fdt.to_bytes();
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    assert_eq!(fdt.to_bytes(), original, "resolve is pure");
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].label.as_deref(), Some("rp1_uart3"));
+    assert!(nodes[0].reasons.iter().any(|s| s.contains("GPIO8")));
+    assert!(nodes[0].reasons.iter().any(|s| s.contains("GPIO9")));
+    let before = fdt.clone();
+    apply_plan(&before, &mut fdt, &note, Policy::default(), &plan).unwrap();
+    let uart = fdt.label("rp1_uart3").unwrap();
+    assert_eq!(fdt.prop(uart, "status"), Some(b"disabled\0".as_slice()));
+    assert_eq!(fdt.prop(uart, "rp1,loader-disabled"), Some([].as_slice()));
+    assert_eq!(
+        fdt.strings(fdt.find("/rp1-firmware").unwrap(), "rp1,loader-disabled"),
+        [format!("{RP1}/serial@3c000")]
+    );
+    let round_trip = Fdt::parse(&fdt.to_bytes()).unwrap();
+    assert!(
+        check::check(&before, &round_trip, &note)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(disables(&resolve(&round_trip, &note, Policy::default()).unwrap()).is_empty());
+}
+
+#[test]
+fn generic_groups_select_rp1_pins_like_pins() {
+    // Review 12 (Codex #1, Claude L1): pinctrl-rp1 falls back to the generic binding, whose
+    // `groups` names the one-pin groups gpio0..gpio53.
+    let direct = "&rp1_gpio { grp: uart3-groups { function = \"uart3\"; groups = \"gpio8\", \"gpio9\"; }; }; \
+        &rp1_uart3 { status = \"okay\"; pinctrl-0 = <&grp>; };";
+    let child = "&rp1_gpio { grp: uart3-groups { tx { function = \"uart3\"; groups = \"gpio8\"; }; \
+        rx { function = \"uart3\"; groups = \"gpio9\"; }; }; }; \
+        &rp1_uart3 { status = \"okay\"; pinctrl-0 = <&grp>; };";
+    for extra in [direct, child] {
+        let (mut fdt, note) = fixture(extra);
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{extra}");
+        assert_eq!(nodes[0].path, format!("{RP1}/serial@3c000"));
+        for pin in ["GPIO8", "GPIO9"] {
+            assert!(
+                nodes[0].reasons.iter().any(|r| r.contains(pin)),
+                "{nodes:?}"
+            );
+        }
+        let before = fdt.clone();
+        apply_plan(&before, &mut fdt, &note, Policy::default(), &plan).unwrap();
+        let uart = fdt.label("rp1_uart3").unwrap();
+        assert_eq!(fdt.prop(uart, "status"), Some(b"disabled\0".as_slice()));
+        assert!(check::check(&before, &fdt, &note).unwrap().is_empty());
+        // Refuse policy: the same conflict refuses, without touching the tree.
+        let (mut fdt, note) = fixture(extra);
+        let strict = Policy {
+            on_conflict: OnConflict::Refuse,
+            ..Policy::default()
+        };
+        let plan = resolve(&fdt, &note, strict).unwrap();
+        refusal(
+            plan.clone(),
+            "configures RP1-owned GPIO9; on_conflict=refuse",
+        );
+        let before = fdt.clone();
+        assert!(apply_plan(&before, &mut fdt, &note, strict, &plan).is_err());
+        assert_eq!(fdt.to_bytes(), before.to_bytes());
+        // The final-DTB check sees it too.
+        assert!(!check::final_conflicts(&fdt, &note).unwrap().is_empty());
+    }
+    for extra in [
+        // Pins Linux keeps, and the same group names on another controller.
+        "&rp1_gpio { grp: g { function = \"gpio\"; groups = \"gpio23\"; }; }; / { user { pinctrl-0 = <&grp>; }; };",
+        "/ { soc-pinctrl { soc_groups: g { function = \"uart3\"; groups = \"gpio8\", \"gpio9\"; }; }; \
+            user { pinctrl-0 = <&soc_groups>; }; };",
+    ] {
+        let (fdt, note) = fixture(extra);
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{extra}"
+        );
+    }
+    // A group name that is not an RP1 pin cannot be checked, so it refuses.
+    let (fdt, note) = fixture(
+        "&rp1_gpio { grp: g { function = \"gpio\"; groups = \"spi0_grp\"; }; }; / { user { pinctrl-0 = <&grp>; }; };",
+    );
+    refusal(
+        resolve(&fdt, &note, Policy::default()).unwrap(),
+        "unknown RP1 pin group spi0_grp",
+    );
+    let (fdt, note) =
+        fixture("&rp1_gpio { grp: g { groups = [01]; }; }; / { user { pinctrl-0 = <&grp>; }; };");
+    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+}
+
+#[test]
+fn groups_muxing_an_rp1_instance_onto_linux_pins_conflict() {
+    // Review 12 (Claude L2): GPIO7 is not RP1's, but spi0 (RP1-owned) on it is SPI0 CS1, and
+    // the instance sees inputs selected on several pins ORed.
+    let user = "/ { user { pinctrl-0 = <&grp>; }; };";
+    for group in [
+        "function = \"spi0\"; pins = \"gpio7\";",
+        "function = \"spi0\"; groups = \"gpio7\";",
+        "function = \"alt0\"; pins = \"gpio7\";",
+        "function = \"spi0\"; brcm,pins = <7>;",
+    ] {
+        let (mut fdt, note) = fixture(&format!("&rp1_gpio {{ grp: g {{ {group} }}; }}; {user}"));
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{group}");
+        assert_eq!(nodes[0].path, "/user");
+        assert!(
+            nodes[0].reasons[0].contains("muxes GPIO7 to ")
+                && nodes[0].reasons[0].contains("a signal of RP1-owned rp1_spi0"),
+            "{nodes:?}"
+        );
+        let before = fdt.clone();
+        apply_plan(&before, &mut fdt, &note, Policy::default(), &plan).unwrap();
+        let strict = Policy {
+            on_conflict: OnConflict::Refuse,
+            ..Policy::default()
+        };
+        let (fdt, note) = fixture(&format!("&rp1_gpio {{ grp: g {{ {group} }}; }}; {user}"));
+        refusal(
+            resolve(&fdt, &note, strict).unwrap(),
+            "rp1_spi0; on_conflict=refuse",
+        );
+    }
+    // The review's case: Linux GPIO10/11 as i2c1 while RP1 owns i2c1 on GPIO2/3.
+    let i2c1 = descriptor(&[(1, 2), (1, 3), (2, 33)]);
+    let (mut fdt, _) = fixture(
+        "&rp1_gpio { gpio-reserved-ranges = <2 2>; grp: g { function = \"i2c1\"; pins = \"gpio10\", \"gpio11\"; }; }; \
+         / { user { pinctrl-0 = <&grp>; }; pcie@1000120000 { rp1 { rp1_i2c1: i2c@74000 { status = \"disabled\"; }; }; }; };",
+    );
+    set(&mut fdt, "/rp1-firmware", "rp1,note", i2c1.clone());
+    let plan = resolve(&fdt, &i2c1, Policy::default()).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 1);
+    for pin in ["GPIO10", "GPIO11"] {
+        assert!(
+            nodes[0].reasons.iter().any(|r| r.contains(&format!(
+                "muxes {pin} to i2c1, a signal of RP1-owned rp1_i2c1"
+            ))),
+            "{nodes:?}"
+        );
+    }
+    for group in [
+        // Another instance, a function the pin does not have, plain GPIO, an owned instance's
+        // function on a group of another controller.
+        "&rp1_gpio { grp: g { function = \"uart2\"; pins = \"gpio7\"; }; };",
+        "&rp1_gpio { grp: g { function = \"spi0\"; pins = \"gpio24\"; }; };",
+        "&rp1_gpio { grp: g { function = \"gpio\"; pins = \"gpio7\"; }; };",
+        "&rp1_gpio { grp: g { function = \"alt5\"; pins = \"gpio7\"; }; };",
+        "/ { soc-pinctrl { grp: g { function = \"spi0\"; pins = \"gpio7\"; }; }; };",
+    ] {
+        let (fdt, note) = fixture(&format!("{group} {user}"));
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{group}"
+        );
+    }
+    // A malformed function on an RP1 group cannot be checked: it refuses, not aborts.
+    let (fdt, note) = fixture(&format!(
+        "&rp1_gpio {{ grp: g {{ function = [01]; pins = \"gpio7\"; }}; }}; {user}"
+    ));
+    refusal(
+        resolve(&fdt, &note, Policy::default()).unwrap(),
+        "unverifiable function",
+    );
+}
+
+#[test]
+fn gpio_led_singular_plural_and_mixed_controller_specifiers() {
+    for prop in ["gpios", "gpio", "reset-gpios", "enable-gpio"] {
+        let (fdt, note) = fixture(&format!(
+            "/ {{ leds {{ compatible = \"gpio-leds\"; led {{ {prop} = <0 &other_gpio 22 0 0 &rp1_gpio 22 1>; }}; }}; }};"
+        ));
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].path, "/leds/led");
+        assert!(nodes[0].reasons[0].contains("GPIO22"));
+    }
+}
+
+#[test]
+fn gpio_hog_and_instance_are_disabled() {
+    let (fdt, note) = fixture(
+        "&rp1_gpio { hog { gpio-hog; gpios = <22 0>; output-high; }; }; &rp1_spi0 { status = \"okay\"; };",
+    );
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 2);
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n.reasons.iter().any(|r| r.contains("hogs GPIO22")))
+    );
+    assert!(nodes.iter().any(|n| {
+        n.reasons
+            .iter()
+            .any(|r| r.contains("RP1-owned block rp1_spi0"))
+    }));
+}
+
+#[test]
+fn console_direct_alias_and_ancestors_are_protected() {
+    for stdout in [
+        "serial3:115200n8".to_owned(),
+        format!("{RP1}/serial@3c000:115200n8"),
+    ] {
+        let (fdt, note) = fixture(&format!(
+            "{} / {{ chosen {{ stdout-path = \"{stdout}\"; }}; }};",
+            uart3()
+        ));
+        refusal(
+            resolve(&fdt, &note, Policy::default()).unwrap(),
+            "console stdout-path",
+        );
+    }
+    let (fdt, note) = fixture(
+        "/ { console-bus { pinctrl-0 = <&uart3_pins>; console {}; }; chosen { stdout-path = \"/console-bus/console\"; }; };",
+    );
+    refusal(
+        resolve(&fdt, &note, Policy::default()).unwrap(),
+        "console stdout-path",
+    );
+}
+
+#[test]
+fn all_design_protected_nodes_and_their_ancestors_refuse() {
+    for path in [
+        "/",
+        "/pcie@1000120000",
+        RP1,
+        &format!("{RP1}/gpio@d0000"),
+        &format!("{RP1}/ethernet@100000"),
+        &format!("{RP1}/usb@200000"),
+        &format!("{RP1}/usb@300000"),
+        &format!("{RP1}/dma@188000"),
+        &format!("{RP1}/pio@178000"),
+        "/reserved-memory",
+        "/reserved-memory/scratch@21000000",
+        "/rp1-firmware",
+        "/rp1-link@1f0040c000",
+        "/firmware",
+        "/firmware/scmi",
+        "/firmware/scmi/protocol@14",
+        "/scmi-shmem",
+    ] {
+        let (mut fdt, note) = fixture("");
+        set(&mut fdt, path, "status", b"okay\0".to_vec());
+        let handle = fdt.phandle_of(fdt.label("uart3_pins").unwrap()).unwrap();
+        set(&mut fdt, path, "pinctrl-0", handle.to_be_bytes().to_vec());
+        refusal(
+            resolve(&fdt, &note, Policy::default()).unwrap(),
+            "protected:",
+        );
+    }
+}
+
+#[test]
+fn board_linux_blocks_from_the_shared_table_are_protected() {
+    // rp1-build rejects declaring these; the loader protects the same labels.
+    for (block, label) in rp1_proto::board::LINUX_BLOCKS {
+        let (mut fdt, note) = fixture("");
+        let n = fdt
+            .label(label)
+            .unwrap_or_else(|| panic!("fixture lacks {label} ({block})"));
+        fdt.set_prop(n, "status", b"okay\0".to_vec());
+        let handle = fdt.phandle_of(fdt.label("uart3_pins").unwrap()).unwrap();
+        fdt.set_prop(n, "pinctrl-0", handle.to_be_bytes().to_vec());
+        refusal(
+            resolve(&fdt, &note, Policy::default()).unwrap(),
+            // pcie2 is also the ancestor of the other blocks, so it may carry their reason.
+            "protected: board Linux block rp1_",
+        );
+    }
+}
+
+#[test]
+fn gpiomem_identified_by_compatible_and_reg_not_path() {
+    let (mut fdt, note) = fixture(
+        "/ { arbitrary-container { #address-cells = <2>; #size-cells = <2>; mapping { compatible = \"vendor,other\", \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0 0x30000>; }; soc-mapping { compatible = \"raspberrypi,gpiomem\"; reg = <0 0x7e200000 0 0x1000>; }; }; };",
+    );
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    assert_eq!(disables(&plan).len(), 1);
+    assert_eq!(disables(&plan)[0].path, "/arbitrary-container/mapping");
+    let before = fdt.clone();
+    apply_plan(&before, &mut fdt, &note, Policy::default(), &plan).unwrap();
+    assert!(fdt.enabled(fdt.find("/arbitrary-container/soc-mapping").unwrap()));
+    assert!(disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty());
+}
+
+#[test]
+fn gpiomem_absent_kept_or_no_owned_pins() {
+    let (fdt, note) = fixture("");
+    assert!(disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty());
+    let (mut fdt, note) = fixture(
+        "/ { renamed { compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; }; };",
+    );
+    assert!(
+        disables(
+            &resolve(
+                &fdt,
+                &note,
+                Policy {
+                    gpiomem: Gpiomem::Keep,
+                    ..Policy::default()
+                }
+            )
+            .unwrap()
+        )
+        .is_empty()
+    );
+    let empty = descriptor(&[]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", empty.clone());
+    assert!(disables(&resolve(&fdt, &empty, Policy::default()).unwrap()).is_empty());
+}
+
+#[test]
+fn strict_mode_refuses_without_applying_partial_plan() {
+    let (mut fdt, note) = fixture(uart3());
+    let policy = Policy {
+        on_conflict: OnConflict::Refuse,
+        ..Policy::default()
+    };
+    let plan = resolve(&fdt, &note, policy).unwrap();
+    refusal(plan.clone(), "on_conflict=refuse");
+    let before = fdt.clone();
+    assert!(apply_plan(&before, &mut fdt, &note, policy, &plan).is_err());
+    assert_eq!(fdt.to_bytes(), before.to_bytes());
+    let (fdt, note) = fixture("");
+    assert!(disables(&resolve(&fdt, &note, policy).unwrap()).is_empty());
+}
+
+#[test]
+fn strict_mode_still_disables_gpiomem_by_policy_only() {
+    // The stock board DTB always has gpiomem@d0000: refuse must not turn the default gpiomem
+    // policy into a refusal, or every refuse build would halt without any conflict.
+    let gpiomem = "/ { gpiomem { compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; }; };";
+    let policy = Policy {
+        on_conflict: OnConflict::Refuse,
+        ..Policy::default()
+    };
+    let (mut fdt, note) = fixture(gpiomem);
+    let plan = resolve(&fdt, &note, policy).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].path, "/gpiomem");
+    assert!(nodes[0].policy_only);
+    let before = fdt.clone();
+    apply_plan(&before, &mut fdt, &note, policy, &plan).unwrap();
+    // A real conflict next to it still refuses the whole boot.
+    let (fdt, note) = fixture(&format!("{} {gpiomem}", uart3()));
+    refusal(resolve(&fdt, &note, policy).unwrap(), "on_conflict=refuse");
+    // A gpiomem node that is also a GPIO consumer is a conflict, so refuse refuses it.
+    let (fdt, note) = fixture(
+        "/ { gpiomem { compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; gpios = <&rp1_gpio 22 0>; }; };",
+    );
+    refusal(resolve(&fdt, &note, policy).unwrap(), "on_conflict=refuse");
+}
+
+#[test]
+fn no_conflicts_and_non_rp1_groups_or_gpios_are_untouched() {
+    let (mut fdt, note) = fixture(
+        "/ { user { pinctrl-0 = <&soc_pins>; gpios = <&other_gpio 8 0 0 &rp1_gpio 23 0>; }; bus { status = \"disabled\"; child { pinctrl-0 = <&uart3_pins>; }; }; };",
+    );
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    assert!(disables(&plan).is_empty());
+    let before = fdt.clone();
+    apply_plan(&before, &mut fdt, &note, Policy::default(), &plan).unwrap();
+    assert_eq!(fdt.to_bytes(), before.to_bytes());
+}
+
+#[test]
+fn policy_defaults_explicit_values_and_invalid_values() {
+    let (mut fdt, _) = fixture("");
+    assert_eq!(Policy::from_fdt(&fdt).unwrap(), Policy::default());
+    set(
+        &mut fdt,
+        "/rp1-firmware",
+        "rp1,on-conflict",
+        b"refuse\0".to_vec(),
+    );
+    set(&mut fdt, "/rp1-firmware", "rp1,gpiomem", b"keep\0".to_vec());
+    assert_eq!(
+        Policy::from_fdt(&fdt).unwrap(),
+        Policy {
+            on_conflict: OnConflict::Refuse,
+            gpiomem: Gpiomem::Keep
+        }
+    );
+    for v in [
+        b"unknown\0".to_vec(),
+        b"disable".to_vec(),
+        vec![],
+        b"disable\0refuse\0".to_vec(),
+        vec![255, 0],
+    ] {
+        set(&mut fdt, "/rp1-firmware", "rp1,gpiomem", v);
+        assert!(Policy::from_fdt(&fdt).is_err());
+    }
+}
+
+#[test]
+fn interrupt_users_of_rp1_owned_pins_are_disabled() {
+    // Review 11 L1: interrupts on rp1_gpio, direct, inherited and interrupts-extended.
+    let intc = "/ { other_intc: other-intc { interrupt-controller; #interrupt-cells = <1>; }; };";
+    for (extra, path, why) in [
+        (
+            "/ { user { interrupt-parent = <&rp1_gpio>; interrupts = <22 8>; }; };",
+            "/user",
+            "/user interrupts uses GPIO22",
+        ),
+        (
+            "/ { bus { interrupt-parent = <&rp1_gpio>; user { interrupts = <23 8 9 8>; }; }; };",
+            "/bus/user",
+            "/bus/user interrupts uses GPIO9",
+        ),
+        (
+            "/ { user { interrupts-extended = <&other_intc 1 &rp1_gpio 10 8>; }; };",
+            "/user",
+            "/user interrupts-extended uses GPIO10",
+        ),
+    ] {
+        let (fdt, note) = fixture(&format!("{intc} {extra}"));
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{extra}");
+        assert_eq!(nodes[0].path, path);
+        assert!(
+            nodes[0].reasons.iter().any(|r| r.contains(why)),
+            "{nodes:?}"
+        );
+    }
+    for extra in [
+        // Pins Linux keeps, another controller, a disabled user, the extended form winning.
+        "/ { user { interrupt-parent = <&rp1_gpio>; interrupts = <23 8>; }; };",
+        "/ { user { interrupt-parent = <&other_intc>; interrupts = <22>; }; };",
+        "/ { user { status = \"disabled\"; interrupt-parent = <&rp1_gpio>; interrupts = <22 8>; }; };",
+        "/ { user { interrupt-parent = <&rp1_gpio>; interrupts = <22 8>; interrupts-extended = <&other_intc 22>; }; };",
+        "/ { user { interrupts-extended = <0xfffffffe 22 8>; }; };",
+    ] {
+        let (fdt, note) = fixture(&format!("{intc} {extra}"));
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{extra}"
+        );
+    }
+    let (fdt, note) =
+        fixture("/ { user { interrupt-parent = <&rp1_gpio>; interrupts = <22>; }; };");
+    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+    let (fdt, note) =
+        fixture("/ { user { interrupts-extended = <0xfffffffe 0 &rp1_gpio 22 8>; }; };");
+    refusal(
+        resolve(&fdt, &note, Policy::default()).unwrap(),
+        "may name rp1_gpio",
+    );
+}
+
+#[test]
+fn interrupt_parent_is_found_as_linux_of_irq_find_parent_does() {
+    // Review 12 (Claude L4): without its own interrupt-parent, a node's parent is the nearest
+    // ancestor with #interrupt-cells, or the target of the nearest interrupt-parent.
+    let intc = "/ { other_intc: other-intc { interrupt-controller; #interrupt-cells = <1>; }; };";
+    // (a) A child of rp1_gpio inherits rp1_gpio itself, not the bus's interrupt-parent.
+    let (fdt, note) = fixture(&format!(
+        "{intc} / {{ pcie@1000120000 {{ rp1 {{ interrupt-parent = <&other_intc>; \
+         gpio@d0000 {{ user {{ interrupts = <22 8>; }}; }}; }}; }}; }};"
+    ));
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 1, "{nodes:?}");
+    assert_eq!(nodes[0].path, format!("{RP1}/gpio@d0000/user"));
+    assert!(nodes[0].reasons[0].contains("interrupts uses GPIO22"));
+    // (b) An interrupt controller in between (a GPIO expander) is the parent, although an
+    // ancestor names rp1_gpio: one cell, not an rp1_gpio specifier, and no conflict.
+    let expander = format!(
+        "{intc} / {{ bus {{ interrupt-parent = <&rp1_gpio>; \
+         expander {{ interrupt-controller; #interrupt-cells = <1>; user {{ interrupts = <22>; }}; }}; }}; }};"
+    );
+    let (fdt, note) = fixture(&expander);
+    assert!(disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty());
+    // An interrupt-parent pointing at a node without #interrupt-cells continues from there.
+    let (fdt, note) = fixture(&format!(
+        "{intc} / {{ nexus: nexus {{ interrupt-parent = <&rp1_gpio>; }}; user {{ interrupt-parent = <&nexus>; interrupts = <22 8>; }}; }};"
+    ));
+    assert_eq!(
+        disables(&resolve(&fdt, &note, Policy::default()).unwrap())[0].path,
+        "/user"
+    );
+    // A dangling interrupt-parent has no parent, and a phandle cycle terminates.
+    for extra in [
+        "/ { user { interrupt-parent = <0xfffffffe>; interrupts = <22 8>; }; };",
+        "/ { a: a { interrupt-parent = <&b>; }; b: b { interrupt-parent = <&a>; }; user { interrupt-parent = <&a>; interrupts = <22 8>; }; };",
+    ] {
+        let (fdt, note) = fixture(extra);
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{extra}"
+        );
+    }
+}
+
+#[test]
+fn console_on_an_rp1_owned_uart_refuses() {
+    // Review 11 L2: the overlay has already disabled the owned UART, so no node has a
+    // conflict reason; the console would vanish without a marker.
+    let owned = descriptor(&[(1, 8), (1, 9), (1, 10), (1, 11), (1, 22), (2, 16), (2, 3)]);
+    for console in ["serial3:115200n8", "/pcie@1000120000/rp1/serial@3c000"] {
+        let (mut fdt, _) = fixture(&format!(
+            "/ {{ chosen {{ stdout-path = \"{console}\"; }}; }};"
+        ));
+        set(&mut fdt, "/rp1-firmware", "rp1,note", owned.clone());
+        refusal(
+            resolve(&fdt, &owned, Policy::default()).unwrap(),
+            "console stdout-path is /pcie@1000120000/rp1/serial@3c000 (rp1_uart3), which RP1 owns",
+        );
+    }
+    // A console on a UART RP1 does not own is fine.
+    let (fdt, note) = fixture("/ { chosen { stdout-path = \"serial3:115200n8\"; }; };");
+    assert!(disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty());
+}
+
+#[test]
+fn malformed_rp1_data_returns_errors() {
+    for extra in [
+        "/ { user { gpios = <&rp1_gpio 22>; }; };",
+        "&rp1_gpio { #gpio-cells = <0xffffffff>; };",
+        "&rp1_gpio { gpio-reserved-ranges = <0 0xffffffff>; };",
+        "&rp1_gpio { gpio-reserved-ranges = [01]; };",
+        "/ { mapping { compatible = \"raspberrypi,gpiomem\"; reg = [01]; }; };",
+    ] {
+        let (fdt, note) = fixture(extra);
+        assert!(resolve(&fdt, &note, Policy::default()).is_err(), "{extra}");
+    }
+}
+
+#[test]
+fn dt_defects_unrelated_to_rp1_do_not_stop_the_boot() {
+    // Review 11 M1: Linux ignores these, so the loader must not halt on them.
+    for extra in [
+        "/ { user { gpios = [01]; }; };",
+        "/ { user { gpios = <0xfffffffe 22 0>; }; };",
+        "/ { bad_gpio: bad-gpio { gpio-controller; }; user { gpios = <&bad_gpio 1 2>; }; };",
+        "/ { bad_gpio: bad-gpio { gpio-controller; #gpio-cells = <0>; }; user { reset-gpios = <&bad_gpio 1 2>; }; };",
+        "/ { user { cs-gpios = <&other_gpio 1 2>; }; };",
+        "/ { user { pinctrl-0 = <0xfffffffe>; }; };",
+        "/ { user { pinctrl-0 = [01]; }; };",
+    ] {
+        let (fdt, note) = fixture(extra);
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{extra}"
+        );
+        // Next to a real conflict they are still ignored: only the conflict is disabled.
+        let (fdt, note) = fixture(&format!("{} {extra}", uart3()));
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{extra}");
+        assert_eq!(nodes[0].path, format!("{RP1}/serial@3c000"), "{extra}");
+    }
+}
+
+#[test]
+fn legacy_numeric_function_and_malformed_function_refuse_instead_of_passing() {
+    // Review 13: `brcm,function` numbers are not translated, so a group using them on pins RP1
+    // does not own (GPIO7/12 here) is unverifiable; a malformed `function` must not abort.
+    let user = "/ { user { pinctrl-0 = <&grp>; }; };";
+    for (group, why) in [
+        (
+            "brcm,pins = <7 12>; brcm,function = <2>;",
+            "legacy numeric brcm,function on GPIO7",
+        ),
+        (
+            "brcm,pins = <7 12>; brcm,function = <2 2>;",
+            "legacy numeric brcm,function on GPIO12",
+        ),
+        (
+            "function = [01 02]; pins = \"gpio7\";",
+            "unverifiable function",
+        ),
+    ] {
+        let (fdt, note) = fixture(&format!("&rp1_gpio {{ grp: g {{ {group} }}; }}; {user}"));
+        refusal(resolve(&fdt, &note, Policy::default()).unwrap(), why);
+    }
+}
+
+#[test]
+fn unparseable_lists_that_may_name_rp1_gpio_refuse() {
+    for (extra, why) in [
+        (
+            "/ { user { gpios = <0xfffffffe 0 &rp1_gpio 22 0>; }; };",
+            "may name rp1_gpio",
+        ),
+        (
+            "/ { bad_gpio: bad-gpio { gpio-controller; }; user { gpios = <&bad_gpio 1 &rp1_gpio 22 0>; }; };",
+            "may name rp1_gpio",
+        ),
+        (
+            "/ { user { gpios = <&rp1_gpio 22 0>, [01]; }; };",
+            "malformed GPIO list may name rp1_gpio",
+        ),
+        (
+            "/ { user { pinctrl-0 = <&uart3_pins>, [01]; }; };",
+            "malformed pinctrl list names an RP1 pin group",
+        ),
+    ] {
+        let (fdt, note) = fixture(extra);
+        refusal(resolve(&fdt, &note, Policy::default()).unwrap(), why);
+    }
+}
+
+#[test]
+fn unresolvable_console_matters_only_when_something_would_be_disabled() {
+    for console in ["missing-alias", "/missing", "serial9:115200n8"] {
+        let chosen = format!("/ {{ chosen {{ stdout-path = \"{console}\"; }}; }};");
+        let (fdt, note) = fixture(&chosen);
+        assert!(
+            disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty(),
+            "{console}"
+        );
+        let (fdt, note) = fixture(&format!("{} {chosen}", uart3()));
+        refusal(
+            resolve(&fdt, &note, Policy::default()).unwrap(),
+            "cannot tell whether a disable would remove the Linux console",
+        );
+        // Review 12 (Claude L3): the gpiomem policy disable alone is not a reason to stop.
+        let gpiomem = "/ { gpiomem { compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; }; };";
+        let (fdt, note) = fixture(&format!("{gpiomem} {chosen}"));
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{console}");
+        assert!(nodes[0].policy_only && nodes[0].path == "/gpiomem");
+        let (fdt, note) = fixture(&format!("{gpiomem} {} {chosen}", uart3()));
+        refusal(
+            resolve(&fdt, &note, Policy::default()).unwrap(),
+            "cannot tell whether a disable would remove the Linux console",
+        );
+    }
+}
+
+#[test]
+fn recheck_rejects_missing_reservations_and_note_mismatch() {
+    let (mut fdt, note) = fixture("");
+    set(
+        &mut fdt,
+        &format!("{RP1}/gpio@d0000"),
+        "gpio-reserved-ranges",
+        Vec::new(),
+    );
+    refusal(
+        resolve(&fdt, &note, Policy::default()).unwrap(),
+        "not in gpio-reserved-ranges",
+    );
+    let (mut fdt, note) = fixture(uart3());
+    set(&mut fdt, "/rp1-firmware", "rp1,note", vec![0]);
+    refusal(
+        resolve(&fdt, &note, Policy::default()).unwrap(),
+        "differs from the ELF note",
+    );
+    assert!(resolve(&fdt, &[0], Policy::default()).is_err());
+}
+
+#[test]
+fn apply_rejects_stale_plan_and_reservation_shrink_without_mutation() {
+    let (mut fdt, note) = fixture(uart3());
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    let before = fdt.clone();
+    assert!(
+        apply_plan(
+            &before,
+            &mut fdt,
+            &note,
+            Policy::default(),
+            &Plan::Disable(Vec::new())
+        )
+        .is_err()
+    );
+    assert_eq!(fdt.to_bytes(), before.to_bytes());
+    let mut base = fdt.clone();
+    let n = base.label("rp1_gpio").unwrap();
+    base.set_prop(
+        n,
+        "gpio-reserved-ranges",
+        [8u32, 4, 22, 2]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    let err = apply_plan(&base, &mut fdt, &note, Policy::default(), &plan).unwrap_err();
+    assert!(err.contains("back to Linux"));
+    assert_eq!(fdt.to_bytes(), before.to_bytes());
+}
+
+#[test]
+fn legacy_pin_groups_and_markers_are_preserved_across_applications() {
+    let (mut fdt, note) = fixture("/ { legacy-user { pinctrl-0 = <&legacy_pins>; }; };");
+    set(
+        &mut fdt,
+        "/rp1-firmware",
+        "rp1,loader-disabled",
+        b"/previous\0".to_vec(),
+    );
+    let before = fdt.clone();
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    apply_plan(&before, &mut fdt, &note, Policy::default(), &plan).unwrap();
+    assert_eq!(
+        fdt.strings(fdt.find("/rp1-firmware").unwrap(), "rp1,loader-disabled"),
+        ["/previous", "/legacy-user"]
+    );
+    let done = fdt.to_bytes();
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    apply_plan(&before, &mut fdt, &note, Policy::default(), &plan).unwrap();
+    assert_eq!(fdt.to_bytes(), done);
+}
+
+#[test]
+fn arbitrary_dtb_bytes_and_valid_tree_property_mutations_never_panic() {
+    let (fdt, note) = fixture(uart3());
+    let bytes = fdt.to_bytes();
+    for len in 0..bytes.len() {
+        if let Ok(tree) = Fdt::parse(&bytes[..len]) {
+            let _ = resolve(&tree, &note, Policy::default());
+        }
+    }
+    // Includes overflowing structure/string/property offsets on 32-bit targets.
+    for at in (0..bytes.len().saturating_sub(4)).step_by(4) {
+        let mut damaged = bytes.clone();
+        damaged[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        if let Ok(tree) = Fdt::parse(&damaged) {
+            let _ = resolve(&tree, &note, Policy::default());
+        }
+    }
+    for n in 0..fdt.nodes.len() {
+        for (name, _) in &fdt.nodes[n].props {
+            for value in [vec![], vec![255], u32::MAX.to_be_bytes().to_vec()] {
+                let mut tree = fdt.clone();
+                tree.set_prop(n, name, value);
+                let _ = resolve(&tree, &note, Policy::default());
+            }
+        }
+    }
+}
+
+#[test]
+fn deeply_nested_pin_groups_use_an_iterative_walk() {
+    let (mut fdt, note) = fixture(uart3());
+    let mut parent = fdt.label("uart3_pins").unwrap();
+    for _ in 0..2048 {
+        parent = fdt.child_or_add(parent, "nested");
+    }
+    fdt.set_prop(parent, "pins", b"gpio22\0".to_vec());
+    let tree = Fdt::parse(&fdt.to_bytes()).unwrap();
+    let plan = resolve(&tree, &note, Policy::default()).unwrap();
+    assert!(
+        disables(&plan)[0]
+            .reasons
+            .iter()
+            .any(|s| s.contains("GPIO22"))
+    );
+}
+
+#[test]
+fn dt_symbols_aliases_and_overlay_parameters_are_not_gpio_consumers() {
+    let (fdt, note) = fixture(
+        "/ { aliases { gpio = &rp1_gpio; }; __overrides__ { gpio = <&rp1_gpio>, \"gpio:0\"; }; __symbols__ { gpio = \"/pcie@1000120000/rp1/gpio@d0000\"; }; };",
+    );
+    assert!(disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty());
+}
+
+#[test]
+fn gpiomem_only_disables_are_policy_only_and_conflicts_are_not() {
+    let (fdt, note) = fixture(&format!(
+        "{} / {{ gpiomem {{ compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; }}; }};",
+        uart3()
+    ));
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 2, "{nodes:?}");
+    let gpiomem = nodes.iter().find(|n| n.path == "/gpiomem").unwrap();
+    assert!(gpiomem.policy_only);
+    let uart = nodes
+        .iter()
+        .find(|n| n.path.ends_with("/serial@3c000"))
+        .unwrap();
+    assert!(!uart.policy_only);
+    // A gpiomem node that is also a GPIO consumer is a conflict, not only policy.
+    let (fdt, note) = fixture(
+        "/ { gpiomem { compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x30000>; gpios = <&rp1_gpio 22 0>; }; };",
+    );
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    assert_eq!(disables(&plan).len(), 1);
+    assert!(!disables(&plan)[0].policy_only);
+}
+
+#[test]
+fn enforce_reads_policy_applies_or_refuses_without_mutation() {
+    // Default policy: disable, mark, and leave a clean tree.
+    let (mut fdt, note) = fixture(uart3());
+    let before = fdt.clone();
+    let (policy, plan) = check::enforce(&before, &mut fdt, &note).unwrap();
+    assert_eq!(policy, Policy::default());
+    assert_eq!(disables(&plan).len(), 1);
+    let uart = fdt.label("rp1_uart3").unwrap();
+    assert!(!fdt.enabled(uart));
+    assert!(fdt.prop(uart, "rp1,loader-disabled").is_some());
+    assert!(check::check(&before, &fdt, &note).unwrap().is_empty());
+    // Policy from /rp1-firmware: refuse leaves the tree untouched.
+    let (mut fdt, note) = fixture(uart3());
+    set(
+        &mut fdt,
+        "/rp1-firmware",
+        "rp1,on-conflict",
+        b"refuse\0".to_vec(),
+    );
+    let before = fdt.clone();
+    let (policy, plan) = check::enforce(&before, &mut fdt, &note).unwrap();
+    assert_eq!(policy.on_conflict, OnConflict::Refuse);
+    refusal(plan, "on_conflict=refuse");
+    assert_eq!(fdt.to_bytes(), before.to_bytes());
+    // A post-disable check failure (reservation shrink) is an error, also without mutation.
+    let (mut fdt, note) = fixture(uart3());
+    let mut base = fdt.clone();
+    let n = base.label("rp1_gpio").unwrap();
+    base.set_prop(
+        n,
+        "gpio-reserved-ranges",
+        [8u32, 4, 22, 2]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    let original = fdt.to_bytes();
+    assert!(check::enforce(&base, &mut fdt, &note).is_err());
+    assert_eq!(fdt.to_bytes(), original);
+    // Unknown policy values fail closed.
+    let (mut fdt, note) = fixture("");
+    set(
+        &mut fdt,
+        "/rp1-firmware",
+        "rp1,on-conflict",
+        b"ignore\0".to_vec(),
+    );
+    let before = fdt.clone();
+    assert!(check::enforce(&before, &mut fdt, &note).is_err());
+}

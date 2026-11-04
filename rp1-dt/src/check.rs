@@ -2,22 +2,33 @@
 use crate::{Result, fdt::Fdt};
 use alloc::{collections::BTreeSet, format, string::String, vec::Vec};
 
+mod resolve;
+pub use resolve::{Disable, Gpiomem, OnConflict, Plan, Policy, apply_plan, enforce, resolve};
+
 /// RP1 GPIO numbers that `fdt` withholds from Linux (`gpio-reserved-ranges` of the node
 /// labelled `rp1_gpio`). No label or no property means none.
 pub fn reserved_gpios(fdt: &Fdt) -> Result<BTreeSet<u32>> {
     let Some(gpio) = fdt.label("rp1_gpio") else {
         return Ok(BTreeSet::new());
     };
-    let Some(cells) = fdt.cells(gpio, "gpio-reserved-ranges") else {
+    if fdt.prop(gpio, "gpio-reserved-ranges").is_none() {
         return Ok(BTreeSet::new());
-    };
+    }
+    let cells = fdt
+        .cells(gpio, "gpio-reserved-ranges")
+        .ok_or("malformed gpio-reserved-ranges")?;
     if !cells.len().is_multiple_of(2) {
         return Err("gpio-reserved-ranges must be <start count> pairs".into());
     }
-    Ok(cells
-        .chunks(2)
-        .flat_map(|c| c[0]..c[0].saturating_add(c[1]))
-        .collect())
+    let mut pins = BTreeSet::new();
+    for pair in cells.as_chunks::<2>().0 {
+        let end = pair[0]
+            .checked_add(pair[1])
+            .filter(|end| *end <= 54)
+            .ok_or("gpio-reserved-ranges exceeds RP1 GPIO0..53")?;
+        pins.extend(pair[0]..end);
+    }
+    Ok(pins)
 }
 
 /// Every conflict between `before` (the DTB the overlay was applied to), the merged `after`
@@ -52,19 +63,6 @@ fn block_label(id: u16) -> Option<String> {
     })
 }
 
-/// RP1 bank-0 pins a pinctrl group (and its subnodes) configures.
-fn group_pins(fdt: &Fdt, group: usize, out: &mut Vec<u32>) {
-    for p in fdt.strings(group, "pins") {
-        if let Some(n) = p.strip_prefix("gpio").and_then(|n| n.parse().ok()) {
-            out.push(n);
-        }
-    }
-    out.extend(fdt.cells(group, "brcm,pins").unwrap_or_default());
-    for &c in &fdt.nodes[group].children {
-        group_pins(fdt, c, out);
-    }
-}
-
 /// Final-DTB ownership check (declaration-and-note.md §3.2 step 3, design §9): every conflict
 /// between the note's OWNERSHIP/SHM records and what Linux would see in `dtb`.
 /// An empty list means no conflict was found; a missing board-table label fails closed.
@@ -87,132 +85,9 @@ pub fn final_conflicts(fdt: &Fdt, note: &[u8]) -> Result<Vec<String>> {
         .get(note::OWNERSHIP)
         .ok_or_else(|| String::from("note has no OWNERSHIP"))?
         .value;
-    let count = note::u32_at(own, 0).map_err(|_| "OWNERSHIP truncated")? as usize;
-    let mut pins = alloc::collections::BTreeSet::new();
-    for i in 0..count {
-        let at = 4 + i * 4;
-        let (kind, id) = (
-            own[at],
-            note::u16_at(own, at + 2).map_err(|_| "OWNERSHIP truncated")?,
-        );
-        match kind {
-            1 => {
-                pins.insert(u32::from(id));
-            }
-            2 => {
-                let label = block_label(id).ok_or(format!("unknown OWNERSHIP block id {id}"))?;
-                match fdt.label(&label) {
-                    Some(n) if fdt.enabled(n) => bad.push(format!(
-                        "RP1-owned block {label} ({}) is enabled for Linux",
-                        fdt.path(n)
-                    )),
-                    Some(_) => {}
-                    None => bad.push(format!("board DTB has no node labelled {label}")),
-                }
-            }
-            5 => match fdt.label("rp1_clocks") {
-                Some(n) if fdt.enabled(n) => {
-                    bad.push("clock authority is RP1 but rp1_clocks is enabled".into())
-                }
-                Some(_) => {}
-                None => bad.push("board DTB has no node labelled rp1_clocks".into()),
-            },
-            _ => {}
-        }
-    }
-
-    // An enabled gpio-hog on a line withheld from Linux fails the RP1 gpiochip (HYP, gpiolib).
-    if let Some(gpio) = fdt.label("rp1_gpio") {
-        let reserved = reserved_gpios(fdt)?;
-        for &c in &fdt.nodes[gpio].children {
-            if !fdt.enabled(c) || fdt.prop(c, "gpio-hog").is_none() {
-                continue;
-            }
-            for line in fdt.cells(c, "gpios").unwrap_or_default().chunks(2) {
-                if reserved.contains(&line[0]) {
-                    bad.push(format!(
-                        "{} hogs GPIO{} that gpio-reserved-ranges withholds from Linux",
-                        fdt.path(c),
-                        line[0]
-                    ));
-                }
-            }
-        }
-    }
-
-    // An enabled consumer (`gpio(s)`, `*-gpio(s)`) of a withheld RP1 line fails to probe.
-    if let Some(gpio) = fdt.label("rp1_gpio") {
-        let reserved = reserved_gpios(fdt)?;
-        for n in (0..fdt.nodes.len()).filter(|n| fdt.enabled(*n)) {
-            for (name, _) in &fdt.nodes[n].props {
-                let consumer = name == "gpio"
-                    || name == "gpios"
-                    || name.ends_with("-gpio")
-                    || name.ends_with("-gpios");
-                if !consumer || fdt.prop(n, "gpio-hog").is_some() {
-                    continue;
-                }
-                let cells = fdt.cells(n, name).unwrap_or_default();
-                let mut i = 0;
-                while i < cells.len() {
-                    // A 0 phandle is an empty entry (e.g. a native chip select).
-                    let Some(ctrl) = fdt.phandle(cells[i]).filter(|_| cells[i] != 0) else {
-                        i += 1;
-                        continue;
-                    };
-                    let args = fdt.number(ctrl, "#gpio-cells").unwrap_or(2) as usize;
-                    if ctrl == gpio
-                        && let Some(&line) = cells.get(i + 1)
-                        && reserved.contains(&line)
-                    {
-                        bad.push(format!(
-                            "{} {name} uses GPIO{line} that gpio-reserved-ranges withholds from Linux",
-                            fdt.path(n)
-                        ));
-                    }
-                    i += 1 + args;
-                }
-            }
-        }
-    }
-
-    // pinctrl: an enabled node selecting an RP1 pin group that touches an RP1-owned pin.
-    if !pins.is_empty() {
-        let gpio = fdt
-            .label("rp1_gpio")
-            .ok_or("board DTB has no node labelled rp1_gpio")?;
-        for n in (0..fdt.nodes.len()).filter(|n| fdt.enabled(*n)) {
-            for (name, _) in &fdt.nodes[n].props {
-                let Some(state) = name.strip_prefix("pinctrl-") else {
-                    continue;
-                };
-                if state.parse::<u32>().is_err() {
-                    continue;
-                }
-                for handle in fdt.cells(n, name).unwrap_or_default() {
-                    let Some(group) = fdt.phandle(handle) else {
-                        bad.push(format!(
-                            "{} {name}: phandle {handle:#x} not found",
-                            fdt.path(n)
-                        ));
-                        continue;
-                    };
-                    if !fdt.is_descendant(group, gpio) {
-                        continue;
-                    }
-                    let mut used = Vec::new();
-                    group_pins(fdt, group, &mut used);
-                    for p in used.into_iter().filter(|p| pins.contains(p)) {
-                        bad.push(format!(
-                            "{} {name} -> {} configures RP1-owned GPIO{p}",
-                            fdt.path(n),
-                            fdt.path(group)
-                        ));
-                    }
-                }
-            }
-        }
-    }
+    let conflicts = resolve::node_conflicts(fdt, own)?;
+    bad.extend(conflicts.unresolved);
+    bad.extend(conflicts.nodes.into_values().flatten());
 
     // Shared-memory reservation: exactly the note's area, overlapping nothing else.
     let area = parsed

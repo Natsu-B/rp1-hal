@@ -112,6 +112,29 @@ VPU ファーム: config.txt / cmdline.txt を処理、rp1-bundle.img を initra
 - 宣言 `boot.on_failure = "stock"` を書いた場合だけ、手順 1〜5 の失敗では overlay を当てずに元の DTB で本来のカーネルを起動する（素の Raspberry Pi OS として動く）。既定ではない。
 - 同じ失敗で再起動を繰り返し続けるのは公式の RESTART と同じ振る舞い。止めたい場合は起動順を STOP で終える（公式と同じ設定で制御する）。
 
+### 3.1 Linux 側の衝突は既定で「無効化して印」、停止は選択（2026-10-30 改訂）
+
+v0.1 は「overlay 適用後の検査で衝突が 1 件でもあれば停止（フォールバック無し）」だった。config.txt の `dtoverlay=` 1 行で
+装置が起動しなくなるので、次のように改めた（ユーザー決定 2026-10-30。詳細は declaration-and-note.md §3.2）。
+
+| 場合 | 動作 | UART10 |
+|---|---|---|
+| Linux の有効なノードが RP1 所有のピン・ブロックを使う（pinctrl、`*-gpios`、hog、rp1_gpio の割り込み、有効に戻された所有ブロック） | そのノードを disabled にして起動を続ける（既定 `linux.on_conflict = "disable"`） | `RP1BOOT_LINUX_DISABLED path=.. label=.. why=..`、`RP1BOOT_LINUX_DISABLED_COUNT=<n>` |
+| `/dev/gpiomem0`（`linux.gpiomem = "disable"`、既定） | 無効化（方針。refuse でも行う） | 同上（why に `gpiomem policy`） |
+| `linux.on_conflict = "refuse"` で衝突あり | 停止（RP1 も Linux も起動しない） | 理由ごとに `RP1BOOT_LINUX_REFUSED why=..`、`FAIL: .. RP1 not started` |
+| 保護ノードに衝突・コンソールが RP1 所有・DT の不備・再検査の失敗 | 停止（方針によらない） | 同上 |
+
+- 停止からの戻し方は config.txt の該当 `dtoverlay=` を外すこと（または宣言を直して作り直す）。停止後の次の起動方法は §3 の
+  とおり未実装（理由を出して止まるだけ）。
+- RP1 と無関係な DT の不備（解決できない `stdout-path` の別名、他のコントローラ宛ての壊れた `*-gpios` など）では止めない。
+  Linux も無視して起動できるため。コンソールが分からないときに止めるのは、gpiomem 方針以外の無効化候補（衝突）があるときだけ。
+  既定の gpiomem 方針では実機の DTB に常に `gpiomem@d0000` の無効化が 1 件あるが、gpiomem は互換と reg で特定でき、コンソールには
+  なり得ないので、それだけでは止めない（STATIC、`stock_dtb.rs` の試験）。
+- HW（2026-10-30、lab ファーム、各 cold boot ×1）: 既定の版で `dtoverlay=uart3-pi5` を足すと serial@3c000（GPIO 8/9 = SPI0 の
+  CS/MISO）を無効化して印 2 件（+ gpiomem）、Linux は起動し回帰も合格。`dtoverlay=gpio-led,gpio=22` では leds ノードとその led
+  を無効化（印 3 件）。`on_conflict = "refuse"` の版に uart3-pi5 では `RP1BOOT_LINUX_REFUSED` 2 行と `FAIL` で停止し、
+  config.txt を戻すだけで同じ版が起動（gpiomem は方針どおり無効化）。
+
 ## 4. 部品
 
 | 部品 | 中身 | 出どころ |
@@ -156,6 +179,7 @@ VPU ファーム: config.txt / cmdline.txt を処理、rp1-bundle.img を initra
   `device_tree=` は使わない。SCMI の transport・クロック利用者の付け替え・予約は `.rp1.dtbo` が自分で足す
   （declaration-and-note.md §3.1）。標準 DTB の `/chosen/bootargs`（約 150 B）がファームにより cmdline.txt の前に付くが、
   880 B の上限内で収まる（HW: bootargs 568 B）。HW（2026-10-29、cold boot 2 回）。
+- 旧 PoC の基準 DTB（`scmi_linux.dtb`・`rp1-base.dtb`。`gpio-reserved-ranges` で GPIO 2..53 を予約）は、RP1 所有ピンちょうどを予約する今の方針と衝突する（`check` が予約の縮小として停止する）。標準 DTB を使う。
 - 起動時間（電源 → BusyBox の `~ #`、UART の 1 s 精度）: **約 31 s**（PoC 84〜87 s）。内訳: VPU ファーム（束 28.7 MB の
   TFTP 約 10 s を含む）約 26 s、rp1boot 約 1.1 s、Linux 約 3 s。
 - SD 起動の経路は未試験。

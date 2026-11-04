@@ -1,0 +1,7 @@
+[package]
+name = "rp1-pinmux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "RP1 bank-0 pin functions and signal lookups"

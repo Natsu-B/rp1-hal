@@ -1,6 +1,6 @@
 use rp1_build::{
     generate,
-    metadata::{Declaration, TypeInfo},
+    metadata::{Declaration, I2cPins, Instance, SpiPins, TypeInfo, UartPins},
 };
 use rp1_proto::note::{ENTRY, Note};
 use std::{fs, path::Path, process::Command};
@@ -22,48 +22,120 @@ peripherals=["TIMER.ALARM1"]
     )
     .unwrap()
 }
+
+#[test]
+fn reserves_exactly_gpio_signal_and_log_pins_as_contiguous_ranges() {
+    let d: Declaration = toml::from_str(
+        r#"
+schema = 2
+log = { sink = "uart0", baudrate = 115200 }
+[proc0]
+gpio = [22]
+i2c1 = { sda = 2, scl = 3 }
+[proc1]
+gpio = [27, 8]
+spi0 = { sck = 11, mosi = 10, miso = 9 }
+adc = {}
+"#,
+    )
+    .unwrap();
+    let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    assert!(
+        a.dts
+            .contains("gpio-reserved-ranges = <2 2 8 4 14 2 22 1 27 1>;")
+    );
+    assert!(a.dts.contains("rp1,on-conflict = \"disable\";"));
+    assert!(a.dts.contains("rp1,gpiomem = \"disable\";"));
+    assert!(!a.dts.contains("gpiomem@"));
+    let empty = generate("test", "0.1.0", &Declaration::default(), [0; 32], [0; 20]).unwrap();
+    assert!(empty.dts.contains("gpio-reserved-ranges = <>;"));
+}
+
+#[test]
+fn every_owned_instance_disables_its_linux_node_and_keeps_its_reset_and_clock() {
+    use rp1_build::metadata::BOARD_LINUX_RESETS;
+    // Expected reset locations are independent of the generation table.
+    let cases = [
+        ("uart0", "tx=14,rx=15", 1, 26),
+        ("uart1", "tx=0,rx=1", 1, 27),
+        ("uart2", "tx=4,rx=5", 1, 28),
+        ("uart3", "tx=8,rx=9", 1, 29),
+        ("uart4", "tx=12,rx=13", 1, 30),
+        ("i2c0", "sda=0,scl=1", 0, 7),
+        ("i2c1", "sda=2,scl=3", 0, 8),
+        ("i2c2", "sda=4,scl=5", 0, 9),
+        ("i2c3", "sda=6,scl=7", 0, 10),
+        ("spi0", "sck=11,mosi=10,miso=9", 1, 10),
+        ("spi1", "sck=21,mosi=20,miso=19", 1, 11),
+        ("spi3", "sck=7,mosi=6,miso=5", 1, 13),
+        ("spi5", "sck=15,mosi=14,miso=13", 1, 15),
+        ("adc", "", 0, 0),
+    ];
+    for (name, pins, bank, bit) in cases {
+        for core in [0, 1] {
+            let d: Declaration = toml::from_str(&format!(
+                "schema=2\n[linux]\nkeep={{}}\n[proc{core}]\n{name}={{{pins}}}"
+            ))
+            .unwrap();
+            let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+            for (other, _, _, _) in cases {
+                let disabled =
+                    format!("target = <&rp1_{other}>; __overlay__ {{ status = \"disabled\"; }}");
+                assert_eq!(a.dts.contains(&disabled), name == other, "{name}/{other}");
+            }
+            let mut expected = BOARD_LINUX_RESETS;
+            expected[bank] &= !(1 << bit);
+            assert_eq!(d.linux_resets(), expected, "{name}");
+            let blocks = unsafe { rp1_hal::linux_blocks::LinuxBlocks::new(d.linux_resets()) };
+            assert_eq!(
+                blocks.held_clocks(),
+                if name == "adc" {
+                    1 << rp1_hal::scmi::id::ADC
+                } else {
+                    0
+                },
+                "{name}"
+            );
+        }
+    }
+    let d = declaration();
+    let mut expected = BOARD_LINUX_RESETS;
+    expected[1] &= !(1 << 26); // The system log owns UART0 too.
+    assert_eq!(d.linux_resets(), expected);
+    let blocks = unsafe { rp1_hal::linux_blocks::LinuxBlocks::new(d.linux_resets()) };
+    assert_eq!(blocks.held_clocks(), 0);
+}
 #[test]
 fn rejects_mistakes_before_building() {
     let mut d = declaration();
     d.validate().unwrap();
-    d.proc0.pins.push(14);
+    d.proc0.gpio.push(14);
     assert!(d.validate().is_err());
-    d.proc0.pins.pop();
+    d.proc0.gpio.pop();
     // The log owns UART0: no driver may also take it (review #6).
-    d.proc0.peripherals.push("UART0".into());
+    d.proc0
+        .instances
+        .insert("uart0".into(), Instance::Uart(UartPins::default()));
     assert!(d.validate().is_err());
-    d.proc0.peripherals.pop();
-    d.proc1.peripherals.push("TIMER.ALARM0".into());
+    d.proc0.instances.remove("uart0");
+    d.proc1.timer.push("ALARM0".into());
     assert!(d.validate().is_err());
-    d.proc1.peripherals.pop();
+    d.proc1.timer.pop();
     d.proc1.gpio_irq.push(26);
     assert!(d.validate().is_err());
     d.proc1.gpio_irq.pop();
-    // Review 3 #5: a second spelling of a declared block, on the other core or the same one.
-    for (core, alias) in [
-        (1, "TIMER.ALARM00"),
-        (0, "TIMER.ALARM00"),
-        (1, "TIMER.ALARM+0"),
-        (1, "UART00"),
-        (1, "UART+0"),
-    ] {
-        let c = if core == 0 {
-            &mut d.proc0
-        } else {
-            &mut d.proc1
-        };
-        c.peripherals.push(alias.into());
+    for alias in ["uart00", "uart+0", "i2c01"] {
+        d.proc0
+            .instances
+            .insert(alias.into(), Instance::Uart(UartPins::default()));
         assert!(d.validate().is_err(), "{alias}");
-        assert!(
-            generate("test", "0.1.0", &d, [0; 32], [0; 20]).is_err(),
-            "{alias}"
-        );
-        let c = if core == 0 {
-            &mut d.proc0
-        } else {
-            &mut d.proc1
-        };
-        c.peripherals.pop();
+        assert!(generate("test", "0.1.0", &d, [0; 32], [0; 20]).is_err());
+        d.proc0.instances.remove(alias);
+    }
+    for alias in ["ALARM00", "ALARM+0"] {
+        d.proc0.timer.push(alias.into());
+        assert!(d.validate().is_err(), "{alias}");
+        d.proc0.timer.pop();
     }
     // Non-canonical names are rejected even without a clash.
     for alias in ["TIMER.ALARM03", "UART05", "UART+5", "I2C01"] {
@@ -72,7 +144,7 @@ fn rejects_mistakes_before_building() {
             "{alias}"
         );
     }
-    for name in ["TIMER.ALARM3", "UART5", "I2C1"] {
+    for name in ["TIMER.ALARM3", "UART4", "I2C1"] {
         rp1_build::metadata::peripheral_type(name).unwrap();
     }
     d.clock.authority = "linux".into();
@@ -89,15 +161,16 @@ fn i2c_ownership_and_board_management_pins() {
         assert!(peripheral_type(p).is_err());
     }
     let mut d = declaration();
-    d.proc0.pins.extend([2, 3]);
-    assert!(d.validate().is_err());
-    d.proc1.peripherals.push("I2C1".into());
-    assert!(
-        d.validate().is_err(),
-        "a different core cannot unlock GPIO2/3"
+    d.proc0.gpio.extend([2, 3]);
+    d.validate().unwrap(); // Schema 2 has no implicit GPIO2/3 reservation.
+    d.proc0.gpio.retain(|p| ![2, 3].contains(p));
+    d.proc0.instances.insert(
+        "i2c1".into(),
+        Instance::I2c(I2cPins {
+            sda: Some(2),
+            scl: Some(3),
+        }),
     );
-    d.proc1.peripherals.clear();
-    d.proc0.peripherals.push("I2C1".into());
     d.validate().unwrap();
     let a = generate("i2c", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
     assert!(a.dts.contains("target = <&rp1_i2c1>"));
@@ -108,10 +181,12 @@ fn i2c_ownership_and_board_management_pins() {
             .0
             .contains(&[2, 1, 33, 0])
     );
-    d.proc1.peripherals.push("I2C1".into());
+    d.proc1
+        .instances
+        .insert("i2c1".into(), Instance::I2c(I2cPins::default()));
     assert!(d.validate().is_err());
-    d.proc1.peripherals.clear();
-    d.proc0.pins.push(0);
+    d.proc1.instances.clear();
+    d.proc0.gpio.push(0);
     assert!(d.validate().is_err(), "Linux UART1 retains GPIO0/1");
 }
 #[test]
@@ -124,7 +199,7 @@ fn adc_ownership_disables_linux_adc_and_keeps_its_reset() {
     let a = generate("plain", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
     assert!(!a.dts.contains("<&rp1_adc>; __overlay__ { status"));
     assert_eq!(d.linux_resets()[0] & 1, 1);
-    d.proc0.peripherals.push("ADC".into());
+    d.proc0.instances.insert("adc".into(), Instance::Adc {});
     d.validate().unwrap();
     assert_eq!(d.linux_resets()[0], BOARD_LINUX_RESETS[0] & !1);
     let a = generate("adc", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
@@ -139,7 +214,7 @@ fn adc_ownership_disables_linux_adc_and_keeps_its_reset() {
             .0
             .contains(&[2, 1, 64, 0])
     );
-    d.proc1.peripherals.push("ADC".into());
+    d.proc1.instances.insert("adc".into(), Instance::Adc {});
     assert!(d.validate().is_err(), "ADC claimed twice");
 }
 #[test]
@@ -152,7 +227,7 @@ fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
             format!("::rp1_hal::spi::Token<{n}>")
         );
     }
-    // Slave-only (4, 7), not on bank 0 (6, 8), MISO on Linux's UART1 pin (2), aliases.
+    // Slave-only (4, 7), not on bank 0 (6, 8), not supported yet (2), aliases.
     for p in [
         "SPI2", "SPI4", "SPI6", "SPI7", "SPI8", "SPI9", "SPI00", "SPI+0", "SPI",
     ] {
@@ -164,8 +239,14 @@ fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
         before[1] & (0x1ff << 10),
         BOARD_LINUX_RESETS[1] & (0x1ff << 10)
     );
-    d.proc1.pins.extend([9, 10, 11]);
-    d.proc1.peripherals.push("SPI0".into());
+    d.proc1.instances.insert(
+        "spi0".into(),
+        Instance::Spi(SpiPins {
+            sck: Some(11),
+            mosi: Some(10),
+            miso: Some(9),
+        }),
+    );
     d.validate().unwrap();
     assert_eq!(
         d.linux_resets(),
@@ -187,7 +268,9 @@ fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
             .0
             .contains(&[2, 2, 16, 0])
     );
-    d.proc0.peripherals.push("SPI0".into());
+    d.proc0
+        .instances
+        .insert("spi0".into(), Instance::Spi(SpiPins::default()));
     assert!(d.validate().is_err(), "SPI0 claimed twice");
 }
 /// Review 6 #1: an unusable or out-of-range SPI/I2C number fails `validate` and `generate` as
@@ -195,20 +278,52 @@ fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
 #[test]
 fn unusable_bus_numbers_are_rejected_by_name() {
     use rp1_build::metadata::peripheral_id;
-    for p in [
-        "SPI2", "SPI4", "SPI6", "SPI16", "SPI32", "I2C4", "I2C9", "I2C32",
+    for (p, why) in [
+        ("SPI2", "E4: SPI2 is not supported yet"),
+        ("SPI4", "E4: SPI4 is slave-only"),
+        ("SPI6", "E2: SPI6 has no bank-0 pins"),
+        ("SPI16", "E0: unknown key 'spi16' in proc1"),
+        ("SPI32", "E0: unknown key 'spi32' in proc1"),
+        ("I2C4", "E2: I2C4 has no bank-0 pins"),
+        ("I2C9", "E0: unknown key 'i2c9' in proc1"),
+        ("I2C32", "E0: unknown key 'i2c32' in proc1"),
     ] {
         assert!(peripheral_id(p).is_err(), "{p}");
+        let key = p.to_ascii_lowercase();
+        let e = toml::from_str::<Declaration>(&format!("schema=2\n[proc1]\n{key}={{}}"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.to_ascii_uppercase().contains(p), "{p}: {e}");
         for with_i2c0 in [false, true] {
             let mut d = declaration();
             if with_i2c0 {
-                d.proc0.peripherals.push("I2C0".into());
+                d.proc0.instances.insert(
+                    "i2c0".into(),
+                    Instance::I2c(I2cPins {
+                        sda: Some(8),
+                        scl: Some(9),
+                    }),
+                );
             }
             d.validate().unwrap();
-            d.proc1.peripherals.push(p.into());
+            // Complete signals on free pins (SPI1's 21/20/19, I2C1's 2/3), so that only the
+            // bus number can be why validation fails.
+            let instance = if p.starts_with("SPI") {
+                Instance::Spi(SpiPins {
+                    sck: Some(21),
+                    mosi: Some(20),
+                    miso: Some(19),
+                })
+            } else {
+                Instance::I2c(I2cPins {
+                    sda: Some(2),
+                    scl: Some(3),
+                })
+            };
+            d.proc1.instances.insert(key.clone(), instance);
             let e = d.validate().unwrap_err().to_string();
-            assert!(!e.contains("claimed twice"), "{p}: {e}");
-            assert!(e.contains(p), "{p}: {e}");
+            assert!(e.starts_with(why), "{p}: {e}");
+            assert!(!e.contains("needs"), "{p}: {e}");
             assert!(
                 generate("bad", "0.1.0", &d, [0; 32], [0; 20]).is_err(),
                 "{p}"
@@ -228,7 +343,7 @@ pins=[22]
 "#,
     )
     .unwrap();
-    assert!(d.log.is_none() && d.proc0.peripherals.is_empty());
+    assert!(d.log.is_none() && d.proc0.peripherals().is_empty());
     assert!(
         d.validate().is_err(),
         "GPIO-only firmware must not take authority=linux"
@@ -466,7 +581,7 @@ fn overlay_applies_to_a_copy_of_the_stock_board_dtb() {
     let base_pins = rp1_build::overlay::reserved_gpios(&copy).unwrap();
     let merged_pins = rp1_build::overlay::reserved_gpios(&merged).unwrap();
     assert!(merged_pins.is_superset(&base_pins));
-    assert!([14, 15, 22, 27].iter().all(|p| merged_pins.contains(p)));
+    assert_eq!(merged_pins, [14, 15, 22, 27].into());
     assert!(!merged_pins.contains(&0) && !merged_pins.contains(&1));
 
     let m = rp1_build::fdt::Fdt::parse(&fs::read(&merged).unwrap()).unwrap();

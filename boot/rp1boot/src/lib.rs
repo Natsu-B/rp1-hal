@@ -231,6 +231,92 @@ pub fn i2c_receive(
     Ok(())
 }
 
+/// Final DTB placement and its bound: Linux arm64 maps at most `MAX_FDT_SIZE` (2 MiB, DOC:
+/// arch/arm64/include/asm/boot.h). The whole window is checked against the other ranges with
+/// the serialized size, so growth from the ownership markers is covered by [`final_dtb`].
+pub const DTB_OUT: u64 = 0x2020_0000;
+pub const DTB_OUT_MAX: u64 = 0x0020_0000;
+
+/// Serialize the final DTB for Linux, refusing anything larger than [`DTB_OUT_MAX`].
+pub fn final_dtb(fdt: &rp1_dt::fdt::Fdt) -> Result<Vec<u8>> {
+    let out = fdt.to_bytes();
+    if out.len() as u64 > DTB_OUT_MAX {
+        return Err(format!("final DTB is {} B (> {DTB_OUT_MAX:#x})", out.len()));
+    }
+    Ok(out)
+}
+
+/// Outcome of the ownership step (sharing design §4, 4b..4e) after `.rp1.dtbo` is applied.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ownership {
+    /// Conflicting Linux nodes were disabled and marked; log `markers` in order.
+    Applied { markers: Vec<String> },
+    /// RP1 must not start: log `lines`, then stop with `reason`. The DTB is unchanged.
+    Refused { lines: Vec<String>, reason: String },
+}
+
+/// Marker text stays on one console line whatever the DTB contains.
+fn one_line(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
+}
+
+/// Resolve and apply the `/rp1-firmware` policy on the merged DTB (`after`), checking against
+/// the firmware DTB (`before`). Each disabled node gives
+/// `RP1BOOT_LINUX_DISABLED path=<path> label=<label|-> why=<reason>[; <reason>]...`, then
+/// `RP1BOOT_LINUX_DISABLED_COUNT=<n>` (also for 0). A refusal gives one
+/// `RP1BOOT_LINUX_REFUSED why=<reason>` per reason; so does an error (malformed input, unknown
+/// policy, failed recheck), which also refuses. `after` is unchanged when refused.
+pub fn enforce_linux_ownership(
+    before: &rp1_dt::fdt::Fdt,
+    after: &mut rp1_dt::fdt::Fdt,
+    note: &[u8],
+) -> Ownership {
+    use rp1_dt::check::{OnConflict, Plan};
+    let (policy, plan) = match rp1_dt::check::enforce(before, after, note) {
+        Ok(result) => result,
+        Err(e) => {
+            return Ownership::Refused {
+                lines: alloc::vec![one_line(&format!("RP1BOOT_LINUX_REFUSED why={e}"))],
+                reason: format!("RP1 ownership check: {e}; RP1 not started"),
+            };
+        }
+    };
+    match plan {
+        Plan::Disable(nodes) => {
+            let mut markers: Vec<String> = nodes
+                .iter()
+                .map(|d| {
+                    one_line(&format!(
+                        "RP1BOOT_LINUX_DISABLED path={} label={} why={}",
+                        d.path,
+                        d.label.as_deref().unwrap_or("-"),
+                        d.reasons.join("; ")
+                    ))
+                })
+                .collect();
+            markers.push(format!("RP1BOOT_LINUX_DISABLED_COUNT={}", nodes.len()));
+            Ownership::Applied { markers }
+        }
+        Plan::Refuse(reasons) => Ownership::Refused {
+            lines: reasons
+                .iter()
+                .map(|r| one_line(&format!("RP1BOOT_LINUX_REFUSED why={r}")))
+                .collect(),
+            reason: format!(
+                "{} Linux conflict(s) that rp1boot must not resolve by disabling ({}); \
+                 RP1 not started",
+                reasons.len(),
+                match policy.on_conflict {
+                    OnConflict::Refuse => "on_conflict=refuse",
+                    OnConflict::Disable => "protected node or unresolvable conflict",
+                }
+            ),
+        },
+    }
+}
+
 /// Fixed 2 MiB-aligned kernel base and the end of the loader's normal-RAM mapping.
 pub const KERNEL_BASE: u64 = 0x0600_0000;
 pub const RAM_MAP_END: u64 = 0x4000_0000;

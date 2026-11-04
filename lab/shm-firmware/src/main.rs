@@ -81,13 +81,8 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     log!("proc0 ready shm bss=0x{:x}\n", bss_check(0xb55_0000)).unwrap();
     p.proc1.launch(&mut core).unwrap();
     let i2c = p
-        .I2C1
-        .init(
-            p.pins.gpio2,
-            p.pins.gpio3,
-            &clocks,
-            rp1_hal::i2c::Speed::Standard,
-        )
+        .i2c1
+        .init(&clocks, rp1_hal::i2c::Speed::Standard)
         .map_err(|e| e.error);
     log!("proc0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
     let mut i2c = i2c.ok();
@@ -170,7 +165,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000);
     log!("proc1 clocks {:?}\n", clocks).unwrap();
     let adc = match clocks {
-        Ok(c) => p.ADC.init(&c),
+        Ok(c) => p.adc.init(&c),
         Err(_) => Err(rp1_hal::adc::Error::Precondition),
     };
     log!("proc1 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
@@ -181,11 +176,8 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     }
     let spi = match clocks {
         Ok(c) => p
-            .SPI0
+            .spi0
             .init(
-                p.pins.gpio11,
-                p.pins.gpio10,
-                p.pins.gpio9,
                 &c,
                 rp1_hal::spi::Config::new(1_000_000, embedded_hal::spi::MODE_0),
             )

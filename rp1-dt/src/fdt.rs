@@ -26,8 +26,15 @@ fn be32(b: &[u8], at: usize) -> Result<u32> {
     let s = b.get(at..end).ok_or("truncated FDT")?;
     Ok(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
 }
+fn offset(at: usize, len: usize) -> Result<usize> {
+    at.checked_add(len)
+        .ok_or_else(|| "FDT offset overflow".into())
+}
+fn align(at: usize) -> Result<usize> {
+    Ok(offset(at, 3)? & !3)
+}
 fn be64(b: &[u8], at: usize) -> Result<u64> {
-    Ok((u64::from(be32(b, at)?) << 32) | u64::from(be32(b, at + 4)?))
+    Ok((u64::from(be32(b, at)?) << 32) | u64::from(be32(b, offset(at, 4)?)?))
 }
 fn cstr(b: &[u8], at: usize) -> Result<&str> {
     let rest = b.get(at..).ok_or("truncated FDT string")?;
@@ -59,8 +66,8 @@ impl Fdt {
         let mut memreserve = Vec::new();
         let mut at = be32(b, 16)? as usize;
         loop {
-            let (addr, size) = (be64(b, at)?, be64(b, at + 8)?);
-            at += 16;
+            let (addr, size) = (be64(b, at)?, be64(b, offset(at, 8)?)?);
+            at = offset(at, 16)?;
             if addr == 0 && size == 0 {
                 break;
             }
@@ -71,11 +78,11 @@ impl Fdt {
         let mut at = structs;
         loop {
             let token = be32(b, at)?;
-            at += 4;
+            at = offset(at, 4)?;
             match token {
                 1 => {
                     let name = cstr(b, at)?.to_string();
-                    at = (at + name.len() + 1 + 3) & !3;
+                    at = align(offset(offset(at, name.len())?, 1)?)?;
                     let parent = stack.last().copied();
                     if parent.is_none() && !nodes.is_empty() {
                         return Err("FDT has more than one root".into());
@@ -97,12 +104,15 @@ impl Fdt {
                 }
                 3 => {
                     let len = be32(b, at)? as usize;
-                    let name = cstr(b, strings + be32(b, at + 4)? as usize)?.to_string();
+                    let name_at = offset(strings, be32(b, offset(at, 4)?)? as usize)?;
+                    let name = cstr(b, name_at)?.to_string();
+                    let data_at = offset(at, 8)?;
+                    let data_end = offset(data_at, len)?;
                     let data = b
-                        .get(at + 8..at + 8 + len)
+                        .get(data_at..data_end)
                         .ok_or("truncated FDT property")?
                         .to_vec();
-                    at = (at + 8 + len + 3) & !3;
+                    at = align(data_end)?;
                     let node = *stack.last().ok_or("FDT property outside a node")?;
                     nodes[node].props.push((name, data));
                 }

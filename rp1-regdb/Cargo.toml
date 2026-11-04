@@ -11,3 +11,4 @@ toml = "0.8"
 tempfile = "3"
 
 [dev-dependencies]
+rp1-pinmux = { path = "../rp1-pinmux" }

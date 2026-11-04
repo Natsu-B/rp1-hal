@@ -4,7 +4,7 @@
 //! External pull-ups are required. Only bank-0 routes are exposed; I2C4..6 are internal.
 use crate::{
     clocks::Clocks,
-    gpio::{Function, Pin},
+    gpio::{Alternate, Pin},
     read, write,
 };
 use embedded_hal::i2c::{ErrorKind, NoAcknowledgeSource, Operation};
@@ -78,18 +78,17 @@ mod sealed {
     pub trait Pin {}
     impl<const N: u8> Pin for crate::gpio::Pin<N> {}
 }
-pub trait Sda<const N: u8>: sealed::Pin {}
-pub trait Scl<const N: u8>: sealed::Pin {}
-macro_rules! routes {
-    ($n:literal: $($sda:literal, $scl:literal);+ $(;)?) => {$(
-        impl Sda<$n> for Pin<$sda> {}
-        impl Scl<$n> for Pin<$scl> {}
-    )+};
+/// SDA route of controller N; `FUNC` is the GPIO function select (`crate::pinmux`).
+pub trait Sda<const N: u8>: sealed::Pin {
+    const FUNC: u8;
 }
-routes!(0: 0, 1; 8, 9);
-routes!(1: 2, 3; 10, 11);
-routes!(2: 4, 5; 12, 13);
-routes!(3: 6, 7; 14, 15; 22, 23);
+/// SCL route of controller N.
+pub trait Scl<const N: u8>: sealed::Pin {
+    const FUNC: u8;
+}
+/// Schmitt, input enable, 12 mA sink, weak pull-up; external pull-ups are required. Only the
+/// I2C peripheral may sink the line, so the pad output stays disabled while the mux switches.
+const PAD: u32 = 0x7a;
 
 pub struct Token<const N: u8> {
     _private: (),
@@ -112,8 +111,8 @@ impl<const N: u8, const SDA: u8, const SCL: u8> From<InitError<N, SDA, SCL>> for
     }
 }
 pub struct I2c<const N: u8, const SDA: u8, const SCL: u8> {
-    _sda: Pin<SDA, Function<3>>,
-    _scl: Pin<SCL, Function<3>>,
+    _sda: Pin<SDA, Alternate>,
+    _scl: Pin<SCL, Alternate>,
     rx_depth: usize,
     usable: bool,
     clocks: Clocks,
@@ -160,7 +159,12 @@ impl<const N: u8> Token<N> {
             (sda, scl),
             clocks,
             speed,
-            |(sda, scl)| (sda.into_i2c(), scl.into_i2c()),
+            |(sda, scl)| {
+                (
+                    sda.into_alternate(<Pin<SDA> as Sda<N>>::FUNC, PAD, PAD),
+                    scl.into_alternate(<Pin<SCL> as Scl<N>>::FUNC, PAD, PAD),
+                )
+            },
         )
     }
     /// [`Token::init`] on `io`; `route` muxes the pins and runs only once the controller is set up.
@@ -170,7 +174,7 @@ impl<const N: u8> Token<N> {
         (sda, scl): (Pin<SDA>, Pin<SCL>),
         clocks: &Clocks,
         speed: Speed,
-        route: impl FnOnce((Pin<SDA>, Pin<SCL>)) -> (Pin<SDA, Function<3>>, Pin<SCL, Function<3>>),
+        route: impl FnOnce((Pin<SDA>, Pin<SCL>)) -> (Pin<SDA, Alternate>, Pin<SCL, Alternate>),
     ) -> Result<I2c<N, SDA, SCL>, InitError<N, SDA, SCL>> {
         match start(io, reset_bit(N), clocks, speed) {
             Ok(rx_depth) => {
@@ -190,6 +194,31 @@ impl<const N: u8> Token<N> {
                 scl,
             }),
         }
+    }
+}
+
+/// A declared I2C N with its pins, as the generated resources hand it out (`rp1-build`).
+pub struct Parts<const N: u8, const SDA: u8, const SCL: u8>
+where
+    Pin<SDA>: Sda<N>,
+    Pin<SCL>: Scl<N>,
+{
+    pub token: Token<N>,
+    pub sda: Pin<SDA>,
+    pub scl: Pin<SCL>,
+}
+impl<const N: u8, const SDA: u8, const SCL: u8> Parts<N, SDA, SCL>
+where
+    Pin<SDA>: Sda<N>,
+    Pin<SCL>: Scl<N>,
+{
+    /// [`Token::init`] with the declared pins.
+    pub fn init(
+        self,
+        clocks: &Clocks,
+        speed: Speed,
+    ) -> Result<I2c<N, SDA, SCL>, InitError<N, SDA, SCL>> {
+        self.token.init(self.sda, self.scl, clocks, speed)
     }
 }
 

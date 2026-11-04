@@ -1,9 +1,46 @@
-use crate::Result;
+use crate::{
+    Result,
+    board::{BoardInstance, Kind},
+};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
+struct InputDeclaration {
+    pub schema: u32,
+    pub board: String,
+    pub clock: Clock,
+    pub log: Option<Log>,
+    pub stack: Stack,
+    pub link_page: String,
+    pub proc0: BTreeMap<String, toml::Value>,
+    pub proc1: BTreeMap<String, toml::Value>,
+    pub shm: Vec<Shm>,
+    pub linux: Linux,
+    #[serde(skip)]
+    pub types: BTreeMap<String, TypeInfo>,
+}
+impl Default for InputDeclaration {
+    fn default() -> Self {
+        Self {
+            schema: 1,
+            board: "rpi-cm5".into(),
+            clock: Clock::default(),
+            log: None,
+            stack: Stack::default(),
+            link_page: "16KiB".into(),
+            proc0: BTreeMap::new(),
+            proc1: BTreeMap::new(),
+            shm: Vec::new(),
+            linux: Linux::default(),
+            types: BTreeMap::new(),
+        }
+    }
+}
+/// Normalized schema 2 declaration. Schema 1 input is converted during deserialization.
+#[derive(Clone, Debug, Serialize)]
 pub struct Declaration {
     pub schema: u32,
     pub board: String,
@@ -17,11 +54,13 @@ pub struct Declaration {
     pub linux: Linux,
     #[serde(skip)]
     pub types: BTreeMap<String, TypeInfo>,
+    #[serde(skip)]
+    schema1: bool,
 }
 impl Default for Declaration {
     fn default() -> Self {
         Self {
-            schema: 1,
+            schema: 2,
             board: "rpi-cm5".into(),
             clock: Clock::default(),
             log: None,
@@ -32,7 +71,117 @@ impl Default for Declaration {
             shm: Vec::new(),
             linux: Linux::default(),
             types: BTreeMap::new(),
+            schema1: false,
         }
+    }
+}
+impl<'de> Deserialize<'de> for Declaration {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let input = InputDeclaration::deserialize(deserializer)?;
+        Self::from_input(input).map_err(serde::de::Error::custom)
+    }
+}
+impl Declaration {
+    pub(crate) fn owned_instances(&self) -> impl Iterator<Item = &'static BoardInstance> + '_ {
+        crate::board::INSTANCES.iter().filter(|i| {
+            self.proc0.instances.contains_key(i.name)
+                || self.proc1.instances.contains_key(i.name)
+                || (self.log.is_some() && i.name == "uart0")
+        })
+    }
+
+    fn from_input(input: InputDeclaration) -> Result<Self> {
+        if !matches!(input.schema, 1 | 2) {
+            return Err("unsupported schema".into());
+        }
+        let schema1 = input.schema == 1;
+        Ok(Self {
+            schema: 2,
+            board: input.board,
+            clock: input.clock,
+            log: input.log,
+            stack: input.stack,
+            link_page: input.link_page,
+            proc0: Core::parse(input.proc0, input.schema, "proc0")?,
+            proc1: Core::parse(input.proc1, input.schema, "proc1")?,
+            shm: input.shm,
+            linux: input.linux,
+            types: input.types,
+            schema1,
+        })
+    }
+    /// Warnings emitted by build.rs; also available to manifest inspection tools.
+    pub fn warnings(&self) -> Vec<&'static str> {
+        let mut warnings = Vec::new();
+        if self.schema1 {
+            warnings.push("schema 1 is deprecated; use schema 2");
+        }
+        if !self.linux.kept().contains_key("uart1") {
+            warnings.push("linux.keep omits uart1: GPIO 0/1 are available to RP1 on rpi-cm5");
+        }
+        warnings
+    }
+    /// SHA-256 of the declaration, recorded in the note's FIRMWARE record.
+    ///
+    /// A `schema = 1` manifest read through the automatic conversion keeps its legacy hash, so
+    /// its note is unchanged. Rewriting it as schema 2 changes this hash (the text differs);
+    /// the rest of the note stays identical.
+    pub fn declaration_hash(&self) -> Result<[u8; 32]> {
+        let default_linux = Linux::default();
+        if self.schema1
+            && self.linux.keep == default_linux.keep
+            && self.linux.gpiomem == default_linux.gpiomem
+            && self.linux.on_conflict == default_linux.on_conflict
+        {
+            return self.legacy_hash();
+        }
+        Ok(Sha256::digest(toml::to_string(self)?.as_bytes()).into())
+    }
+}
+impl Declaration {
+    fn legacy_hash(&self) -> Result<[u8; 32]> {
+        #[derive(Serialize)]
+        struct LegacyLinux<'a> {
+            uio_group: &'a str,
+        }
+        #[derive(Serialize)]
+        struct Legacy<'a> {
+            schema: u32,
+            board: &'a str,
+            clock: &'a Clock,
+            log: &'a Option<Log>,
+            stack: &'a Stack,
+            link_page: &'a str,
+            proc0: crate::declaration::LegacyCore,
+            proc1: crate::declaration::LegacyCore,
+            shm: &'a [Shm],
+            linux: LegacyLinux<'a>,
+        }
+        let view = Legacy {
+            schema: 1,
+            board: &self.board,
+            clock: &self.clock,
+            log: &self.log,
+            stack: &self.stack,
+            link_page: &self.link_page,
+            proc0: crate::declaration::LegacyCore {
+                pins: self.proc0.pins(),
+                peripherals: self.proc0.peripherals(),
+                gpio_irq: self.proc0.gpio_irq.clone(),
+            },
+            proc1: crate::declaration::LegacyCore {
+                pins: self.proc1.pins(),
+                peripherals: self.proc1.peripherals(),
+                gpio_irq: self.proc1.gpio_irq.clone(),
+            },
+            shm: &self.shm,
+            linux: LegacyLinux {
+                uio_group: &self.linux.uio_group,
+            },
+        };
+        Ok(Sha256::digest(toml::to_string(&view)?.as_bytes()).into())
     }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -69,25 +218,9 @@ impl Default for Stack {
         }
     }
 }
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Core {
-    pub pins: Vec<u8>,
-    pub peripherals: Vec<String>,
-    pub gpio_irq: Vec<u8>,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Linux {
-    pub uio_group: String,
-}
-impl Default for Linux {
-    fn default() -> Self {
-        Self {
-            uio_group: "rp1".into(),
-        }
-    }
-}
+pub use crate::board::{Gpiomem, Linux, OnConflict};
+pub use crate::declaration::{Core, I2cPins, Instance, SpiPins, UartPins};
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Shm {
@@ -132,43 +265,29 @@ pub const fn align(n: usize, a: usize) -> usize {
     (n + a - 1) & !(a - 1)
 }
 
-/// Only canonical names (`UART1`, `I2C1`, `TIMER.ALARM0`) are accepted: `TIMER.ALARM00` or
-/// `UART+1` would otherwise name the same block under a second string and pass the duplicate
-/// check (review 3 #5).
+/// HAL type of a canonical peripheral name (`UART1`, `I2C1`, `ADC`, `TIMER.ALARM0`), from the
+/// board instance table. Non-canonical spellings such as `TIMER.ALARM00` or `UART+1` would
+/// name the same block twice and are rejected (review 3 #5).
 pub fn peripheral_type(p: &str) -> Result<String> {
     if let Some(n) = p
-        .strip_prefix("UART")
-        .and_then(|s| s.parse::<u8>().ok())
-        .filter(|n| *n < 6 && p == format!("UART{n}"))
-    {
-        Ok(format!("::rp1_hal::uart::Token<{n}>"))
-    } else if let Some(n) = p
-        .strip_prefix("I2C")
-        .and_then(|s| s.parse::<u8>().ok())
-        .filter(|n| *n < 4 && p == format!("I2C{n}"))
-    {
-        Ok(format!("::rp1_hal::i2c::Token<{n}>"))
-    } else if let Some(n) = p
-        .strip_prefix("SPI")
-        .and_then(|s| s.parse::<u8>().ok())
-        .filter(|n| p == format!("SPI{n}"))
-    {
-        // SPI4/7 are slave-only, SPI6/8 are not on bank 0, SPI2's MISO is GPIO1 (Linux UART1
-        // on rpi-cm5): only SPI0/1/3/5 can be used here.
-        match n {
-            0 | 1 | 3 | 5 => Ok(format!("::rp1_hal::spi::Token<{n}>")),
-            _ => Err(format!("{p} is not a usable SPI master on rpi-cm5 (SPI0/1/3/5)").into()),
-        }
-    } else if p == "ADC" {
-        Ok("::rp1_hal::adc::Token".into())
-    } else if let Some(n) = p
         .strip_prefix("TIMER.ALARM")
         .and_then(|s| s.parse::<u8>().ok())
         .filter(|n| *n < 4 && p == format!("TIMER.ALARM{n}"))
     {
-        Ok(format!("::rp1_hal::timer::Alarm<{n}>"))
-    } else {
-        Err(format!("unknown or v0.1 unsupported peripheral '{p}'").into())
+        return Ok(format!("::rp1_hal::timer::Alarm<{n}>"));
+    }
+    let name = p.to_ascii_lowercase();
+    match crate::board::find_instance(&name).filter(|_| p == name.to_ascii_uppercase()) {
+        Some(i) => Ok(match i.kind {
+            Kind::Uart => format!("::rp1_hal::uart::Token<{}>", i.number),
+            Kind::I2c => format!("::rp1_hal::i2c::Token<{}>", i.number),
+            Kind::Spi => format!("::rp1_hal::spi::Token<{}>", i.number),
+            Kind::Adc => "::rp1_hal::adc::Token".into(),
+        }),
+        None => Err(crate::board::undeclarable(&name)
+            .filter(|_| p == name.to_ascii_uppercase())
+            .unwrap_or_else(|| format!("unknown or unsupported peripheral '{p}'"))
+            .into()),
     }
 }
 pub fn peripheral_id(p: &str) -> Result<(u8, u16)> {
@@ -199,19 +318,8 @@ impl Declaration {
     /// clk_adc (`rp1_hal::linux_blocks::LinuxBlocks::held_clocks`).
     pub fn linux_resets(&self) -> [u32; 3] {
         let mut r = BOARD_LINUX_RESETS;
-        for p in self.proc0.peripherals.iter().chain(&self.proc1.peripherals) {
-            if let Some(n) = p.strip_prefix("UART").and_then(|n| n.parse::<u32>().ok()) {
-                r[1] &= !(1 << (26 + n));
-            } else if let Some(n) = p.strip_prefix("I2C").and_then(|n| n.parse::<u32>().ok()) {
-                r[0] &= !(1 << (7 + n));
-            } else if let Some(n) = p.strip_prefix("SPI").and_then(|n| n.parse::<u32>().ok()) {
-                r[1] &= !(1 << (10 + n));
-            } else if p == "ADC" {
-                r[0] &= !1;
-            }
-        }
-        if self.log.is_some() {
-            r[1] &= !(1 << 26);
+        for i in self.owned_instances() {
+            r[i.reset_bank] &= !i.reset_mask;
         }
         r
     }
@@ -234,7 +342,7 @@ impl Declaration {
         Ok(n)
     }
     pub fn validate(&self) -> Result<()> {
-        if self.schema != 1 || self.board != "rpi-cm5" {
+        if self.schema != 2 || self.board != "rpi-cm5" {
             return Err("unsupported schema or board".into());
         }
         if self.link_page != "16KiB" {
@@ -258,42 +366,7 @@ impl Declaration {
         }
         self.stack_size(0)?;
         self.stack_size(1)?;
-        let mut pins = BTreeSet::new();
-        let mut peripherals = BTreeSet::new();
-        if let Some(l) = &self.log {
-            if l.sink != "uart0" || l.baudrate == 0 {
-                return Err("invalid UART0 log declaration".into());
-            }
-            pins.extend([14, 15]);
-            peripherals.insert(peripheral_id("UART0")?);
-        }
-        for c in [&self.proc0, &self.proc1] {
-            for p in &c.pins {
-                if *p >= 28 || !pins.insert(*p) {
-                    return Err(format!("GPIO {p} unsupported or claimed twice").into());
-                }
-                // Linux UART1 retains 0/1; 2/3 may be granted to the same core's I2C1.
-                if [0, 1].contains(p)
-                    || ([2, 3].contains(p) && !c.peripherals.iter().any(|p| p == "I2C1"))
-                {
-                    return Err(format!("GPIO {p} is reserved by rpi-cm5 board policy").into());
-                }
-            }
-            for p in &c.gpio_irq {
-                if !c.pins.contains(p) {
-                    return Err(format!("gpio_irq {p} is not in pins").into());
-                }
-            }
-            for p in &c.peripherals {
-                // Duplicates by hardware identity, not by spelling.
-                if !peripherals.insert(peripheral_id(p)?) {
-                    return Err(format!("{p} is claimed twice").into());
-                }
-            }
-        }
-        if self.clock.authority == "linux" && peripherals.iter().any(|&(k, n)| k == 2 && n < 32) {
-            return Err("UARTs share clk_uart with Linux; set clock.authority = rp1".into());
-        }
+        self.validate_ownership()?;
         let mut names = BTreeSet::new();
         if self.shm.len() > 64 {
             return Err("v0.1 supports at most 64 shm regions".into());

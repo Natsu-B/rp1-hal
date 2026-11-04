@@ -6,15 +6,18 @@ adds a GPIO chip select (active low) and owns the bus exclusively, either an own
 lent `&mut Spi` (`Device::new(&mut spi, cs)`; other buses are not accepted).
 
 ```toml
+[package.metadata.rp1]
+schema = 2
+
 [package.metadata.rp1.proc0]
-pins = [8, 9, 10, 11]
-peripherals = ["SPI0"]
+gpio = [8]                                 # chip select, driven as a GPIO
+spi0 = { sck = 11, mosi = 10, miso = 9 }
 ```
 
 ```rust,ignore
 use embedded_hal::spi::{MODE_0, Operation, SpiDevice};
-let bus = p.SPI0.init(p.pins.gpio11, p.pins.gpio10, p.pins.gpio9, &clocks,
-    rp1_hal::spi::Config::new(10_000_000, MODE_0))?;
+// p.spi0: rp1_hal::spi::Parts<0, 11, 10, 9>; GPIO8 stays a plain declared pin.
+let bus = p.spi0.init(&clocks, rp1_hal::spi::Config::new(10_000_000, MODE_0))?;
 let mut dev = rp1_hal::spi::Device::new(bus, p.pins.gpio8);
 dev.transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])?;
 ```
@@ -70,9 +73,11 @@ Wrong or swapped pins fail to compile (`tests/ui/spi_wrong_pins.rs`).
 ## Linux
 
 As for I2C: declaring `SPIn` removes CTRL1 bit 10 + n from the resets rp1-hal releases for
-Linux, and the overlay sets `rp1_spiN` to `status = "disabled"`. The final DT check rejects a
-later overlay that enables the node again (e.g. `dtparam=spi=on`) and enabled Linux pinctrl
-users of the declared pins.
+Linux, and the overlay sets `rp1_spiN` to `status = "disabled"`. A later overlay that enables
+the node again (e.g. `dtparam=spi=on`) or a Linux user of a declared pin (e.g.
+`dtoverlay=uart3-pi5` on GPIO 8/9) makes `cargo rp1 check --dtb` fail; at boot rp1boot disables
+that node by default and logs `RP1BOOT_LINUX_DISABLED` (`linux.on_conflict = "refuse"` stops
+instead).
 
 ## Behaviour
 
@@ -108,6 +113,8 @@ destructured `InitError`'s token and pins initialise the controller on retry.
 setters.
 `Spi` has no `Drop`: dropping it without `free` leaves the controller enabled and the pins
 on the SPI function, and the token is gone.
+`Device::free` returns the bus and the chip select as an unconfigured `Pin<CS>` (still driven
+high), so the same pin can make a new `Device` (STATIC: a host compile test).
 
 `Config::rx_sample_dly` (default 0) is written to RX_SAMPLE_DLY: MISO is sampled that many
 clk_sys cycles later. Only 0 is hardware-tested. It is written without a range check or

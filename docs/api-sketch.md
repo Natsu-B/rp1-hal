@@ -113,14 +113,8 @@ fn main(core: Proc0, p: rp1::Proc0Resources) -> ! {
     rp1_rt::log::init(p.log, &clocks);                  // ここから log! が UART0 に出る（それまでは捨てて数える）
     log!("proc0 up, clk_sys={}", clocks.sys());
 
-    let pins = hal::gpio::Pins::new(p.pins);           // 宣言した 4, 5 だけを持つ
-    let mut uart = hal::uart::Uart::new(
-        p.UART2,
-        (pins.gpio4.into_function(), pins.gpio5.into_function()),
-        hal::uart::Config::default().baudrate(115_200.Hz()),
-        &clocks,
-    )
-    .unwrap();
+    // 宣言 uart2 = { tx = 4, rx = 5 } の Parts（Token + Pin<4> + Pin<5>）。表に無い組は型が無い
+    let mut uart = p.uart2.init(&clocks, 115_200).unwrap();
 
     let samples = SAMPLES.consumer(&core);             // Proc0 トークンでしか取れない
     p.proc1.start();                                    // proc1 の #[entry(proc1)] を起動する

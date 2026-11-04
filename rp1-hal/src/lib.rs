@@ -7,6 +7,7 @@ pub mod gpio;
 pub mod i2c;
 pub mod linux_blocks;
 pub mod logging;
+mod pinmux;
 pub mod scmi;
 pub mod shm;
 pub mod spi;

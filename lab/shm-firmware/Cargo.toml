@@ -21,19 +21,23 @@ nb = "1"
 rp1-build = { path = "../../rp1-build" }
 
 [package.metadata.rp1]
-schema = 1
+schema = 2
 board = "rpi-cm5"
 clock = { authority = "rp1", clk_sys_hz = 200000000 }
+# UART0 (GPIO 14/15) carries the RP1 log. Linux keeps UART1 (GPIO 0/1) by the board default.
 log = { sink = "uart0", baudrate = 115200 }
 
 [package.metadata.rp1.proc0]
-pins = [2, 3, 22]
-peripherals = ["TIMER.ALARM0", "I2C1"]
+gpio = [22]
+timer = ["ALARM0"]
+i2c1 = { sda = 2, scl = 3 }
 
 [package.metadata.rp1.proc1]
-pins = [8, 9, 10, 11, 27]
+gpio = [8, 27] # 8 = SPI0 chip select driven as GPIO
 gpio_irq = [27]
-peripherals = ["TIMER.ALARM1", "ADC", "SPI0"]
+timer = ["ALARM1"]
+adc = {}
+spi0 = { sck = 11, mosi = 10, miso = 9 }
 
 [[package.metadata.rp1.shm]]
 name = "up"

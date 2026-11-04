@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+rp1-pinmux = { path = "../rp1-pinmux" }
 rp1-proto = { path = "../rp1-proto" }
 rp1-dt = { path = "../rp1-dt" }
 toml = "0.8"
@@ -13,4 +14,5 @@ sha2 = "0.10"
 object = { version = "0.36", features = ["read"] }
 
 [dev-dependencies]
+rp1-hal = { path = "../rp1-hal" }
 tempfile = "3"

@@ -1,4 +1,4 @@
-use crate::{Error, poll, uart::Uart, write};
+use crate::{Error, poll, write};
 use core::{
     fmt::{self, Write},
     sync::atomic::{AtomicU32, Ordering},
@@ -38,9 +38,7 @@ impl Logger {
             write(0x400d_0004 + pin * 8, 4);
             write(0x400f_0004 + pin * 4, 0x46);
         }
-        write(0x4001_7004, 1 << 26);
-        poll(0x4001_401c, 1 << 26, 1 << 26)?;
-        let _uart = unsafe { Uart::<0>::new(uart_hz, baud)? };
+        crate::uart::start(0, uart_hz, baud)?;
         self.ready.store(1, Ordering::Release);
         Ok(())
     }
