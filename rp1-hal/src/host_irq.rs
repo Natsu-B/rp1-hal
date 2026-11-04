@@ -3,16 +3,18 @@
 //! Linux receives it on the `rp1:irq` UIO node (`read()` / `poll()` on `/dev/uioN`, then
 //! `write(1)` to re-enable).
 //!
-//! **Unstable** (cargo feature `unstable-host-irq`, declaration `host_irq = true`): TEST is ORed
-//! with the vector's own hardware source (PROC_MISC), which is not identified or masked yet. If
-//! that source were held high, a pulse would make no new edge and Linux would get no wake.
+//! **Unstable** (cargo feature `unstable-host-irq`, declaration `host_irq = true`). TEST is ORed
+//! with the vector's own hardware source, TIMER alarm 3 (`TIMER.INTS` bit 3). `host_irq` owns
+//! `TIMER.ALARM3` (the declaration rejects any other owner), and nothing in rp1-hal unmasks or
+//! forces it, so the source stays low (HW 2026-11-05: forcing `TIMER.INTF` bit 3 raises the
+//! vector once and then swallows TEST pulses until released).
 //!
 //! Delivery is a hint, not a message: Linux's receiver must re-check the data it waits for
 //! after every wake and after a bounded timeout. The vector is edge-triggered, so
 //! - a pulse while Linux has not enabled the vector (before the UIO's first `write(1)`) is lost;
 //! - pulses while the UIO is disabled (between a wake and the next `write(1)`) merge into one
 //!   pending wake (lazy disable);
-//! - an asserted PROC_MISC source would swallow pulses (above).
+//! - an asserted TIMER alarm 3 interrupt would swallow pulses (above).
 use crate::write;
 use rp1_proto::irq;
 

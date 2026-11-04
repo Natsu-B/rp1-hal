@@ -257,9 +257,9 @@ RMW atomic のメソッドは持たない。
   SCMI shmem を移すか、link の配置でその範囲を予約する。
 - **済（HW）**: UIO mmap（BAR2 SRAM）への書き込みは M3 から見える（SCMI 要求 2000/2000 が解釈され応答）。
 - **hwirq58 以外の IRQ 経路（HW 2026-11-04、`<lab-log>`。不安定機能）**: RP1 の 61 本の割り込みはそれぞれ PCIe MSI-X の vector で、
-  `MSIX_CFG(n)`（PCIE_APBS 0x40108008 + 4n）の TEST bit は割り込み源と OR される（DOC）。Linux のドライバが無い
-  vector 57（PROC_MISC）を使い、proc1 が TEST を SET/CLR エイリアス（0x800/0xc00、Linux の rp1 ドライバと同じ）でパルスし、
-  Linux は rp1 ノードの子の generic-uio（`rp1:irq`、`interrupts = <57 1>` 立ち上がりエッジ）で受ける。hwirq58・rp1-mailbox・SCMI
+  `MSIX_CFG(n)`（PCIE_APBS 0x40108008 + 4n）の TEST bit は割り込み源と OR される（DOC）。Linux のドライバが無く、
+  源を RP1 が握れる vector 29（TIMER アラーム 3、2026-11-05 に vector 57 から変更）を使い、proc1 が TEST を SET/CLR エイリアス（0x800/0xc00、Linux の rp1 ドライバと同じ）でパルスし、
+  Linux は rp1 ノードの子の generic-uio（`rp1:irq`、`interrupts = <29 1>` 立ち上がりエッジ）で受ける。hwirq58・rp1-mailbox・SCMI
   には触れない（serial@34000 は probe、UART1 送受信も合格）。
   - 使い方: 宣言でちょうど 1 コアが `host_irq = true` を書き、rp1-hal の feature `unstable-host-irq` を有効にする。その
     コアのリソースに `HostIrq` が 1 つだけ入り、overlay に `rp1:irq` が加わる。`notify_*` は `&mut self` を取る:
@@ -267,21 +267,27 @@ RMW atomic のメソッドは持たない。
     ならない → 両方 CLR）起床が 1 回消えるので、所有は 1 つにする（STATIC、コンパイル失敗の試験あり）。
   - 公開の順序: RP1 の SRAM のデータは `notify_sram`（barrier → パルス）。Linux DDR のデータは `notify_ddr`（同じ窓の読み戻し
     `shm::complete_posted_writes` → パルス。`shm::Area` を要求して shm が有効なことを示す）。protocol.md §3。
-  - **不安定の理由（PROC_MISC の割り込み源）**: Linux の rp1 ドライバの番号表で 57 は `RP1_INT_PROC_MISC`（DOC、dt-bindings
-    rp1.h）。データシートには番号ごとの割り込み源の表は無い（DOC、TEST bit の説明だけ）。M3 側の NVIC 57 は SYSCFG
-    `PROC_EVENTS`（0x40008008）の channel 0、つまり Linux → proc0 の mailbox ドアベル（SCMI の要求）で上がる（HW 2026-09-27、
-    channel 1 は上がらない。公式 FW は `0xf8000008` bit0 を立ててから有効化、STATIC）。しかし Linux 側の vector 57 には
-    出ない（HW 2026-11-04、cold boot 2 回）: `rp1:irq` を有効にしたまま SCMI の要求（ch0）を 60 回送っても起床 0、PROC_EVENTS
-    bit3 を立てたままでも起床 0 で INTSTATH bit25 は 0。SCMI 要求 600 回と並行した往復 2000 回でも空振り・取りこぼし 0。
-    よって vector 57 の本来の源は未特定のまま（候補 2 つは HW で否定）。源だけを止める方法は無い（MSIX_CFG の ENABLE は
-    TEST も一緒に止める）ので、源が立っている間のパルスは失われうる（HYP）。代替は、RP1 が源を握れる vector（例: 誰も
-    使わない TIMER アラームの IRQ 26..29 で INTE を 0 のままにする）だが未試験（HYP）。
+  - **割り込み源（TIMER アラーム 3）**: vector 29 の源は `TIMER.INTS` bit 3 =（INTR & INTE）| INTF（DOC、RP2040 と同じ形）。
+    `host_irq` が宣言上 `TIMER.ALARM3` を所有し（他のコアの `timer = ["ALARM3"]` は E3）、rp1-hal はその INTE/INTF を立てない
+    ので源は 0 のまま（INTR は立っても INTE=0 なら出ない。HW: 実行中 INTR=0x3、INTE=0）。Linux の DT に RP1 hwirq 26..29 の
+    利用者は無い（STATIC、標準 DTB + bcm2712d0 + uart1-pi5）。HW（2026-11-05、cold boot 2 回）: Linux から `TIMER.INTF` bit 3 を
+    立てると `rp1:irq` が 1 回起床（bit 2 では 0 回）し源の特定を確認、立てたままの間は TEST パルスがエッジにならず 10 回とも
+    10 ms の見直しで返答を拾う（missed=10、失敗 0）、解除後は元通り。
+  - 旧 vector 57（PROC_MISC）を捨てた理由: 57 は Linux の rp1 ドライバの番号表で `RP1_INT_PROC_MISC`（DOC、dt-bindings rp1.h）
+    だが源が特定できず（mailbox PROC_EVENTS ch0/ch3 は HW 2026-11-04 で否定）、源だけを止める方法も無かった（MSIX_CFG の
+    ENABLE は TEST も止める）。往復の数値は vector 57 と 29 で差が無い（下）。
   - 受け手の約束: 起床は合図。起床のたびと、起床が無くても上限付きの待ち（`linux-doorbell` は 10 ms）ごとにデータを見直す。
     Linux が vector を有効にする前（UIO の最初の `write(1)` の前）のパルスは失われる。UIO が無効の間（起床から `write(1)`
     まで）の複数のパルスは 1 回にまとまる（lazy disable）。
   - 往復（Linux が GPIO27 INTF ドアベル → proc1 が link+0x14 に返してパルス → `poll`+`read` で起床）: cold boot 2 回で
     2000 回 p50 8.5 / p99 10.3〜10.7 / max 14.5〜17.5 µs、5000 回 p50 7.8〜8.6 / p99 10.4〜10.9 / max 14.8〜16.8 µs。
     同じ起動のポーリングは p50 2.4 µs。空振り起床・重複は 0（UIO の計数は通知数と一致。SCMI の要求が無い間の測定）。
+    vector 29（HW 2026-11-05、cold boot 2 回）: 2000 回 p50 8.6〜8.8 / p99 10.6〜12.1 / max 14.1〜14.5 µs、5000 回 p50 8.7〜9.7 /
+    p99 10.6〜11.7 / max 19.9〜26.1 µs、SCMI 要求 600 回と並行の 2000 回 p50 8.3〜9.1 / p99 10.2〜10.9 µs。空振り・取りこぼし・
+    重複 0。SCMI 要求 60 回で `rp1:irq` の起床 0。非 root（UIO を group 所有 0660 にした uid 1000）でも同じ（2000 回 p50 8.7 µs）。
+  - 起動直後の `stale=1`（HW 2026-11-05）: ポーリング中も proc1 はパルスするので、返答 2 回以上のポーリングの後に UIO を
+    開くと、マスク中に保留された 1 エッジが最初の `write(1)` で再送される（返答 1 回なら 0、IRQ → IRQ なら 0 を実機で確認）。
+    不具合ではなく、受け手の見直しで吸収される。
   - 注意: ノードをルートに置くと fw_devlink が rp1 ノードを供給元として待ち続け deferred になる（HW）。rp1 の子に置く。
     UIO の reg は PCIE_APBS の 16 KiB（16K ページのカーネルの最小単位）だが、マップは使わない。
 - 未測定: M3 から見た Linux DDR の遅延・帯域。
@@ -372,6 +378,7 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | 2026-10-28 | 束案は成立（HW: ≥32 MiB、約 2.9 MiB/s、配置は /chosen から読む、bootargs はトークン照合）。DTB に残りの BOOT_ORDER は無いので、失敗時の次の方法は set_reboot_order か EEPROM の BOOT_ORDER で決める（loader.md §3） | HW（2026-10-28） |
 | 2026-10-28 | PoC ローダーの遅さの主因は TFTP ではなくソフトウェアの gzip 展開（約 18 s）と SHA-256（約 15 s）。I2C 約 3.4 s。旧記録の「initramfs に 36 秒」は誤帰属（loader.md §0） | 実機ログ + コード |
 | 2026-10-28 | hwirq58 は rp1-mailbox が専有し UIO と共有できない（HW）。mailbox・SCMI・remoteproc を disabled にすれば UIO が取れ、IRQ 往復 p50 71 µs（うち M3 の SCMI 処理約 60 µs）、通知ごとに空振り 1 回（HW）。SCMI クロック（既定）と両立しないので v0.1 は mailbox/SCMI を残してポーリング（feat/v0.1-core の決定と同じ） | HW（2026-10-28） |
+| 2026-11-05 | proc1 → Linux の割り込みの vector を 57（PROC_MISC、源が未特定）から 29（TIMER アラーム 3）に変える。源は `TIMER.INTS` bit 3 で、`host_irq` が `TIMER.ALARM3` を所有し（他の所有は E3）INTE/INTF を立てないので常に 0。Linux の DT に hwirq 26..29 の利用者は無い。仕組み・往復の数値は 57 と同じ | HW（2026-11-05、cold boot 2 回）: INTF bit 3 で 1 回起床・bit 2 で 0 回、源を立てたままのパルスは 10 ms の見直しで全数回収、往復 p50 8.6〜9.7 µs、SCMI・rp1-mailbox・UART1 不変。STATIC: 標準 DTB + overlay |
 | 2026-11-04 | proc1 → Linux の割り込みは MSI-X vector 57（PROC_MISC、Linux のドライバ無し）の `MSIX_CFG.TEST` パルスを rp1 の子の generic-uio（`rp1:irq`、エッジ）で受ける。hwirq58・mailbox・SCMI は変えない。PROC_MISC の源（未特定。mailbox PROC_EVENTS ch0/ch3 は HW で否定）を制御できるまで不安定機能（宣言 `host_irq = true` + feature `unstable-host-irq`）とし、`HostIrq` の所有は 1 つ、受け手は上限付きの待ちで見直す。往復 p50 約 8.5 µs、p99 約 11 µs（ポーリングは p50 2.4 µs）。低遅延の通路はポーリング、待ち時間に CPU を使いたくない通路は IRQ | HW（2026-11-04、cold boot 2 回、各 2000 + 5000 回） |
 | 2026-10-29 | ローダー rp1boot v0.1: stable Rust（build-std なし）、DTB と overlay は純 Rust の `rp1-dt`（libfdt と同じ意味、`cargo rp1 check --dtb` と共用）、束は非圧縮 Image を入れてローダーで展開しない、EL2 で恒等写像のキャッシュを有効にしてから SHA-256。PCIe RC には触らず、RP1 の冷起動は Linux の最初の PERSTn 解除を最大 20 s 待つ。失敗は UART10 に理由を出して停止 | HW（2026-10-29、cold boot 2 回 + 負例 1 回）: 電源 → `~ #` 約 31 s（PoC 84〜87 s）、ローダー 1.1 s、dual-core・SCMI v2.0・ttyAMA1・ドアベル・SHM_PASS 成立。束の 1 bit 破損を拒否（loader.md §6） |
 | 2026-10-29 | ライブラリのホットパス（ring の push/pop とバッチ版、SCMI・PCIe エンドポイントの poll の空振り判定）を既定で ISRAM に置き、冷たい経路は `#[rp1_rt::cold]` で共有 SRAM に残す。ring に `push_slice` / `pop_into` を追加。v0.2 の自動配置（共通 ISRAM イメージ分）を `cargo rp1 build` として実装 | HW（2026-10-29、cold boot 2 回）: M3 は約 50 MHz で、共有 SRAM の命令取得が ring の律速。Linux→RP1 0.345 → 5.30 MB/s、RP1→Linux 0.763 → 4.58 MB/s（バッチ）。RP1→Linux は posted 書き込み 0.54 µs/語が律速 |

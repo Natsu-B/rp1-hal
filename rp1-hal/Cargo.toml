@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-# proc1 -> Linux interrupt on RP1 MSI-X vector 57 (`host_irq`). Unstable: the vector's own
-# hardware source (PROC_MISC) is not controlled yet (docs/design.md 6.2).
+# proc1 -> Linux interrupt on RP1 MSI-X vector 29 (`host_irq`, TIMER alarm 3, which host_irq
+# owns). Unstable: delivery is a hint that receivers must re-check (docs/design.md 6.2).
 unstable-host-irq = []
 
 [dependencies]

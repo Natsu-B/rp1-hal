@@ -134,7 +134,7 @@ impl Irq {
 }
 
 /// Linux -> RP1: GPIO27 PROC1_INTF force bit. RP1 -> Linux: either polling the reply word in
-/// the link page, or (4th argument) waiting on the `rp1:irq` UIO node (MSI-X vector 57, which
+/// the link page, or (4th argument) waiting on the `rp1:irq` UIO node (MSI-X vector 29, which
 /// proc1 pulses after the reply; hwirq58 stays with rp1-mailbox / SCMI).
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
@@ -158,8 +158,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(p) => Some(Irq::open(Path::new(p))?),
         None => None,
     };
-    // Interrupt mode: drain anything pending from before, count wakes that came before the
-    // reply (`early`, the receiver must tolerate them) and the UIO event counter span.
+    // Interrupt mode: drain anything pending from before (`stale`), count wakes that came before
+    // the reply (`early`, the receiver must tolerate them) and the UIO event counter span.
+    // `stale=1` is expected after a polling run with 2 or more replies: the first pulse is
+    // delivered and uio_pdrv_genirq masks the line, the next ones are held as one pending edge
+    // (lazy disable) and replayed by the first `enable()` here (HW 2026-11-05).
     // `missed`: the reply was found by a timed re-check, not by a wake.
     let (mut early, mut missed, mut first_count, mut last_count) = (0u32, 0u32, None, 0u32);
     let mut stale = 0u32;
