@@ -189,7 +189,7 @@ fn policy_properties_survive_overlay_application_without_targeting_gpiomem() {
             // A DTB without gpiomem must accept the overlay too.
             for extra in [
                 "",
-                "gpiomem@d0000 { compatible = \"raspberrypi,gpiomem\"; reg = <0xd0000 0x30000>; };",
+                "gpiomem@d0000 { compatible = \"raspberrypi,gpiomem\"; reg = <0xc0 0x400d0000 0x0 0x30000>; };",
             ] {
                 let (fdt, note) = apply_declaration(&d, &BASE.replace("@EXTRA_RP1@", extra));
                 let firmware = fdt.find("/rp1-firmware").unwrap();
