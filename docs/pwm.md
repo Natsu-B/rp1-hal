@@ -86,7 +86,7 @@ does not constitute a HW test of this implementation.
 |---|---|---|
 | PWM0/1 base | 0x40098000 / 0x4009c000 | `peripherals/pwm0.toml`, `pwm1.toml`, peripheral base |
 | GLOBAL_CTRL +0x00 | EN[3:0], SET_UPDATE[31], self-clearing | same, `global_ctrl`; peripheral aliases SET +0x2000, CLR +0x3000 |
-| FIFO_CTRL +0x04 | write zero to disable DREQ[31] and flush[5] | same, `fifo_ctrl`; no FIFO data access |
+| FIFO_CTRL +0x04 | written zero: DREQ_EN[31] off, FLUSH[5] not asserted (the FIFO is unused) | same, `fifo_ctrl`; no FIFO data access |
 | CHAN0..3_CTRL +0x14 + C*0x10 | MODE=1, FIFO_POP_MASK[8]=1; BIND/USEFIFO/SDM/INVERT clear | same, `chanN_ctrl` |
 | CHAN0..3_RANGE +0x18 + C*0x10 | unsigned 32-bit period | same, `chanN_range` |
 | CHAN0..3_PHASE +0x1c + C*0x10 | zero phase | same, `chanN_phase` |

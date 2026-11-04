@@ -322,7 +322,8 @@ fn start(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
     wait(io, RESETS_DONE1, reset, reset)?;
     io.write(base(n) + GLOBAL_CTRL + CLR, 0xf);
     update(io, n);
-    io.write(base(n) + FIFO_CTRL, 0); // DREQ off; no FIFO channel is selected below.
+    // DREQ_EN off (FLUSH is not asserted; the FIFO is unused: no channel sets USEFIFO below).
+    io.write(base(n) + FIFO_CTRL, 0);
     io.write(base(n) + INTE, 0);
     io.write(base(n) + INTF, 0);
     for c in 0..4 {
