@@ -80,6 +80,10 @@ impl Drop for Mapping {
     }
 }
 
+/// Interrupt mode re-checks the reply this often when no wake comes (a lost edge costs at most
+/// this much latency, never a hang).
+const RECHECK_MS: i32 = 10;
+
 /// The `rp1:irq` UIO node (RP1 MSI-X vector `rp1_proto::irq::VECTOR`, no mapping used).
 struct Irq {
     file: File,
@@ -156,7 +160,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // Interrupt mode: drain anything pending from before, count wakes that came before the
     // reply (`early`, the receiver must tolerate them) and the UIO event counter span.
-    let (mut early, mut first_count, mut last_count) = (0u32, None, 0u32);
+    // `missed`: the reply was found by a timed re-check, not by a wake.
+    let (mut early, mut missed, mut first_count, mut last_count) = (0u32, 0u32, None, 0u32);
     let mut stale = 0u32;
     if let Some(irq) = irq.as_mut() {
         irq.enable()?;
@@ -176,19 +181,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         gpio.write(0x2114, 1 << 27);
         let start = Instant::now();
         if let Some(irq) = irq.as_mut() {
+            // A wake is a hint (edges can be lost or merged, rp1_hal::host_irq): re-check the
+            // reply after every wake and after every bounded wait, never sleep on one edge.
             loop {
-                let Some(c) = irq.wait(1000)? else {
-                    return Err(format!("RP1 irq timed out (sequence {sequence})").into());
-                };
-                first_count.get_or_insert(c);
-                last_count = c;
+                let woke = irq.wait(RECHECK_MS)?;
+                if let Some(c) = woke {
+                    first_count.get_or_insert(c);
+                    last_count = c;
+                }
                 match link.read(0x14) {
-                    v if v == sequence => break,
+                    v if v == sequence => {
+                        missed += u32::from(woke.is_none());
+                        break;
+                    }
                     u32::MAX => return Err("BAR2 reads 0xffffffff: PCIe link down".into()),
-                    _ => {
+                    _ if woke.is_some() => {
                         early += 1;
                         irq.enable()?;
                     }
+                    _ if start.elapsed() > Duration::from_secs(1) => {
+                        return Err(format!("RP1 reply timed out (sequence {sequence})").into());
+                    }
+                    _ => {}
                 }
             }
             let elapsed = start.elapsed();
@@ -243,7 +257,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if irq.is_some() {
         let span = first_count.map_or(0, |f| last_count.wrapping_sub(f) + 1);
         println!(
-            "irq events stale={stale} early={early} trailing={trailing} uio_count_span={span}"
+            "irq events stale={stale} early={early} missed={missed} trailing={trailing} uio_count_span={span}"
         );
     }
     Ok(())
