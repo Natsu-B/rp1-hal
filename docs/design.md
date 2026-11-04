@@ -270,10 +270,11 @@ RMW atomic のメソッドは持たない。
   - **不安定の理由（PROC_MISC の割り込み源）**: Linux の rp1 ドライバの番号表で 57 は `RP1_INT_PROC_MISC`（DOC、dt-bindings
     rp1.h）。データシートには番号ごとの割り込み源の表は無い（DOC、TEST bit の説明だけ）。M3 側の NVIC 57 は SYSCFG
     `PROC_EVENTS`（0x40008008）の channel 0、つまり Linux → proc0 の mailbox ドアベル（SCMI の要求）で上がる（HW 2026-09-27、
-    channel 1 は上がらない。公式 FW は `0xf8000008` bit0 を立ててから有効化、STATIC）。同じ源が MSI-X vector 57 にも出るなら、
-    SCMI 要求ごとに Linux に空振り起床が 1 回あり、proc0 がそのビットを消すまで（proc0 は main loop でポーリングして CLR する）
-    vector 57 の源が立ったままになり、その間の TEST パルスはエッジにならず失われる（HYP）。源だけを止める方法は無い:
-    MSIX_CFG の ENABLE は TEST も一緒に止め、PROC_EVENTS ch0 は SCMI が要る。代替は、RP1 が源を握れる vector（例: 誰も
+    channel 1 は上がらない。公式 FW は `0xf8000008` bit0 を立ててから有効化、STATIC）。しかし Linux 側の vector 57 には
+    出ない（HW 2026-11-04、cold boot 2 回）: `rp1:irq` を有効にしたまま SCMI の要求（ch0）を 60 回送っても起床 0、PROC_EVENTS
+    bit3 を立てたままでも起床 0 で INTSTATH bit25 は 0。SCMI 要求 600 回と並行した往復 2000 回でも空振り・取りこぼし 0。
+    よって vector 57 の本来の源は未特定のまま（候補 2 つは HW で否定）。源だけを止める方法は無い（MSIX_CFG の ENABLE は
+    TEST も一緒に止める）ので、源が立っている間のパルスは失われうる（HYP）。代替は、RP1 が源を握れる vector（例: 誰も
     使わない TIMER アラームの IRQ 26..29 で INTE を 0 のままにする）だが未試験（HYP）。
   - 受け手の約束: 起床は合図。起床のたびと、起床が無くても上限付きの待ち（`linux-doorbell` は 10 ms）ごとにデータを見直す。
     Linux が vector を有効にする前（UIO の最初の `write(1)` の前）のパルスは失われる。UIO が無効の間（起床から `write(1)`
@@ -371,7 +372,7 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | 2026-10-28 | 束案は成立（HW: ≥32 MiB、約 2.9 MiB/s、配置は /chosen から読む、bootargs はトークン照合）。DTB に残りの BOOT_ORDER は無いので、失敗時の次の方法は set_reboot_order か EEPROM の BOOT_ORDER で決める（loader.md §3） | HW（2026-10-28） |
 | 2026-10-28 | PoC ローダーの遅さの主因は TFTP ではなくソフトウェアの gzip 展開（約 18 s）と SHA-256（約 15 s）。I2C 約 3.4 s。旧記録の「initramfs に 36 秒」は誤帰属（loader.md §0） | 実機ログ + コード |
 | 2026-10-28 | hwirq58 は rp1-mailbox が専有し UIO と共有できない（HW）。mailbox・SCMI・remoteproc を disabled にすれば UIO が取れ、IRQ 往復 p50 71 µs（うち M3 の SCMI 処理約 60 µs）、通知ごとに空振り 1 回（HW）。SCMI クロック（既定）と両立しないので v0.1 は mailbox/SCMI を残してポーリング（feat/v0.1-core の決定と同じ） | HW（2026-10-28） |
-| 2026-11-04 | proc1 → Linux の割り込みは MSI-X vector 57（PROC_MISC、Linux のドライバ無し）の `MSIX_CFG.TEST` パルスを rp1 の子の generic-uio（`rp1:irq`、エッジ）で受ける。hwirq58・mailbox・SCMI は変えない。PROC_MISC の源（mailbox ch0 の PROC_EVENTS と推定）を制御できるまで不安定機能（宣言 `host_irq = true` + feature `unstable-host-irq`）とし、`HostIrq` の所有は 1 つ、受け手は上限付きの待ちで見直す。往復 p50 約 8.5 µs、p99 約 11 µs（ポーリングは p50 2.4 µs）。低遅延の通路はポーリング、待ち時間に CPU を使いたくない通路は IRQ | HW（2026-11-04、cold boot 2 回、各 2000 + 5000 回） |
+| 2026-11-04 | proc1 → Linux の割り込みは MSI-X vector 57（PROC_MISC、Linux のドライバ無し）の `MSIX_CFG.TEST` パルスを rp1 の子の generic-uio（`rp1:irq`、エッジ）で受ける。hwirq58・mailbox・SCMI は変えない。PROC_MISC の源（未特定。mailbox PROC_EVENTS ch0/ch3 は HW で否定）を制御できるまで不安定機能（宣言 `host_irq = true` + feature `unstable-host-irq`）とし、`HostIrq` の所有は 1 つ、受け手は上限付きの待ちで見直す。往復 p50 約 8.5 µs、p99 約 11 µs（ポーリングは p50 2.4 µs）。低遅延の通路はポーリング、待ち時間に CPU を使いたくない通路は IRQ | HW（2026-11-04、cold boot 2 回、各 2000 + 5000 回） |
 | 2026-10-29 | ローダー rp1boot v0.1: stable Rust（build-std なし）、DTB と overlay は純 Rust の `rp1-dt`（libfdt と同じ意味、`cargo rp1 check --dtb` と共用）、束は非圧縮 Image を入れてローダーで展開しない、EL2 で恒等写像のキャッシュを有効にしてから SHA-256。PCIe RC には触らず、RP1 の冷起動は Linux の最初の PERSTn 解除を最大 20 s 待つ。失敗は UART10 に理由を出して停止 | HW（2026-10-29、cold boot 2 回 + 負例 1 回）: 電源 → `~ #` 約 31 s（PoC 84〜87 s）、ローダー 1.1 s、dual-core・SCMI v2.0・ttyAMA1・ドアベル・SHM_PASS 成立。束の 1 bit 破損を拒否（loader.md §6） |
 | 2026-10-29 | ライブラリのホットパス（ring の push/pop とバッチ版、SCMI・PCIe エンドポイントの poll の空振り判定）を既定で ISRAM に置き、冷たい経路は `#[rp1_rt::cold]` で共有 SRAM に残す。ring に `push_slice` / `pop_into` を追加。v0.2 の自動配置（共通 ISRAM イメージ分）を `cargo rp1 build` として実装 | HW（2026-10-29、cold boot 2 回）: M3 は約 50 MHz で、共有 SRAM の命令取得が ring の律速。Linux→RP1 0.345 → 5.30 MB/s、RP1→Linux 0.763 → 4.58 MB/s（バッチ）。RP1→Linux は posted 書き込み 0.54 µs/語が律速 |
 | 2026-10-29 | 上の 2026-10-28「PLL / clk_sys を書かない」を改める。`clocks::Authority::init`（旧 `adopt`）が、`cold::clocks` でロックした PLL_SYS（1 GHz /5 /1）へ clk_sys の mux を切り替える（CLK_SYS_CTRL.SRC=2 のみ書き、CLK_SYS_SEL=4 を待つ。DIV_INT=1 と PLL の組を事前に確認、200 MHz 以外は不可）。`Clocks` はレジスタから読み戻した値で、I2C の SCL カウントは clk_sys から計算、UART/log は clk_uart を読む。レジスタ待ちは 1 MHz タイマーで 10 ms | HW（2026-10-29、cold boot 2 回）: SysTick 200.1 / 199.9 MHz、SEL=4。I2C SCL 100.1 / 400.0 kHz（ESP32 RMT）。バッチ ring RP1→Linux 4.41 → 14.14 MB/s、Linux→RP1 5.57 → 22.20 MB/s、ドアベル p50 4.43 → 2.32 µs。SCMI の uart 50 MHz / uart_apb 100 MHz は clk_sys と独立（PLL_SYS PRI_PH、DOC clk-rp1）で変わらない。PoC で実機確認済みの手順（2026-10-22）の移植 |
