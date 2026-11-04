@@ -9,6 +9,10 @@ name = "shm-firmware"
 test = false
 bench = false
 
+[features]
+default = []
+sram-profile = []
+
 [dependencies]
 rp1-hal = { path = "../../rp1-hal", features = ["unstable-host-irq"] }
 rp1-rt = { path = "../../rp1-rt" }

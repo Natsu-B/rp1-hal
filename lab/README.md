@@ -7,6 +7,28 @@ accounting, M3 scalar DDR read latency/read bandwidth/posted-write bandwidth, an
 M3 per-message push/pop cost (commands 7/8, Linux idle on the link page).
 Rates include API/loop overhead; M3 writes include a same-window read to drain PCIe writes.
 
+STATIC: the SRAM/DDR micro-profile (command 9) is opt-in. The default firmware and
+`shm-linux` omit it; `shm-linux` prints `PROFILE skipped`. Set `SHM_PROFILE=1` when using
+`lab/build-shm.sh` to enable `sram-profile` in both binaries, and pass `--profile` to
+`lab/verify-shm.py`. For direct builds, pass `--features sram-profile` to both packages.
+A profile-enabled client with a default firmware gets a command error; it must not be
+reported as a successful profile. A disabled command 9 follows the existing unknown-command
+path (`errors=1`); it never touches the bulk scratch or starts SysTick.
+
+STATIC size measurement (rustc 1.99.1, release, `cargo rp1 build` two-stage link):
+
+| Firmware | SRAM image / 49152 B | Free | ISRAM / 8192 B | DSRAM static |
+|---|---:|---:|---:|---:|
+| Before (all proofs + profile) | 49128 | 24 | 3684 | 656 |
+| Default (all proofs) | 45408 | 3744 | 3096 | 16 |
+
+The SRAM image includes ISRAM/DSRAM load copies and linker alignment; ELF file length is
+not the SRAM budget. Numbers are compiler-dependent. HW 未検証: cold-boot the default tuple,
+run `lab/check-shm.sh`, and require `PROFILE skipped`, `SHM_PASS`, the peripheral replies
+and the normal verifier's pass. Repeat with `SHM_PROFILE=1` and `verify-shm.py --profile`;
+require `PROF_DONE` and command 9 `errors=0` before `SHM_PASS`. Also pair a profile client
+with a default firmware once and require a non-zero client exit for command 9.
+
 Build with `bash lab/build-shm.sh` and `python3 lab/pack-shm.py`. Locations come from the
 environment: `SHM_ARTIFACT_ROOT`, `RP1_LOADER_ROOT`, `RP1_BASE_DTB` (build), and
 `SHM_ARTIFACT_ROOT`, `RP1_INITRAMFS`, `RP1_INITRAMFS_HELPER` (pack); see each script header.
@@ -46,8 +68,9 @@ limit, any non-zero exit or wrong I2C reply prints `CHECK_FAIL`, the script ends
 runs `python3 lab/verify-shm.py --uart0 U0 --uart10 U10 --result OBSERVER_JSON`, which needs
 the capture's `"complete": true`, the UART10 markers in order (`SHM_PASS`, `SHM_RC=0`, both
 doorbells, `I2C_REPLY=0x00000001`, `ADC_REPLY=0x00000ADC`, `SPI_REPLY=0x000005B1`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
-`PROF_DONE`, `proc1 shm cmd=9 ... errors=0`, the three `I2C_PASS` lines and
-`I2C_RESULT request=1 Ok`. The ADC is declared on proc1 in `shm-firmware`: proc1 gets its
+the three `I2C_PASS` lines and
+`I2C_RESULT request=1 Ok` (with `--profile`, also `PROF_DONE` and
+`proc1 shm cmd=9 ... errors=0`). The ADC is declared on proc1 in `shm-firmware`: proc1 gets its
 `Clocks` with `Clocks::wait_from_proc0`, runs the boot burst (`p1 adc init Ok`,
 `ADC_P1BOOT ... PASS`) and answers Linux's 0xadc request (`ADC_P1REQ ... PASS`).
 `check-shm.sh` issues that request itself, after the doorbell, shm and I2C steps (the burst

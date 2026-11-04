@@ -6,6 +6,7 @@ use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
 mod adc_proof;
 mod i2c_proof;
+#[cfg(feature = "sram-profile")]
 mod prof;
 mod spi_proof;
 #[shared]
@@ -332,6 +333,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             }
             10 | 12 => errors = up_batch(&mut up, count, start),
             11 | 13 => errors = down_batch(&mut down, count, start),
+            #[cfg(feature = "sram-profile")]
             9 => {
                 // Lab micro-profile (ends with PROF_DONE); RP1 holds the bulk writer role and uses
                 // it as DDR scratch. Its SRAM scratch is a linker-placed `.shared` static.
