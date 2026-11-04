@@ -1,7 +1,7 @@
 // Generated from rp1-regdb/data/pinmux/bank0.toml; do not edit.
 //! DOC: bank-0 routes of the signals rp1-hal drives, with their function select
 //! (RP1 Peripherals Table 4). SPI4 is slave-only and has no driver.
-use crate::{gpio::Pin, i2c, spi, uart};
+use crate::{gpio::Pin, i2c, pwm, spi, uart};
 impl i2c::Scl<0> for Pin<1> {
     const FUNC: u8 = 3;
 }
@@ -54,6 +54,24 @@ impl i2c::Sda<3> for Pin<14> {
     const FUNC: u8 = 3;
 }
 impl i2c::Sda<3> for Pin<22> {
+    const FUNC: u8 = 3;
+}
+impl pwm::PinRoute<0, 0> for Pin<12> {
+    const FUNC: u8 = 0;
+}
+impl pwm::PinRoute<0, 1> for Pin<13> {
+    const FUNC: u8 = 0;
+}
+impl pwm::PinRoute<0, 2> for Pin<14> {
+    const FUNC: u8 = 0;
+}
+impl pwm::PinRoute<0, 2> for Pin<18> {
+    const FUNC: u8 = 3;
+}
+impl pwm::PinRoute<0, 3> for Pin<15> {
+    const FUNC: u8 = 0;
+}
+impl pwm::PinRoute<0, 3> for Pin<19> {
     const FUNC: u8 = 3;
 }
 impl spi::Miso<0> for Pin<9> {

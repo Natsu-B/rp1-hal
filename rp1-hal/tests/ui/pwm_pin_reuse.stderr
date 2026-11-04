@@ -1,0 +1,9 @@
+error[E0382]: use of moved value: `pin`
+ --> tests/ui/pwm_pin_reuse.rs:4:13
+  |
+2 | fn bad(ch: Channel<0, 0>, pin: Pin<12>) {
+  |                           --- move occurs because `pin` has type `rp1_hal::gpio::Pin<12>`, which does not implement the `Copy` trait
+3 |     let _output = ch.output(pin);
+  |                             --- value moved here
+4 |     let _ = pin.into_output(false);
+  |             ^^^ value used here after move

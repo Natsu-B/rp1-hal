@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf, process::Command};
 
-use rp1_pinmux::{I2cSignal, Signal, SpiSignal, UartSignal, candidate_pins, funcsel};
+use rp1_pinmux::{I2cSignal, PwmSignal, Signal, SpiSignal, UartSignal, candidate_pins, funcsel};
 use rp1_regdb::pinmux::{self, Bank0};
 
 fn root() -> PathBuf {
@@ -73,7 +73,7 @@ fn numbers(text: &str) -> Vec<u8> {
 }
 
 /// rp1-hal's generated routes are exactly the UART0..4 TX/RX, I2C0..3 and SPI master
-/// SCLK/MOSI/MISO cells of the table, and include the hardware-tested ones.
+/// SCLK/MOSI/MISO and PWM0 channel cells of the table, and include the hardware-tested ones.
 #[test]
 fn hal_routes_agree_with_the_table_in_both_directions() {
     let hal = fs::read_to_string(root().join("../rp1-hal/src/pinmux.rs")).unwrap();
@@ -81,8 +81,17 @@ fn hal_routes_agree_with_the_table_in_both_directions() {
     for line in hal.lines().filter(|line| line.starts_with("impl ")) {
         let (route, rest) = line["impl ".len()..].split_once('<').unwrap();
         let nums = numbers(rest);
-        let (n, pin) = (nums[0], nums[1]);
+        let (n, pin) = (nums[0], *nums.last().unwrap());
         let signal = match route {
+            "pwm::PinRoute" => Signal::Pwm(
+                n,
+                [
+                    PwmSignal::Channel0,
+                    PwmSignal::Channel1,
+                    PwmSignal::Channel2,
+                    PwmSignal::Channel3,
+                ][nums[1] as usize],
+            ),
             "uart::Tx" => Signal::Uart(n, UartSignal::Tx),
             "uart::Rx" => Signal::Uart(n, UartSignal::Rx),
             "i2c::Sda" => Signal::I2c(n, I2cSignal::Sda),
@@ -115,9 +124,18 @@ fn hal_routes_agree_with_the_table_in_both_directions() {
         signals
             .extend([SpiSignal::Sclk, SpiSignal::Mosi, SpiSignal::Miso].map(|r| Signal::Spi(n, r)));
     }
+    signals.extend(
+        [
+            PwmSignal::Channel0,
+            PwmSignal::Channel1,
+            PwmSignal::Channel2,
+            PwmSignal::Channel3,
+        ]
+        .map(|r| Signal::Pwm(0, r)),
+    );
     let expected: usize = signals.iter().map(|&s| candidate_pins(s).count()).sum();
     assert_eq!(routes.len(), expected);
-    assert_eq!(expected, 10 + 18 + 15);
+    assert_eq!(expected, 10 + 18 + 15 + 6);
     for &signal in &signals {
         for pin in candidate_pins(signal) {
             assert!(routes.contains(&(pin, signal)), "GPIO{pin} {signal:?}");

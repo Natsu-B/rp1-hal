@@ -88,8 +88,8 @@ pub fn generate_hal(bank: &Bank0, output: &Path) -> Result<()> {
     let mut routes = Vec::new();
     for pin in &bank.pins {
         for (func, name) in pin.functions.iter().enumerate() {
-            if let Some((route, n)) = hal_route(name) {
-                routes.push((route, n, pin.gpio, func));
+            if let Some(route) = hal_route(name) {
+                routes.push((route, pin.gpio, func));
             }
         }
     }
@@ -98,20 +98,24 @@ pub fn generate_hal(bank: &Bank0, output: &Path) -> Result<()> {
         "// Generated from rp1-regdb/data/pinmux/bank0.toml; do not edit.\n\
          //! DOC: bank-0 routes of the signals rp1-hal drives, with their function select\n\
          //! (RP1 Peripherals Table 4). SPI4 is slave-only and has no driver.\n\
-         use crate::{gpio::Pin, i2c, spi, uart};\n",
+         use crate::{gpio::Pin, i2c, pwm, spi, uart};\n",
     );
-    for (route, n, gpio, func) in routes {
+    for (route, gpio, func) in routes {
         writeln!(
             out,
-            "impl {route}<{n}> for Pin<{gpio}> {{ const FUNC: u8 = {func}; }}"
+            "impl {route} for Pin<{gpio}> {{ const FUNC: u8 = {func}; }}"
         )?;
     }
     write_rust(output, &out)
 }
 
 /// The rp1-hal pin trait and instance of a bank-0 signal name, e.g. `UART2_TX` →
-/// `("uart::Tx", 2)`; `None` for signals the HAL does not route.
-fn hal_route(name: &str) -> Option<(&'static str, u8)> {
+/// `"uart::Tx<2>"`; `None` for signals the HAL does not route.
+fn hal_route(name: &str) -> Option<String> {
+    if let Some(channel) = name.strip_prefix("PWM0[").and_then(|s| s.strip_suffix(']')) {
+        let channel: u8 = channel.parse().ok()?;
+        return Some(format!("pwm::PinRoute<0, {channel}>"));
+    }
     let (block, role) = name.split_once('_')?;
     let family = block.trim_end_matches(|c: char| c.is_ascii_digit());
     let n: u8 = block[family.len()..].parse().ok()?;
@@ -126,7 +130,7 @@ fn hal_route(name: &str) -> Option<(&'static str, u8)> {
         ("SPI", "SIO[1]") => "spi::Miso",
         _ => return None,
     };
-    Some((route, n))
+    Some(format!("{route}<{n}>"))
 }
 
 fn write_rust(output: &Path, text: &str) -> Result<()> {
