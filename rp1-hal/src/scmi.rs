@@ -14,7 +14,7 @@
 //!   out). Linux's enable/disable and rate requests program the generator (CTRL.ENABLE, AUXSRC and
 //!   the divider), restricted to the parents RP1 keeps running (XOSC and the PLL_SYS outputs).
 //!
-//! A Linux-kind clock whose block the image declares (v0.1: `ADC`) is *held* by RP1
+//! A Linux-kind clock whose block the image declares (ADC or PWM) is *held* by RP1
 //! ([`Server::holding`], from [`crate::linux_blocks::LinuxBlocks::held_clocks`]): the block's
 //! driver owns the generator, Linux's node is disabled by the overlay, and the server treats the
 //! clock like a fixed one at whatever the generator runs (rate changes `DENIED`, enable/disable
@@ -974,31 +974,30 @@ mod tests {
 
     #[test]
     fn held_clock_reports_but_never_changes() {
-        // An image that declares ADC: RP1's driver runs clk_adc at XOSC / 1.
-        let mut s = server().holding(1 << id::ADC);
-        let adc = generator(id::ADC);
-        s.hw.regs.insert(adc.ctrl, CTRL_ENABLE);
-        s.hw.regs.insert(adc.ctrl + 4, 1);
-        assert_eq!(req(&mut s, 0x14, 3, &[id::ADC])[..2], [0, 1]);
-        assert_eq!(req(&mut s, 0x14, 6, &[id::ADC]), [0, 50_000_000, 0]);
-        assert_eq!(req(&mut s, 0x14, 4, &[id::ADC, 0]), [0, 1, 50_000_000, 0]);
-        assert_eq!(req(&mut s, 0x14, 4, &[id::ADC, 1]), [0, 0]);
-        assert_eq!(req(&mut s, 0x14, 4, &[id::ADC, 2])[0] as i32, -2);
-        assert_eq!(
-            req(&mut s, 0x14, 5, &[0, id::ADC, 25_000_000, 0])[0] as i32,
-            -3
-        );
-        assert_eq!(req(&mut s, 0x14, 5, &[0, id::ADC, 50_000_000, 0]), [0]);
-        // clk_disable_unused / a consumer's disable: a vote only, the clock stays on.
-        assert_eq!(req(&mut s, 0x14, 7, &[id::ADC, 1]), [0]);
-        assert_eq!(s.votes(), 1 << id::ADC);
-        assert_eq!(req(&mut s, 0x14, 7, &[id::ADC, 0]), [0]);
-        assert_eq!(s.votes(), 0);
-        assert_eq!(req(&mut s, 0x14, 3, &[id::ADC])[1], 1);
-        assert!(s.hw.writes.is_empty());
-        // Other Linux clocks are unaffected.
-        assert_eq!(req(&mut s, 0x14, 7, &[id::DMA, 1]), [0]);
-        assert_eq!(s.hw.writes.len(), 1);
+        // Each declared block holds its generator against Linux changes.
+        for (id, aux) in [(id::ADC, 0), (id::PWM0, 2), (id::PWM1, 2)] {
+            let mut s = server().holding(1 << id);
+            let adc = generator(id);
+            s.hw.regs.insert(adc.ctrl, CTRL_ENABLE | (aux << 5));
+            s.hw.regs.insert(adc.ctrl + 4, 1);
+            assert_eq!(req(&mut s, 0x14, 3, &[id])[..2], [0, 1]);
+            assert_eq!(req(&mut s, 0x14, 6, &[id]), [0, 50_000_000, 0]);
+            assert_eq!(req(&mut s, 0x14, 4, &[id, 0]), [0, 1, 50_000_000, 0]);
+            assert_eq!(req(&mut s, 0x14, 4, &[id, 1]), [0, 0]);
+            assert_eq!(req(&mut s, 0x14, 4, &[id, 2])[0] as i32, -2);
+            assert_eq!(req(&mut s, 0x14, 5, &[0, id, 25_000_000, 0])[0] as i32, -3);
+            assert_eq!(req(&mut s, 0x14, 5, &[0, id, 50_000_000, 0]), [0]);
+            // clk_disable_unused / a consumer's disable: a vote only, the clock stays on.
+            assert_eq!(req(&mut s, 0x14, 7, &[id, 1]), [0]);
+            assert_eq!(s.votes(), 1 << id);
+            assert_eq!(req(&mut s, 0x14, 7, &[id, 0]), [0]);
+            assert_eq!(s.votes(), 0);
+            assert_eq!(req(&mut s, 0x14, 3, &[id])[1], 1);
+            assert!(s.hw.writes.is_empty());
+            // Other Linux clocks are unaffected.
+            assert_eq!(req(&mut s, 0x14, 7, &[id::DMA, 1]), [0]);
+            assert_eq!(s.hw.writes.len(), 1);
+        }
     }
 
     #[test]

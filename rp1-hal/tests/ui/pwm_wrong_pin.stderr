@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+ --> tests/ui/pwm_wrong_pin.rs:3:23
+  |
+3 |     let _ = ch.output(pin);
+  |                ------ ^^^ expected `12`, found `13`
+  |                |
+  |                arguments to this method are incorrect
+  |
+  = note: expected struct `Pin<12>`
+             found struct `Pin<13>`
+note: method defined here
+ --> src/pwm.rs
+  |
+  |     pub fn output<const P: u8>(self, pin: Pin<P>) -> Output<N, C, P>
+  |            ^^^^^^

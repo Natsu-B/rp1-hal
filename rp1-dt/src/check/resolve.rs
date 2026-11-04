@@ -355,14 +355,24 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
             _ => {}
         }
     }
+    pwm_consumers(fdt, &mut out)?;
     let reserved = reserved_gpios(fdt)?;
     let withheld: BTreeSet<u32> = reserved.union(&out.pins).copied().collect();
-    if withheld.is_empty() {
+    // An RP1-owned instance with no owned pins still needs the pinctrl check, but only when
+    // the instance has pinmux signals (an enabled node can mux a pin to one of them). Blocks
+    // without any (ADC, DMA) cannot conflict through pinmux. With nothing withheld and no
+    // such block there is nothing to inspect.
+    let needs_mux = out
+        .blocks
+        .iter()
+        .any(|id| matches!(id, 0..=5 | 16..=24 | 32..=38 | 48..=49 | 56..=58 | 66));
+    if withheld.is_empty() && !needs_mux {
         return Ok(out);
     }
-    let gpio = fdt
-        .label("rp1_gpio")
-        .ok_or("board DTB has no node labelled rp1_gpio")?;
+    // Without the controller no consumer can be checked: fail closed, never accept.
+    let Some(gpio) = fdt.label("rp1_gpio") else {
+        return Err("board DTB has no node labelled rp1_gpio".into());
+    };
     for pin in out.pins.difference(&reserved) {
         out.unresolved.push(format!(
             "RP1-owned GPIO{pin} is not in gpio-reserved-ranges"
@@ -693,6 +703,45 @@ fn rp1_irq_lines(
             .map(|spec| ("interrupts", spec[0])),
     );
     Ok(lines)
+}
+
+/// A disabled PWM provider must not leave its Linux consumers eligible to probe.
+/// Parse each specifier with its provider's #pwm-cells; raw cell matching could mistake a
+/// period or duty argument for an owned provider's phandle.
+fn pwm_consumers(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
+    if !out.blocks.iter().any(|id| (48..=49).contains(id)) {
+        return Ok(());
+    }
+    for n in 0..fdt.nodes.len() {
+        if !fdt.enabled(n) || metadata_node(fdt, n) || fdt.prop(n, "pwms").is_none() {
+            continue;
+        }
+        let values = cells(fdt, n, "pwms")?;
+        let mut at = 0;
+        while at < values.len() {
+            let handle = values[at];
+            at += 1;
+            if handle == 0 {
+                continue;
+            } // Empty phandle slot (of_parse_phandle_with_args).
+            let provider = fdt
+                .phandle(handle)
+                .ok_or_else(|| format!("{} pwms: unresolved provider {handle:#x}", fdt.path(n)))?;
+            let count = cells(fdt, provider, "#pwm-cells")?;
+            let count = match count.as_slice() {
+                [count] if *count > 0 => *count as usize,
+                _ => return Err(format!("{}: unsupported #pwm-cells", fdt.path(provider))),
+            };
+            if count > values.len() - at {
+                return Err(format!("{} pwms: truncated specifier", fdt.path(n)));
+            }
+            if let Some(label) = out.owned_blocks.get(&provider) {
+                out.add(n, format!("pwms uses RP1-owned block {label}"));
+            }
+            at += count;
+        }
+    }
+    Ok(())
 }
 
 /// OWNERSHIP block id (`rp1_proto::BlockId`) of the instance a bank-0 signal belongs to.

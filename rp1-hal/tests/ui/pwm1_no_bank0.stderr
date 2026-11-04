@@ -1,0 +1,23 @@
+error[E0277]: the trait bound `rp1_hal::gpio::Pin<_>: PinRoute<1, 0>` is not satisfied
+ --> tests/ui/pwm1_no_bank0.rs:3:23
+  |
+3 |     let _ = ch.output(pin);
+  |                ------ ^^^ the trait `PinRoute<1, 0>` is not implemented for `rp1_hal::gpio::Pin<_>`
+  |                |
+  |                required by a bound introduced by this call
+  |
+  = help: the following other types implement trait `PinRoute<N, C>`:
+            `rp1_hal::gpio::Pin<12>` implements `PinRoute<0, 0>`
+            `rp1_hal::gpio::Pin<13>` implements `PinRoute<0, 1>`
+            `rp1_hal::gpio::Pin<14>` implements `PinRoute<0, 2>`
+            `rp1_hal::gpio::Pin<15>` implements `PinRoute<0, 3>`
+            `rp1_hal::gpio::Pin<18>` implements `PinRoute<0, 2>`
+            `rp1_hal::gpio::Pin<19>` implements `PinRoute<0, 3>`
+note: required by a bound in `Channel::<N, C>::output`
+ --> src/pwm.rs
+  |
+  |     pub fn output<const P: u8>(self, pin: Pin<P>) -> Output<N, C, P>
+  |            ------ required by a bound in this associated function
+  |     where
+  |         Pin<P>: PinRoute<N, C>,
+  |                 ^^^^^^^^^^^^^^ required by this bound in `Channel::<N, C>::output`

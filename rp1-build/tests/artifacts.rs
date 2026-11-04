@@ -70,6 +70,8 @@ fn every_owned_instance_disables_its_linux_node_and_keeps_its_reset_and_clock() 
         ("spi3", "sck=7,mosi=6,miso=5", 1, 13),
         ("spi5", "sck=15,mosi=14,miso=13", 1, 15),
         ("adc", "", 0, 0),
+        ("pwm0", "channel0=12", 1, 4),
+        ("pwm1", "", 1, 5),
     ];
     for (name, pins, bank, bit) in cases {
         for core in [0, 1] {
@@ -89,10 +91,11 @@ fn every_owned_instance_disables_its_linux_node_and_keeps_its_reset_and_clock() 
             let blocks = unsafe { rp1_hal::linux_blocks::LinuxBlocks::new(d.linux_resets()) };
             assert_eq!(
                 blocks.held_clocks(),
-                if name == "adc" {
-                    1 << rp1_hal::scmi::id::ADC
-                } else {
-                    0
+                match name {
+                    "adc" => 1 << rp1_hal::scmi::id::ADC,
+                    "pwm0" => 1 << rp1_hal::scmi::id::PWM0,
+                    "pwm1" => 1 << rp1_hal::scmi::id::PWM1,
+                    _ => 0,
                 },
                 "{name}"
             );
@@ -818,4 +821,15 @@ fn branch_commits_change_watched_git_paths() {
         commit();
         assert_ne!(before, snapshot(&paths), "pack={pack} paths={paths:?}");
     }
+}
+
+#[test]
+fn pwm_resources_keep_pins_and_note_block_ids_without_channel_subownership() {
+    let d: Declaration =
+        toml::from_str("schema=2\n[proc0]\npwm0={channel0=12,channel2=18}\n[proc1]\npwm1={}")
+            .unwrap();
+    let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    assert!(a.dts.contains("gpio-reserved-ranges = <12 1 18 1>;"));
+    assert_eq!(rp1_build::metadata::peripheral_id("PWM0").unwrap(), (2, 48));
+    assert_eq!(rp1_build::metadata::peripheral_id("PWM1").unwrap(), (2, 49));
 }

@@ -88,7 +88,7 @@ impl LinuxBlocks {
         self.resets
     }
     /// SCMI clock IDs (one bit each) of the Linux-kind generators whose block is not Linux's:
-    /// the image declared it (v0.1: only `ADC` can be), so RP1 holds the clock
+    /// the image declared it (ADC or PWM), so RP1 holds the clock
     /// ([`crate::scmi::Server::holding`]) and [`bring_up`] leaves the generator to its driver.
     pub const fn held_clocks(&self) -> u32 {
         let mut held = 0;

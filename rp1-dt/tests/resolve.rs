@@ -940,3 +940,171 @@ fn enforce_reads_policy_applies_or_refuses_without_mutation() {
     let before = fdt.clone();
     assert!(check::enforce(&before, &mut fdt, &note).is_err());
 }
+
+#[test]
+fn owned_pwm_consumers_are_disabled_even_without_owned_gpio_pins() {
+    for (block, id) in [("rp1_pwm0", 48), ("rp1_pwm1", 49)] {
+        let (mut fdt, _) = fixture(&format!(
+            r#"
+/ {{
+    {block}: pwm {{ #pwm-cells=<3>; status="disabled"; }};
+    other_pwm: other-pwm {{ #pwm-cells=<2>; }};
+    fan {{ pwms=<&other_pwm 0 1000000 &{block} 2 1000000 0>; }};
+    unrelated {{ pwms=<&other_pwm 0 123>; }};
+}};
+"#
+        ));
+        let note = descriptor(&[(2, id)]);
+        set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+        // A numeric argument equal to the owned phandle is not a consumer of that block.
+        let handle = fdt.phandle_of(fdt.label(block).unwrap()).unwrap();
+        let other = fdt.phandle_of(fdt.label("other_pwm").unwrap()).unwrap();
+        set(
+            &mut fdt,
+            "/unrelated",
+            "pwms",
+            [other, 0, handle]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        let policy = Policy {
+            gpiomem: Gpiomem::Keep,
+            ..Policy::default()
+        };
+        let plan = resolve(&fdt, &note, policy).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].path, "/fan");
+        assert!(nodes[0].reasons.iter().any(|r| r.contains(block)));
+        let mut after = fdt.clone();
+        apply_plan(&fdt, &mut after, &note, policy, &plan).unwrap();
+        assert!(check::final_conflicts(&after, &note).unwrap().is_empty());
+        refusal(
+            resolve(
+                &fdt,
+                &note,
+                Policy {
+                    on_conflict: OnConflict::Refuse,
+                    ..policy
+                },
+            )
+            .unwrap(),
+            "pwms uses RP1-owned block",
+        );
+    }
+}
+
+#[test]
+fn malformed_pwm_dependencies_fail_closed() {
+    let (mut fdt, _) = fixture(
+        r#"/ { rp1_pwm0: pwm { #pwm-cells=<3>; status="disabled"; }; fan { pwms=<&rp1_pwm0 0 1000>; }; };"#,
+    );
+    let note = descriptor(&[(2, 48)]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+    set(&mut fdt, "/fan", "pwms", vec![1]);
+    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+    set(
+        &mut fdt,
+        "/fan",
+        "pwms",
+        0xdeadbeefu32.to_be_bytes().to_vec(),
+    );
+    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+    set(&mut fdt, "/fan", "pwms", vec![0; 4]);
+    assert!(resolve(&fdt, &note, Policy::default()).is_ok());
+}
+
+#[test]
+fn pwm_pinmux_on_an_unreserved_channel_still_conflicts_with_block_owner() {
+    let (mut fdt, _) = fixture(
+        r#"
+/ { rp1_pwm0: pwm { status="disabled"; }; user { pinctrl-0=<&pwm_group>; }; };
+&rp1_gpio { gpio-reserved-ranges=<12 1>; pwm_group: pwm-group { function="pwm0"; pins="gpio13"; }; };
+"#,
+    );
+    let note = descriptor(&[(1, 12), (2, 48)]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    assert!(
+        disables(&plan).iter().any(
+            |n| n.path == "/user" && n.reasons.iter().any(|r| r.contains("RP1-owned rp1_pwm0"))
+        )
+    );
+}
+
+#[test]
+fn pinless_owned_pwm_still_conflicts_with_pinctrl_mux_to_its_signal() {
+    let (mut fdt, _) = fixture(
+        r#"
+/ { rp1_pwm0: pwm { status="disabled"; }; user { pinctrl-0=<&pwm_group>; }; };
+&rp1_gpio { gpio-reserved-ranges = <>; pwm_group: pwm-group { function="pwm0"; pins="gpio12"; }; };
+"#,
+    );
+    let note = descriptor(&[(2, 48)]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    let policy = Policy {
+        gpiomem: Gpiomem::Keep,
+        ..Policy::default()
+    };
+    let plan = resolve(&fdt, &note, policy).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].path, "/user");
+    assert!(
+        nodes[0]
+            .reasons
+            .iter()
+            .any(|r| r.contains("RP1-owned rp1_pwm0"))
+    );
+    let mut after = fdt.clone();
+    apply_plan(&fdt, &mut after, &note, policy, &plan).unwrap();
+    assert!(check::final_conflicts(&after, &note).unwrap().is_empty());
+    refusal(
+        resolve(
+            &fdt,
+            &note,
+            Policy {
+                on_conflict: OnConflict::Refuse,
+                ..policy
+            },
+        )
+        .unwrap(),
+        "muxes GPIO12 to pwm0",
+    );
+}
+
+#[test]
+fn owned_adc_ignores_unrelated_legacy_numeric_function() {
+    let (mut fdt, _) = fixture(
+        r#"
+/ { rp1_adc: adc { status="disabled"; }; led { pinctrl-0=<&led_group>; }; };
+&rp1_gpio { gpio-reserved-ranges = <>; led_group: led-group { brcm,pins=<22>; brcm,function=<1>; }; };
+"#,
+    );
+    let note = descriptor(&[(2, 64)]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    let policy = Policy {
+        on_conflict: OnConflict::Refuse,
+        gpiomem: Gpiomem::Keep,
+    };
+    let plan = resolve(&fdt, &note, policy).unwrap();
+    assert!(disables(&plan).is_empty());
+}
+
+#[test]
+fn missing_gpio_symbol_fails_closed_for_pinless_pwm_ownership() {
+    let (mut fdt, _) = fixture(
+        r#"
+/ { rp1_pwm0: pwm { status="disabled"; }; user { pinctrl-0=<&pwm_group>; }; };
+&rp1_gpio { gpio-reserved-ranges = <>; pwm_group: pwm-group { function="pwm0"; pins="gpio12"; }; };
+"#,
+    );
+    let note = descriptor(&[(2, 48)]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    let symbols = fdt.find("/__symbols__").unwrap();
+    fdt.remove_prop(symbols, "rp1_gpio");
+    assert!(fdt.label("rp1_gpio").is_none());
+    assert!(resolve(&fdt, &note, Policy::default()).is_err());
+}

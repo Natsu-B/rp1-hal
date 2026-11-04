@@ -365,3 +365,13 @@ cmdline_extra = "quiet"                 # cmdline.txt に足す引数
 2. ボード表（既定の所有権、Linux 必須のもの、DT ラベル、共有メモリの固定領域）は `rp1-build` に同梱（案）。別 crate にすると build.rs から読みにくい。
 3. Linux 側の調整はビルド時に生成する overlay（§3）で行い、ELF に入れてローダーが最後に当てる（2026-10-23 ユーザー指摘で変更）。
 4. 番号（ピン・ブロック・型 ID）の安定性: `rp1-proto` の enum を正本にし、v0.x の間も番号は変えない（案）。
+
+## PWM implementation (STATIC / HW 未検証)
+
+Schema 2 accepts `pwm0 = { channel0 = 12, channel1 = 13, channel2 = 18, channel3 = 19 }`
+on either core. All output pins are optional; `pwm1 = {}` selects an internal-only PWM1 block.
+PWM1 has no bank-0 pin route, and GPIO28..53 remain Linux board lines. The resource is one
+`pwm::Token<N>`; declared output pins remain in `ProcNPins` for explicit channel attachment.
+The entire block, reset and clock are reserved, even for a single output. Another core or
+`linux.keep` cannot claim another channel of the same block. See [PWM](pwm.md) for the API,
+STATIC register evidence and proposed hardware checks.
