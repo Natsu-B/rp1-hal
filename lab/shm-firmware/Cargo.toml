@@ -10,7 +10,7 @@ test = false
 bench = false
 
 [dependencies]
-rp1-hal = { path = "../../rp1-hal" }
+rp1-hal = { path = "../../rp1-hal", features = ["unstable-host-irq"] }
 rp1-rt = { path = "../../rp1-rt" }
 rp1-proto = { path = "../../rp1-proto" }
 embedded-hal = "1"
@@ -38,6 +38,7 @@ gpio_irq = [27]
 timer = ["ALARM1"]
 adc = {}
 spi0 = { sck = 11, mosi = 10, miso = 9 }
+host_irq = true # unstable: RP1 -> Linux interrupt on MSI-X vector 57 (rp1:irq UIO)
 
 [[package.metadata.rp1.shm]]
 name = "up"

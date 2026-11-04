@@ -25,7 +25,10 @@ The link-page first 64 bytes hold handoff magic/PA/size (offsets 0/4/8/12), exis
 request/reply (16/20), published generation/status (24/28), and Linux enable request (32).
 SCMI occupies `0x17c0..0x18c0` relative to the link page; allocations skip it and the ABI tail.
 Linux loads `uio.ko`, then `uio_pdrv_genirq.ko of_id=generic-uio`, and runs `lab/check-shm.sh`.
-UIO is polled: hwirq58 stays with SCMI's mailbox. No cached mapping, kernel patch or private
+UIO is polled, or (after shm enable) proc1 also raises MSI-X vector 57 on the `rp1:irq` UIO after
+each doorbell reply (unstable `host_irq = true`, `linux-doorbell <link> <doorbell> N
+/dev/uio<rp1:irq>`, which re-checks the reply every 10 ms without a wake and reports
+`missed=`); hwirq58 stays with SCMI's mailbox. No cached mapping, kernel patch or private
 kernel API is used. Device mappings never go through libc memcpy/memset.
 
 RP1 calls unsafe `shm::enable` once after the final Linux PERSTn, then one unsafe `Area::attach`
@@ -45,7 +48,7 @@ the capture's `"complete": true`, the UART10 markers in order (`SHM_PASS`, `SHM_
 doorbells, `I2C_REPLY=0x00000001`, `ADC_REPLY=0x00000ADC`, `SPI_REPLY=0x000005B1`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
 `PROF_DONE`, `proc1 shm cmd=9 ... errors=0`, the three `I2C_PASS` lines and
 `I2C_RESULT request=1 Ok`. The ADC is declared on proc1 in `shm-firmware`: proc1 gets its
-`Clocks` with `Clocks::wait_from_proc0`, runs the boot burst (`proc1 adc init Ok`,
+`Clocks` with `Clocks::wait_from_proc0`, runs the boot burst (`p1 adc init Ok`,
 `ADC_P1BOOT ... PASS`) and answers Linux's 0xadc request (`ADC_P1REQ ... PASS`).
 `check-shm.sh` issues that request itself, after the doorbell, shm and I2C steps (the burst
 blocks proc1's doorbell and command handling for tens of ms, so it must not overlap them), and

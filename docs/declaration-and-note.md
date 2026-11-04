@@ -56,6 +56,7 @@ gpio_irq = [27]                           # 割り込みを受けるピン（gpi
 timer = ["ALARM1"]
 adc = {}                                  # ピンの無いブロック
 spi0 = { sck = 11, mosi = 10, miso = 9 }  # ハードの csN は未対応（エラー）
+host_irq = true                           # 不安定: RP1 → Linux 割り込み（rp1-hal の unstable-host-irq、design.md §6.2）
 
 [[package.metadata.rp1.shm]]
 name = "ctl"                              # [a-z][a-z0-9_]{0,23}。UIO 名は rp1:<name>
@@ -128,6 +129,7 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 | インスタンス | `uart0`..`uart4`、`i2c0`..`i2c3`、`spi0`/`spi1`/`spi3`/`spi5`、`adc` | インスタンス全体。信号ごとのピン | IRQ 線、リセットビット、クロック、ラッパー `+0x108`、割り当てたピン |
 | ブロックの一部 | `timer = ["ALARM0".."ALARM3"]` | アラーム単位。タイマーの計数値は全員が読める | 該当 IRQ（26..29） |
 | ピン | `gpio = [..]`、`gpio_irq = [..]` | ピン単位（funcsel、pad、SYS_RIO、イベント選択） | — |
+| RP1 → Linux 割り込み（不安定） | `host_irq = true`（1 コアだけ） | MSI-X vector 57 の `MSIX_CFG.TEST` | `HostIrq`（rp1-hal の feature `unstable-host-irq`）、overlay の `rp1:irq` UIO |
 | バンク | 自動 | ピンを 1 本でも持つと、そのバンクの電圧設定は読むだけ | — |
 | システム | `log`、`clock.authority = "rp1"` | RP1 全体（コアに属さない） | UART0 と GPIO 14/15 / クロック生成器 |
 | Linux | `linux.keep`（省略時はボード既定。書くと既定を置き換える） | インスタンスとピン | 宣言できない（E3/E4） |
@@ -143,7 +145,7 @@ rpi-cm5 のボード表は GPIO 28..53（ETH_RST_N、VBUS など）と Ethernet�
 | E0 | `schema` が未知、知らないキー・インスタンス、形式違反 | `unknown key 'uart9' in proc1 (instances: uart0, .., adc)` |
 | E1 | 同じピンを 2 回（コア間、機能と `gpio`、log と機能、`linux.keep` と RP1） | `GPIO 10 is claimed by both proc1.spi0.mosi and proc0.gpio` |
 | E2 | ピンがその信号を出せない・bank 0 にピンが無い | `proc0.uart2.tx = 6: GPIO6 is UART2_CTS (alt2), not UART2_TX; UART2_TX is on GPIO4` / `SPI6 has no bank-0 pins` |
-| E3 | 同じインスタンスを 2 回（proc0 と proc1、log と core、RP1 と `linux.keep`） | `I2C1 is declared by both proc0 and proc1` |
+| E3 | 同じインスタンスを 2 回（proc0 と proc1、log と core、RP1 と `linux.keep`）、`host_irq` を両コアで | `I2C1 is declared by both proc0 and proc1` |
 | E4 | ボードが Linux に要るピン・ブロック、未対応のインスタンス | `GPIO 32 is board line ETH_RST_N, owned by Linux on rpi-cm5` / `GPIO 0 is kept for Linux (uart1.tx) by board rpi-cm5` / `ETH is required by Linux on rpi-cm5` / `SPI4 is slave-only` / `proc0.uart2.cts: UART flow control is not supported yet` |
 | E5 | 必須信号の欠落、`gpio_irq` が `gpio` に無い | `proc1.spi0 needs sck, mosi, miso` / `gpio_irq 27 is not in proc1.gpio` |
 | E6 | 環境変数 `RP1_BOARD_DTB` があり、その DTB（config.txt の overlay を当てたもの）で起動時に無効化・拒否が起きる | `RP1_BOARD_DTB <file>: rp1boot would disable 1 Linux node(s) ...`（gpiomem 方針だけなら警告） |
