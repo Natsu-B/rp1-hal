@@ -4,6 +4,8 @@
 # The firmware boots the stock DTB (no device_tree=); rp1boot applies RP1.elf's .rp1.dtbo onto it.
 # Required: RP1BOOT_ARTIFACT_ROOT (output dir), RP1_TFTP_ROOT (firmware boot dir with the stock
 # DTB and overlays/), RP1_KERNEL, RP1_INITRAMFS. Optional: RP1_BASE_DTB, RP1_CMDLINE.
+# SHM_FIRMWARE_FEATURES: cargo feature arguments for shm-firmware (e.g. "--no-default-features
+# --features sram-profile"); use the same ones for the `cargo rp1 build` that made RP1_ISRAM_PLAN.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 out=${RP1BOOT_ARTIFACT_ROOT:?set RP1BOOT_ARTIFACT_ROOT to the output directory}
@@ -14,7 +16,8 @@ initramfs=${RP1_INITRAMFS:?set RP1_INITRAMFS to the initramfs}
 cmdline=${RP1_CMDLINE:-earlycon=pl011,0x107d001000,115200n8 console=ttyAMA10,115200 rdinit=/init panic=0 ftrace=nop trace_clock=mono_raw trace_buf_size=256K trace_options=nooverwrite}
 mkdir -p "$out"
 cd "$repo"
-cargo build --offline -p shm-firmware --target thumbv7m-none-eabi --release
+# shellcheck disable=SC2086 # word-split feature arguments
+cargo build --offline -p shm-firmware --target thumbv7m-none-eabi --release ${SHM_FIRMWARE_FEATURES:-}
 cargo build --offline -p rp1boot --target aarch64-unknown-none-softfloat --release
 cp target/thumbv7m-none-eabi/release/shm-firmware "$out/RP1.elf"
 llvm-objcopy -O binary target/aarch64-unknown-none-softfloat/release/rp1boot "$out/rp1boot.img"
