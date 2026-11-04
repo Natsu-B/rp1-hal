@@ -56,8 +56,9 @@ UART0_REQUIRED = [
     ("SPI request result", r"\bSPI_RESULT request=0x5b1 Ok\b"),
 ]
 UART0_PROFILE_REQUIRED = [
+    ("profile firmware", r"\bp0 sram-profile\b"),
     ("profile done", r"\bPROF_DONE\b"),
-    ("profile command", r"\bproc1 shm cmd=9 count=\d+ errors=0\b"),
+    ("profile command", r"\bp1 shm cmd=9 count=\d+ errors=0\b"),
 ]
 UART0_FORBIDDEN = [r"\bI2C_FAIL\b", r"\bpanic", r"\bI2C_RESULT request=1 Err\b", r"\bADC_RESULT\b.*\bErr\b",
                    r"\bSPI_RESULT\b.*\bErr\b", r"\bspi0 init Err\b"]
@@ -82,6 +83,8 @@ def verify(uart0, uart10, result, profile=False):
     for name, pattern in UART0_REQUIRED + (UART0_PROFILE_REQUIRED if profile else []):
         if re.search(pattern, uart0) is None:
             failures.append(f"UART0 {name}: missing ({pattern})")
+    if not profile and re.search(r"\bp0 sram-profile\b", uart0):
+        failures.append("UART0 firmware built with sram-profile but verifying without --profile")
     for text, label, patterns in ((uart10, "UART10", UART10_FORBIDDEN), (uart0, "UART0", UART0_FORBIDDEN)):
         for pattern in patterns:
             line = next((l for l in text.splitlines() if re.search(pattern, l)), None)

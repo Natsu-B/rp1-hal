@@ -15,8 +15,8 @@ case ${SHM_PROFILE:-0} in
     1) profile_args=(--features sram-profile) ;;
     *) echo 'SHM_PROFILE must be 0 or 1' >&2; exit 1 ;;
 esac
-cargo build --offline -p shm-firmware --target thumbv7m-none-eabi --release "${profile_args[@]}"
-cargo build --offline -p shm-linux -p linux-doorbell --target aarch64-unknown-linux-musl --release "${profile_args[@]}"
+cargo build --offline -p shm-firmware --target thumbv7m-none-eabi --release ${profile_args[@]+"${profile_args[@]}"}
+cargo build --offline -p shm-linux -p linux-doorbell --target aarch64-unknown-linux-musl --release ${profile_args[@]+"${profile_args[@]}"}
 cp target/thumbv7m-none-eabi/release/shm-firmware "$out/fw/RP1.elf"
 # The bss smoke test needs a real .bss in the image (review #10).
 arm-none-eabi-size -A "$out/fw/RP1.elf" | awk '$1==".bss" { found = $2 > 0 } END { exit !found }'

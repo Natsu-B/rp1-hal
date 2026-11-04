@@ -50,7 +50,7 @@ class Verify(unittest.TestCase):
 
     def test_profile_is_explicit_and_requires_completion(self):
         profiled = UART10.replace("PROFILE skipped", "PROFILE rp1_us=99 (results on UART0)")
-        done = UART0 + "[t] PROF_DONE\n[t] proc1 shm cmd=9 count=0 errors=0 us=99\n"
+        done = UART0 + "[t] p0 sram-profile\n[t] PROF_DONE\n[t] p1 shm cmd=9 count=0 errors=0 us=99\n"
         self.assertEqual(v.verify(done, profiled, DONE, profile=True), [])
         self.assertTrue(v.verify(UART0, profiled, DONE, profile=True))
         self.assertTrue(v.verify(done.replace("PROF_DONE", ""), profiled, DONE, profile=True))
@@ -58,6 +58,9 @@ class Verify(unittest.TestCase):
         self.assertTrue(v.verify(done, UART10, DONE, profile=True))
         self.assertTrue(v.verify(done, profiled, DONE))
         self.assertTrue(v.verify(UART0, UART10.replace("PROFILE skipped", ""), DONE))
+        # Firmware/client profile mismatch, both directions.
+        self.assertTrue(v.verify(UART0 + "[t] p0 sram-profile\n", UART10, DONE))
+        self.assertTrue(v.verify(done.replace("p0 sram-profile", ""), profiled, DONE, profile=True))
 
     def test_incomplete_capture_fails(self):
         self.assertTrue(v.verify(UART0, UART10, {"complete": False}))
@@ -92,7 +95,7 @@ class Verify(unittest.TestCase):
         self.assertTrue(v.verify(UART0 + "[t] ADC_RESULT boot Err(Precondition)\n", UART10, DONE))
         self.assertTrue(v.verify(UART0, UART10.replace("SPI_REPLY=0x000005B1", "SPI_REPLY=0xFFFFFFFF"), DONE))
         self.assertTrue(v.verify(UART0 + "[t] SPI_RESULT request=0x5b1 Err data hz=1000000 bits=8 code=0x3\n", UART10, DONE))
-        self.assertTrue(v.verify(UART0 + "[t] proc1 spi0 init Err 0x102\n", UART10, DONE))
+        self.assertTrue(v.verify(UART0 + "[t] p1 spi0 init Err 0x102\n", UART10, DONE))
         # 100 MHz must not satisfy the 10 MHz marker.
         self.assertTrue(v.verify(UART0.replace("hz=10000000 ", "hz=100000000 "), UART10, DONE))
         self.assertTrue(v.verify(UART0 + "[t] I2C_FAIL Bus(\"read\", Timeout)\n", UART10, DONE))

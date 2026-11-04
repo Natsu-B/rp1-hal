@@ -87,17 +87,20 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     // 48 KiB shared SRAM image.
     match unsafe { rp1_hal::cold::endpoint_and_syscfg(programmed) } {
         Ok(r) => log!(
-            "proc0 pcie Ok clocks_programmed={} endpoint_programmed={} perstn_wait_us={} link_wait_us={} monitor2=0x{:x}\n",
+            "p0 pcie Ok clocks_programmed={} endpoint_programmed={} perstn_wait_us={} link_wait_us={} monitor2=0x{:x}\n",
             r.clocks_programmed,
             r.endpoint_programmed,
             r.perstn_wait_us,
             r.link_wait_us,
             r.monitor2
         ),
-        Err(e) => log!("proc0 pcie Err({:?})\n", e),
+        Err(e) => log!("p0 pcie Err({:?})\n", e),
     }
     .unwrap();
     log!("p0 ready bss=0x{:x}\n", bss_check(0xb55_0000)).unwrap();
+    // Lets the verifier catch a profile firmware run with a default client (and vice versa).
+    #[cfg(feature = "sram-profile")]
+    log!("p0 sram-profile\n").unwrap();
     p.proc1.launch(&mut core).unwrap();
     #[cfg(feature = "i2c")]
     let mut i2c = {
@@ -127,7 +130,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
             log!("p0 received {}\n", v).unwrap();
         }
         if let Some(r) = perst {
-            log!("proc0 pcie perst {:?}\n", r).unwrap();
+            log!("p0 pcie perst {:?}\n", r).unwrap();
         }
         if let Some(e) = scmi_event {
             log!(
@@ -177,7 +180,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         if !attempted && link_read(link::SHM_REQUEST) == 1 {
             attempted = true;
             let enabled = unsafe { rp1_hal::shm::enable(rp1::SHM_NOTE, &rp1::SHM_NOTE_SHA256) };
-            log!("proc0 shm enable {:?}\n", enabled).unwrap();
+            log!("p0 shm enable {:?}\n", enabled).unwrap();
         }
     }
 }
@@ -218,8 +221,8 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             Err(_) => Err(rp1_hal::spi::Error::Precondition),
         };
         match &spi {
-            Ok(_) => log!("proc1 spi0 init Ok\n"),
-            Err(e) => log!("proc1 spi0 init Err 0x{:x}\n", 0x100 + *e as u32),
+            Ok(_) => log!("p1 spi0 init Ok\n"),
+            Err(e) => log!("p1 spi0 init Err 0x{:x}\n", 0x100 + *e as u32),
         }
         .unwrap();
         let mut spi = spi
@@ -395,7 +398,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         unsafe { control.write(&request) };
         rp1_hal::shm::complete_posted_writes();
         log!(
-            "proc1 shm cmd={} count={} errors={} us={}\n",
+            "p1 shm cmd={} count={} errors={} us={}\n",
             command,
             count,
             errors,
