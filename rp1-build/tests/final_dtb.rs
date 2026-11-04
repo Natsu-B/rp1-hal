@@ -93,6 +93,15 @@ adc = {}
         assert!(fdt.enabled(fdt.label(label).unwrap()), "{label}");
     }
     assert!(rp1_dt_check(&fdt, &note).is_empty());
+    // proc1 -> Linux interrupt: a UIO child of rp1 on MSI-X vector 57 (edge), not hwirq 58.
+    let rp1 = fdt.label("rp1").unwrap();
+    let irq = fdt.child(rp1, "rp1-irq@c040108000").unwrap();
+    assert_eq!(
+        fdt.cells(irq, "interrupts").unwrap(),
+        [rp1_proto::irq::VECTOR, 1]
+    );
+    assert_eq!(fdt.strings(irq, "linux,uio-name"), ["rp1:irq"]);
+    assert!(fdt.enabled(irq));
 }
 
 #[test]

@@ -59,7 +59,23 @@ pub mod uio {
     pub const LINK: &str = "link";
     pub const DOORBELL: &str = "doorbell";
     pub const HEADER: &str = "header";
-    pub const BUILTIN: [&str; 3] = [LINK, DOORBELL, HEADER];
+    /// proc1 -> Linux interrupt (RP1 MSI-X vector `irq::VECTOR`), no mapping use.
+    pub const IRQ: &str = "irq";
+    pub const BUILTIN: [&str; 4] = [LINK, DOORBELL, HEADER, IRQ];
+}
+
+/// proc1 -> Linux interrupt without hwirq 58 (SYSCFG HOST_EVENTS, kept by rp1-mailbox / SCMI).
+/// RP1 forwards each of its 61 interrupt sources to the host as a PCIe MSI-X vector; vector 57
+/// (PROC_MISC) has no Linux driver. RP1 raises it by pulsing that vector's `MSIX_CFG.TEST` bit
+/// (ORed with the source), and Linux receives it on the `rp1:irq` UIO node (edge-triggered).
+pub mod irq {
+    pub const VECTOR: u32 = 57;
+    /// PCIE_APBS `MSIX_CFG(VECTOR)` in the RP1 address space, and its set / clear aliases
+    /// (the same 0x800 / 0xc00 aliases Linux's rp1 driver uses for ENABLE / IACK).
+    pub const MSIX_CFG: u32 = 0x4010_8008 + 4 * VECTOR;
+    pub const MSIX_CFG_SET: u32 = MSIX_CFG + 0x800;
+    pub const MSIX_CFG_CLR: u32 = MSIX_CFG + 0xc00;
+    pub const MSIX_CFG_TEST: u32 = 1 << 1;
 }
 
 /// rpi-cm5 board table: Linux DDR reservation for `shm`. 2 MiB aligned, above the PoC

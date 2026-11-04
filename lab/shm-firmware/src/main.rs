@@ -78,13 +78,13 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         Err(e) => log!("proc0 pcie Err({:?})\n", e),
     }
     .unwrap();
-    log!("proc0 ready shm bss=0x{:x}\n", bss_check(0xb55_0000)).unwrap();
+    log!("p0 ready bss=0x{:x}\n", bss_check(0xb55_0000)).unwrap();
     p.proc1.launch(&mut core).unwrap();
     let i2c = p
         .i2c1
         .init(&clocks, rp1_hal::i2c::Speed::Standard)
         .map_err(|e| e.error);
-    log!("proc0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
+    log!("p0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
     let mut i2c = i2c.ok();
     let mut rx = VALUES.consumer(&mut core);
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
@@ -99,7 +99,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         let (value, perst, scmi_event) =
             idle0(&mut rx, &mut endpoint, &mut scmi, probed, attempted);
         if let Some(v) = value {
-            log!("proc0 received {}\n", v).unwrap();
+            log!("p0 received {}\n", v).unwrap();
         }
         if let Some(r) = perst {
             log!("proc0 pcie perst {:?}\n", r).unwrap();
@@ -159,16 +159,16 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
 
 #[entry(proc1)]
 fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
-    log!("proc1 ready shm bss=0x{:x}\n", bss_check(0xb55_1000)).unwrap();
+    log!("p1 ready bss=0x{:x}\n", bss_check(0xb55_1000)).unwrap();
     // The ADC is declared on proc1: its Clocks come from proc0's clock_authority.init
     // (published before proc0 launches proc1).
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000);
-    log!("proc1 clocks {:?}\n", clocks).unwrap();
+    log!("p1 clocks {:?}\n", clocks).unwrap();
     let adc = match clocks {
         Ok(c) => p.adc.init(&c),
         Err(_) => Err(rp1_hal::adc::Error::Precondition),
     };
-    log!("proc1 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
+    log!("p1 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
     let mut adc = adc.ok();
     if let Some(adc) = adc.as_mut() {
         let r = adc_proof::prove(adc, "P1BOOT");
@@ -477,7 +477,11 @@ unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
 #[rp1_rt::isram]
 fn wait_command(doorbell: &mut Doorbell, control: &rp1_hal::shm::Block<Control>, seen: u32) -> u32 {
     loop {
-        service_doorbell(doorbell);
+        // Interrupt to Linux (rp1:irq) after the reply; only here, in ISRAM: the shared SRAM
+        // image has no room for it in the pre-shm loop, so Linux uses interrupts after shm enable.
+        if service_doorbell(doorbell) {
+            rp1_hal::host_irq::notify();
+        }
         let sequence = control.sequence();
         if sequence != seen || proc1_request(i2c_proof::pending()) {
             return sequence;
@@ -485,7 +489,7 @@ fn wait_command(doorbell: &mut Doorbell, control: &rp1_hal::shm::Block<Control>,
     }
 }
 #[inline(always)]
-fn service_doorbell(doorbell: &mut Doorbell) {
+fn service_doorbell(doorbell: &mut Doorbell) -> bool {
     if doorbell.pending() {
         doorbell.acknowledge();
         unsafe {
@@ -493,7 +497,9 @@ fn service_doorbell(doorbell: &mut Doorbell) {
                 .write_volatile(link_read(link::DOORBELL_REQUEST));
         }
         rp1_proto::barrier();
+        return true;
     }
+    false
 }
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {

@@ -157,6 +157,18 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
             header = rp1_proto::uio::HEADER,
         ),
     );
+    // proc1 -> Linux interrupt (`rp1_proto::irq`): a child of the rp1 node, so the rp1 driver
+    // populates it and its interrupt parent is rp1's MSI-X domain. At the root, fw_devlink
+    // waits for the rp1 node as a supplier forever (HW 2026-11-04: deferred).
+    fragment(
+        "target = <&rp1>",
+        &format!(
+            "rp1-irq@c040108000 {{ compatible = \"generic-uio\"; linux,uio-name = \"rp1:{}\";
+            reg = <0xc0 0x40108000 0x0 0x4000>; interrupts = <{} 1>; status = \"okay\"; }};",
+            rp1_proto::uio::IRQ,
+            rp1_proto::irq::VECTOR
+        ),
+    );
     // Independent of any other reservation (`final_conflicts` rejects overlaps).
     fragment(
         "target-path = \"/reserved-memory\"",
@@ -173,9 +185,9 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         );
     }
     // rp1-mailbox keeps HOST_EVENTS (hwirq 58) and stays SCMI's transport; UIO cannot share that
-    // IRQ (HW 2026-10-28: -EBUSY). v0.1 has no proc1 -> Linux interrupt: the UIO nodes above carry
-    // no interrupts and Linux polls the link page. The PoC OpenAMP remoteproc (mailbox channels
-    // 1..3) has no label; the stock DTB has no such node, so this leaves an empty disabled
+    // IRQ (HW 2026-10-28: -EBUSY). proc1 -> Linux interrupts use MSI-X vector 57 instead
+    // (`rp1_proto::irq`, edge-triggered, `rp1:irq` above); Linux may also poll the link page.
+    // The PoC OpenAMP remoteproc (mailbox channels 1..3) has no label; the stock DTB has no such node, so this leaves an empty disabled
     // `/openamp-address-space` there (inert: no compatible) and disables it in a PoC DT.
     fragment(
         "target-path = \"/\"",

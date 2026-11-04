@@ -12,7 +12,7 @@
     cam0_reg: cam0_reg { gpio = <&rp1_gpio 34 0>; };
     soc-gpio { soc22: grp22 { pins = "gpio22"; }; };
     soc-user { pinctrl-0 = <&soc22>; };
-    rp1 { #address-cells = <1>; #size-cells = <1>;
+    rp1: rp1 { #address-cells = <1>; #size-cells = <1>;
         rp1_clocks: clocks { status = "okay"; };
         rp1_mbox: mailbox@8000 { #mbox-cells = <1>; };
         sram: sram@400000 { #address-cells = <1>; #size-cells = <1>;
