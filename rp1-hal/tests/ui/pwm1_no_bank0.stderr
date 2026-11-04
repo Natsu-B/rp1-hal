@@ -13,7 +13,7 @@ error[E0277]: the trait bound `rp1_hal::gpio::Pin<_>: PinRoute<1, 0>` is not sat
             `rp1_hal::gpio::Pin<15>` implements `PinRoute<0, 3>`
             `rp1_hal::gpio::Pin<18>` implements `PinRoute<0, 2>`
             `rp1_hal::gpio::Pin<19>` implements `PinRoute<0, 3>`
-note: required by a bound in `Channel::<N, C>::output`
+note: required by a bound in `rp1_hal::pwm::Channel::<N, C>::output`
  --> src/pwm.rs
   |
   |     pub fn output<const P: u8>(self, pin: Pin<P>) -> Output<N, C, P>
