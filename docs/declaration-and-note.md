@@ -317,7 +317,7 @@ overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ロ
 | 非 root（gpio グループ）が `/dev/gpiomem0` で IO_BANK0/PADS を直接書く | 防ぐ（既定。HW 2026-10-30: `/dev/gpiomem0` が無い） | `linux.gpiomem = "disable"` でローダーが gpiomem@d0000 を無効化。ページ単位の mmap なのでピン単位では守れない。`"keep"` で残せる |
 | 共有クロック（clk_uart は UART0〜5 共通）を Linux が変える | 条件付き | `clock.authority = "rp1"` なら RP1 が SCMI で変更を拒否できる。`authority = "linux"` で UART0 を RP1、他の UART を Linux が持つ宣言はビルドエラー |
 | 別のノードの pinctrl が、Linux のピンを RP1 所有インスタンスの信号に mux する（`function` 名。STATIC） | 防ぐ（同上） | ローダーの起動時の解決（§3.2） |
-| 同上を旧形式の数値 `brcm,function` で行う | 防ぐ（保守的。数値は翻訳せず、RP1 所有ではないピンへの使用を確かめられないものとして拒否。STATIC） | ビルド時 `cargo rp1 check` の拒否、起動時の Linux 側無効化 |
+| 同上を旧形式の数値 `brcm,function` で行う | 防ぐ（保守的。数値は翻訳せず、RP1 所有ではないピンへの使用を確かめられないものとして拒否。STATIC） | ビルド時 `cargo rp1 check` の拒否。起動時は `on_conflict` に関わらず停止（`RP1BOOT` が Refused。Linux 側だけを無効化する方式は未実装）。RP1 所有ピンへの数値指定は通常の衝突として扱い、既定では無効化 |
 | root が `/dev/mem`・`pinctrl` ツールで直接書く、`uio_group` が UIO の `rp1:doorbell`（IO_BANK0 の 16 KiB）を書く | 防がない | DT では不可能（標準カーネルは `STRICT_DEVMEM` 無効）。型や宣言による保護はセキュリティ境界ではない（設計 §1.2） |
 
 同じ考え方は UART0 以外の RP1 専用ブロック（SPI、I2C、PWM など）にも当てはまる。PWM のようにブロック単位で共有されるもの・
