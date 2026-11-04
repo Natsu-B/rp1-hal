@@ -45,12 +45,20 @@ for periods larger than 65535. Small periods have correspondingly coarse resolut
 
 STATIC: enable/disable use peripheral SET/CLR aliases; every enable, disable, period and duty
 write is followed by SET_UPDATE (GLOBAL_CTRL bit 31, self-clearing), as the Linux driver does
-after its channel writes, and waits for it to clear with a 10 ms raw-timer deadline. Whether a
-new compare appears immediately or at the end of the running period is HW 未検証. No synchronous waveform-observation guarantee is implied
-by returning from a setter. Clock checks reject a changed rate or stopped clock before
-channel writes. `InitError` returns the token; reset/update failures may leave partial
+after its channel writes. Like Linux (`rp1_pwm_apply_config`), nothing waits for the bit to
+clear: if the latch happens at the end of the running period, a bounded wait would fail for
+long periods (u32::MAX ticks is about 86 s). Whether a new compare appears immediately or at
+the end of the running period is HW 未検証. No synchronous waveform-observation guarantee is
+implied by returning from a setter. Clock checks reject a changed rate or stopped clock before
+channel writes; every setter error (`Invalid`, `Enabled`, `Precondition`) is returned before
+any register write, so the cached period always matches RANGE. `Timeout` comes only from the
+reset DONE wait in `init`. `InitError` returns the token; a reset failure may leave partial
 hardware state. `free` consumes ownership on error, without issuing a new token.
-Dropping an output leaves its pin and channel configured; stop it explicitly first.
+`Output::free` disables the channel and clears its MODE (0 = generate 0), as Linux's
+`rp1_pwm_free` clears MODE; the pad stays muxed to the channel, so the pin should then read
+low (DOC/STATIC, HW 未検証). `enable` writes the trailing-edge CTRL value again, as Linux's
+`rp1_pwm_request` does. Dropping an output leaves its pin and channel configured; stop it
+explicitly first.
 
 STATIC: the declaration reserves one block ID (48 or 49), one reset and one clock, regardless
 of the number of output pins. It disables the Linux PWM node, excludes its reset from Linux

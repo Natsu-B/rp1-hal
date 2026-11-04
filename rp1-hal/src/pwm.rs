@@ -25,6 +25,8 @@ const SET: usize = 0x2000;
 const CLR: usize = 0x3000;
 const UPDATE: u32 = 1 << 31;
 const TRAILING_EDGE: u32 = (1 << 8) | 1;
+/// CHANn_CTRL MODE[2:0] (regdb pwm0.toml); 0 = generate 0.
+const MODE_MASK: u32 = 0x7;
 const RESETS_CLR1: usize = 0x4001_7004;
 const RESETS_DONE1: usize = 0x4001_401c;
 const TIMEOUT_US: u32 = 10_000;
@@ -48,7 +50,7 @@ pub enum Error {
     Enabled,
     /// Stale `Clocks`, or clk_pwm is no longer enabled at 50 MHz.
     Precondition,
-    /// Reset DONE or SET_UPDATE did not complete within 10 ms.
+    /// The block's reset DONE did not assert within 10 ms (`Token::init` only).
     Timeout,
 }
 impl embedded_hal::pwm::Error for Error {
@@ -124,9 +126,9 @@ impl<const N: u8> Channels<N> {
     /// ownership is consumed; no second token is issued for an unknown hardware state.
     pub fn free(self) -> Result<Token<N>, Error> {
         let io = &mut Mmio;
-        ready(io, N)?;
+        clock_current(io, N)?;
         io.write(base(N) + GLOBAL_CTRL + CLR, 0xf);
-        update(io, N)?;
+        update(io, N);
         Ok(Token { _private: () })
     }
 }
@@ -149,14 +151,17 @@ impl<const N: u8, const C: u8> Channel<N, C> {
     }
     /// Period in 20 ns ticks. Only while disabled; resets duty to zero. A period of P gives
     /// frequency 50 MHz / P (STATIC, Linux RP1 PWM range convention; HW 未検証).
+    /// Every error is reported before any register write, so on error both the hardware and
+    /// [`Self::period_ticks`] keep the previous period.
     pub fn set_period_ticks(&mut self, period: u32) -> Result<(), Error> {
         set_period(&mut Mmio, N, C, period)?;
         self.period = period;
         Ok(())
     }
     /// Native 32-bit compare, 0..=period: zero is low, period is continuously high in normal
-    /// polarity. Latched with SET_UPDATE like the Linux driver; the new compare may appear only
-    /// after the current period ends, not necessarily before return.
+    /// polarity. Latched with SET_UPDATE like the Linux driver, which does not wait for it
+    /// either: the new compare may appear only after the current period ends, not
+    /// necessarily before return.
     pub fn set_duty_ticks(&mut self, duty: u32) -> Result<(), Error> {
         set_duty(&mut Mmio, N, C, self.period, duty)
     }
@@ -184,10 +189,13 @@ pub struct Output<const N: u8, const C: u8, const P: u8> {
     pin: Pin<P, Alternate>,
 }
 impl<const N: u8, const C: u8, const P: u8> Output<N, C, P> {
-    /// Disables the channel, then returns channel and unconfigured pin. Pad/mux stay as they
-    /// are (the PWM channel is disabled). On failure ownership is consumed, as in Channels::free.
-    pub fn free(mut self) -> Result<(Channel<N, C>, Pin<P>), Error> {
-        self.channel.disable()?;
+    /// Disables the channel and clears its MODE (generate 0), as Linux's `pwm-rp1` free does,
+    /// then returns channel and unconfigured pin. The pad stays muxed to the channel, which
+    /// then outputs a constant low (DOC/STATIC; HW 未検証). [`Channel::enable`] restores the
+    /// trailing-edge mode. On failure (clock no longer 50 MHz) nothing is written and ownership
+    /// is consumed, as in [`Channels::free`].
+    pub fn free(self) -> Result<(Channel<N, C>, Pin<P>), Error> {
+        release_channel(&mut Mmio, N, C)?;
         Ok((self.channel, self.pin.release()))
     }
 }
@@ -247,41 +255,57 @@ fn clock_current(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
         Err(Error::Precondition)
     }
 }
-fn ready(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
-    clock_current(io, n)?;
-    wait(io, base(n) + GLOBAL_CTRL, UPDATE, 0)
-}
-fn update(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
+/// Request that the channel registers latch (SET_UPDATE, self-clearing). Like Linux's
+/// `pwm-rp1` (`rp1_pwm_apply_config`), nothing waits for the bit to clear: if the latch
+/// happens at the end of the running period, a wait would have to last up to
+/// u32::MAX × 20 ns (about 86 s). A second request while one is pending is what Linux does
+/// as well. When the new values take effect is HW 未検証.
+fn update(io: &mut impl Hardware, n: u8) {
     io.write(base(n) + GLOBAL_CTRL + SET, UPDATE);
-    wait(io, base(n) + GLOBAL_CTRL, UPDATE, 0)
 }
 fn set_enabled(io: &mut impl Hardware, n: u8, c: u8, enabled: bool) -> Result<(), Error> {
-    ready(io, n)?;
+    clock_current(io, n)?;
+    if enabled {
+        // Output::free leaves MODE = 0; restore the mode Linux's request() writes.
+        io.write(base(n) + CHAN_CTRL + c as usize * STRIDE, TRAILING_EDGE);
+    }
     io.write(
         base(n) + GLOBAL_CTRL + if enabled { SET } else { CLR },
         1 << c,
     );
-    update(io, n)
+    update(io, n);
+    Ok(())
+}
+/// Linux `rp1_pwm_free`: clear MODE (0 = generate 0) and latch. This driver also clears the
+/// channel's enable bit.
+fn release_channel(io: &mut impl Hardware, n: u8, c: u8) -> Result<(), Error> {
+    clock_current(io, n)?;
+    io.write(base(n) + GLOBAL_CTRL + CLR, 1 << c);
+    io.write(base(n) + CHAN_CTRL + c as usize * STRIDE + CLR, MODE_MASK);
+    update(io, n);
+    Ok(())
 }
 fn set_period(io: &mut impl Hardware, n: u8, c: u8, period: u32) -> Result<(), Error> {
     if period == 0 {
         return Err(Error::Invalid);
     }
-    ready(io, n)?;
+    clock_current(io, n)?;
     if io.read(base(n) + GLOBAL_CTRL) & (1 << c) != 0 {
         return Err(Error::Enabled);
     }
     io.write(base(n) + CHAN_DUTY + c as usize * STRIDE, 0);
     io.write(base(n) + CHAN_RANGE + c as usize * STRIDE, period);
-    update(io, n)
+    update(io, n);
+    Ok(())
 }
 fn set_duty(io: &mut impl Hardware, n: u8, c: u8, period: u32, duty: u32) -> Result<(), Error> {
     if duty > period {
         return Err(Error::Invalid);
     }
-    ready(io, n)?;
+    clock_current(io, n)?;
     io.write(base(n) + CHAN_DUTY + c as usize * STRIDE, duty);
-    update(io, n)
+    update(io, n);
+    Ok(())
 }
 fn start(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
     let clk = generator(n);
@@ -296,9 +320,8 @@ fn start(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
     let reset = 1 << (4 + n);
     io.write(RESETS_CLR1, reset);
     wait(io, RESETS_DONE1, reset, reset)?;
-    ready(io, n)?;
     io.write(base(n) + GLOBAL_CTRL + CLR, 0xf);
-    update(io, n)?;
+    update(io, n);
     io.write(base(n) + FIFO_CTRL, 0); // DREQ off; no FIFO channel is selected below.
     io.write(base(n) + INTE, 0);
     io.write(base(n) + INTF, 0);
@@ -309,7 +332,8 @@ fn start(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
         io.write(base(n) + CHAN_DUTY + offset, 0);
         io.write(base(n) + CHAN_RANGE + offset, DEFAULT_PERIOD);
     }
-    update(io, n)
+    update(io, n);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -325,7 +349,6 @@ mod tests {
         now: u32,
         stuck_update: bool,
         stuck_clock: bool,
-        update_reads: usize,
     }
     impl Fake {
         fn new(n: u8) -> Self {
@@ -335,7 +358,6 @@ mod tests {
                 now: u32::MAX - 5000,
                 stuck_update: false,
                 stuck_clock: false,
-                update_reads: 0,
             }
         }
         fn running(n: u8) -> Self {
@@ -347,15 +369,7 @@ mod tests {
     }
     impl Registers for Fake {
         fn read(&mut self, address: usize) -> u32 {
-            let mut value = self.regs.get(&address).copied().unwrap_or(0);
-            if [base(0), base(1)].contains(&address) && value & UPDATE != 0 {
-                self.update_reads += 1;
-                if !self.stuck_update && self.update_reads.is_multiple_of(2) {
-                    value &= !UPDATE;
-                    self.regs.insert(address, value);
-                }
-            }
-            value
+            self.regs.get(&address).copied().unwrap_or(0)
         }
         fn write(&mut self, address: usize, value: u32) {
             self.writes.push((address, value));
@@ -363,12 +377,17 @@ mod tests {
                 return;
             }
             for n in 0..2 {
-                if address == base(n) + SET {
-                    *self.regs.entry(base(n)).or_default() |= value;
+                if (base(n) + SET..base(n) + CLR).contains(&address) {
+                    let reg = self.regs.entry(address - SET).or_default();
+                    *reg |= value;
+                    // SET_UPDATE self-clears at once unless the test holds it pending.
+                    if address == base(n) + SET && !self.stuck_update {
+                        *reg &= !UPDATE;
+                    }
                     return;
                 }
-                if address == base(n) + CLR {
-                    *self.regs.entry(base(n)).or_default() &= !value;
+                if (base(n) + CLR..base(n) + 0x4000).contains(&address) {
+                    *self.regs.entry(address - CLR).or_default() &= !value;
                     return;
                 }
             }
@@ -496,7 +515,7 @@ mod tests {
         assert!(f.writes.is_empty());
     }
     #[test]
-    fn reset_update_and_clock_failures_are_bounded() {
+    fn reset_and_clock_failures_are_bounded() {
         let mut f = Fake::new(1);
         f.regs.insert(RESETS_DONE1, 0);
         assert_eq!(start(&mut f, 1), Err(Error::Timeout));
@@ -509,13 +528,62 @@ mod tests {
         f.stuck_clock = true;
         assert_eq!(start(&mut f, 0), Err(Error::Precondition));
         assert!(!f.writes.iter().any(|&(a, _)| a == RESETS_CLR1));
+    }
+    /// Review minor 2: SET_UPDATE may stay set until the running period ends (up to ~86 s for
+    /// u32::MAX ticks). Like Linux, setters do not wait for it, so a pending update is not
+    /// an error, and every setter still writes its value and requests another update.
+    #[test]
+    fn pending_update_is_not_waited_for() {
         let mut f = Fake::running(0);
         f.stuck_update = true;
-        assert_eq!(set_enabled(&mut f, 0, 0, true), Err(Error::Timeout));
+        f.regs.insert(base(0), UPDATE);
+        set_period(&mut f, 0, 0, 100).unwrap();
+        set_duty(&mut f, 0, 0, 100, 50).unwrap();
+        set_enabled(&mut f, 0, 0, true).unwrap();
+        assert_eq!(f.regs[&(base(0) + CHAN_RANGE)], 100);
+        assert_eq!(f.regs[&(base(0) + CHAN_DUTY)], 50);
+        assert_eq!(f.regs[&base(0)], UPDATE | 1);
+        let updates = f.writes.iter().filter(|&&w| w == (base(0) + SET, UPDATE));
+        assert_eq!(updates.count(), 3);
+    }
+    /// Review minor 1: every set_period error is returned before a register write, so the
+    /// cached period (assigned only on Ok) always matches RANGE.
+    #[test]
+    fn set_period_errors_precede_writes() {
+        let mut f = Fake::running(0);
+        set_enabled(&mut f, 0, 1, true).unwrap();
         f.writes.clear();
-        assert_eq!(set_duty(&mut f, 0, 0, 100, 50), Err(Error::Timeout));
+        assert_eq!(set_period(&mut f, 0, 1, 7), Err(Error::Enabled));
+        assert_eq!(set_period(&mut f, 0, 0, 0), Err(Error::Invalid));
+        f.regs.insert(generator(0).ctrl, 2 << 5);
+        assert_eq!(set_period(&mut f, 0, 0, 7), Err(Error::Precondition));
         assert!(f.writes.is_empty());
-        assert!(f.update_reads < 40);
+        assert_eq!(f.regs[&(base(0) + CHAN_RANGE + STRIDE)], DEFAULT_PERIOD);
+    }
+    /// Review minor 3: freeing an output disables the channel and clears MODE like Linux's
+    /// rp1_pwm_free, without touching sibling channels; enabling again restores the mode.
+    #[test]
+    fn release_clears_mode_and_enable_restores_it() {
+        for n in 0..2 {
+            let mut f = Fake::running(n);
+            for c in 0..4 {
+                set_enabled(&mut f, n, c, true).unwrap();
+            }
+            release_channel(&mut f, n, 2).unwrap();
+            assert_eq!(f.regs[&base(n)] & 0xf, 0xb);
+            for c in 0..4 {
+                let mode = f.regs[&(base(n) + CHAN_CTRL + c * STRIDE)];
+                assert_eq!(mode, if c == 2 { 1 << 8 } else { TRAILING_EDGE });
+            }
+            assert_eq!(f.writes.last(), Some(&(base(n) + SET, UPDATE)));
+            set_enabled(&mut f, n, 2, true).unwrap();
+            assert_eq!(f.regs[&(base(n) + CHAN_CTRL + 2 * STRIDE)], TRAILING_EDGE);
+            assert_eq!(f.regs[&base(n)] & 0xf, 0xf);
+            f.regs.insert(generator(n).ctrl, 2 << 5);
+            f.writes.clear();
+            assert_eq!(release_channel(&mut f, n, 2), Err(Error::Precondition));
+            assert!(f.writes.is_empty());
+        }
     }
     #[test]
     fn normalized_duty_includes_both_endpoints_without_overflow() {
