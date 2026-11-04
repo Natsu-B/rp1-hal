@@ -311,6 +311,10 @@ fn instance_resource(
                 Vec::new(),
             ));
         }
+        Instance::Dma {} => {
+            let ty = "::rp1_hal::dma::Token";
+            return Ok((ty.into(), format!("unsafe {{ {ty}::new() }}"), Vec::new()));
+        }
         Instance::Adc {} => {
             let ty = "::rp1_hal::adc::Token";
             return Ok((ty.into(), format!("unsafe {{ {ty}::new() }}"), Vec::new()));

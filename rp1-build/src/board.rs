@@ -18,6 +18,7 @@ pub(crate) enum Kind {
     Spi,
     Adc,
     Pwm,
+    Dma,
 }
 
 /// One declarable instance: key, family, instance number, Linux DT label and RESETS bit.
@@ -49,7 +50,7 @@ const fn instance(
 
 /// STATIC: the single list of declarable instances on rpi-cm5 (RP1 RESETS for the bits).
 /// Parsing, peripheral tokens, Linux-node disabling and `linux_resets` all derive from it;
-/// held SCMI clocks follow the reset masks via `LinuxBlocks::held_clocks` (ADC and PWM).
+/// held SCMI clocks follow the reset masks via `LinuxBlocks::held_clocks` (ADC, PWM and DMA).
 pub(crate) const INSTANCES: &[BoardInstance] = &[
     instance("uart0", Kind::Uart, 0, "rp1_uart0", 1, 26),
     instance("uart1", Kind::Uart, 1, "rp1_uart1", 1, 27),
@@ -67,6 +68,8 @@ pub(crate) const INSTANCES: &[BoardInstance] = &[
     instance("adc", Kind::Adc, 0, "rp1_adc", 0, 0),
     instance("pwm0", Kind::Pwm, 0, "rp1_pwm0", 1, 4),
     instance("pwm1", Kind::Pwm, 1, "rp1_pwm1", 1, 5),
+    // RESETS CTRL0 bit 3 (inferred from the bit order, rp1_hal::linux_blocks::ALLOWED).
+    instance("dma", Kind::Dma, 0, "rp1_dma", 0, 3),
 ];
 
 pub(crate) fn find_instance(name: &str) -> Option<&'static BoardInstance> {
@@ -201,6 +204,7 @@ mod tests {
                     Kind::Spi => Instance::Spi(Default::default()),
                     Kind::Adc => Instance::Adc {},
                     Kind::Pwm => Instance::Pwm(Default::default()),
+                    Kind::Dma => Instance::Dma {},
                 })
             );
             let block = i.name.to_ascii_uppercase();

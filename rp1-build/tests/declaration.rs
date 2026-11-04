@@ -144,7 +144,7 @@ fn uart1_policy_pins() {
 }
 #[test]
 fn linux_required_block() {
-    for block in ["eth", "usbhost0", "usbhost1", "dma", "pcie", "pio"] {
+    for block in ["eth", "usbhost0", "usbhost1", "pcie", "pio"] {
         error(
             &format!("[proc0]\n{block}={{}}"),
             &["E4", "required by Linux on rpi-cm5"],
@@ -403,4 +403,30 @@ fn pwm_ownership_is_whole_block_even_with_disjoint_channel_pins() {
     assert_eq!(d.proc0.pins(), [12, 13, 18, 19]);
     assert_eq!(d.proc0.peripherals(), ["PWM0"]);
     assert_eq!(d.proc1.peripherals(), ["PWM1"]);
+}
+
+#[test]
+fn dma_is_one_pinless_controller_owned_by_one_core() {
+    error(
+        "[proc0]\ndma={}\n[proc1]\ndma={}",
+        &["E3", "DMA", "proc0", "proc1"],
+    );
+    error(
+        "[proc0]\ndma={channel=1}",
+        &["E0", "proc0.dma must be an empty table"],
+    );
+    error(
+        "[proc0]\ndma=1",
+        &["E0", "proc0.dma must be an empty table"],
+    );
+    let d = parse("[proc1]\ndma={}");
+    d.validate().unwrap();
+    assert!(d.proc1.pins().is_empty());
+    assert_eq!(d.proc1.peripherals(), ["DMA"]);
+    // No longer a board Linux block: the declaration may own it.
+    assert!(
+        !rp1_proto::board::LINUX_BLOCKS
+            .iter()
+            .any(|(b, _)| *b == "DMA")
+    );
 }

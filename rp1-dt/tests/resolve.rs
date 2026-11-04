@@ -331,7 +331,6 @@ fn all_design_protected_nodes_and_their_ancestors_refuse() {
         &format!("{RP1}/ethernet@100000"),
         &format!("{RP1}/usb@200000"),
         &format!("{RP1}/usb@300000"),
-        &format!("{RP1}/dma@188000"),
         &format!("{RP1}/pio@178000"),
         "/reserved-memory",
         "/reserved-memory/scratch@21000000",
@@ -1107,4 +1106,79 @@ fn missing_gpio_symbol_fails_closed_for_pinless_pwm_ownership() {
     fdt.remove_prop(symbols, "rp1_gpio");
     assert!(fdt.label("rp1_gpio").is_none());
     assert!(resolve(&fdt, &note, Policy::default()).is_err());
+}
+
+#[test]
+fn owned_dma_consumers_are_disabled_and_rp1_dma_is_no_longer_protected() {
+    let dma = format!("{RP1}/dma@188000");
+    let setup = |extra: &str, enabled: bool| {
+        let (mut fdt, _) = fixture(extra);
+        set(&mut fdt, &dma, "#dma-cells", 1u32.to_be_bytes().to_vec());
+        if !enabled {
+            set(&mut fdt, &dma, "status", b"disabled\0".to_vec());
+        }
+        let handle = fdt.phandle_of(fdt.label("rp1_dma").unwrap()).unwrap();
+        (fdt, handle)
+    };
+    let consumers = r#"
+/ {
+    other_dma: other-dma { #dma-cells=<2>; };
+    spi { dmas=<&other_dma 1 2 &rp1_dma 7>; };
+    unrelated { dmas=<&other_dma 0 1>; };
+    off { dmas=<&rp1_dma 3>; status="disabled"; };
+};
+"#;
+    let note = descriptor(&[(2, 65)]);
+    let (mut fdt, handle) = setup(consumers, false);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    // A DREQ argument equal to the owned phandle is not a consumer of that block.
+    let other = fdt.phandle_of(fdt.label("other_dma").unwrap()).unwrap();
+    set(
+        &mut fdt,
+        "/unrelated",
+        "dmas",
+        [other, 0, handle]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    let policy = Policy {
+        gpiomem: Gpiomem::Keep,
+        ..Policy::default()
+    };
+    let plan = resolve(&fdt, &note, policy).unwrap();
+    let nodes = disables(&plan);
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].path, "/spi");
+    assert!(
+        nodes[0]
+            .reasons
+            .iter()
+            .any(|r| r.contains("dmas uses RP1-owned block rp1_dma"))
+    );
+    let mut after = fdt.clone();
+    apply_plan(&fdt, &mut after, &note, policy, &plan).unwrap();
+    assert!(check::final_conflicts(&after, &note).unwrap().is_empty());
+    refusal(
+        resolve(
+            &fdt,
+            &note,
+            Policy {
+                on_conflict: OnConflict::Refuse,
+                ..policy
+            },
+        )
+        .unwrap(),
+        "dmas uses RP1-owned block",
+    );
+    // A later overlay that re-enables the owned DMAC: rp1_dma itself is disabled, not refused.
+    let (mut fdt, _) = setup("", true);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    let plan = resolve(&fdt, &note, policy).unwrap();
+    assert!(disables(&plan).iter().any(|n| n.path == dma));
+    // Not owned: Linux's DMA consumers are left alone.
+    let (mut fdt, _) = setup(consumers, true);
+    let note = descriptor(&[]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    assert!(disables(&resolve(&fdt, &note, policy).unwrap()).is_empty());
 }
