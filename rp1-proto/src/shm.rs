@@ -32,7 +32,9 @@ pub const DROPPED: usize = 64;
 pub const TAIL: usize = 0;
 /// `ctrl`: times `tail` wrapped past `u32::MAX` (`overflow = overwrite`).
 pub const TAIL_HI: usize = 4;
-/// `ctrl`: the reader is about to sleep and wants a notification.
+/// `ctrl`: the reader's sleep counter (protocol.md §2.3). Odd = asleep and wants a
+/// notification, even = awake. Only the reader writes it, adding 1 at every transition, so each
+/// sleep has its own value and the writer notifies at most once per sleep.
 pub const WAITING: usize = 64;
 /// Slot word 1 bit: the writer is rewriting this slot (`overflow = overwrite`).
 const BUSY: u32 = 1 << 16;
@@ -307,6 +309,8 @@ pub struct RingTx<T> {
     dropped: u32,
     /// `dropped` changed since it was last stored remotely.
     dropped_dirty: bool,
+    /// The odd `waiting` value (reader sleep) already notified; 0 = none.
+    woken: u32,
     _t: PhantomData<fn(T)>,
 }
 unsafe impl<T> Send for RingTx<T> {}
@@ -347,6 +351,8 @@ impl<T: Message> RingTx<T> {
             tail_seen: head.wrapping_sub(depth),
             dropped: unsafe { ld(data, DROPPED) },
             dropped_dirty: false,
+            // A reader already asleep when this writer attaches is notified on the next call.
+            woken: 0,
             _t: PhantomData,
         })
     }
@@ -459,19 +465,28 @@ impl<T: Message> RingTx<T> {
         unsafe { st(self.data, HEAD, self.head) };
         n as usize
     }
-    /// The reader armed a notification (`waiting`); the caller decides how to notify.
+    /// Whether to notify the reader now; call after `push`/`push_slice` (once per batch is
+    /// enough). Returns `true` at most once per reader sleep (an odd `waiting` value not
+    /// notified before), so a reader that keeps up costs no notifications at all.
     ///
     /// `head` was a posted write into the reader's memory. A `dsb` only completes it at the
     /// local bridge, so first read `head` back through the same window: the non-posted read
-    /// cannot pass the posted write, hence when it returns the reader can see `head`. Only then
-    /// is `waiting` sampled. Paired with [`RingRx::prepare_wait`] this closes the race in which
-    /// both peers see stale values and the reader sleeps on a non-empty ring. Costs one
+    /// cannot pass the posted writes (slots, then `head`), hence when it returns the reader can
+    /// see them. Only then is `waiting` sampled. Paired with [`RingRx::prepare_wait`] (arm,
+    /// read back, re-check `head`) this closes the lost-wakeup race: either the reader's
+    /// re-check sees the new `head`, or this sees the reader asleep. The readback also
+    /// completes the payload, so the caller may notify without another drain. Costs one
     /// round trip per call; pure polling users need not call it.
-    pub fn reader_waiting(&self) -> bool {
+    pub fn wake_needed(&mut self) -> bool {
         barrier();
         let _ = unsafe { ld(self.data, HEAD) };
         barrier();
-        unsafe { ld(self.ctrl, WAITING) != 0 }
+        let waiting = unsafe { ld(self.ctrl, WAITING) };
+        if waiting & 1 == 0 || waiting == self.woken {
+            return false;
+        }
+        self.woken = waiting;
+        true
     }
     pub fn head(&self) -> u32 {
         self.head
@@ -492,7 +507,20 @@ pub struct RingRx<T> {
     tail_hi: u32,
     /// Last `head` read from the local `data`; reread only when the ring looks empty.
     head_seen: u32,
+    /// Shadow of the remote `waiting` sleep counter (odd = asleep).
+    waiting: u32,
     _t: PhantomData<fn() -> T>,
+}
+
+/// Result of one [`RingRx::wait_with`] step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Wait {
+    /// Messages were available; the reader did not sleep.
+    Ready,
+    /// The reader slept and the sleeper reported a notification.
+    Woken,
+    /// The reader slept until the sleeper's bound without a notification.
+    Timeout,
 }
 unsafe impl<T> Send for RingRx<T> {}
 impl<T: Message> RingRx<T> {
@@ -510,6 +538,13 @@ impl<T: Message> RingRx<T> {
     ) -> Result<Self, Error> {
         check_ring::<T>(data, data_len, ctrl, ctrl_len, depth)?;
         let tail = unsafe { ld(ctrl, TAIL) };
+        // Resume the sleep counter; a previous reader that died asleep is marked awake, so the
+        // next sleep gets a value the writer has not notified yet.
+        let mut waiting = unsafe { ld(ctrl, WAITING) };
+        if waiting & 1 != 0 {
+            waiting = waiting.wrapping_add(1);
+            unsafe { st(ctrl, WAITING, waiting) };
+        }
         Ok(Self {
             data,
             ctrl,
@@ -518,6 +553,7 @@ impl<T: Message> RingRx<T> {
             tail,
             tail_hi: unsafe { ld(ctrl, TAIL_HI) },
             head_seen: tail,
+            waiting,
             _t: PhantomData,
         })
     }
@@ -679,15 +715,19 @@ impl<T: Message> RingRx<T> {
         }
         result.map(|()| 0)
     }
-    /// Arm `waiting`, then re-check `head` so a push racing with the arm is not missed.
-    /// Returns `true` if the ring is still empty and the caller may sleep.
+    /// Arm `waiting` (next odd value), then re-check `head` so a push racing with the arm is
+    /// not missed. Returns `true` if the ring is still empty and the caller may sleep; then it
+    /// must call [`RingRx::finish_wait`] when it wakes.
     ///
     /// `waiting` is read back through the same window before `head` is re-checked, so the
-    /// arm has reached the writer's memory (see [`RingTx::reader_waiting`] for the pairing).
+    /// arm has reached the writer's memory (see [`RingTx::wake_needed`] for the pairing).
     /// The notification itself must not overtake `head`: the writer calls
-    /// [`RingTx::reader_waiting`] (which drains `head`) before it rings the doorbell.
+    /// [`RingTx::wake_needed`] (which drains `head`) before it notifies.
     pub fn prepare_wait(&mut self) -> bool {
-        unsafe { st(self.ctrl, WAITING, 1) };
+        if self.waiting & 1 == 0 {
+            self.waiting = self.waiting.wrapping_add(1);
+            unsafe { st(self.ctrl, WAITING, self.waiting) };
+        }
         barrier();
         let _ = unsafe { ld(self.ctrl, WAITING) };
         barrier();
@@ -697,8 +737,25 @@ impl<T: Message> RingRx<T> {
         }
         empty
     }
+    /// Mark the reader awake (even `waiting`): the writer stops notifying until the next sleep.
     pub fn finish_wait(&mut self) {
-        unsafe { st(self.ctrl, WAITING, 0) };
+        if self.waiting & 1 != 0 {
+            self.waiting = self.waiting.wrapping_add(1);
+            unsafe { st(self.ctrl, WAITING, self.waiting) };
+        }
+    }
+    /// One wait step for an interrupt-notified ring: return [`Wait::Ready`] if messages are
+    /// available, otherwise arm (`prepare_wait`), call `sleep` and disarm. `sleep` blocks for a
+    /// bounded time and returns whether a notification arrived. A notification is a hint:
+    /// the caller pops after every return and calls again when the ring is still empty, so a
+    /// lost or merged notification costs at most one `sleep` bound (protocol.md §3).
+    pub fn wait_with(&mut self, sleep: impl FnOnce() -> bool) -> Wait {
+        if self.available() != 0 || !self.prepare_wait() {
+            return Wait::Ready;
+        }
+        let woke = sleep();
+        self.finish_wait();
+        if woke { Wait::Woken } else { Wait::Timeout }
     }
     pub fn tail(&self) -> u32 {
         self.tail
@@ -1095,20 +1152,180 @@ mod tests {
         assert_eq!(rx.available(), 0);
     }
 
+    fn wait_pair(
+        depth: u32,
+    ) -> (
+        std::boxed::Box<Mem<4224>>,
+        std::boxed::Box<Mem<CONTROL_SIZE>>,
+    ) {
+        assert!(CONTROL_SIZE + depth as usize * 24 <= 4224);
+        (mem(), mem())
+    }
+
     #[test]
     fn wait_handshake() {
-        let mut data = mem::<{ CONTROL_SIZE + 2 * 16 }>();
-        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (mut data, mut ctrl) = wait_pair(2);
         let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
         let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
         let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        // Awake reader: no notification.
+        assert!(!tx.wake_needed());
+        // Arm, then a push: one notification for this sleep, not two.
         assert!(rx.prepare_wait());
-        assert!(tx.reader_waiting());
         tx.push(&1).unwrap();
+        assert!(tx.wake_needed());
+        assert!(!tx.wake_needed());
+        tx.push(&2).unwrap();
+        assert!(!tx.wake_needed());
         rx.finish_wait();
-        assert!(!tx.reader_waiting());
+        assert!(!tx.wake_needed());
+        // Data present: arming does not sleep and leaves the reader awake.
         assert!(!rx.prepare_wait());
-        assert!(!tx.reader_waiting());
+        assert!(!tx.wake_needed());
+        assert_eq!(rx.pop().unwrap(), Some(1));
+        assert_eq!(rx.pop().unwrap(), Some(2));
+        // The next sleep gets a new value and so a new notification.
+        assert!(rx.prepare_wait());
+        assert!(tx.wake_needed());
+        rx.finish_wait();
+    }
+
+    /// The race the handshake closes, in its sequentially consistent orders: a push between
+    /// the reader's emptiness check and its arm is seen by the re-check; a push after the arm
+    /// is notified. Either way the reader never sleeps on a non-empty ring unnotified.
+    #[test]
+    fn wait_with_never_sleeps_unnotified() {
+        let (mut data, mut ctrl) = wait_pair(4);
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let mut tx = unsafe { RingTx::<u32>::attach(d, 224, c, 128, 4, Overflow::Reject) }.unwrap();
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 224, c, 128, 4, Overflow::Reject) }.unwrap();
+        // Data already there.
+        tx.push(&7).unwrap();
+        assert_eq!(rx.wait_with(|| unreachable!()), Wait::Ready);
+        assert_eq!(rx.pop().unwrap(), Some(7));
+        // Push lands after the arm, before the sleep: the writer notifies.
+        let mut notified = false;
+        let r = rx.wait_with(|| {
+            tx.push(&8).unwrap();
+            notified = tx.wake_needed();
+            notified
+        });
+        assert!(notified);
+        assert_eq!(r, Wait::Woken);
+        assert_eq!(rx.pop().unwrap(), Some(8));
+        // Nothing happens: the bounded sleep times out and the reader is awake again.
+        assert_eq!(rx.wait_with(|| false), Wait::Timeout);
+        assert!(!tx.wake_needed());
+    }
+
+    /// Restarts on either side: a writer attaching while the reader sleeps notifies it; a
+    /// reader that died asleep comes back awake, and its next sleep is notified again.
+    #[test]
+    fn wait_counter_survives_restarts() {
+        let (mut data, mut ctrl) = wait_pair(2);
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        assert!(rx.prepare_wait());
+        assert!(tx.wake_needed());
+        // Reader dies asleep; a new one attaches.
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        assert!(!tx.wake_needed());
+        assert!(rx.prepare_wait());
+        assert!(tx.wake_needed());
+        // Writer restarts while the reader sleeps.
+        let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        assert!(tx.wake_needed());
+        assert!(!tx.wake_needed());
+        rx.finish_wait();
+    }
+
+    /// Lost-wakeup stress with real concurrency: the writer pushes random batches, pulses an
+    /// edge-like event (merged while pending) when `wake_needed`, and waits for the reader to
+    /// drain the ring; the reader sleeps on the event with a 1 s bound. A timeout would be a
+    /// lost wakeup. A smoke test: the race windows are nanoseconds wide, so it does not prove
+    /// the handshake (the sequential cases above pin down the orders).
+    #[test]
+    fn wait_stress_no_lost_wakeup() {
+        use std::sync::{Condvar, Mutex};
+        use std::time::Duration;
+        struct Event(Mutex<bool>, Condvar);
+        struct SendPtr(*mut u8);
+        unsafe impl Send for SendPtr {}
+        unsafe impl Sync for SendPtr {}
+        const N: u32 = 20_000;
+        let (mut data, mut ctrl) = wait_pair(16);
+        let len = CONTROL_SIZE + 16 * 16;
+        let (d, c) = (SendPtr(data.0.as_mut_ptr()), SendPtr(ctrl.0.as_mut_ptr()));
+        let event = Event(Mutex::new(false), Condvar::new());
+        let mut tx =
+            unsafe { RingTx::<u64>::attach(d.0, len, c.0, 128, 16, Overflow::Reject) }.unwrap();
+        let mut rx =
+            unsafe { RingRx::<u64>::attach(d.0, len, c.0, 128, 16, Overflow::Reject) }.unwrap();
+        let (mut pulses, mut waits, mut sleeps, mut timeouts) = (0u32, 0u32, 0u32, 0u32);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut x = 0x1234_5678u32;
+                let mut next = 0u64;
+                while next < u64::from(N) {
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    let k = (x % 8 + 1) as u64;
+                    let batch: std::vec::Vec<u64> = (next..(next + k).min(u64::from(N))).collect();
+                    next += tx.push_slice(&batch) as u64;
+                    if tx.wake_needed() {
+                        pulses += 1;
+                        *event.0.lock().unwrap() = true;
+                        event.1.notify_one();
+                    }
+                    // Sporadic producer: no further push (and so no further `wake_needed`)
+                    // until the reader has drained the ring, so a missed notification is not
+                    // rescued by the next batch.
+                    while tx.free() != 16 {
+                        core::hint::spin_loop();
+                    }
+                    for _ in 0..(x >> 20) % 2048 {
+                        core::hint::spin_loop();
+                    }
+                }
+            });
+            let mut expect = 0u64;
+            let mut buf = [0u64; 8];
+            let mut y = 1u32;
+            while expect < u64::from(N) {
+                let n = rx.pop_into(&mut buf).unwrap();
+                for v in &buf[..n] {
+                    assert_eq!(*v, expect);
+                    expect += 1;
+                }
+                if n == 0 {
+                    waits += 1;
+                    // Vary the reader's timing against the writer's.
+                    y = y.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                    for _ in 0..(y >> 20) % 2048 {
+                        core::hint::spin_loop();
+                    }
+                    match rx.wait_with(|| {
+                        let g = event.0.lock().unwrap();
+                        let (mut g, _) = event
+                            .1
+                            .wait_timeout_while(g, Duration::from_secs(1), |p| !*p)
+                            .unwrap();
+                        core::mem::replace(&mut *g, false)
+                    }) {
+                        Wait::Ready => {}
+                        Wait::Woken => sleeps += 1,
+                        Wait::Timeout => timeouts += 1,
+                    }
+                }
+            }
+        });
+        assert_eq!(timeouts, 0, "lost wakeup");
+        // At most one notification per arm. An arm cancelled by the re-check (data arrived
+        // meanwhile) can still be notified; that edge is a spurious wake later.
+        assert!(pulses <= waits, "pulses={pulses} waits={waits}");
+        assert!(sleeps > 0);
     }
 
     #[test]
