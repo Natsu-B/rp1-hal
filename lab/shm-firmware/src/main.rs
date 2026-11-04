@@ -250,6 +250,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut up = area.ring_tx::<Sample>("up").unwrap();
     let mut down = area.ring_rx::<Sample>("down").unwrap();
     let mut latest = area.ring_tx::<Sample>("latest").unwrap();
+    let mut events = area.ring_tx::<Sample>("events").unwrap();
     let mut control = area.block::<Control>("control").unwrap();
     let mut bulk = area.block::<Bulk>("bulk").unwrap();
     let mut last = 0;
@@ -276,6 +277,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         let (command, count, seed) = (request[1], request[2], request[3]);
         let start = now();
         let mut errors = 0u32;
+        let mut extra = 0u32;
         match command {
             1 | 6 => {
                 let tx = if command == 1 { &mut up } else { &mut latest };
@@ -379,6 +381,16 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 }
             }
             10 | 12 => errors = up_batch(&mut up, count, start),
+            // `events` stream: seed = batch << 16 | gap_us; 14 notifies after every batch
+            // (HostIrq::notify_ring), 15 does not (polling baseline on the same ring).
+            14 | 15 => {
+                let notify = if command == 14 {
+                    Some(&mut host_irq)
+                } else {
+                    None
+                };
+                (errors, extra) = events_stream(&mut events, notify, count, seed, start);
+            }
             11 | 13 => errors = down_batch(&mut down, count, start),
             #[cfg(feature = "sram-profile")]
             9 => {
@@ -394,7 +406,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         request[4] = 2;
         request[5] = errors;
         request[6] = now().wrapping_sub(start);
-        request[7] = if command == 1 { up.dropped() } else { 0 };
+        request[7] = if command == 1 { up.dropped() } else { extra };
         unsafe { control.write(&request) };
         rp1_hal::shm::complete_posted_writes();
         log!(
@@ -476,6 +488,51 @@ fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u3
         i += k as u32;
     }
     0
+}
+/// `events` stream (commands 14/15): batches of `seed >> 16` (1..=32, 0 = 32) messages,
+/// `seed & 0xffff` µs apart, each batch published with one `push_slice` (and notified,
+/// with `notify`, through `HostIrq::push_slice_notify`). Returns (errors, pulses).
+#[rp1_rt::isram]
+fn events_stream(
+    tx: &mut rp1_hal::shm::RingTx<Sample>,
+    mut notify: Option<&mut rp1_hal::host_irq::HostIrq>,
+    count: u32,
+    seed: u32,
+    start: u32,
+) -> (u32, u32) {
+    let batch = match seed >> 16 {
+        0 => BATCH,
+        b => (b as usize).min(BATCH),
+    };
+    let gap = seed & 0xffff;
+    let mut buf = [[0u32; 4]; BATCH];
+    let mut i = 0;
+    let mut pulses = 0;
+    while i < count {
+        let k = (count - i).min(batch as u32) as usize;
+        for (j, b) in buf[..k].iter_mut().enumerate() {
+            *b = sample(i + j as u32);
+        }
+        let mut done = 0;
+        while done < k {
+            // Also while the ring is full: the reader may have armed meanwhile.
+            done += match notify.as_deref_mut() {
+                Some(irq) => {
+                    let (n, pulsed) = irq.push_slice_notify(tx, &buf[done..k]);
+                    pulses += u32::from(pulsed);
+                    n
+                }
+                None => tx.push_slice(&buf[done..k]),
+            };
+            if now().wrapping_sub(start) > 180_000_000 {
+                return (1, pulses);
+            }
+        }
+        i += k as u32;
+        let t = now();
+        while now().wrapping_sub(t) < gap {}
+    }
+    (0, pulses)
 }
 /// Batched Linux→RP1 stream: one `tail` store per `pop_into`, every message checked.
 #[rp1_rt::isram]

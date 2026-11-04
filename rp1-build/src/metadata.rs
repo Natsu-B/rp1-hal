@@ -426,8 +426,31 @@ impl Declaration {
                     if r.placement.as_deref().is_some_and(|s| s != "reader-local") {
                         return Err("placement=linux is unimplemented".into());
                     }
-                    if r.notify.as_deref().is_some_and(|s| s != "poll") {
-                        return Err("v0.1 supports only notify=poll (SCMI owns hwirq58)".into());
+                    match r.notify.as_deref() {
+                        None | Some("poll") => {}
+                        // The producing core raises `rp1:irq` (rp1_hal::host_irq), so it must own
+                        // the host interrupt. Linux -> RP1 keeps the doorbell or polling.
+                        Some("irq") => {
+                            if r.direction.as_deref() != Some("rp1-to-linux") {
+                                return Err("notify=irq is only for rp1-to-linux rings \
+                                            (linux-to-rp1 uses the doorbell or polling)"
+                                    .into());
+                            }
+                            let owner = if r.core == "proc0" {
+                                &self.proc0
+                            } else {
+                                &self.proc1
+                            };
+                            if !owner.host_irq {
+                                return Err(format!(
+                                    "notify=irq on ring {} requires {}.host_irq = true \
+                                     (the producing core raises rp1:irq)",
+                                    r.name, r.core
+                                )
+                                .into());
+                            }
+                        }
+                        Some(_) => return Err("invalid notify (poll or irq)".into()),
                     }
                 }
                 "block" => {

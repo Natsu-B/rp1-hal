@@ -370,6 +370,39 @@ notify="{notify}"
         assert_eq!(d.validate().is_ok(), ok, "notify={notify}");
     }
 }
+/// `notify = "irq"` needs the host interrupt on the producing core and the RP1 -> Linux
+/// direction; everything else is a build error naming the fix.
+#[test]
+fn notify_irq_requires_host_irq_on_the_producing_core() {
+    let decl = |host_irq_core: &str, core: &str, direction: &str| -> Declaration {
+        toml::from_str(&format!(
+            r#"
+schema = 2
+[{host_irq_core}]
+host_irq = true
+[[shm]]
+name="events"
+kind="ring"
+core="{core}"
+message="u32"
+direction="{direction}"
+depth=16
+notify="irq"
+"#
+        ))
+        .unwrap()
+    };
+    decl("proc1", "proc1", "rp1-to-linux").validate().unwrap();
+    decl("proc0", "proc0", "rp1-to-linux").validate().unwrap();
+    let e = decl("proc0", "proc1", "rp1-to-linux")
+        .validate()
+        .unwrap_err();
+    assert!(e.to_string().contains("proc1.host_irq = true"), "{e}");
+    let e = decl("proc1", "proc1", "linux-to-rp1")
+        .validate()
+        .unwrap_err();
+    assert!(e.to_string().contains("only for rp1-to-linux"), "{e}");
+}
 #[test]
 fn shm_names_of_builtin_uio_nodes_are_rejected() {
     // Review 4 #1: a region named like a built-in UIO node would add a second `rp1:<name>`

@@ -9,6 +9,7 @@ use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
     os::fd::AsRawFd,
+    path::{Path, PathBuf},
     ptr::NonNull,
     rc::Rc,
     time::{Duration, Instant},
@@ -22,17 +23,7 @@ struct Mapping {
 }
 impl Mapping {
     fn open(name: &str, phys: u64, len: usize) -> Result<Rc<Self>> {
-        let mut matches = Vec::new();
-        for entry in fs::read_dir("/sys/class/uio")? {
-            let path = entry?.path();
-            if fs::read_to_string(path.join("name"))?.trim() == name {
-                matches.push(path);
-            }
-        }
-        if matches.len() != 1 {
-            return Err(format!("expected one UIO named {name}, found {}", matches.len()).into());
-        }
-        let path = &matches[0];
+        let path = &find_uio(name)?;
         let hex = |field: &str| -> Result<u64> {
             let text = fs::read_to_string(path.join("maps/map0").join(field))?;
             Ok(u64::from_str_radix(
@@ -43,13 +34,7 @@ impl Mapping {
         if hex("addr")? != phys || hex("size")? != len as u64 || hex("offset")? != 0 {
             return Err(format!("UIO {name} mapping differs from note/board table").into());
         }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(std::path::Path::new("/dev").join(path.file_name().unwrap()))?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        let file = open_exclusive(path)?;
         let pointer = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -81,6 +66,31 @@ impl Mapping {
         unsafe { self.ptr().add(offset).cast::<u32>().write_volatile(value) };
         barrier();
     }
+}
+/// The `/sys/class/uio` entry with this name; exactly one must exist.
+fn find_uio(name: &str) -> Result<PathBuf> {
+    let mut matches = Vec::new();
+    for entry in fs::read_dir("/sys/class/uio")? {
+        let path = entry?.path();
+        if fs::read_to_string(path.join("name"))?.trim() == name {
+            matches.push(path);
+        }
+    }
+    if matches.len() != 1 {
+        return Err(format!("expected one UIO named {name}, found {}", matches.len()).into());
+    }
+    Ok(matches.remove(0))
+}
+/// Open `/dev/uioN` for a sysfs entry, with an exclusive non-blocking `flock` (one owner).
+fn open_exclusive(sys: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(Path::new("/dev").join(sys.file_name().ok_or("invalid UIO path")?))?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(file)
 }
 impl Drop for Mapping {
     fn drop(&mut self) {
@@ -171,9 +181,10 @@ impl Firmware {
             .into_iter()
             .find(|r| r.name == name)
             .ok_or("unknown shm name")?;
+        // notify=irq is valid only on RP1 -> Linux rings (rp1-build checks it; refuse others).
         if r.type_id != T::TYPE_ID
             || r.elem_size as usize != std::mem::size_of::<T>()
-            || r.notify_irq
+            || (r.notify_irq && r.kind != ShmKind::RingToLinux)
         {
             return Err(Error::Mismatch.into());
         }
@@ -199,9 +210,13 @@ impl Firmware {
                 overflow(r.overwrite),
             )
         }?;
+        let notify_irq = r.notify_irq;
         self.taken.insert(name.into());
         Ok(RingRx {
             inner,
+            notify_irq,
+            spin: Duration::ZERO,
+            stats: WaitStats::default(),
             _map: map,
             session: self.session.clone(),
         })
@@ -264,8 +279,178 @@ fn overflow(overwrite: bool) -> shm::Overflow {
     }
 }
 
+/// Longest single sleep in [`RingRx::wait`]. A wake is a hint: an edge can be lost (before
+/// the UIO is first enabled, or while the vector's hardware source is held) or merged, so the
+/// ring is re-checked at least this often even without one (protocol.md §3).
+pub const RECHECK: Duration = Duration::from_millis(10);
+
+/// The `rp1:irq` UIO node: the RP1 -> Linux interrupt (MSI-X vector `rp1_proto::irq::VECTOR`,
+/// raised by the core that declares `host_irq = true`). One owner (exclusive `flock`), and one
+/// line for every `notify = "irq"` ring: a wake for one ring is a spurious wake for another.
+/// [`RingRx::wait`] arms only its own ring, so while it sleeps (up to its timeout; `None`:
+/// until that ring has data) the other rings' writers do not notify. To serve several irq
+/// rings from one thread, wait on all of them with [`Irq::wait_any`].
+pub struct Irq {
+    file: File,
+    wakes: u64,
+    count: u32,
+}
+impl Irq {
+    /// Open `rp1:irq` and enable the interrupt (`uio_pdrv_genirq` starts it enabled, and masks
+    /// it again in its handler; pulses before the first enable are lost).
+    pub fn open() -> Result<Self> {
+        let file = open_exclusive(&find_uio(&format!("rp1:{}", uio::IRQ))?)?;
+        let mut irq = Self {
+            file,
+            wakes: 0,
+            count: 0,
+        };
+        irq.enable()?;
+        Ok(irq)
+    }
+    fn enable(&mut self) -> std::io::Result<()> {
+        let one = 1u32.to_ne_bytes();
+        loop {
+            let n = unsafe { libc::write(self.file.as_raw_fd(), one.as_ptr().cast(), 4) };
+            match n {
+                4 => return Ok(()),
+                0..=3 => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero)),
+                _ => {
+                    let e = std::io::Error::last_os_error();
+                    if e.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+    /// Sleep up to `timeout` (rounded up to whole ms) for an interrupt. Returns whether one
+    /// arrived; it is consumed and the line re-enabled before returning, so an edge from then
+    /// on wakes the next call (edges while masked merge into one pending wake). A signal
+    /// (`EINTR`) ends the wait early as a spurious wake (`Ok(false)`).
+    pub fn wait(&mut self, timeout: Duration) -> std::io::Result<bool> {
+        let mut pfd = libc::pollfd {
+            fd: self.file.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ms = timeout.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
+        let r = unsafe { libc::poll(&mut pfd, 1, ms) };
+        if r < 0 {
+            let e = std::io::Error::last_os_error();
+            return if e.kind() == std::io::ErrorKind::Interrupted {
+                Ok(false)
+            } else {
+                Err(e)
+            };
+        }
+        if r == 0 {
+            return Ok(false);
+        }
+        let mut count = [0u8; 4];
+        let n = unsafe { libc::read(self.file.as_raw_fd(), count.as_mut_ptr().cast(), 4) };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            return if e.kind() == std::io::ErrorKind::Interrupted {
+                Ok(false)
+            } else {
+                Err(e)
+            };
+        }
+        if n != 4 {
+            // UIO reads are all-or-nothing; anything else is not a UIO event count.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("rp1:irq read returned {n} bytes"),
+            ));
+        }
+        self.count = u32::from_ne_bytes(count);
+        self.wakes += 1;
+        self.enable()?;
+        Ok(true)
+    }
+    /// Interrupts consumed by [`Irq::wait`] so far.
+    pub fn wakes(&self) -> u64 {
+        self.wakes
+    }
+    /// The UIO's total event count at the last wake (the kernel's count, including events
+    /// that merged into one wake).
+    pub fn event_count(&self) -> u32 {
+        self.count
+    }
+    /// [`RingRx::wait`] for several `notify = "irq"` rings at once (any message types): arm
+    /// every ring, re-check them all, sleep once (bounded by [`RECHECK`]), disarm all, and
+    /// repeat until one has messages or `timeout` passes. Returns whether one has; the caller
+    /// then pops every ring. No spin, and [`RingRx::wait_stats`] is not updated.
+    pub fn wait_any(
+        &mut self,
+        rings: &mut [&mut dyn IrqRing],
+        timeout: Option<Duration>,
+    ) -> Result<bool> {
+        let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+        loop {
+            let mut waiters = rings
+                .iter_mut()
+                .map(|r| r.waiter())
+                .collect::<std::result::Result<Vec<_>, Error>>()?;
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return Ok(waiters.iter().any(|w| w.available() != 0));
+            }
+            let bound = remaining(deadline);
+            let mut io = Ok(false);
+            let outcome = shm::wait_any_with(&mut waiters, || {
+                io = self.wait(bound);
+                matches!(io, Ok(true))
+            });
+            io?;
+            if outcome == shm::Wait::Ready {
+                return Ok(true);
+            }
+        }
+    }
+}
+
+/// A [`RingRx`] of any message type, for [`Irq::wait_any`].
+pub trait IrqRing {
+    /// Check the session and that the ring is `notify = "irq"`; the ring's wait handle.
+    fn waiter(&mut self) -> std::result::Result<&mut dyn shm::Waiter, Error>;
+}
+impl<T: Message> IrqRing for RingRx<T> {
+    fn waiter(&mut self) -> std::result::Result<&mut dyn shm::Waiter, Error> {
+        if !self.notify_irq {
+            return Err(Error::Invalid);
+        }
+        self.session.check()?;
+        Ok(&mut self.inner)
+    }
+}
+
+/// One sleep's bound: [`RECHECK`], or less when the deadline is closer.
+fn remaining(deadline: Option<Instant>) -> Duration {
+    deadline
+        .map_or(RECHECK, |d| d.saturating_duration_since(Instant::now()))
+        .min(RECHECK)
+}
+
+/// Counters of [`RingRx::wait`] (observational).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WaitStats {
+    /// Sleeps (the ring was empty after arming).
+    pub sleeps: u64,
+    /// Sleeps ended by an interrupt.
+    pub woken: u64,
+    /// Sleeps that ran to their bound ([`RECHECK`] or the deadline) without one.
+    pub rechecks: u64,
+    /// Of `rechecks`, those after which messages were available: data found by the re-check
+    /// rather than a wake (a lost, merged-away or slower-than-`RECHECK` notification).
+    pub late: u64,
+}
+
 pub struct RingRx<T> {
     inner: shm::RingRx<T>,
+    notify_irq: bool,
+    spin: Duration,
+    stats: WaitStats,
     _map: Rc<Mapping>,
     session: Rc<Session>,
 }
@@ -285,6 +470,73 @@ impl<T: Message> RingRx<T> {
     }
     pub fn dropped(&self) -> u32 {
         self.inner.dropped()
+    }
+    /// Messages available now.
+    pub fn available(&self) -> u32 {
+        self.inner.available()
+    }
+    /// Block until messages are available or `timeout` passes (`None`: no deadline); returns
+    /// whether some are. For rings declared `notify = "irq"` (otherwise `Error::Invalid`).
+    ///
+    /// Handshake (protocol.md §2.3): arm the sleep counter, read it back, re-check `head`, and
+    /// only then sleep on `irq`; RP1 drains `head` before it samples the counter. Each sleep
+    /// is bounded by [`RECHECK`], because a wake is only a hint.
+    pub fn wait(&mut self, irq: &mut Irq, timeout: Option<Duration>) -> Result<bool> {
+        if !self.notify_irq {
+            return Err(Error::Invalid.into());
+        }
+        self.session.check()?;
+        let start = Instant::now();
+        let deadline = timeout.and_then(|t| start.checked_add(t));
+        if !self.spin.is_zero() {
+            // Never past the deadline; `None` (spin too long to represent): until data.
+            let end = match (start.checked_add(self.spin), deadline) {
+                (Some(s), Some(d)) => Some(s.min(d)),
+                (s, d) => s.or(d),
+            };
+            while end.is_none_or(|e| Instant::now() < e) {
+                self.session.check()?;
+                if self.inner.available() != 0 {
+                    return Ok(true);
+                }
+                std::hint::spin_loop();
+            }
+        }
+        loop {
+            self.session.check()?;
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return Ok(self.inner.available() != 0);
+            }
+            let bound = remaining(deadline);
+            let mut io = Ok(false);
+            let outcome = self.inner.wait_with(|| {
+                io = irq.wait(bound);
+                matches!(io, Ok(true))
+            });
+            io?;
+            match outcome {
+                shm::Wait::Ready => return Ok(true),
+                shm::Wait::Woken => self.stats.woken += 1,
+                shm::Wait::Timeout => {
+                    self.stats.rechecks += 1;
+                    if self.inner.available() != 0 {
+                        self.stats.late += 1;
+                    }
+                }
+            }
+            self.stats.sleeps += 1;
+        }
+    }
+    /// Poll for up to `spin` (never past the wait's timeout) before the first arm of each
+    /// [`RingRx::wait`] (default zero).
+    /// With a producer that publishes a message every few µs, arming right away is mostly
+    /// cancelled by the re-check, yet RP1 may still see the odd counter and pulse (one PCIe
+    /// round trip each way per arm); a short spin trades consumer CPU for fewer arms.
+    pub fn set_spin(&mut self, spin: Duration) {
+        self.spin = spin;
+    }
+    pub fn wait_stats(&self) -> WaitStats {
+        self.stats
     }
 }
 pub struct RingTx<T> {
@@ -346,5 +598,133 @@ impl<T: Message> BlockMap<T> {
             return Err(Error::Invalid);
         }
         Ok(unsafe { self.inner.begin_write() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::{fd::OwnedFd, unix::net::UnixStream};
+
+    /// Anonymous memory standing in for a UIO mapping.
+    fn anon(len: usize) -> Rc<Mapping> {
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(p, libc::MAP_FAILED);
+        Rc::new(Mapping {
+            base: NonNull::new(p.cast()).unwrap(),
+            len,
+            _file: File::open("/dev/null").unwrap(),
+        })
+    }
+    struct Rig {
+        rx: RingRx<u32>,
+        tx: shm::RingTx<u32>,
+        header: Rc<Mapping>,
+        _ctrl: Rc<Mapping>,
+    }
+    /// A published header and one depth-4 irq ring; both ends in this process.
+    fn rig() -> Rig {
+        let header = anon(4096);
+        let sha = [7u8; 32];
+        let mut init = unsafe { shm::HeaderInit::begin(header.ptr(), 0) };
+        init.write(&sha, 1, 0);
+        init.publish();
+        let session = Rc::new(Session {
+            header: unsafe { shm::Header::open(header.ptr(), &sha) }.unwrap(),
+            _map: header.clone(),
+            _link: header.clone(),
+        });
+        let (data, ctrl) = (anon(4096), anon(4096));
+        let len = shm::CONTROL_SIZE + 4 * shm::slot_size(4);
+        let ow = shm::Overflow::Reject;
+        let inner = unsafe { shm::RingRx::attach(data.ptr(), len, ctrl.ptr(), 128, 4, ow) };
+        let tx = unsafe { shm::RingTx::attach(data.ptr(), len, ctrl.ptr(), 128, 4, ow) };
+        let rx = RingRx {
+            inner: inner.unwrap(),
+            notify_irq: true,
+            spin: Duration::ZERO,
+            stats: WaitStats::default(),
+            _map: data,
+            session,
+        };
+        Rig {
+            rx,
+            tx: tx.unwrap(),
+            header,
+            _ctrl: ctrl,
+        }
+    }
+    /// An `Irq` on one end of a socket pair; writing 4 bytes to the other end is an event.
+    fn irq() -> (Irq, UnixStream) {
+        let (a, b) = UnixStream::pair().unwrap();
+        let irq = Irq {
+            file: File::from(OwnedFd::from(a)),
+            wakes: 0,
+            count: 0,
+        };
+        (irq, b)
+    }
+
+    #[test]
+    fn spin_stops_at_the_deadline() {
+        let mut r = rig();
+        let (mut irq, _peer) = irq();
+        r.rx.set_spin(Duration::from_secs(60));
+        let t = Instant::now();
+        assert!(!r.rx.wait(&mut irq, Some(Duration::from_millis(1))).unwrap());
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        // Zero timeout: no spin, no sleep.
+        assert!(!r.rx.wait(&mut irq, Some(Duration::ZERO)).unwrap());
+        assert_eq!(r.rx.wait_stats().sleeps, 0);
+    }
+
+    #[test]
+    fn wait_checks_the_session_before_spinning() {
+        let mut r = rig();
+        let (mut irq, _peer) = irq();
+        r.rx.set_spin(Duration::from_secs(60));
+        r.header.write(12, 1); // RP1 re-initializes the region
+        let t = Instant::now();
+        let e = r.rx.wait(&mut irq, None).unwrap_err();
+        assert_eq!(e.downcast_ref::<Error>(), Some(&Error::Reset));
+        assert!(t.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn irq_wait_wakes_and_rejects_short_reads() {
+        let (mut irq, mut peer) = irq();
+        assert!(!irq.wait(Duration::from_millis(1)).unwrap());
+        peer.write_all(&5u32.to_ne_bytes()).unwrap();
+        assert!(irq.wait(Duration::from_secs(5)).unwrap());
+        assert_eq!((irq.wakes(), irq.event_count()), (1, 5));
+        peer.write_all(&[1, 2]).unwrap();
+        let e = irq.wait(Duration::from_secs(5)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn wait_any_returns_on_any_ring() {
+        let mut a = rig();
+        let mut b = rig();
+        let (mut irq, _peer) = irq();
+        let t = Instant::now();
+        let timeout = Some(Duration::from_millis(30));
+        assert!(!irq.wait_any(&mut [&mut a.rx, &mut b.rx], timeout).unwrap());
+        assert!(t.elapsed() >= Duration::from_millis(30));
+        b.tx.push(&9).unwrap();
+        assert!(irq.wait_any(&mut [&mut a.rx, &mut b.rx], None).unwrap());
+        assert_eq!(b.rx.pop().unwrap(), Some(9));
+        // Both rings were disarmed again: no notification is due.
+        assert!(!a.tx.wake_needed() && !b.tx.wake_needed());
     }
 }

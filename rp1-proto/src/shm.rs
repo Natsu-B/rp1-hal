@@ -32,7 +32,11 @@ pub const DROPPED: usize = 64;
 pub const TAIL: usize = 0;
 /// `ctrl`: times `tail` wrapped past `u32::MAX` (`overflow = overwrite`).
 pub const TAIL_HI: usize = 4;
-/// `ctrl`: the reader is about to sleep and wants a notification.
+/// `ctrl`: the reader's sleep counter (protocol.md §2.3). Odd = asleep and wants a
+/// notification, even = awake. Only the reader writes it, adding 1 at every transition, so
+/// consecutive sleeps have different values and the writer notifies at most once per sleep.
+/// The counter wraps after 2^31 sleeps: a sleep may then reuse the odd value the writer
+/// notified last and get no notification; the reader's bounded re-check covers that.
 pub const WAITING: usize = 64;
 /// Slot word 1 bit: the writer is rewriting this slot (`overflow = overwrite`).
 const BUSY: u32 = 1 << 16;
@@ -67,6 +71,8 @@ pub const fn block_size(elem: usize) -> usize {
 
 #[inline(always)]
 unsafe fn ld(base: *const u8, offset: usize) -> u32 {
+    #[cfg(test)]
+    tests::model::before_load(unsafe { base.add(offset) });
     unsafe { ptr::read_volatile(base.add(offset).cast()) }
 }
 #[inline(always)]
@@ -307,6 +313,8 @@ pub struct RingTx<T> {
     dropped: u32,
     /// `dropped` changed since it was last stored remotely.
     dropped_dirty: bool,
+    /// The odd `waiting` value (reader sleep) already notified; 0 = none.
+    woken: u32,
     _t: PhantomData<fn(T)>,
 }
 unsafe impl<T> Send for RingTx<T> {}
@@ -347,6 +355,8 @@ impl<T: Message> RingTx<T> {
             tail_seen: head.wrapping_sub(depth),
             dropped: unsafe { ld(data, DROPPED) },
             dropped_dirty: false,
+            // A reader already asleep when this writer attaches is notified on the next call.
+            woken: 0,
             _t: PhantomData,
         })
     }
@@ -459,19 +469,33 @@ impl<T: Message> RingTx<T> {
         unsafe { st(self.data, HEAD, self.head) };
         n as usize
     }
-    /// The reader armed a notification (`waiting`); the caller decides how to notify.
+    /// Whether to notify the reader now; call after `push`/`push_slice` (once per batch is
+    /// enough). Returns `true` at most once per reader sleep (an odd `waiting` value not
+    /// notified before), so a reader that keeps up costs no notifications at all.
     ///
     /// `head` was a posted write into the reader's memory. A `dsb` only completes it at the
     /// local bridge, so first read `head` back through the same window: the non-posted read
-    /// cannot pass the posted write, hence when it returns the reader can see `head`. Only then
-    /// is `waiting` sampled. Paired with [`RingRx::prepare_wait`] this closes the race in which
-    /// both peers see stale values and the reader sleeps on a non-empty ring. Costs one
+    /// cannot pass the posted writes (slots, then `head`), hence when it returns the reader can
+    /// see them. Only then is `waiting` sampled. Paired with [`RingRx::prepare_wait`] (arm,
+    /// read back, re-check `head`) this closes the lost-wakeup race: either the reader's
+    /// re-check sees the new `head`, or this sees the reader asleep. The readback also
+    /// completes the payload, so the caller may notify without another drain. Costs one
     /// round trip per call; pure polling users need not call it.
-    pub fn reader_waiting(&self) -> bool {
+    ///
+    /// "Not notified before" compares with the last notified value only: after 2^31 reader
+    /// sleeps without a notification in between, a sleep can reuse that value and is then
+    /// not notified (the reader's bounded re-check picks the data up; notifications are hints).
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
+    pub fn wake_needed(&mut self) -> bool {
         barrier();
         let _ = unsafe { ld(self.data, HEAD) };
         barrier();
-        unsafe { ld(self.ctrl, WAITING) != 0 }
+        let waiting = unsafe { ld(self.ctrl, WAITING) };
+        if waiting & 1 == 0 || waiting == self.woken {
+            return false;
+        }
+        self.woken = waiting;
+        true
     }
     pub fn head(&self) -> u32 {
         self.head
@@ -492,7 +516,20 @@ pub struct RingRx<T> {
     tail_hi: u32,
     /// Last `head` read from the local `data`; reread only when the ring looks empty.
     head_seen: u32,
+    /// Shadow of the remote `waiting` sleep counter (odd = asleep).
+    waiting: u32,
     _t: PhantomData<fn() -> T>,
+}
+
+/// Result of one [`RingRx::wait_with`] step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Wait {
+    /// Messages were available; the reader did not sleep.
+    Ready,
+    /// The reader slept and the sleeper reported a notification.
+    Woken,
+    /// The reader slept until the sleeper's bound without a notification.
+    Timeout,
 }
 unsafe impl<T> Send for RingRx<T> {}
 impl<T: Message> RingRx<T> {
@@ -510,6 +547,13 @@ impl<T: Message> RingRx<T> {
     ) -> Result<Self, Error> {
         check_ring::<T>(data, data_len, ctrl, ctrl_len, depth)?;
         let tail = unsafe { ld(ctrl, TAIL) };
+        // Resume the sleep counter; a previous reader that died asleep is marked awake, so the
+        // next sleep gets a value the writer has not notified yet.
+        let mut waiting = unsafe { ld(ctrl, WAITING) };
+        if waiting & 1 != 0 {
+            waiting = waiting.wrapping_add(1);
+            unsafe { st(ctrl, WAITING, waiting) };
+        }
         Ok(Self {
             data,
             ctrl,
@@ -518,6 +562,7 @@ impl<T: Message> RingRx<T> {
             tail,
             tail_hi: unsafe { ld(ctrl, TAIL_HI) },
             head_seen: tail,
+            waiting,
             _t: PhantomData,
         })
     }
@@ -679,15 +724,19 @@ impl<T: Message> RingRx<T> {
         }
         result.map(|()| 0)
     }
-    /// Arm `waiting`, then re-check `head` so a push racing with the arm is not missed.
-    /// Returns `true` if the ring is still empty and the caller may sleep.
+    /// Arm `waiting` (next odd value), then re-check `head` so a push racing with the arm is
+    /// not missed. Returns `true` if the ring is still empty and the caller may sleep; then it
+    /// must call [`RingRx::finish_wait`] when it wakes.
     ///
     /// `waiting` is read back through the same window before `head` is re-checked, so the
-    /// arm has reached the writer's memory (see [`RingTx::reader_waiting`] for the pairing).
+    /// arm has reached the writer's memory (see [`RingTx::wake_needed`] for the pairing).
     /// The notification itself must not overtake `head`: the writer calls
-    /// [`RingTx::reader_waiting`] (which drains `head`) before it rings the doorbell.
+    /// [`RingTx::wake_needed`] (which drains `head`) before it notifies.
     pub fn prepare_wait(&mut self) -> bool {
-        unsafe { st(self.ctrl, WAITING, 1) };
+        if self.waiting & 1 == 0 {
+            self.waiting = self.waiting.wrapping_add(1);
+            unsafe { st(self.ctrl, WAITING, self.waiting) };
+        }
         barrier();
         let _ = unsafe { ld(self.ctrl, WAITING) };
         barrier();
@@ -697,8 +746,25 @@ impl<T: Message> RingRx<T> {
         }
         empty
     }
+    /// Mark the reader awake (even `waiting`): the writer stops notifying until the next sleep.
     pub fn finish_wait(&mut self) {
-        unsafe { st(self.ctrl, WAITING, 0) };
+        if self.waiting & 1 != 0 {
+            self.waiting = self.waiting.wrapping_add(1);
+            unsafe { st(self.ctrl, WAITING, self.waiting) };
+        }
+    }
+    /// One wait step for an interrupt-notified ring: return [`Wait::Ready`] if messages are
+    /// available, otherwise arm (`prepare_wait`), call `sleep` and disarm. `sleep` blocks for a
+    /// bounded time and returns whether a notification arrived. A notification is a hint:
+    /// the caller pops after every return and calls again when the ring is still empty, so a
+    /// lost or merged notification costs at most one `sleep` bound (protocol.md §3).
+    pub fn wait_with(&mut self, sleep: impl FnOnce() -> bool) -> Wait {
+        if self.available() != 0 || !self.prepare_wait() {
+            return Wait::Ready;
+        }
+        let woke = sleep();
+        self.finish_wait();
+        if woke { Wait::Woken } else { Wait::Timeout }
     }
     pub fn tail(&self) -> u32 {
         self.tail
@@ -707,6 +773,46 @@ impl<T: Message> RingRx<T> {
     pub fn dropped(&self) -> u32 {
         unsafe { ld(self.data, DROPPED) }
     }
+}
+
+/// A [`RingRx`] of any message type, for [`wait_any_with`].
+pub trait Waiter {
+    fn available(&self) -> u32;
+    fn prepare_wait(&mut self) -> bool;
+    fn finish_wait(&mut self);
+}
+impl<T: Message> Waiter for RingRx<T> {
+    fn available(&self) -> u32 {
+        RingRx::available(self)
+    }
+    fn prepare_wait(&mut self) -> bool {
+        RingRx::prepare_wait(self)
+    }
+    fn finish_wait(&mut self) {
+        RingRx::finish_wait(self)
+    }
+}
+/// [`RingRx::wait_with`] for several rings whose writers share one notification: arm every
+/// ring (each with its own read back and re-check), sleep once if all are still empty, then
+/// disarm them all. [`Wait::Ready`] means some ring has messages; the caller pops every ring
+/// after each return.
+pub fn wait_any_with(rings: &mut [&mut dyn Waiter], sleep: impl FnOnce() -> bool) -> Wait {
+    if rings.iter().any(|r| r.available() != 0) {
+        return Wait::Ready;
+    }
+    for i in 0..rings.len() {
+        if !rings[i].prepare_wait() {
+            for r in &mut rings[..i] {
+                r.finish_wait();
+            }
+            return Wait::Ready;
+        }
+    }
+    let woke = sleep();
+    for r in rings.iter_mut() {
+        r.finish_wait();
+    }
+    if woke { Wait::Woken } else { Wait::Timeout }
 }
 
 /// A SeqLock-protected block (protocol.md §5): `seq` u32, `flags` u32, then `T`.
@@ -1095,20 +1201,416 @@ mod tests {
         assert_eq!(rx.available(), 0);
     }
 
+    fn wait_pair(
+        depth: u32,
+    ) -> (
+        std::boxed::Box<Mem<4224>>,
+        std::boxed::Box<Mem<CONTROL_SIZE>>,
+    ) {
+        assert!(CONTROL_SIZE + depth as usize * 24 <= 4224);
+        (mem(), mem())
+    }
+
     #[test]
     fn wait_handshake() {
-        let mut data = mem::<{ CONTROL_SIZE + 2 * 16 }>();
-        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (mut data, mut ctrl) = wait_pair(2);
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        // Awake reader: no notification.
+        assert!(!tx.wake_needed());
+        // Arm, then a push: one notification for this sleep, not two.
+        assert!(rx.prepare_wait());
+        tx.push(&1).unwrap();
+        assert!(tx.wake_needed());
+        assert!(!tx.wake_needed());
+        tx.push(&2).unwrap();
+        assert!(!tx.wake_needed());
+        rx.finish_wait();
+        assert!(!tx.wake_needed());
+        // Data present: arming does not sleep and leaves the reader awake.
+        assert!(!rx.prepare_wait());
+        assert!(!tx.wake_needed());
+        assert_eq!(rx.pop().unwrap(), Some(1));
+        assert_eq!(rx.pop().unwrap(), Some(2));
+        // The next sleep gets a new value and so a new notification.
+        assert!(rx.prepare_wait());
+        assert!(tx.wake_needed());
+        rx.finish_wait();
+    }
+
+    /// The race the handshake closes, in its sequentially consistent orders: a push between
+    /// the reader's emptiness check and its arm is seen by the re-check; a push after the arm
+    /// is notified. Either way the reader never sleeps on a non-empty ring unnotified.
+    #[test]
+    fn wait_with_never_sleeps_unnotified() {
+        let (mut data, mut ctrl) = wait_pair(4);
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let mut tx = unsafe { RingTx::<u32>::attach(d, 224, c, 128, 4, Overflow::Reject) }.unwrap();
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 224, c, 128, 4, Overflow::Reject) }.unwrap();
+        // Data already there.
+        tx.push(&7).unwrap();
+        assert_eq!(rx.wait_with(|| unreachable!()), Wait::Ready);
+        assert_eq!(rx.pop().unwrap(), Some(7));
+        // Push lands after the arm, before the sleep: the writer notifies.
+        let mut notified = false;
+        let r = rx.wait_with(|| {
+            tx.push(&8).unwrap();
+            notified = tx.wake_needed();
+            notified
+        });
+        assert!(notified);
+        assert_eq!(r, Wait::Woken);
+        assert_eq!(rx.pop().unwrap(), Some(8));
+        // Nothing happens: the bounded sleep times out and the reader is awake again.
+        assert_eq!(rx.wait_with(|| false), Wait::Timeout);
+        assert!(!tx.wake_needed());
+    }
+
+    /// Restarts on either side: a writer attaching while the reader sleeps notifies it; a
+    /// reader that died asleep comes back awake, and its next sleep is notified again.
+    #[test]
+    fn wait_counter_survives_restarts() {
+        let (mut data, mut ctrl) = wait_pair(2);
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        assert!(rx.prepare_wait());
+        assert!(tx.wake_needed());
+        // Reader dies asleep; a new one attaches.
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        assert!(!tx.wake_needed());
+        assert!(rx.prepare_wait());
+        assert!(tx.wake_needed());
+        // Writer restarts while the reader sleeps.
+        let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        assert!(tx.wake_needed());
+        assert!(!tx.wake_needed());
+        rx.finish_wait();
+    }
+
+    /// Two rings, one notification: every ring is armed for the sleep, so either writer
+    /// notifies; data on a later ring cancels the arms of the earlier ones.
+    #[test]
+    fn wait_any_arms_every_ring() {
+        let (mut d0, mut c0) = wait_pair(2);
+        let (mut d1, mut c1) = wait_pair(2);
+        let (d0, c0) = (d0.0.as_mut_ptr(), c0.0.as_mut_ptr());
+        let (d1, c1) = (d1.0.as_mut_ptr(), c1.0.as_mut_ptr());
+        let ow = Overflow::Reject;
+        let mut tx0 = unsafe { RingTx::<u32>::attach(d0, 160, c0, 128, 2, ow) }.unwrap();
+        let mut rx0 = unsafe { RingRx::<u32>::attach(d0, 160, c0, 128, 2, ow) }.unwrap();
+        let mut tx1 = unsafe { RingTx::<u64>::attach(d1, 160, c1, 128, 2, ow) }.unwrap();
+        let mut rx1 = unsafe { RingRx::<u64>::attach(d1, 160, c1, 128, 2, ow) }.unwrap();
+        // The second ring's writer notifies while both are armed.
+        let r = wait_any_with(&mut [&mut rx0, &mut rx1], || {
+            tx1.push(&5).unwrap();
+            tx1.wake_needed()
+        });
+        assert_eq!(r, Wait::Woken);
+        assert!(!tx0.wake_needed() && !tx1.wake_needed(), "all disarmed");
+        assert_eq!(
+            wait_any_with(&mut [&mut rx0, &mut rx1], || unreachable!()),
+            Wait::Ready
+        );
+        assert_eq!(rx1.pop().unwrap(), Some(5));
+        // A message that arrives on ring 1 between the first check and its arm: the re-check
+        // cancels the sleep and ring 0's arm is undone.
+        struct Arrives;
+        impl Waiter for Arrives {
+            fn available(&self) -> u32 {
+                0
+            }
+            fn prepare_wait(&mut self) -> bool {
+                false
+            }
+            fn finish_wait(&mut self) {}
+        }
+        assert_eq!(
+            wait_any_with(&mut [&mut rx0, &mut Arrives], || unreachable!()),
+            Wait::Ready
+        );
+        assert!(
+            !tx0.wake_needed(),
+            "ring 0 disarmed after the cancelled sleep"
+        );
+        // Ring 0's writer notifies too.
+        let r = wait_any_with(&mut [&mut rx0, &mut rx1], || {
+            tx0.push(&7).unwrap();
+            tx0.wake_needed()
+        });
+        assert_eq!(r, Wait::Woken);
+        assert_eq!(rx0.pop().unwrap(), Some(7));
+    }
+
+    /// Counter wrap: after the notified sleep, 2^31 - 1 more sleeps bring the counter back to
+    /// the same odd value. That sleep is not notified (documented on [`WAITING`]); the reader's
+    /// bounded re-check still finds the data.
+    #[test]
+    fn wait_counter_wrap_can_alias() {
+        let (mut data, mut ctrl) = wait_pair(2);
         let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
         let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
         let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
         assert!(rx.prepare_wait());
-        assert!(tx.reader_waiting());
-        tx.push(&1).unwrap();
+        assert!(tx.wake_needed());
         rx.finish_wait();
-        assert!(!tx.reader_waiting());
-        assert!(!rx.prepare_wait());
-        assert!(!tx.reader_waiting());
+        let w = unsafe { ld(c, WAITING) };
+        // 2^31 - 1 more sleeps, 2 steps each.
+        unsafe { st(c, WAITING, w.wrapping_add(u32::MAX - 1)) };
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        let r = rx.wait_with(|| {
+            tx.push(&1).unwrap();
+            assert!(!tx.wake_needed(), "aliased sleep is not notified");
+            false
+        });
+        assert_eq!(r, Wait::Timeout);
+        assert_eq!(rx.wait_with(|| unreachable!()), Wait::Ready);
+        assert_eq!(rx.pop().unwrap(), Some(1));
+    }
+
+    /// Exhaustive interleaving model of the handshake (protocol.md §2.3) on the real code.
+    ///
+    /// Each side's stores into the peer's memory are posted: the writer writes a private copy
+    /// of `data` and the reader a private copy of `ctrl` (`shadow`); a store reaches the peer's
+    /// copy (`real`) only when it lands. Landing is in order, so a path lands as a whole: either
+    /// spontaneously at any point, or when its own side reads back through the same window (a
+    /// non-posted read does not pass earlier posted writes). Every load in the ring code is a
+    /// scheduling point (`ld` calls [`before_load`]); the two sides run on threads that hand a
+    /// single token back and forth (so there is no data race), and a depth-first search over the
+    /// choices "run writer / run reader / land data / land ctrl" visits every schedule.
+    pub(super) mod model {
+        extern crate std;
+        use std::cell::RefCell;
+        use std::sync::{Arc, Condvar, Mutex};
+        use std::vec::Vec;
+
+        /// A posted-write path: what the writing side sees and what the peer sees.
+        pub struct Path {
+            pub shadow: usize,
+            pub real: usize,
+            pub len: usize,
+        }
+        impl Path {
+            fn pending(&self) -> bool {
+                // SAFETY: both buffers live for the run; only the token holder touches them.
+                unsafe {
+                    std::slice::from_raw_parts(self.shadow as *const u8, self.len)
+                        != std::slice::from_raw_parts(self.real as *const u8, self.len)
+                }
+            }
+            fn land(&self) {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        self.shadow as *const u8,
+                        self.real as *mut u8,
+                        self.len,
+                    )
+                }
+            }
+        }
+        #[derive(Default)]
+        struct State {
+            running: Option<usize>,
+            parked: [bool; 2],
+            /// Asleep: not runnable until the other side is done.
+            asleep: [bool; 2],
+            done: [bool; 2],
+        }
+        pub struct Sched {
+            state: Mutex<State>,
+            cv: Condvar,
+            pub paths: [Path; 2],
+        }
+        std::thread_local!(static CURRENT: RefCell<Option<(Arc<Sched>, usize)>> = const { RefCell::new(None) });
+
+        /// Called by `ld` before every load; a no-op outside a model run.
+        pub fn before_load(addr: *const u8) {
+            let Some((s, me)) = CURRENT.with(|c| c.borrow().clone()) else {
+                return;
+            };
+            s.park(me);
+            for p in &s.paths {
+                if (p.shadow..p.shadow + p.len).contains(&(addr as usize)) {
+                    p.land();
+                }
+            }
+        }
+        impl Sched {
+            pub fn new(paths: [Path; 2]) -> Arc<Self> {
+                Arc::new(Self {
+                    state: Mutex::new(State::default()),
+                    cv: Condvar::new(),
+                    paths,
+                })
+            }
+            fn park(&self, me: usize) {
+                self.park_as(me, false);
+            }
+            fn park_as(&self, me: usize, asleep: bool) {
+                let mut g = self.state.lock().unwrap();
+                g.parked[me] = true;
+                g.asleep[me] = asleep;
+                g.running = None;
+                self.cv.notify_all();
+                while g.running != Some(me) {
+                    g = self.cv.wait(g).unwrap();
+                }
+                g.parked[me] = false;
+            }
+            /// Sleep (inside side `me`) until the other side has finished: a notification
+            /// would wake it, and none can come later.
+            pub fn sleep(&self, me: usize) {
+                self.park_as(me, true);
+            }
+            /// Run `f` as side `me` (0 = writer, 1 = reader) under the scheduler.
+            pub fn side<R>(self: &Arc<Self>, me: usize, f: impl FnOnce() -> R) -> R {
+                CURRENT.with(|c| *c.borrow_mut() = Some((self.clone(), me)));
+                self.park(me);
+                let r = f();
+                CURRENT.with(|c| *c.borrow_mut() = None);
+                let mut g = self.state.lock().unwrap();
+                g.done[me] = true;
+                g.running = None;
+                self.cv.notify_all();
+                r
+            }
+            /// Drive both sides to completion; `choose(n)` picks one of `n` enabled steps.
+            pub fn drive(&self, mut choose: impl FnMut(usize) -> usize, trace: &mut Vec<usize>) {
+                loop {
+                    let mut g = self.state.lock().unwrap();
+                    while g.running.is_some() || (0..2).any(|t| !g.done[t] && !g.parked[t]) {
+                        g = self.cv.wait(g).unwrap();
+                    }
+                    // 0..2: run that side; 2..4: land that path.
+                    let steps: Vec<usize> = (0..2)
+                        .filter(|&t| g.parked[t] && !(g.asleep[t] && !g.done[1 - t]))
+                        .chain((0..2).filter(|&p| self.paths[p].pending()).map(|p| p + 2))
+                        .collect();
+                    if (0..2).all(|t| g.done[t]) {
+                        return;
+                    }
+                    let step = steps[choose(steps.len())];
+                    trace.push(step);
+                    if step >= 2 {
+                        self.paths[step - 2].land();
+                    } else {
+                        g.running = Some(step);
+                        self.cv.notify_all();
+                    }
+                }
+            }
+        }
+
+        /// Depth-first search over every sequence of choices `run` makes; returns the count.
+        pub fn explore(mut run: impl FnMut(&mut dyn FnMut(usize) -> usize)) -> usize {
+            let mut prefix: Vec<usize> = Vec::new();
+            let mut runs = 0;
+            loop {
+                let mut taken: Vec<(usize, usize)> = Vec::new();
+                run(&mut |n| {
+                    let c = prefix.get(taken.len()).copied().unwrap_or(0);
+                    taken.push((c, n));
+                    c
+                });
+                runs += 1;
+                while let Some((c, n)) = taken.pop() {
+                    if c + 1 < n {
+                        taken.push((c + 1, n));
+                        break;
+                    }
+                }
+                if taken.is_empty() {
+                    return runs;
+                }
+                prefix = taken.into_iter().map(|(c, _)| c).collect();
+            }
+        }
+    }
+
+    /// The handshake never lets the reader sleep on a published message unnotified, and never
+    /// notifies before the message has landed, in any interleaving of one `push` +
+    /// `wake_needed` against one `wait_with`. Fails if the reader's re-check or either
+    /// readback is removed (each gives a schedule where the reader sleeps unnotified).
+    #[test]
+    fn wait_handshake_all_interleavings() {
+        use model::{Path, Sched, explore};
+        const LEN: usize = CONTROL_SIZE + 4 * 16;
+        // prior = 0: fresh ring; 1: the reader already had one notified sleep and a message.
+        for prior in 0..2 {
+            let runs = explore(|choose| {
+                let (mut data, mut data_shadow) = (mem::<LEN>(), mem::<LEN>());
+                let (mut ctrl, mut ctrl_shadow) = (mem::<CONTROL_SIZE>(), mem::<CONTROL_SIZE>());
+                let (dr, ds) = (data.0.as_mut_ptr(), data_shadow.0.as_mut_ptr());
+                let (cr, cs) = (ctrl.0.as_mut_ptr(), ctrl_shadow.0.as_mut_ptr());
+                let head_real = dr as usize;
+                let ow = Overflow::Reject;
+                let mut tx = unsafe { RingTx::<u32>::attach(ds, LEN, cr, 128, 4, ow) }.unwrap();
+                let mut rx = unsafe { RingRx::<u32>::attach(dr, LEN, cs, 128, 4, ow) }.unwrap();
+                let sync = || unsafe {
+                    core::ptr::copy_nonoverlapping(ds, dr, LEN);
+                    core::ptr::copy_nonoverlapping(cs, cr, CONTROL_SIZE);
+                };
+                if prior == 1 {
+                    assert!(rx.prepare_wait());
+                    sync();
+                    tx.push(&0).unwrap();
+                    assert!(tx.wake_needed());
+                    sync();
+                    rx.finish_wait();
+                    assert_eq!(rx.pop().unwrap(), Some(0));
+                    sync();
+                }
+                let sched = Sched::new([
+                    Path {
+                        shadow: ds as usize,
+                        real: dr as usize,
+                        len: LEN,
+                    },
+                    Path {
+                        shadow: cs as usize,
+                        real: cr as usize,
+                        len: CONTROL_SIZE,
+                    },
+                ]);
+                let mut trace = vec![];
+                let notified_now = core::sync::atomic::AtomicBool::new(false);
+                let (notified, outcome) = std::thread::scope(|s| {
+                    let w = s.spawn(|| {
+                        sched.side(0, || {
+                            tx.push(&1).unwrap();
+                            let notify = tx.wake_needed();
+                            notified_now.store(notify, core::sync::atomic::Ordering::Relaxed);
+                            // The notification must not overtake the message.
+                            let landed = unsafe { ld(head_real as *const u8, HEAD) } == tx.head();
+                            (notify, landed)
+                        })
+                    });
+                    let r = s.spawn(|| {
+                        sched.side(1, || {
+                            rx.wait_with(|| {
+                                sched.sleep(1);
+                                notified_now.load(core::sync::atomic::Ordering::Relaxed)
+                            })
+                        })
+                    });
+                    sched.drive(choose, &mut trace);
+                    (w.join().unwrap(), r.join().unwrap())
+                });
+                let (notified, landed) = notified;
+                assert_eq!(outcome == Wait::Woken, notified && outcome != Wait::Ready);
+                assert!(
+                    outcome == Wait::Ready || notified,
+                    "lost wakeup: reader sleeps on a published message (prior={prior}, \
+                     schedule={trace:?}; 0 writer, 1 reader, 2 land data, 3 land ctrl)"
+                );
+                assert!(
+                    !notified || landed,
+                    "notified before head landed (prior={prior}, schedule={trace:?})"
+                );
+            });
+            assert!(runs > 10, "runs={runs}");
+        }
     }
 
     #[test]

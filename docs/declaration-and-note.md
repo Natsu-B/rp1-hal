@@ -65,7 +65,7 @@ core = "proc1"                            # M3 側でハンドルを受け取る
 message = "protocol::Cmd"                 # Linux → M3（channel）/ リングの要素（ring）
 reply = "protocol::Reply"                 # M3 → Linux（channel のみ）
 depth = 16                                # 要素数（2 の冪）
-notify = "irq"                            # "irq" | "poll"。Linux → M3 の通知（channel と linux-to-rp1 の ring）
+notify = "irq"                            # "irq" | "poll"。channel は未実装。ring は rp1-to-linux だけ irq 可（core に host_irq = true が要る）
 
 [[package.metadata.rp1.shm]]
 name = "samples"
@@ -151,7 +151,9 @@ rpi-cm5 のボード表は GPIO 28..53（ETH_RST_N、VBUS など）と Ethernet�
 | E6 | 環境変数 `RP1_BOARD_DTB` があり、その DTB（config.txt の overlay を当てたもの）で起動時に無効化・拒否が起きる | `RP1_BOARD_DTB <file>: rp1boot would disable 1 Linux node(s) ...`（gpiomem 方針だけなら警告） |
 | — | `log` があるのに UART0 が RP1 の所有になれない | `log sink uart0 requires UART0 to be owned by RP1` |
 | — | v0.1 の rpi-cm5 で `clock.authority = "linux"` | `clock.authority = linux is unsupported on the v0.1 rpi-cm5 board; use rp1` |
-| — | ring の `notify` が `poll` 以外（hwirq58 は SCMI の mailbox が持つ） | `v0.1 supports only notify=poll (SCMI owns hwirq58)` |
+| — | ring の `notify = "irq"` で、宣言した core が `host_irq = true` を持たない（RP1 → Linux の割り込みは生産側のコアが鳴らす） | `notify=irq on ring events requires proc1.host_irq = true (the producing core raises rp1:irq)` |
+| — | `notify = "irq"` の ring が linux-to-rp1 | `notify=irq is only for rp1-to-linux rings (linux-to-rp1 uses the doorbell or polling)` |
+| — | ring の `notify` が `poll`・`irq` 以外 | `invalid notify (poll or irq)` |
 | — | shm の名前が重複・形式違反、depth が 2 の冪でない、kind と項目が合わない | `shm 'ctl': 'direction' is only valid for kind = "ring"` |
 | — | Linux → RP1 のリングが共有 SRAM の予算を超える | `shm 'cmds': linux-to-rp1 ring needs 8.0 KiB of shared SRAM, 2.5 KiB left` |
 | — | 型が存在しない、`Message` を実装していない | rustc のエラー（生成コードがその型を参照するため） |

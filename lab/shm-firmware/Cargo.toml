@@ -74,6 +74,18 @@ direction = "rp1-to-linux"
 depth = 16
 overflow = "overwrite"
 
+# RP1 -> Linux ring with interrupt notification (rp1_hal::host_irq::HostIrq::notify_ring,
+# rp1_linux::RingRx::wait); proc1 declares host_irq, as notify = "irq" requires.
+[[package.metadata.rp1.shm]]
+name = "events"
+kind = "ring"
+core = "proc1"
+message = "Sample"
+direction = "rp1-to-linux"
+depth = 256
+overflow = "reject"
+notify = "irq"
+
 [[package.metadata.rp1.shm]]
 name = "control"
 kind = "block"
