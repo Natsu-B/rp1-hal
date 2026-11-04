@@ -285,9 +285,11 @@ fn overflow(overwrite: bool) -> shm::Overflow {
 pub const RECHECK: Duration = Duration::from_millis(10);
 
 /// The `rp1:irq` UIO node: the RP1 -> Linux interrupt (MSI-X vector `rp1_proto::irq::VECTOR`,
-/// raised by the core that declares `host_irq = true`). One owner (exclusive `flock`); one
-/// `Irq` serves every `notify = "irq"` ring, so a wake for one ring is a spurious wake for
-/// another, which [`RingRx::wait`] tolerates.
+/// raised by the core that declares `host_irq = true`). One owner (exclusive `flock`), and one
+/// line for every `notify = "irq"` ring: a wake for one ring is a spurious wake for another.
+/// [`RingRx::wait`] arms only its own ring, so while it sleeps (up to its timeout; `None`:
+/// until that ring has data) the other rings' writers do not notify. To serve several irq
+/// rings from one thread, give each wait a short timeout and poll the others.
 pub struct Irq {
     file: File,
     wakes: u64,
@@ -308,15 +310,24 @@ impl Irq {
     }
     fn enable(&mut self) -> std::io::Result<()> {
         let one = 1u32.to_ne_bytes();
-        let n = unsafe { libc::write(self.file.as_raw_fd(), one.as_ptr().cast(), 4) };
-        if n != 4 {
-            return Err(std::io::Error::last_os_error());
+        loop {
+            let n = unsafe { libc::write(self.file.as_raw_fd(), one.as_ptr().cast(), 4) };
+            match n {
+                4 => return Ok(()),
+                0..=3 => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero)),
+                _ => {
+                    let e = std::io::Error::last_os_error();
+                    if e.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(e);
+                    }
+                }
+            }
         }
-        Ok(())
     }
     /// Sleep up to `timeout` (rounded up to whole ms) for an interrupt. Returns whether one
     /// arrived; it is consumed and the line re-enabled before returning, so an edge from then
-    /// on wakes the next call (edges while masked merge into one pending wake).
+    /// on wakes the next call (edges while masked merge into one pending wake). A signal
+    /// (`EINTR`) ends the wait early as a spurious wake (`Ok(false)`).
     pub fn wait(&mut self, timeout: Duration) -> std::io::Result<bool> {
         let mut pfd = libc::pollfd {
             fd: self.file.as_raw_fd(),
@@ -338,8 +349,20 @@ impl Irq {
         }
         let mut count = [0u8; 4];
         let n = unsafe { libc::read(self.file.as_raw_fd(), count.as_mut_ptr().cast(), 4) };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            return if e.kind() == std::io::ErrorKind::Interrupted {
+                Ok(false)
+            } else {
+                Err(e)
+            };
+        }
         if n != 4 {
-            return Err(std::io::Error::last_os_error());
+            // UIO reads are all-or-nothing; anything else is not a UIO event count.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("rp1:irq read returned {n} bytes"),
+            ));
         }
         self.count = u32::from_ne_bytes(count);
         self.wakes += 1;
@@ -355,6 +378,13 @@ impl Irq {
     pub fn event_count(&self) -> u32 {
         self.count
     }
+}
+
+/// One sleep's bound: [`RECHECK`], or less when the deadline is closer.
+fn remaining(deadline: Option<Instant>) -> Duration {
+    deadline
+        .map_or(RECHECK, |d| d.saturating_duration_since(Instant::now()))
+        .min(RECHECK)
 }
 
 /// Counters of [`RingRx::wait`] (observational).
@@ -410,10 +440,17 @@ impl<T: Message> RingRx<T> {
         if !self.notify_irq {
             return Err(Error::Invalid.into());
         }
-        let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+        self.session.check()?;
+        let start = Instant::now();
+        let deadline = timeout.and_then(|t| start.checked_add(t));
         if !self.spin.is_zero() {
-            let start = Instant::now();
-            while start.elapsed() < self.spin {
+            // Never past the deadline; `None` (spin too long to represent): until data.
+            let end = match (start.checked_add(self.spin), deadline) {
+                (Some(s), Some(d)) => Some(s.min(d)),
+                (s, d) => s.or(d),
+            };
+            while end.is_none_or(|e| Instant::now() < e) {
+                self.session.check()?;
                 if self.inner.available() != 0 {
                     return Ok(true);
                 }
@@ -422,9 +459,10 @@ impl<T: Message> RingRx<T> {
         }
         loop {
             self.session.check()?;
-            let bound = deadline
-                .map_or(RECHECK, |d| d.saturating_duration_since(Instant::now()))
-                .min(RECHECK);
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return Ok(self.inner.available() != 0);
+            }
+            let bound = remaining(deadline);
             let mut io = Ok(false);
             let outcome = self.inner.wait_with(|| {
                 io = irq.wait(bound);
@@ -442,12 +480,10 @@ impl<T: Message> RingRx<T> {
                 }
             }
             self.stats.sleeps += 1;
-            if deadline.is_some_and(|d| Instant::now() >= d) {
-                return Ok(self.inner.available() != 0);
-            }
         }
     }
-    /// Poll for up to `spin` before the first arm of each [`RingRx::wait`] (default zero).
+    /// Poll for up to `spin` (never past the wait's timeout) before the first arm of each
+    /// [`RingRx::wait`] (default zero).
     /// With a producer that publishes a message every few µs, arming right away is mostly
     /// cancelled by the re-check, yet RP1 may still see the odd counter and pulse (one PCIe
     /// round trip each way per arm); a short spin trades consumer CPU for fewer arms.
@@ -517,5 +553,117 @@ impl<T: Message> BlockMap<T> {
             return Err(Error::Invalid);
         }
         Ok(unsafe { self.inner.begin_write() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::{fd::OwnedFd, unix::net::UnixStream};
+
+    /// Anonymous memory standing in for a UIO mapping.
+    fn anon(len: usize) -> Rc<Mapping> {
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(p, libc::MAP_FAILED);
+        Rc::new(Mapping {
+            base: NonNull::new(p.cast()).unwrap(),
+            len,
+            _file: File::open("/dev/null").unwrap(),
+        })
+    }
+    struct Rig {
+        rx: RingRx<u32>,
+        tx: shm::RingTx<u32>,
+        header: Rc<Mapping>,
+        _ctrl: Rc<Mapping>,
+    }
+    /// A published header and one depth-4 irq ring; both ends in this process.
+    fn rig() -> Rig {
+        let header = anon(4096);
+        let sha = [7u8; 32];
+        let mut init = unsafe { shm::HeaderInit::begin(header.ptr(), 0) };
+        init.write(&sha, 1, 0);
+        init.publish();
+        let session = Rc::new(Session {
+            header: unsafe { shm::Header::open(header.ptr(), &sha) }.unwrap(),
+            _map: header.clone(),
+            _link: header.clone(),
+        });
+        let (data, ctrl) = (anon(4096), anon(4096));
+        let len = shm::CONTROL_SIZE + 4 * shm::slot_size(4);
+        let ow = shm::Overflow::Reject;
+        let inner = unsafe { shm::RingRx::attach(data.ptr(), len, ctrl.ptr(), 128, 4, ow) };
+        let tx = unsafe { shm::RingTx::attach(data.ptr(), len, ctrl.ptr(), 128, 4, ow) };
+        let rx = RingRx {
+            inner: inner.unwrap(),
+            notify_irq: true,
+            spin: Duration::ZERO,
+            stats: WaitStats::default(),
+            _map: data,
+            session,
+        };
+        Rig {
+            rx,
+            tx: tx.unwrap(),
+            header,
+            _ctrl: ctrl,
+        }
+    }
+    /// An `Irq` on one end of a socket pair; writing 4 bytes to the other end is an event.
+    fn irq() -> (Irq, UnixStream) {
+        let (a, b) = UnixStream::pair().unwrap();
+        let irq = Irq {
+            file: File::from(OwnedFd::from(a)),
+            wakes: 0,
+            count: 0,
+        };
+        (irq, b)
+    }
+
+    #[test]
+    fn spin_stops_at_the_deadline() {
+        let mut r = rig();
+        let (mut irq, _peer) = irq();
+        r.rx.set_spin(Duration::from_secs(60));
+        let t = Instant::now();
+        assert!(!r.rx.wait(&mut irq, Some(Duration::from_millis(1))).unwrap());
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        // Zero timeout: no spin, no sleep.
+        assert!(!r.rx.wait(&mut irq, Some(Duration::ZERO)).unwrap());
+        assert_eq!(r.rx.wait_stats().sleeps, 0);
+    }
+
+    #[test]
+    fn wait_checks_the_session_before_spinning() {
+        let mut r = rig();
+        let (mut irq, _peer) = irq();
+        r.rx.set_spin(Duration::from_secs(60));
+        r.header.write(12, 1); // RP1 re-initializes the region
+        let t = Instant::now();
+        let e = r.rx.wait(&mut irq, None).unwrap_err();
+        assert_eq!(e.downcast_ref::<Error>(), Some(&Error::Reset));
+        assert!(t.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn irq_wait_wakes_and_rejects_short_reads() {
+        let (mut irq, mut peer) = irq();
+        assert!(!irq.wait(Duration::from_millis(1)).unwrap());
+        peer.write_all(&5u32.to_ne_bytes()).unwrap();
+        assert!(irq.wait(Duration::from_secs(5)).unwrap());
+        assert_eq!((irq.wakes(), irq.event_count()), (1, 5));
+        peer.write_all(&[1, 2]).unwrap();
+        let e = irq.wait(Duration::from_secs(5)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
     }
 }
