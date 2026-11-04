@@ -159,7 +159,8 @@ streamed by commands 14 (with `HostIrq::push_slice_notify` for every batch) and 
 `shm-linux ring-irq [count]` runs burst / paced / single-message streams with a polling and
 an `RingRx::wait` consumer, checks every message and prints one `RINGIRQ` line per run
 (measured `missing` / `corrupt`, `check=`). Notified irq runs must be woken by interrupts
-(`woken > 0`, `late` at most 1 % of the sleeps), so a broken notification path fails although
+(`woken > 0`, `late` at most 1 % of the sleeps); the designated `paced-irq` run must also have
+slept (`sleeps > 0`, `woken > 0`), else it is `INCONCLUSIVE` and no `RINGIRQ_PASS` is printed. So a broken notification path fails although
 the 10 ms re-check still delivers the data; `suppressed-irq` (command 15, irq consumer) must
 recover through the re-check (`pulses=0`, `late > 0`, every wait under RECHECK + 40 ms).
 `RINGIRQ_PASS` only if every run passes, else `RINGIRQ_FAIL`. HW (2026-11-05, cold boot x3): docs/design.md §6.2.

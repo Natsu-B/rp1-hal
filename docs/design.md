@@ -317,7 +317,7 @@ RMW atomic のメソッドは持たない。
     arm の前に短くポーリングすると消える（既定 0）。
   - SHM の回帰（各 10^6 件）・ドアベル・SCMI・UART1 送受信・I2C/ADC/SPI・vector 29 の probe は同じ起動で合格。
   - 通知が壊れても 10 ms の再確認だけで全件届くので、lab の判定は通知ありの irq 実行に「割り込みで起きた」ことを課す
-    （`woken > 0`、`late` は眠りの 1 % 以下）。通知を止めた実行（`suppressed-irq`、3200 件、1 ms 間隔）は再確認で回復すること
+    （`woken > 0`、`late` は眠りの 1 % 以下）。指定実行 `paced-irq` は必ず眠り（`sleeps > 0`、`woken > 0`）、一度も眠らなければ `INCONCLUSIVE` で `RINGIRQ_PASS` を出さない。通知を止めた実行（`suppressed-irq`、3200 件、1 ms 間隔）は再確認で回復すること
     （パルス 0、`late > 0`、1 回の待ちは 10 ms + 40 ms 未満）を課す。HW（2026-11-05、cold boot 1 回）: 全実行 `check=ok`、
     suppressed-irq は眠り 13 回のうち再確認で拾った 12 回、最長の待ち 10.07 ms。
   - ホストのテスト: `wait_handshake_all_interleavings` は posted 書き込み（相手側のコピーへの着地が遅れる）をモデル化し、

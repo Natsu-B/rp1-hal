@@ -6,6 +6,9 @@
 //! wakes, `check=`) and `RINGIRQ_PASS` only if every run's check holds:
 //!
 //! - every run: no missing or corrupt message;
+//! - `paced-irq` is the designated notification run: it must record `sleeps > 0` and
+//!   `woken > 0`; a run whose consumer never sleeps is `INCONCLUSIVE`, which fails the whole
+//!   command (never `RINGIRQ_PASS`). Throughput runs have no such requirement;
 //! - notified irq runs: the sleeps are ended by interrupts, not by the 10 ms re-check
 //!   (`woken > 0`, `late` at most 1 % of the sleeps), so a broken notification path fails
 //!   even though the re-check alone would still deliver every message;
@@ -33,6 +36,9 @@ struct Run {
     spin_us: u64,
     /// Messages in this run (`None`: the `count` argument).
     count: Option<u32>,
+    /// The designated notification run: the consumer must have slept (`sleeps > 0`), or the run
+    /// proves nothing about notifications and is reported as inconclusive.
+    must_sleep: bool,
 }
 
 /// Suppressed-notification run: 100 batches 1 ms apart, each found by the re-check.
@@ -53,12 +59,17 @@ pub fn main(count: u32) -> Result<()> {
         irq,
         spin_us,
         count: None,
+        must_sleep: false,
     };
     let runs = [
         run("burst-poll", 15, 32, 0, false, 0),
         run("burst-irq", 14, 32, 0, true, 0),
         run("paced-poll", 15, 32, 100, false, 0),
-        run("paced-irq", 14, 32, 100, true, 0),
+        // Producer 100 us per batch: the consumer drains faster than it is fed and must sleep.
+        Run {
+            must_sleep: true,
+            ..run("paced-irq", 14, 32, 100, true, 0)
+        },
         run("paced-irq-spin20", 14, 32, 100, true, 20),
         run("single-poll", 15, 1, 0, false, 0),
         run("single-irq", 14, 1, 0, true, 0),
@@ -126,7 +137,10 @@ pub fn main(count: u32) -> Result<()> {
         let pulses = report[7];
         let check = if missing != 0 || corrupt != 0 {
             "FAIL(messages)"
-        } else if run.irq && run.command == 14 && sleeps > 0 && (woken == 0 || late * 100 > sleeps)
+        } else if run.must_sleep && sleeps == 0 {
+            "INCONCLUSIVE(never-slept)"
+        } else if (run.must_sleep && woken == 0)
+            || (run.irq && run.command == 14 && sleeps > 0 && (woken == 0 || late * 100 > sleeps))
         {
             "FAIL(not-notified)"
         } else if run.command == 15
