@@ -189,7 +189,7 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         );
     }
     // rp1-mailbox keeps HOST_EVENTS (hwirq 58) and stays SCMI's transport; UIO cannot share that
-    // IRQ (HW 2026-10-28: -EBUSY). RP1 -> Linux interrupts use MSI-X vector 57 instead
+    // IRQ (HW 2026-10-28: -EBUSY). RP1 -> Linux interrupts use MSI-X vector 29 instead
     // (`rp1_proto::irq`, opt-in `rp1:irq` above); otherwise Linux polls the link page.
     // The PoC OpenAMP remoteproc (mailbox channels 1..3) has no label; the stock DTB has no
     // such node, so this leaves an empty disabled

@@ -65,11 +65,16 @@ pub mod uio {
 }
 
 /// proc1 -> Linux interrupt without hwirq 58 (SYSCFG HOST_EVENTS, kept by rp1-mailbox / SCMI).
-/// RP1 forwards each of its 61 interrupt sources to the host as a PCIe MSI-X vector; vector 57
-/// (PROC_MISC) has no Linux driver. RP1 raises it by pulsing that vector's `MSIX_CFG.TEST` bit
-/// (ORed with the source), and Linux receives it on the `rp1:irq` UIO node (edge-triggered).
+/// RP1 forwards each of its 61 interrupt sources to the host as a PCIe MSI-X vector. Vector 29
+/// is TIMER alarm 3 (`TIMER_3`): no Linux driver uses it, and its source is
+/// `TIMER.INTS` bit 3 = `(INTR & INTE) | INTF` bit 3, which RP1 alone controls (`host_irq`
+/// owns `TIMER.ALARM3`, so nothing unmasks or forces it). RP1 raises the vector by pulsing its
+/// `MSIX_CFG.TEST` bit (ORed with that held-low source), and Linux receives it on the `rp1:irq`
+/// UIO node (edge-triggered).
 pub mod irq {
-    pub const VECTOR: u32 = 57;
+    pub const VECTOR: u32 = 29;
+    /// The TIMER alarm whose interrupt is `VECTOR`; `host_irq` owns it.
+    pub const TIMER_ALARM: u32 = 3;
     /// PCIE_APBS `MSIX_CFG(VECTOR)` in the RP1 address space, and its set / clear aliases
     /// (the same 0x800 / 0xc00 aliases Linux's rp1 driver uses for ENABLE / IACK).
     pub const MSIX_CFG: u32 = 0x4010_8008 + 4 * VECTOR;

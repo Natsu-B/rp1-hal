@@ -129,7 +129,7 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 | インスタンス | `uart0`..`uart4`、`i2c0`..`i2c3`、`spi0`/`spi1`/`spi3`/`spi5`、`adc` | インスタンス全体。信号ごとのピン | IRQ 線、リセットビット、クロック、ラッパー `+0x108`、割り当てたピン |
 | ブロックの一部 | `timer = ["ALARM0".."ALARM3"]` | アラーム単位。タイマーの計数値は全員が読める | 該当 IRQ（26..29） |
 | ピン | `gpio = [..]`、`gpio_irq = [..]` | ピン単位（funcsel、pad、SYS_RIO、イベント選択） | — |
-| RP1 → Linux 割り込み（不安定） | `host_irq = true`（1 コアだけ） | MSI-X vector 57 の `MSIX_CFG.TEST` | `HostIrq`（rp1-hal の feature `unstable-host-irq`）、overlay の `rp1:irq` UIO |
+| RP1 → Linux 割り込み（不安定） | `host_irq = true`（1 コアだけ） | MSI-X vector 29 の `MSIX_CFG.TEST`（`TIMER.ALARM3` も所有） | `HostIrq`（rp1-hal の feature `unstable-host-irq`）、overlay の `rp1:irq` UIO |
 | バンク | 自動 | ピンを 1 本でも持つと、そのバンクの電圧設定は読むだけ | — |
 | システム | `log`、`clock.authority = "rp1"` | RP1 全体（コアに属さない） | UART0 と GPIO 14/15 / クロック生成器 |
 | Linux | `linux.keep`（省略時はボード既定。書くと既定を置き換える） | インスタンスとピン | 宣言できない（E3/E4） |

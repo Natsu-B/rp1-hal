@@ -57,10 +57,10 @@ fn apply_declaration(d: &Declaration, source: &str) -> (rp1_build::fdt::Fdt, Vec
     )
 }
 
-/// `host_irq = true` adds a UIO child of rp1 on MSI-X vector 57 (edge), not hwirq 58, whose
+/// `host_irq = true` adds a UIO child of rp1 on MSI-X vector 29, TIMER alarm 3 (edge), not hwirq 58, whose
 /// `reg` decodes with rp1's two-cell bus and whose interrupt parent is rp1 itself.
 #[test]
-fn host_irq_adds_an_rp1_child_uio_on_vector_57() {
+fn host_irq_adds_an_rp1_child_uio_on_the_timer_alarm3_vector() {
     let d: Declaration = toml::from_str(
         r#"
 schema = 2
@@ -76,10 +76,8 @@ host_irq = true
     let rp1 = fdt.label("rp1").unwrap();
     let irq = fdt.child(rp1, "rp1-irq@c040108000").unwrap();
     assert_eq!(fdt.reg(irq).unwrap(), [(0xc0_4010_8000, 0x4000)]);
-    assert_eq!(
-        fdt.cells(irq, "interrupts").unwrap(),
-        [rp1_proto::irq::VECTOR, 1]
-    );
+    assert_eq!(fdt.cells(irq, "interrupts").unwrap(), [29, 1]);
+    assert_eq!(rp1_proto::irq::VECTOR, 29);
     // of_irq_find_parent: no interrupt-parent of its own, so the DT parent, which is the
     // interrupt controller with two cells.
     assert!(fdt.prop(irq, "interrupt-parent").is_none());
@@ -87,6 +85,31 @@ host_irq = true
     assert_eq!(fdt.cells(rp1, "#interrupt-cells").unwrap(), [2]);
     assert_eq!(fdt.strings(irq, "linux,uio-name"), ["rp1:irq"]);
     assert!(fdt.enabled(irq));
+}
+
+/// `host_irq` owns TIMER alarm 3, whose interrupt is the host vector; other alarms stay free.
+#[test]
+fn host_irq_owns_timer_alarm3() {
+    for (owner, alarm, ok) in [
+        ("proc1", "ALARM3", false),
+        ("proc0", "ALARM3", false),
+        ("proc1", "ALARM2", true),
+    ] {
+        let alarm_core = format!("[{owner}]\ntimer = [\"{alarm}\"]\n");
+        let text = if owner == "proc1" {
+            format!("schema = 2\n{alarm_core}host_irq = true\n")
+        } else {
+            format!("schema = 2\n{alarm_core}[proc1]\nhost_irq = true\n")
+        };
+        let d: Declaration =
+            toml::from_str(&text).unwrap_or_else(|e| panic!("{owner} {alarm}: {e}"));
+        let r = generate("test", "0.1.0", &d, [0; 32], [0; 20]);
+        match (r, ok) {
+            (Ok(_), true) => {}
+            (Err(e), false) => assert!(e.to_string().contains("TIMER.ALARM3"), "{e}"),
+            (r, _) => panic!("{owner} {alarm}: {:?}", r.err()),
+        }
+    }
 }
 
 #[test]

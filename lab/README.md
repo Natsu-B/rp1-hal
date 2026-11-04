@@ -88,7 +88,7 @@ The link-page first 64 bytes hold handoff magic/PA/size (offsets 0/4/8/12), exis
 request/reply (16/20), published generation/status (24/28), and Linux enable request (32).
 SCMI occupies `0x17c0..0x18c0` relative to the link page; allocations skip it and the ABI tail.
 Linux loads `uio.ko`, then `uio_pdrv_genirq.ko of_id=generic-uio`, and runs `lab/check-shm.sh`.
-UIO is polled, or (after shm enable) proc1 also raises MSI-X vector 57 on the `rp1:irq` UIO after
+UIO is polled, or (after shm enable) proc1 also raises MSI-X vector 29 on the `rp1:irq` UIO after
 each doorbell reply (unstable `host_irq = true`, `linux-doorbell <link> <doorbell> N
 /dev/uio<rp1:irq>`, which re-checks the reply every 10 ms without a wake and reports
 `missed=`); hwirq58 stays with SCMI's mailbox. No cached mapping, kernel patch or private

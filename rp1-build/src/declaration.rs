@@ -482,6 +482,21 @@ impl Declaration {
                     .into(),
             );
         }
+        // The host interrupt's MSI-X vector is TIMER alarm 3's: an unmasked alarm 3 would hold
+        // the vector's source high and swallow the pulses (`rp1_proto::irq`).
+        for (owner, core) in [("proc0", &self.proc0), ("proc1", &self.proc1)] {
+            let alarm = format!("timer.ALARM{}", rp1_proto::irq::TIMER_ALARM);
+            if core.host_irq
+                && let Some(previous) = blocks.insert(alarm, format!("{owner}.host_irq"))
+            {
+                return Err(format!(
+                    "E3: TIMER.ALARM{} is declared by {previous} but {owner}.host_irq owns it \
+                     (its interrupt is the host interrupt's MSI-X vector)",
+                    rp1_proto::irq::TIMER_ALARM
+                )
+                .into());
+            }
+        }
         for (owner, core) in [("proc0", &self.proc0), ("proc1", &self.proc1)] {
             for pin in &core.gpio {
                 validate_pin(*pin)?;

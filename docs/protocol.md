@@ -145,7 +145,7 @@ T   payload 8 バイト境界に 0 埋め
 |---|---|---|
 | Linux → proc1 | GPIO INTF の SET 別名（`IO_BANK0 + 0x2114`、BAR1 経由）に書く。proc1 の ISRAM 上の ISR が受ける | 往復 p50 4.1 µs（HW、ポーリング側） |
 | Linux → proc0 | mailbox（SYSCFG PROC_EVENTS）。ch0 は SCMI が使うので ch1 以降 | 配送は HW。遅延は未測定 |
-| RP1 → Linux | ポーリング（link の返答語）。または不安定機能（`host_irq = true`）として MSI-X vector 57 の TEST パルス → `rp1:irq` UIO の IRQ（`rp1_hal::host_irq::HostIrq`、design.md §6.2）。hwirq58 は rp1-mailbox/SCMI が専有したまま | 共有は不可（HW、-EBUSY）。mailbox/SCMI を外せば UIO で受けられ、往復 p50 71 µs（M3 の SCMI 処理込み）、通知ごとに空振り起床 1 回（HW 2026-10-28） |
+| RP1 → Linux | ポーリング（link の返答語）。または不安定機能（`host_irq = true`）として MSI-X vector 29（TIMER アラーム 3）の TEST パルス → `rp1:irq` UIO の IRQ（`rp1_hal::host_irq::HostIrq`、design.md §6.2）。hwirq58 は rp1-mailbox/SCMI が専有したまま | 共有は不可（HW、-EBUSY）。mailbox/SCMI を外せば UIO で受けられ、往復 p50 71 µs（M3 の SCMI 処理込み）、通知ごとに空振り起床 1 回（HW 2026-10-28） |
 | どちらでも | 通知なし（`notify = "poll"`）。受け手がポーリング | — |
 
 - 通知は「相手の `waiting` が 1 のときだけ」送る（毎回は送らない）。
@@ -158,8 +158,8 @@ T   payload 8 バイト境界に 0 埋め
     RP1 の SRAM（link ページ、共有 SRAM 上の領域）にあるデータだけ（`HostIrq::notify_sram`）。barrier は PCIe の posted 書き込みの
     到着を待たないので、DDR のデータより先に Linux が起きて古い値を読みうる（STATIC）。
   - 失う・まとまる: Linux が vector を有効にする前（最初の `write(1)` の前）のパルスは消える。起床から次の `write(1)` までの
-    パルスは 1 回にまとまる（lazy disable）。vector 57 の本来の割り込み源（PROC_MISC）が立っている間のパルスはエッジにならず
-    届かない（design.md §6.2）。
+    パルスは 1 回にまとまる（lazy disable）。vector 29 の本来の割り込み源（TIMER アラーム 3、`host_irq` が所有し誰も
+    立てない）が立っている間のパルスはエッジにならず届かない（design.md §6.2）。
   - よって受け手は、起床のたびと、起床が無くても上限付きの待ち時間（例: 10 ms）ごとに、待っているデータ（リング・返答語）を
     見直す。1 回のエッジを無期限に待たない。起床してもデータが無いこと（空振り）も許す。
 

@@ -45,7 +45,7 @@ gpio_irq = [27]
 timer = ["ALARM1"]
 adc = {}
 spi0 = { sck = 11, mosi = 10, miso = 9 }
-host_irq = true # unstable: RP1 -> Linux interrupt on MSI-X vector 57 (rp1:irq UIO)
+host_irq = true # unstable: RP1 -> Linux interrupt on MSI-X vector 29 (TIMER alarm 3, rp1:irq UIO)
 
 [[package.metadata.rp1.shm]]
 name = "up"
