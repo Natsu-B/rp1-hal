@@ -33,8 +33,10 @@ pub const TAIL: usize = 0;
 /// `ctrl`: times `tail` wrapped past `u32::MAX` (`overflow = overwrite`).
 pub const TAIL_HI: usize = 4;
 /// `ctrl`: the reader's sleep counter (protocol.md §2.3). Odd = asleep and wants a
-/// notification, even = awake. Only the reader writes it, adding 1 at every transition, so each
-/// sleep has its own value and the writer notifies at most once per sleep.
+/// notification, even = awake. Only the reader writes it, adding 1 at every transition, so
+/// consecutive sleeps have different values and the writer notifies at most once per sleep.
+/// The counter wraps after 2^31 sleeps: a sleep may then reuse the odd value the writer
+/// notified last and get no notification; the reader's bounded re-check covers that.
 pub const WAITING: usize = 64;
 /// Slot word 1 bit: the writer is rewriting this slot (`overflow = overwrite`).
 const BUSY: u32 = 1 << 16;
@@ -69,6 +71,8 @@ pub const fn block_size(elem: usize) -> usize {
 
 #[inline(always)]
 unsafe fn ld(base: *const u8, offset: usize) -> u32 {
+    #[cfg(test)]
+    tests::model::before_load(unsafe { base.add(offset) });
     unsafe { ptr::read_volatile(base.add(offset).cast()) }
 }
 #[inline(always)]
@@ -477,6 +481,10 @@ impl<T: Message> RingTx<T> {
     /// re-check sees the new `head`, or this sees the reader asleep. The readback also
     /// completes the payload, so the caller may notify without another drain. Costs one
     /// round trip per call; pure polling users need not call it.
+    ///
+    /// "Not notified before" compares with the last notified value only: after 2^31 reader
+    /// sleeps without a notification in between, a sleep can reuse that value and is then
+    /// not notified (the reader's bounded re-check picks the data up; notifications are hints).
     #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn wake_needed(&mut self) -> bool {
         barrier();
@@ -1241,92 +1249,274 @@ mod tests {
         rx.finish_wait();
     }
 
-    /// Lost-wakeup stress with real concurrency: the writer pushes random batches, pulses an
-    /// edge-like event (merged while pending) when `wake_needed`, and waits for the reader to
-    /// drain the ring; the reader sleeps on the event with a 1 s bound. A timeout would be a
-    /// lost wakeup. A smoke test: the race windows are nanoseconds wide, so it does not prove
-    /// the handshake (the sequential cases above pin down the orders).
+    /// Counter wrap: after the notified sleep, 2^31 - 1 more sleeps bring the counter back to
+    /// the same odd value. That sleep is not notified (documented on [`WAITING`]); the reader's
+    /// bounded re-check still finds the data.
     #[test]
-    fn wait_stress_no_lost_wakeup() {
-        use std::sync::{Condvar, Mutex};
-        use std::time::Duration;
-        struct Event(Mutex<bool>, Condvar);
-        struct SendPtr(*mut u8);
-        unsafe impl Send for SendPtr {}
-        unsafe impl Sync for SendPtr {}
-        const N: u32 = 20_000;
-        let (mut data, mut ctrl) = wait_pair(16);
-        let len = CONTROL_SIZE + 16 * 16;
-        let (d, c) = (SendPtr(data.0.as_mut_ptr()), SendPtr(ctrl.0.as_mut_ptr()));
-        let event = Event(Mutex::new(false), Condvar::new());
-        let mut tx =
-            unsafe { RingTx::<u64>::attach(d.0, len, c.0, 128, 16, Overflow::Reject) }.unwrap();
-        let mut rx =
-            unsafe { RingRx::<u64>::attach(d.0, len, c.0, 128, 16, Overflow::Reject) }.unwrap();
-        let (mut pulses, mut waits, mut sleeps, mut timeouts) = (0u32, 0u32, 0u32, 0u32);
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                let mut x = 0x1234_5678u32;
-                let mut next = 0u64;
-                while next < u64::from(N) {
-                    x ^= x << 13;
-                    x ^= x >> 17;
-                    x ^= x << 5;
-                    let k = (x % 8 + 1) as u64;
-                    let batch: std::vec::Vec<u64> = (next..(next + k).min(u64::from(N))).collect();
-                    next += tx.push_slice(&batch) as u64;
-                    if tx.wake_needed() {
-                        pulses += 1;
-                        *event.0.lock().unwrap() = true;
-                        event.1.notify_one();
-                    }
-                    // Sporadic producer: no further push (and so no further `wake_needed`)
-                    // until the reader has drained the ring, so a missed notification is not
-                    // rescued by the next batch.
-                    while tx.free() != 16 {
-                        core::hint::spin_loop();
-                    }
-                    for _ in 0..(x >> 20) % 2048 {
-                        core::hint::spin_loop();
-                    }
+    fn wait_counter_wrap_can_alias() {
+        let (mut data, mut ctrl) = wait_pair(2);
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        assert!(rx.prepare_wait());
+        assert!(tx.wake_needed());
+        rx.finish_wait();
+        let w = unsafe { ld(c, WAITING) };
+        // 2^31 - 1 more sleeps, 2 steps each.
+        unsafe { st(c, WAITING, w.wrapping_add(u32::MAX - 1)) };
+        let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+        let r = rx.wait_with(|| {
+            tx.push(&1).unwrap();
+            assert!(!tx.wake_needed(), "aliased sleep is not notified");
+            false
+        });
+        assert_eq!(r, Wait::Timeout);
+        assert_eq!(rx.wait_with(|| unreachable!()), Wait::Ready);
+        assert_eq!(rx.pop().unwrap(), Some(1));
+    }
+
+    /// Exhaustive interleaving model of the handshake (protocol.md §2.3) on the real code.
+    ///
+    /// Each side's stores into the peer's memory are posted: the writer writes a private copy
+    /// of `data` and the reader a private copy of `ctrl` (`shadow`); a store reaches the peer's
+    /// copy (`real`) only when it lands. Landing is in order, so a path lands as a whole: either
+    /// spontaneously at any point, or when its own side reads back through the same window (a
+    /// non-posted read does not pass earlier posted writes). Every load in the ring code is a
+    /// scheduling point (`ld` calls [`before_load`]); the two sides run on threads that hand a
+    /// single token back and forth (so there is no data race), and a depth-first search over the
+    /// choices "run writer / run reader / land data / land ctrl" visits every schedule.
+    pub(super) mod model {
+        extern crate std;
+        use std::cell::RefCell;
+        use std::sync::{Arc, Condvar, Mutex};
+        use std::vec::Vec;
+
+        /// A posted-write path: what the writing side sees and what the peer sees.
+        pub struct Path {
+            pub shadow: usize,
+            pub real: usize,
+            pub len: usize,
+        }
+        impl Path {
+            fn pending(&self) -> bool {
+                // SAFETY: both buffers live for the run; only the token holder touches them.
+                unsafe {
+                    std::slice::from_raw_parts(self.shadow as *const u8, self.len)
+                        != std::slice::from_raw_parts(self.real as *const u8, self.len)
                 }
-            });
-            let mut expect = 0u64;
-            let mut buf = [0u64; 8];
-            let mut y = 1u32;
-            while expect < u64::from(N) {
-                let n = rx.pop_into(&mut buf).unwrap();
-                for v in &buf[..n] {
-                    assert_eq!(*v, expect);
-                    expect += 1;
+            }
+            fn land(&self) {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        self.shadow as *const u8,
+                        self.real as *mut u8,
+                        self.len,
+                    )
                 }
-                if n == 0 {
-                    waits += 1;
-                    // Vary the reader's timing against the writer's.
-                    y = y.wrapping_mul(1_103_515_245).wrapping_add(12345);
-                    for _ in 0..(y >> 20) % 2048 {
-                        core::hint::spin_loop();
+            }
+        }
+        #[derive(Default)]
+        struct State {
+            running: Option<usize>,
+            parked: [bool; 2],
+            /// Asleep: not runnable until the other side is done.
+            asleep: [bool; 2],
+            done: [bool; 2],
+        }
+        pub struct Sched {
+            state: Mutex<State>,
+            cv: Condvar,
+            pub paths: [Path; 2],
+        }
+        std::thread_local!(static CURRENT: RefCell<Option<(Arc<Sched>, usize)>> = const { RefCell::new(None) });
+
+        /// Called by `ld` before every load; a no-op outside a model run.
+        pub fn before_load(addr: *const u8) {
+            let Some((s, me)) = CURRENT.with(|c| c.borrow().clone()) else {
+                return;
+            };
+            s.park(me);
+            for p in &s.paths {
+                if (p.shadow..p.shadow + p.len).contains(&(addr as usize)) {
+                    p.land();
+                }
+            }
+        }
+        impl Sched {
+            pub fn new(paths: [Path; 2]) -> Arc<Self> {
+                Arc::new(Self {
+                    state: Mutex::new(State::default()),
+                    cv: Condvar::new(),
+                    paths,
+                })
+            }
+            fn park(&self, me: usize) {
+                self.park_as(me, false);
+            }
+            fn park_as(&self, me: usize, asleep: bool) {
+                let mut g = self.state.lock().unwrap();
+                g.parked[me] = true;
+                g.asleep[me] = asleep;
+                g.running = None;
+                self.cv.notify_all();
+                while g.running != Some(me) {
+                    g = self.cv.wait(g).unwrap();
+                }
+                g.parked[me] = false;
+            }
+            /// Sleep (inside side `me`) until the other side has finished: a notification
+            /// would wake it, and none can come later.
+            pub fn sleep(&self, me: usize) {
+                self.park_as(me, true);
+            }
+            /// Run `f` as side `me` (0 = writer, 1 = reader) under the scheduler.
+            pub fn side<R>(self: &Arc<Self>, me: usize, f: impl FnOnce() -> R) -> R {
+                CURRENT.with(|c| *c.borrow_mut() = Some((self.clone(), me)));
+                self.park(me);
+                let r = f();
+                CURRENT.with(|c| *c.borrow_mut() = None);
+                let mut g = self.state.lock().unwrap();
+                g.done[me] = true;
+                g.running = None;
+                self.cv.notify_all();
+                r
+            }
+            /// Drive both sides to completion; `choose(n)` picks one of `n` enabled steps.
+            pub fn drive(&self, mut choose: impl FnMut(usize) -> usize, trace: &mut Vec<usize>) {
+                loop {
+                    let mut g = self.state.lock().unwrap();
+                    while g.running.is_some() || (0..2).any(|t| !g.done[t] && !g.parked[t]) {
+                        g = self.cv.wait(g).unwrap();
                     }
-                    match rx.wait_with(|| {
-                        let g = event.0.lock().unwrap();
-                        let (mut g, _) = event
-                            .1
-                            .wait_timeout_while(g, Duration::from_secs(1), |p| !*p)
-                            .unwrap();
-                        core::mem::replace(&mut *g, false)
-                    }) {
-                        Wait::Ready => {}
-                        Wait::Woken => sleeps += 1,
-                        Wait::Timeout => timeouts += 1,
+                    // 0..2: run that side; 2..4: land that path.
+                    let steps: Vec<usize> = (0..2)
+                        .filter(|&t| g.parked[t] && !(g.asleep[t] && !g.done[1 - t]))
+                        .chain((0..2).filter(|&p| self.paths[p].pending()).map(|p| p + 2))
+                        .collect();
+                    if (0..2).all(|t| g.done[t]) {
+                        return;
+                    }
+                    let step = steps[choose(steps.len())];
+                    trace.push(step);
+                    if step >= 2 {
+                        self.paths[step - 2].land();
+                    } else {
+                        g.running = Some(step);
+                        self.cv.notify_all();
                     }
                 }
             }
-        });
-        assert_eq!(timeouts, 0, "lost wakeup");
-        // At most one notification per arm. An arm cancelled by the re-check (data arrived
-        // meanwhile) can still be notified; that edge is a spurious wake later.
-        assert!(pulses <= waits, "pulses={pulses} waits={waits}");
-        assert!(sleeps > 0);
+        }
+
+        /// Depth-first search over every sequence of choices `run` makes; returns the count.
+        pub fn explore(mut run: impl FnMut(&mut dyn FnMut(usize) -> usize)) -> usize {
+            let mut prefix: Vec<usize> = Vec::new();
+            let mut runs = 0;
+            loop {
+                let mut taken: Vec<(usize, usize)> = Vec::new();
+                run(&mut |n| {
+                    let c = prefix.get(taken.len()).copied().unwrap_or(0);
+                    taken.push((c, n));
+                    c
+                });
+                runs += 1;
+                while let Some((c, n)) = taken.pop() {
+                    if c + 1 < n {
+                        taken.push((c + 1, n));
+                        break;
+                    }
+                }
+                if taken.is_empty() {
+                    return runs;
+                }
+                prefix = taken.into_iter().map(|(c, _)| c).collect();
+            }
+        }
+    }
+
+    /// The handshake never lets the reader sleep on a published message unnotified, and never
+    /// notifies before the message has landed, in any interleaving of one `push` +
+    /// `wake_needed` against one `wait_with`. Fails if the reader's re-check or either
+    /// readback is removed (each gives a schedule where the reader sleeps unnotified).
+    #[test]
+    fn wait_handshake_all_interleavings() {
+        use model::{Path, Sched, explore};
+        const LEN: usize = CONTROL_SIZE + 4 * 16;
+        // prior = 0: fresh ring; 1: the reader already had one notified sleep and a message.
+        for prior in 0..2 {
+            let runs = explore(|choose| {
+                let (mut data, mut data_shadow) = (mem::<LEN>(), mem::<LEN>());
+                let (mut ctrl, mut ctrl_shadow) = (mem::<CONTROL_SIZE>(), mem::<CONTROL_SIZE>());
+                let (dr, ds) = (data.0.as_mut_ptr(), data_shadow.0.as_mut_ptr());
+                let (cr, cs) = (ctrl.0.as_mut_ptr(), ctrl_shadow.0.as_mut_ptr());
+                let head_real = dr as usize;
+                let ow = Overflow::Reject;
+                let mut tx = unsafe { RingTx::<u32>::attach(ds, LEN, cr, 128, 4, ow) }.unwrap();
+                let mut rx = unsafe { RingRx::<u32>::attach(dr, LEN, cs, 128, 4, ow) }.unwrap();
+                let sync = || unsafe {
+                    core::ptr::copy_nonoverlapping(ds, dr, LEN);
+                    core::ptr::copy_nonoverlapping(cs, cr, CONTROL_SIZE);
+                };
+                if prior == 1 {
+                    assert!(rx.prepare_wait());
+                    sync();
+                    tx.push(&0).unwrap();
+                    assert!(tx.wake_needed());
+                    sync();
+                    rx.finish_wait();
+                    assert_eq!(rx.pop().unwrap(), Some(0));
+                    sync();
+                }
+                let sched = Sched::new([
+                    Path {
+                        shadow: ds as usize,
+                        real: dr as usize,
+                        len: LEN,
+                    },
+                    Path {
+                        shadow: cs as usize,
+                        real: cr as usize,
+                        len: CONTROL_SIZE,
+                    },
+                ]);
+                let mut trace = vec![];
+                let notified_now = core::sync::atomic::AtomicBool::new(false);
+                let (notified, outcome) = std::thread::scope(|s| {
+                    let w = s.spawn(|| {
+                        sched.side(0, || {
+                            tx.push(&1).unwrap();
+                            let notify = tx.wake_needed();
+                            notified_now.store(notify, core::sync::atomic::Ordering::Relaxed);
+                            // The notification must not overtake the message.
+                            let landed = unsafe { ld(head_real as *const u8, HEAD) } == tx.head();
+                            (notify, landed)
+                        })
+                    });
+                    let r = s.spawn(|| {
+                        sched.side(1, || {
+                            rx.wait_with(|| {
+                                sched.sleep(1);
+                                notified_now.load(core::sync::atomic::Ordering::Relaxed)
+                            })
+                        })
+                    });
+                    sched.drive(choose, &mut trace);
+                    (w.join().unwrap(), r.join().unwrap())
+                });
+                let (notified, landed) = notified;
+                assert_eq!(outcome == Wait::Woken, notified && outcome != Wait::Ready);
+                assert!(
+                    outcome == Wait::Ready || notified,
+                    "lost wakeup: reader sleeps on a published message (prior={prior}, \
+                     schedule={trace:?}; 0 writer, 1 reader, 2 land data, 3 land ctrl)"
+                );
+                assert!(
+                    !notified || landed,
+                    "notified before head landed (prior={prior}, schedule={trace:?})"
+                );
+            });
+            assert!(runs > 10, "runs={runs}");
+        }
     }
 
     #[test]
