@@ -371,3 +371,36 @@ fn instance_declarations_require_tables() {
         error(body, &["E0", "must be a pin table"]);
     }
 }
+
+#[test]
+fn pwm_ownership_is_whole_block_even_with_disjoint_channel_pins() {
+    error(
+        "[proc0]\npwm0={channel0=12}\n[proc1]\npwm0={channel1=13}",
+        &["E3", "PWM0", "proc0", "proc1"],
+    );
+    error(
+        "[linux]\nkeep={pwm0={channel1=13}}\n[proc0]\npwm0={channel0=12}",
+        &["E3", "PWM0", "Linux by linux.keep"],
+    );
+    error(
+        "[proc0]\ngpio=[12]\npwm0={channel0=12}",
+        &["E1", "GPIO 12", "pwm0.channel0"],
+    );
+    error(
+        "log={sink='uart0',baudrate=115200}\n[proc0]\npwm0={channel2=14}",
+        &["E1", "GPIO 14", "log.uart0.tx"],
+    );
+    error(
+        "[proc0]\npwm0={channel0=13}",
+        &["E2", "pwm0.channel0", "GPIO12"],
+    );
+    error("[proc0]\npwm1={channel0=12}", &["E2", "PWM1"]);
+    error("[proc0]\npwm1={channel0=45}", &["E4", "Linux"]);
+    error("[proc0]\npwm0={channel4=12}", &["E0", "channel4"]);
+    let d =
+        parse("[proc0]\npwm0={channel0=12,channel1=13,channel2=18,channel3=19}\n[proc1]\npwm1={}");
+    d.validate().unwrap();
+    assert_eq!(d.proc0.pins(), [12, 13, 18, 19]);
+    assert_eq!(d.proc0.peripherals(), ["PWM0"]);
+    assert_eq!(d.proc1.peripherals(), ["PWM1"]);
+}

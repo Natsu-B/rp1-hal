@@ -33,9 +33,20 @@ pub struct SpiPins {
     pub miso: Option<u8>,
 }
 
+/// Optional bank-0 outputs; ownership always covers all four channels of the block.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PwmPins {
+    pub channel0: Option<u8>,
+    pub channel1: Option<u8>,
+    pub channel2: Option<u8>,
+    pub channel3: Option<u8>,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum Instance {
+    Pwm(PwmPins),
     Uart(UartPins),
     I2c(I2cPins),
     Spi(SpiPins),
@@ -77,6 +88,7 @@ fn signal_name(signal: Signal) -> String {
                 SpiSignal::Cs(_) => "CS",
             }
         ),
+        Signal::Pwm(n, role) => format!("PWM{n}_{role:?}"),
         _ => unreachable!(),
     }
 }
@@ -121,6 +133,7 @@ impl Instance {
                 Self::Uart(parse_pin_table(value, &path)?)
             }
             Kind::I2c => Self::I2c(parse_pin_table(value, &path)?),
+            Kind::Pwm => Self::Pwm(parse_pin_table(value, &path)?),
             Kind::Spi => {
                 if let Some(key) = value
                     .as_table()
@@ -156,6 +169,28 @@ impl Instance {
                 ("mosi", p.mosi, Signal::Spi(n, SpiSignal::Mosi)),
                 ("miso", p.miso, Signal::Spi(n, SpiSignal::Miso)),
             ],
+            Self::Pwm(p) => vec![
+                (
+                    "channel0",
+                    p.channel0,
+                    Signal::Pwm(n, rp1_pinmux::PwmSignal::Channel0),
+                ),
+                (
+                    "channel1",
+                    p.channel1,
+                    Signal::Pwm(n, rp1_pinmux::PwmSignal::Channel1),
+                ),
+                (
+                    "channel2",
+                    p.channel2,
+                    Signal::Pwm(n, rp1_pinmux::PwmSignal::Channel2),
+                ),
+                (
+                    "channel3",
+                    p.channel3,
+                    Signal::Pwm(n, rp1_pinmux::PwmSignal::Channel3),
+                ),
+            ],
             Self::Adc {} => vec![],
         }
     }
@@ -164,7 +199,7 @@ impl Instance {
             Self::Uart(_) => &["tx", "rx"],
             Self::I2c(_) => &["sda", "scl"],
             Self::Spi(_) => &["sck", "mosi", "miso"],
-            Self::Adc {} => &[],
+            Self::Adc {} | Self::Pwm(_) => &[],
         }
     }
     /// Schema 1 listed raw pins next to a block name. Infer only the required signals, each
@@ -223,6 +258,7 @@ impl Instance {
                 miso: pin("miso"),
             }),
             Self::Adc {} => Self::Adc {},
+            Self::Pwm(_) => Self::Pwm(PwmPins::default()),
         })
     }
     fn number(name: &str) -> u8 {
@@ -266,7 +302,8 @@ impl Instance {
                             matches!((signal, s),
                         (Signal::Uart(n, _), Signal::Uart(m, _)) |
                         (Signal::I2c(n, _), Signal::I2c(m, _)) |
-                        (Signal::Spi(n, _), Signal::Spi(m, _)) if n == *m)
+                        (Signal::Spi(n, _), Signal::Spi(m, _)) |
+                        (Signal::Pwm(n, _), Signal::Pwm(m, _)) if n == *m)
                         })
                     })
                     .map(|(alt, s)| format!("{} (alt{alt})", signal_name(*s)))

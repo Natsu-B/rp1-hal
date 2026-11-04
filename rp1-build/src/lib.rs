@@ -302,6 +302,15 @@ fn instance_resource(
             "spi",
             [("sck", p.sck), ("mosi", p.mosi), ("miso", p.miso)].to_vec(),
         ),
+        // PWM outputs are optional: keep the declared pins in ProcNPins, with a block token.
+        Instance::Pwm(_) => {
+            let ty = format!("::rp1_hal::pwm::Token<{n}>");
+            return Ok((
+                ty.clone(),
+                format!("unsafe {{ <{ty}>::new() }}"),
+                Vec::new(),
+            ));
+        }
         Instance::Adc {} => {
             let ty = "::rp1_hal::adc::Token";
             return Ok((ty.into(), format!("unsafe {{ {ty}::new() }}"), Vec::new()));
@@ -379,5 +388,24 @@ spi0 = { sck = 11, mosi = 10, miso = 9 }
                 "pub gpio27: ::rp1_hal::gpio::Pin<27>,"
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod pwm_tests {
+    #[test]
+    fn resources_issue_block_tokens_and_retain_optional_pins() {
+        let d =
+            toml::from_str("schema=2\n[proc0]\npwm0={channel0=12,channel2=18}\n[proc1]\npwm1={}")
+                .unwrap();
+        let s = super::resources(&d, &[]).unwrap();
+        for field in [
+            "pub pwm0: ::rp1_hal::pwm::Token<0>",
+            "pub pwm1: ::rp1_hal::pwm::Token<1>",
+            "pub gpio12: ::rp1_hal::gpio::Pin<12>",
+            "pub gpio18: ::rp1_hal::gpio::Pin<18>",
+        ] {
+            assert!(s.contains(field), "{field}");
+        }
     }
 }

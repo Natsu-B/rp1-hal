@@ -219,7 +219,7 @@ impl Default for Stack {
     }
 }
 pub use crate::board::{Gpiomem, Linux, OnConflict};
-pub use crate::declaration::{Core, I2cPins, Instance, SpiPins, UartPins};
+pub use crate::declaration::{Core, I2cPins, Instance, PwmPins, SpiPins, UartPins};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -283,6 +283,7 @@ pub fn peripheral_type(p: &str) -> Result<String> {
             Kind::I2c => format!("::rp1_hal::i2c::Token<{}>", i.number),
             Kind::Spi => format!("::rp1_hal::spi::Token<{}>", i.number),
             Kind::Adc => "::rp1_hal::adc::Token".into(),
+            Kind::Pwm => format!("::rp1_hal::pwm::Token<{}>", i.number),
         }),
         None => Err(crate::board::undeclarable(&name)
             .filter(|_| p == name.to_ascii_uppercase())
@@ -298,6 +299,8 @@ pub fn peripheral_id(p: &str) -> Result<(u8, u16)> {
         (2, 32 + n.parse::<u16>()?)
     } else if let Some(n) = p.strip_prefix("SPI") {
         (2, rp1_proto::BlockId::Spi0 as u16 + n.parse::<u16>()?)
+    } else if let Some(n) = p.strip_prefix("PWM") {
+        (2, rp1_proto::BlockId::Pwm0 as u16 + n.parse::<u16>()?)
     } else if p == "ADC" {
         (2, rp1_proto::BlockId::Adc as u16)
     } else {
@@ -313,9 +316,9 @@ pub const BOARD_LINUX_RESETS: [u32; 3] = [
     0x7,
 ];
 impl Declaration {
-    /// [`BOARD_LINUX_RESETS`] without the UARTs, I2Cs, SPIs and ADC the image declares (and UART0
-    /// with `log`): rp1-hal releases these for Linux. A declared ADC also makes rp1-hal hold
-    /// clk_adc (`rp1_hal::linux_blocks::LinuxBlocks::held_clocks`).
+    /// [`BOARD_LINUX_RESETS`] without the UARTs, I2Cs, SPIs, PWM and ADC the image declares (and UART0
+    /// with `log`): rp1-hal releases these for Linux. Declared ADC/PWM blocks also make rp1-hal hold
+    /// their functional clocks (`rp1_hal::linux_blocks::LinuxBlocks::held_clocks`).
     pub fn linux_resets(&self) -> [u32; 3] {
         let mut r = BOARD_LINUX_RESETS;
         for i in self.owned_instances() {

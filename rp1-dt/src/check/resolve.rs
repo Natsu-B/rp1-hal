@@ -355,6 +355,7 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
             _ => {}
         }
     }
+    pwm_consumers(fdt, &mut out)?;
     let reserved = reserved_gpios(fdt)?;
     let withheld: BTreeSet<u32> = reserved.union(&out.pins).copied().collect();
     if withheld.is_empty() {
@@ -693,6 +694,45 @@ fn rp1_irq_lines(
             .map(|spec| ("interrupts", spec[0])),
     );
     Ok(lines)
+}
+
+/// A disabled PWM provider must not leave its Linux consumers eligible to probe.
+/// Parse each specifier with its provider's #pwm-cells; raw cell matching could mistake a
+/// period or duty argument for an owned provider's phandle.
+fn pwm_consumers(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
+    if !out.blocks.iter().any(|id| (48..=49).contains(id)) {
+        return Ok(());
+    }
+    for n in 0..fdt.nodes.len() {
+        if !fdt.enabled(n) || metadata_node(fdt, n) || fdt.prop(n, "pwms").is_none() {
+            continue;
+        }
+        let values = cells(fdt, n, "pwms")?;
+        let mut at = 0;
+        while at < values.len() {
+            let handle = values[at];
+            at += 1;
+            if handle == 0 {
+                continue;
+            } // Empty phandle slot (of_parse_phandle_with_args).
+            let provider = fdt
+                .phandle(handle)
+                .ok_or_else(|| format!("{} pwms: unresolved provider {handle:#x}", fdt.path(n)))?;
+            let count = cells(fdt, provider, "#pwm-cells")?;
+            let count = match count.as_slice() {
+                [count] if *count > 0 => *count as usize,
+                _ => return Err(format!("{}: unsupported #pwm-cells", fdt.path(provider))),
+            };
+            if count > values.len() - at {
+                return Err(format!("{} pwms: truncated specifier", fdt.path(n)));
+            }
+            if let Some(label) = out.owned_blocks.get(&provider) {
+                out.add(n, format!("pwms uses RP1-owned block {label}"));
+            }
+            at += count;
+        }
+    }
+    Ok(())
 }
 
 /// OWNERSHIP block id (`rp1_proto::BlockId`) of the instance a bank-0 signal belongs to.
