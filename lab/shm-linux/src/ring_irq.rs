@@ -20,6 +20,8 @@ struct Run {
     batch: u32,
     gap_us: u32,
     irq: bool,
+    /// `RingRx::set_spin` before arming (irq runs).
+    spin_us: u64,
 }
 
 pub fn main(count: u32) -> Result<()> {
@@ -28,54 +30,30 @@ pub fn main(count: u32) -> Result<()> {
     let mut ctrl = fw.block::<Control>("control")?;
     drop(fw);
     let mut irq = Irq::open()?;
+    // (name, command, batch, gap_us, irq, spin_us)
+    let run = |name, command, batch, gap_us, irq, spin_us| Run {
+        name,
+        command,
+        batch,
+        gap_us,
+        irq,
+        spin_us,
+    };
     let runs = [
-        Run {
-            name: "burst-poll",
-            command: 15,
-            batch: 32,
-            gap_us: 0,
-            irq: false,
-        },
-        Run {
-            name: "burst-irq",
-            command: 14,
-            batch: 32,
-            gap_us: 0,
-            irq: true,
-        },
-        Run {
-            name: "paced-poll",
-            command: 15,
-            batch: 32,
-            gap_us: 100,
-            irq: false,
-        },
-        Run {
-            name: "paced-irq",
-            command: 14,
-            batch: 32,
-            gap_us: 100,
-            irq: true,
-        },
-        Run {
-            name: "single-poll",
-            command: 15,
-            batch: 1,
-            gap_us: 0,
-            irq: false,
-        },
-        Run {
-            name: "single-irq",
-            command: 14,
-            batch: 1,
-            gap_us: 0,
-            irq: true,
-        },
+        run("burst-poll", 15, 32, 0, false, 0),
+        run("burst-irq", 14, 32, 0, true, 0),
+        run("paced-poll", 15, 32, 100, false, 0),
+        run("paced-irq", 14, 32, 100, true, 0),
+        run("paced-irq-spin20", 14, 32, 100, true, 20),
+        run("single-poll", 15, 1, 0, false, 0),
+        run("single-irq", 14, 1, 0, true, 0),
+        run("single-irq-spin20", 14, 1, 0, true, 20),
     ];
     let mut buf = [[0u32; 4]; 32];
     for (k, run) in runs.iter().enumerate() {
         // Ids above the regression's (1..=13): proc1 ignores a repeated id.
         let id = 100 + k as u32;
+        events.set_spin(Duration::from_micros(run.spin_us));
         let stats0 = events.wait_stats();
         let wakes0 = irq.wakes();
         let cpu0 = cpu_seconds();
@@ -111,13 +89,14 @@ pub fn main(count: u32) -> Result<()> {
         let s = events.wait_stats();
         let wakes = irq.wakes() - wakes0;
         println!(
-            "RINGIRQ name={} n={got} missing=0 corrupt=0 batch={} gap_us={} seconds={seconds:.6} \
+            "RINGIRQ name={} n={got} missing=0 corrupt=0 batch={} gap_us={} spin_us={} seconds={seconds:.6} \
              MBps={:.3} cpu_s={cpu:.3} cpu_pct={:.1} rp1_us={} pulses={} wakes={wakes} \
              wakes_per_msg={:.6} sleeps={} woken={} rechecks={} late={} empty_polls={polls_empty} \
              uio_events={}",
             run.name,
             run.batch,
             run.gap_us,
+            run.spin_us,
             count as f64 * 16.0 / seconds / 1e6,
             100.0 * cpu / seconds,
             report[6],
