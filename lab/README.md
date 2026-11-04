@@ -11,23 +11,63 @@ STATIC: the SRAM/DDR micro-profile (command 9) is opt-in. The default firmware a
 `shm-linux` omit it; `shm-linux` prints `PROFILE skipped`. Set `SHM_PROFILE=1` when using
 `lab/build-shm.sh` to enable `sram-profile` in both binaries, and pass `--profile` to
 `lab/verify-shm.py`. For direct builds, pass `--features sram-profile` to both packages.
-A profile-enabled client with a default firmware gets a command error; it must not be
-reported as a successful profile. A disabled command 9 follows the existing unknown-command
-path (`errors=1`); it never touches the bulk scratch or starts SysTick.
+The firmware also has `i2c`, `adc` and `spi` features, all enabled by default for
+`lab/check-shm.sh`. Use `--no-default-features` for SHM/doorbell/SCMI alone, or add
+`--features i2c` (or `adc`, `spi`, `sram-profile`, comma-separated) for a focused image.
+For example, build a profile-only image with:
+
+```sh
+cargo rp1 build -p shm-firmware --target thumbv7m-none-eabi --release \
+    --no-default-features --features sram-profile
+cargo build -p shm-linux --target aarch64-unknown-linux-musl --release --features sram-profile
+```
+
+STATIC: feature selection removes proof initialization, handlers and driver code from the
+linked image. The metadata, note ownership and overlay keep the existing I2C1/ADC/SPI0/pin
+reservations in every profile; disabling a proof does not return its resources to Linux.
+Peripheral requests for an omitted proof return `0xffffffff` instead of hanging. Focused
+images use `shm-linux` directly; the full `check-shm.sh`/verifier still requires all three
+peripheral proofs. A profile-enabled client with a default firmware gets a command error;
+it must not be reported as a successful profile. A disabled command 9 follows the existing
+unknown-command path (`errors=1`); it never touches the bulk scratch or starts SysTick.
 
 STATIC size measurement (rustc 1.99.1, release, `cargo rp1 build` two-stage link):
 
-| Firmware | SRAM image / 49152 B | Free | ISRAM / 8192 B | DSRAM static |
+| Firmware features | SRAM image / 49152 B | Free | ISRAM / 8192 B | DSRAM static |
 |---|---:|---:|---:|---:|
 | Before (all proofs + profile) | 49128 | 24 | 3684 | 656 |
-| Default (all proofs) | 45408 | 3744 | 3096 | 16 |
+| none (SHM only) | 31648 | 17504 | 2084 | 16 |
+| sram-profile | 35416 | 13736 | 2676 | 656 |
+| spi | 37368 | 11784 | 2500 | 16 |
+| spi, sram-profile | 41104 | 8048 | 3092 | 656 |
+| adc | 35848 | 13304 | 2084 | 16 |
+| adc, sram-profile | 39576 | 9576 | 2676 | 656 |
+| adc, spi | 40528 | 8624 | 2500 | 16 |
+| adc, spi, sram-profile | 44264 | 4888 | 3092 | 656 |
+| i2c | 36736 | 12416 | 2780 | 16 |
+| i2c, sram-profile | 40496 | 8656 | 3368 | 656 |
+| i2c, spi | 42248 | 6904 | 3096 | 16 |
+| i2c, spi, sram-profile | 45984 | 3168 | 3684 | 656 |
+| i2c, adc | 40896 | 8256 | 2780 | 16 |
+| i2c, adc, sram-profile | 44624 | 4528 | 3368 | 656 |
+| i2c, adc, spi (default) | 45416 | 3736 | 3096 | 16 |
+| i2c, adc, spi, sram-profile | 49144 | 8 | 3684 | 656 |
 
 The SRAM image includes ISRAM/DSRAM load copies and linker alignment; ELF file length is
-not the SRAM budget. Numbers are compiler-dependent. HW 未検証: cold-boot the default tuple,
-run `lab/check-shm.sh`, and require `PROFILE skipped`, `SHM_PASS`, the peripheral replies
+not the SRAM budget. All 16 combinations passed `cargo rp1 build` and ELF checks;
+`nm -C` confirmed the omitted proof and HAL driver symbols were absent, and the note bytes
+were identical across profiles. Numbers are compiler-dependent. The all-features image
+has only 8 B free; use the focused profile image for memory measurements.
+
+HW 未検証: cold-boot the default tuple, run `lab/check-shm.sh`, and require `PROFILE skipped`, `SHM_PASS`, the peripheral replies
 and the normal verifier's pass. Repeat with `SHM_PROFILE=1` and `verify-shm.py --profile`;
 require `PROF_DONE` and command 9 `errors=0` before `SHM_PASS`. Also pair a profile client
-with a default firmware once and require a non-zero client exit for command 9.
+with a default firmware once and require a non-zero client exit for command 9. Cold-boot
+each focused image, run `shm-linux` (with the matching `sram-profile` setting) plus a doorbell check before/after it, then send
+peripheral requests 1/0xadc/0x5b1 one at a time through link+0x28 (clear link+0x2c first).
+Require the usual reply and UART0 proof markers for enabled proofs; omitted proofs must
+clear the request and reply `0xffffffff`, both before and after SHM enable. Verify SCMI
+and Linux UART1 still probe, and the owned-node/pin reservations stay the same.
 
 Build with `bash lab/build-shm.sh` and `python3 lab/pack-shm.py`. Locations come from the
 environment: `SHM_ARTIFACT_ROOT`, `RP1_LOADER_ROOT`, `RP1_BASE_DTB` (build), and
