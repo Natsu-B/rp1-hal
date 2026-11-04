@@ -147,3 +147,9 @@ records them; the peer repeats `RP1SHARE_RX_<nonce>` and Linux prints what it re
 prints `UART1_DIAG` lines: GPIO 0/1 CTRL/STATUS/PADS, the PL011 baud and control registers and the
 driver's tx/rx counters, to tell a wiring or pinmux fault from a script fault. It keeps the port
 open while it reads, because closing it shuts the PL011 down and drops received bytes.
+
+## PWM loopback diagnostic (STATIC / HW 未検証)
+
+`pwm-loopback` is a separate, focused firmware example. See [the PWM API, register evidence
+and HW test plan](../docs/pwm.md). It reserves PWM0 as one block and reports two GPIO loopbacks
+through UART counters while proc0 services SCMI. It has not been deployed or run on hardware.
