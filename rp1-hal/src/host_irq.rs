@@ -82,6 +82,24 @@ impl HostIrq {
         self.pulse();
     }
 
+    /// Wake Linux's reader of an RP1 -> Linux ring declared `notify = "irq"`, if it sleeps; call
+    /// after `push` / `push_slice` (once per batch is enough). Returns whether it pulsed.
+    ///
+    /// [`RingTx::wake_needed`](crate::shm::RingTx::wake_needed) reads `head` back through the
+    /// shm window (completing the posted slot and `head` writes, like `notify_ddr`), then reads
+    /// the reader's sleep counter from the link page: it pulses only for a sleep not yet
+    /// notified, so a reader that keeps up costs no interrupts and a sleeping one gets one
+    /// (protocol.md §2.3). The readback is one PCIe round trip per call.
+    #[inline(always)]
+    pub fn notify_ring<T: rp1_proto::Message>(&mut self, ring: &mut crate::shm::RingTx<T>) -> bool {
+        if ring.wake_needed() {
+            self.pulse();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Set and clear go through the atomic aliases, so they do not race Linux's own ENABLE /
     /// IACK writes to the same register. `write` ends each store with a barrier.
     #[inline(always)]

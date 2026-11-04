@@ -477,6 +477,7 @@ impl<T: Message> RingTx<T> {
     /// re-check sees the new `head`, or this sees the reader asleep. The readback also
     /// completes the payload, so the caller may notify without another drain. Costs one
     /// round trip per call; pure polling users need not call it.
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn wake_needed(&mut self) -> bool {
         barrier();
         let _ = unsafe { ld(self.data, HEAD) };

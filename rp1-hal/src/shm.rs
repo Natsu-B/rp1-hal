@@ -1,5 +1,5 @@
 //! Reader-local SPSC rings and DDR blocks. Cold boot only (ATU is lost on PERSTn).
-pub use rp1_proto::shm::{Block, BlockReader, BlockWriter, Overflow, RingRx, RingTx};
+pub use rp1_proto::shm::{Block, BlockReader, BlockWriter, Overflow, RingRx, RingTx, Wait};
 use rp1_proto::{
     Error, Message, SHM_WINDOW, barrier, link,
     note::{Note, SHM_AREA, SHM_REGION, ShmArea, ShmKind, ShmRegion},
