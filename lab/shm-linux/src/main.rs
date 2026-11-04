@@ -328,9 +328,14 @@ fn main() -> Result<()> {
         report[6],
         report[6] as f64 / 256.0
     );
-    let start = request(&mut ctrl, 9, 9, 0, 0)?;
-    let report = response(&ctrl, 9, start)?;
-    println!("PROFILE rp1_us={} (results on UART0)", report[6]);
+    #[cfg(feature = "sram-profile")]
+    {
+        let start = request(&mut ctrl, 9, 9, 0, 0)?;
+        let report = response(&ctrl, 9, start)?;
+        println!("PROFILE rp1_us={} (results on UART0)", report[6]);
+    }
+    #[cfg(not(feature = "sram-profile"))]
+    println!("PROFILE skipped");
     println!("SHM_PASS");
     Ok(())
 }

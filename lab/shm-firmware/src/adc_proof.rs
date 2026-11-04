@@ -1,14 +1,12 @@
 //! Lab-only ADC proof, run by proc1 (which owns the ADC and gets its Clocks from proc0):
 //! a burst of conversions logged on UART0, at boot and on request
-//! (link+0x28 = [`REQUEST`], reply at link+0x2c = the request on success, all-ones on failure).
+//! (link+0x28 = [`super::ADC_REQUEST`], reply at link+0x2c = the request on success, all-ones on failure).
 use crate::rp1;
 use embedded_hal_0_2::adc::OneShot;
 use rp1_hal::{
     adc::{Adc, Error, TEMPERATURE, TemperatureSensor},
     log,
 };
-pub const REQUEST: u32 = 0xadc;
-const LINK_REQUEST: usize = rp1_proto::LINK_START as usize + 0x28;
 const SAMPLES: u32 = 1000;
 
 fn now() -> u32 {
@@ -63,13 +61,5 @@ pub fn run(adc: Option<&mut Adc>, request: u32) {
         None => Err(Error::Precondition),
     };
     log!("ADC_RESULT request=0x{:x} {:?}\n", request, result).unwrap();
-    unsafe {
-        (LINK_REQUEST as *mut u32).write_volatile(0);
-        ((LINK_REQUEST + 4) as *mut u32).write_volatile(if result.is_ok() {
-            request
-        } else {
-            0xffff_ffff
-        });
-    }
-    rp1_proto::barrier();
+    super::proof_reply(request, result.is_ok());
 }

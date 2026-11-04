@@ -9,13 +9,20 @@ name = "shm-firmware"
 test = false
 bench = false
 
+[features]
+default = ["i2c", "adc", "spi"]
+i2c = ["dep:embedded-hal"]
+adc = ["dep:embedded-hal-0-2", "dep:nb"]
+spi = ["dep:embedded-hal"]
+sram-profile = []
+
 [dependencies]
 rp1-hal = { path = "../../rp1-hal", features = ["unstable-host-irq"] }
 rp1-rt = { path = "../../rp1-rt" }
 rp1-proto = { path = "../../rp1-proto" }
-embedded-hal = "1"
-embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"] }
-nb = "1"
+embedded-hal = { version = "1", optional = true }
+embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"], optional = true }
+nb = { version = "1", optional = true }
 
 [build-dependencies]
 rp1-build = { path = "../../rp1-build" }

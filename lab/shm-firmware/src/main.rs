@@ -4,9 +4,13 @@ use rp1_hal::{gpio::Doorbell, log};
 use rp1_proto::{Error, link};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
+#[cfg(feature = "adc")]
 mod adc_proof;
+#[cfg(feature = "i2c")]
 mod i2c_proof;
+#[cfg(feature = "sram-profile")]
 mod prof;
+#[cfg(feature = "spi")]
 mod spi_proof;
 #[shared]
 static VALUES: Spsc<u32, 8> = Spsc::new();
@@ -36,6 +40,21 @@ fn reg(address: usize) -> u32 {
 }
 fn sample(i: u32) -> Sample {
     [i, !i, i ^ 0x5a96_c33c, 0x5250_3148]
+}
+
+const ADC_REQUEST: u32 = 0xadc;
+const SPI_REQUEST: u32 = 0x5b1;
+const PROOF_REQUEST: usize = rp1_proto::LINK_START as usize + 0x28;
+#[inline(always)]
+fn proof_pending() -> u32 {
+    unsafe { (PROOF_REQUEST as *const u32).read_volatile() }
+}
+fn proof_reply(request: u32, success: bool) {
+    unsafe {
+        (PROOF_REQUEST as *mut u32).write_volatile(0);
+        ((PROOF_REQUEST + 4) as *mut u32).write_volatile(if success { request } else { u32::MAX });
+    }
+    rp1_proto::barrier();
 }
 
 #[entry(proc0)]
@@ -68,33 +87,42 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     // 48 KiB shared SRAM image.
     match unsafe { rp1_hal::cold::endpoint_and_syscfg(programmed) } {
         Ok(r) => log!(
-            "proc0 pcie Ok clocks_programmed={} endpoint_programmed={} perstn_wait_us={} link_wait_us={} monitor2=0x{:x}\n",
+            "p0 pcie Ok clocks_programmed={} endpoint_programmed={} perstn_wait_us={} link_wait_us={} monitor2=0x{:x}\n",
             r.clocks_programmed,
             r.endpoint_programmed,
             r.perstn_wait_us,
             r.link_wait_us,
             r.monitor2
         ),
-        Err(e) => log!("proc0 pcie Err({:?})\n", e),
+        Err(e) => log!("p0 pcie Err({:?})\n", e),
     }
     .unwrap();
     log!("p0 ready bss=0x{:x}\n", bss_check(0xb55_0000)).unwrap();
+    // Lets the verifier catch a profile firmware run with a default client (and vice versa).
+    #[cfg(feature = "sram-profile")]
+    log!("p0 sram-profile\n").unwrap();
     p.proc1.launch(&mut core).unwrap();
-    let i2c = p
-        .i2c1
-        .init(&clocks, rp1_hal::i2c::Speed::Standard)
-        .map_err(|e| e.error);
-    log!("p0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
-    let mut i2c = i2c.ok();
+    #[cfg(feature = "i2c")]
+    let mut i2c = {
+        let i2c = p
+            .i2c1
+            .init(&clocks, rp1_hal::i2c::Speed::Standard)
+            .map_err(|e| e.error);
+        log!("p0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
+        i2c.ok()
+    };
     let mut rx = VALUES.consumer(&mut core);
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     let mut attempted = false;
     let mut probed = false;
     loop {
         // 0xadc and 0x5b1 are proc1's (it owns the ADC and SPI0); the rest are I2C requests.
-        let request = i2c_proof::pending();
+        let request = proof_pending();
         if request != 0 && !proc1_request(request) {
+            #[cfg(feature = "i2c")]
             i2c_proof::run(i2c.as_mut(), request);
+            #[cfg(not(feature = "i2c"))]
+            proof_reply(request, false);
         }
         let (value, perst, scmi_event) =
             idle0(&mut rx, &mut endpoint, &mut scmi, probed, attempted);
@@ -102,7 +130,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
             log!("p0 received {}\n", v).unwrap();
         }
         if let Some(r) = perst {
-            log!("proc0 pcie perst {:?}\n", r).unwrap();
+            log!("p0 pcie perst {:?}\n", r).unwrap();
         }
         if let Some(e) = scmi_event {
             log!(
@@ -152,7 +180,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         if !attempted && link_read(link::SHM_REQUEST) == 1 {
             attempted = true;
             let enabled = unsafe { rp1_hal::shm::enable(rp1::SHM_NOTE, &rp1::SHM_NOTE_SHA256) };
-            log!("proc0 shm enable {:?}\n", enabled).unwrap();
+            log!("p0 shm enable {:?}\n", enabled).unwrap();
         }
     }
 }
@@ -162,46 +190,61 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     log!("p1 ready bss=0x{:x}\n", bss_check(0xb55_1000)).unwrap();
     // The ADC is declared on proc1: its Clocks come from proc0's clock_authority.init
     // (published before proc0 launches proc1).
+    #[cfg(any(feature = "adc", feature = "spi"))]
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000);
+    #[cfg(any(feature = "adc", feature = "spi"))]
     log!("p1 clocks {:?}\n", clocks).unwrap();
-    let adc = match clocks {
-        Ok(c) => p.adc.init(&c),
-        Err(_) => Err(rp1_hal::adc::Error::Precondition),
+    #[cfg(feature = "adc")]
+    let mut adc = {
+        let adc = match clocks {
+            Ok(c) => p.adc.init(&c),
+            Err(_) => Err(rp1_hal::adc::Error::Precondition),
+        };
+        log!("p1 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
+        let mut adc = adc.ok();
+        if let Some(adc) = adc.as_mut() {
+            let r = adc_proof::prove(adc, "P1BOOT");
+            log!("ADC_RESULT boot {:?}\n", r).unwrap();
+        }
+        adc
     };
-    log!("p1 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
-    let mut adc = adc.ok();
-    if let Some(adc) = adc.as_mut() {
-        let r = adc_proof::prove(adc, "P1BOOT");
-        log!("ADC_RESULT boot {:?}\n", r).unwrap();
-    }
-    let spi = match clocks {
-        Ok(c) => p
-            .spi0
-            .init(
-                &c,
-                rp1_hal::spi::Config::new(1_000_000, embedded_hal::spi::MODE_0),
-            )
-            .map_err(|e| e.error),
-        Err(_) => Err(rp1_hal::spi::Error::Precondition),
+    #[cfg(feature = "spi")]
+    let mut spi = {
+        let spi = match clocks {
+            Ok(c) => p
+                .spi0
+                .init(
+                    &c,
+                    rp1_hal::spi::Config::new(1_000_000, embedded_hal::spi::MODE_0),
+                )
+                .map_err(|e| e.error),
+            Err(_) => Err(rp1_hal::spi::Error::Precondition),
+        };
+        match &spi {
+            Ok(_) => log!("p1 spi0 init Ok\n"),
+            Err(e) => log!("p1 spi0 init Err 0x{:x}\n", 0x100 + *e as u32),
+        }
+        .unwrap();
+        let mut spi = spi
+            .ok()
+            .map(|bus| rp1_hal::spi::Device::new(bus, p.pins.gpio8));
+        if let Some(dev) = spi.as_mut() {
+            spi_proof::log_result("boot", &spi_proof::prove(dev, "P1BOOT"));
+        }
+        spi
     };
-    match &spi {
-        Ok(_) => log!("proc1 spi0 init Ok\n"),
-        Err(e) => log!("proc1 spi0 init Err 0x{:x}\n", 0x100 + *e as u32),
-    }
-    .unwrap();
-    let mut spi = spi
-        .ok()
-        .map(|bus| rp1_hal::spi::Device::new(bus, p.pins.gpio8));
-    if let Some(dev) = spi.as_mut() {
-        spi_proof::log_result("boot", &spi_proof::prove(dev, "P1BOOT"));
-    }
     VALUES.producer(&mut core).push(42).unwrap();
     let mut doorbell = Doorbell::new(p.pins.gpio27);
     let mut host_irq = p.host_irq;
     // Linux may ask for an ADC burst before it enables the shm area.
     while link_read(link::SHM_STATUS) != 1 {
         service_doorbell(&mut doorbell);
-        serve_proc1(adc.as_mut(), spi.as_mut());
+        serve_proc1(
+            #[cfg(feature = "adc")]
+            adc.as_mut(),
+            #[cfg(feature = "spi")]
+            spi.as_mut(),
+        );
     }
     let mut area = unsafe { rp1_hal::shm::Area::attach(rp1::SHM_NOTE, 2) }.unwrap();
     let mut up = area.ring_tx::<Sample>("up").unwrap();
@@ -213,7 +256,12 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut seen = 0;
     loop {
         let sequence = wait_command(&mut doorbell, &mut host_irq, &control, seen);
-        serve_proc1(adc.as_mut(), spi.as_mut());
+        serve_proc1(
+            #[cfg(feature = "adc")]
+            adc.as_mut(),
+            #[cfg(feature = "spi")]
+            spi.as_mut(),
+        );
         if sequence == seen {
             continue;
         }
@@ -332,6 +380,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             }
             10 | 12 => errors = up_batch(&mut up, count, start),
             11 | 13 => errors = down_batch(&mut down, count, start),
+            #[cfg(feature = "sram-profile")]
             9 => {
                 // Lab micro-profile (ends with PROF_DONE); RP1 holds the bulk writer role and uses
                 // it as DDR scratch. Its SRAM scratch is a linker-placed `.shared` static.
@@ -349,7 +398,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         unsafe { control.write(&request) };
         rp1_hal::shm::complete_posted_writes();
         log!(
-            "proc1 shm cmd={} count={} errors={} us={}\n",
+            "p1 shm cmd={} count={} errors={} us={}\n",
             command,
             count,
             errors,
@@ -361,12 +410,18 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
 /// Lab requests proc1 serves (proc0 leaves them alone).
 #[inline(always)]
 fn proc1_request(request: u32) -> bool {
-    matches!(request, adc_proof::REQUEST | spi_proof::REQUEST)
+    matches!(request, ADC_REQUEST | SPI_REQUEST)
 }
-fn serve_proc1(adc: Option<&mut rp1_hal::adc::Adc>, spi: Option<&mut spi_proof::Dev>) {
-    match i2c_proof::pending() {
-        adc_proof::REQUEST => adc_proof::run(adc, adc_proof::REQUEST),
-        spi_proof::REQUEST => spi_proof::run(spi, spi_proof::REQUEST),
+fn serve_proc1(
+    #[cfg(feature = "adc")] adc: Option<&mut rp1_hal::adc::Adc>,
+    #[cfg(feature = "spi")] spi: Option<&mut spi_proof::Dev>,
+) {
+    match proof_pending() {
+        #[cfg(feature = "adc")]
+        ADC_REQUEST => adc_proof::run(adc, ADC_REQUEST),
+        #[cfg(feature = "spi")]
+        SPI_REQUEST => spi_proof::run(spi, SPI_REQUEST),
+        request if proc1_request(request) => proof_reply(request, false),
         _ => {}
     }
 }
@@ -391,10 +446,10 @@ fn idle0(
             || event.is_some()
             || (!probed && request == 2)
             || (!attempted && request == 1)
-            || !matches!(
-                i2c_proof::pending(),
-                0 | adc_proof::REQUEST | spi_proof::REQUEST
-            )
+            || {
+                let request = proof_pending();
+                request != 0 && !proc1_request(request)
+            }
         {
             return (value, perst, event);
         }
@@ -490,7 +545,7 @@ fn wait_command(
             host_irq.notify_sram();
         }
         let sequence = control.sequence();
-        if sequence != seen || proc1_request(i2c_proof::pending()) {
+        if sequence != seen || proc1_request(proof_pending()) {
             return sequence;
         }
     }

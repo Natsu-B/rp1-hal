@@ -8,13 +8,6 @@ use rp1_hal::{
 };
 type Bus = I2c<1, 2, 3>;
 const PEER: u8 = 0x2d;
-const REQUEST: usize = rp1_proto::LINK_START as usize + 0x28;
-const REPLY: usize = REQUEST + 4;
-
-#[inline(always)]
-pub fn pending() -> u32 {
-    unsafe { (REQUEST as *const u32).read_volatile() }
-}
 pub fn run(bus: Option<&mut Bus>, request: u32) {
     let result = match bus {
         None => Err(Error::Precondition),
@@ -25,11 +18,7 @@ pub fn run(bus: Option<&mut Bus>, request: u32) {
         Some(bus) => measure(bus, request),
     };
     log!("I2C_RESULT request={} {:?}\n", request, result).unwrap();
-    unsafe {
-        (REQUEST as *mut u32).write_volatile(0);
-        (REPLY as *mut u32).write_volatile(if result.is_ok() { request } else { 0xffff_ffff });
-    }
-    rp1_proto::barrier();
+    super::proof_reply(request, result.is_ok());
 }
 /// A failed step: its name and the driver error, or the first mismatching reply byte.
 pub enum Failure {

@@ -7,6 +7,69 @@ accounting, M3 scalar DDR read latency/read bandwidth/posted-write bandwidth, an
 M3 per-message push/pop cost (commands 7/8, Linux idle on the link page).
 Rates include API/loop overhead; M3 writes include a same-window read to drain PCIe writes.
 
+STATIC: the SRAM/DDR micro-profile (command 9) is opt-in. The default firmware and
+`shm-linux` omit it; `shm-linux` prints `PROFILE skipped`. Set `SHM_PROFILE=1` when using
+`lab/build-shm.sh` to enable `sram-profile` in both binaries, and pass `--profile` to
+`lab/verify-shm.py`. For direct builds, pass `--features sram-profile` to both packages. The default + `sram-profile` image currently does not fit (below).
+The firmware also has `i2c`, `adc` and `spi` features, all enabled by default for
+`lab/check-shm.sh`. Use `--no-default-features` for SHM/doorbell/SCMI alone, or add
+`--features i2c` (or `adc`, `spi`, `sram-profile`, comma-separated) for a focused image.
+For example, build a profile-only image with:
+
+```sh
+cargo rp1 build -p shm-firmware --target thumbv7m-none-eabi --release \
+    --no-default-features --features sram-profile
+cargo build -p shm-linux --target aarch64-unknown-linux-musl --release --features sram-profile
+```
+
+STATIC: feature selection removes proof initialization, handlers and driver code from the
+linked image. The metadata, note ownership and overlay keep the existing I2C1/ADC/SPI0/pin
+reservations in every profile; disabling a proof does not return its resources to Linux.
+Peripheral requests for an omitted proof return `0xffffffff` instead of hanging. Focused
+images use `shm-linux` directly; the full `check-shm.sh`/verifier still requires all three
+peripheral proofs. A profile-enabled client with a default firmware gets a command error;
+it must not be reported as a successful profile. A disabled command 9 follows the existing
+unknown-command path (`errors=1`); it never touches the bulk scratch or starts SysTick.
+
+STATIC: every image keeps the `host_irq = true` declaration (rp1-hal feature
+`unstable-host-irq`): it is part of the default lab profile, not a cargo feature of
+`shm-firmware`, because the declaration (and the `rp1:irq` overlay node) is metadata that
+features cannot select. Its code is the `notify_sram()` call in proc1's ISRAM command loop.
+A firmware built with `sram-profile` logs `p0 sram-profile` on UART0; `verify-shm.py`
+fails a run without `--profile` that has this line, and a run with `--profile` that lacks it,
+so a firmware/client profile mismatch is caught in both directions.
+
+STATIC size measurement (rustc 1.99.1, release, `cargo rp1 build` two-stage link, with the
+host interrupt):
+
+| Firmware features | SRAM image / 49152 B | Free | ISRAM / 8192 B | DSRAM static |
+|---|---:|---:|---:|---:|
+| i2c, adc, spi (default) | 45400 | 3752 | 3128 | 16 |
+| none (SHM only) | 31648 | 17504 | 2116 | 16 |
+| i2c | 36736 | 12416 | 2812 | 16 |
+| adc | 35840 | 13312 | 2116 | 16 |
+| spi | 37352 | 11800 | 2532 | 16 |
+| sram-profile | 35440 | 13712 | 2708 | 656 |
+| i2c, adc, spi, sram-profile | does not link (16 B over) | - | - | - |
+
+The SRAM image includes ISRAM/DSRAM load copies and linker alignment; ELF file length is
+not the SRAM budget. Numbers are compiler-dependent. The all-features image (default +
+`sram-profile`) is best-effort and excluded from the matrix: it currently overflows the
+shared SRAM, so `SHM_PROFILE=1 lab/build-shm.sh` and `verify-shm.py --profile` (which also
+needs the I2C/ADC/SPI proofs) only work if it fits again. Profile with the focused
+`sram-profile` image and the profile client instead (commands above), running `shm-linux`
+directly and checking `p0 sram-profile`, `PROF_DONE`, `p1 shm cmd=9 ... errors=0` on UART0
+and `PROFILE rp1_us=` before `SHM_PASS` on UART10.
+
+HW 未検証: cold-boot the default tuple, run `lab/check-shm.sh`, and require `PROFILE skipped`, `SHM_PASS`, the peripheral replies
+and the normal verifier's pass. Also pair a profile client
+with a default firmware once and require a non-zero client exit for command 9. Cold-boot
+each focused image, run `shm-linux` (with the matching `sram-profile` setting) plus a doorbell check before/after it, then send
+peripheral requests 1/0xadc/0x5b1 one at a time through link+0x28 (clear link+0x2c first).
+Require the usual reply and UART0 proof markers for enabled proofs; omitted proofs must
+clear the request and reply `0xffffffff`, both before and after SHM enable. Verify SCMI
+and Linux UART1 still probe, and the owned-node/pin reservations stay the same.
+
 Build with `bash lab/build-shm.sh` and `python3 lab/pack-shm.py`. Locations come from the
 environment: `SHM_ARTIFACT_ROOT`, `RP1_LOADER_ROOT`, `RP1_BASE_DTB` (build), and
 `SHM_ARTIFACT_ROOT`, `RP1_INITRAMFS`, `RP1_INITRAMFS_HELPER` (pack); see each script header.
@@ -46,8 +109,9 @@ limit, any non-zero exit or wrong I2C reply prints `CHECK_FAIL`, the script ends
 runs `python3 lab/verify-shm.py --uart0 U0 --uart10 U10 --result OBSERVER_JSON`, which needs
 the capture's `"complete": true`, the UART10 markers in order (`SHM_PASS`, `SHM_RC=0`, both
 doorbells, `I2C_REPLY=0x00000001`, `ADC_REPLY=0x00000ADC`, `SPI_REPLY=0x000005B1`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
-`PROF_DONE`, `proc1 shm cmd=9 ... errors=0`, the three `I2C_PASS` lines and
-`I2C_RESULT request=1 Ok`. The ADC is declared on proc1 in `shm-firmware`: proc1 gets its
+the three `I2C_PASS` lines and
+`I2C_RESULT request=1 Ok` (with `--profile`, also `PROF_DONE` and
+`p1 shm cmd=9 ... errors=0`). The ADC is declared on proc1 in `shm-firmware`: proc1 gets its
 `Clocks` with `Clocks::wait_from_proc0`, runs the boot burst (`p1 adc init Ok`,
 `ADC_P1BOOT ... PASS`) and answers Linux's 0xadc request (`ADC_P1REQ ... PASS`).
 `check-shm.sh` issues that request itself, after the doorbell, shm and I2C steps (the burst

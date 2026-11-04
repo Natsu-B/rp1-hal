@@ -1,6 +1,6 @@
 //! Lab-only SPI0 proof, run by proc1 (which owns SPI0 and gets its Clocks from proc0): internal
 //! loopback (CTRLR0.SRL) at several rates and frame sizes through `SpiDevice` (GPIO8 chip
-//! select), logged on UART0, at boot and on request (link+0x28 = [`REQUEST`], reply at
+//! select), logged on UART0, at boot and on request (link+0x28 = [`super::SPI_REQUEST`], reply at
 //! link+0x2c = the request on success, all-ones on failure).
 //!
 //! SCLK/MOSI/CS (GPIO11/10/8) drive ESP32 inputs; MISO (GPIO9) is an ESP32 input with the RP1
@@ -12,8 +12,6 @@ use rp1_hal::{
     spi::{Device, Error, Spi},
 };
 pub type Dev = Device<Spi<0, 11, 10, 9>, 8>;
-pub const REQUEST: u32 = 0x5b1;
-const LINK_REQUEST: usize = rp1_proto::LINK_START as usize + 0x28;
 /// Transfers per measurement (each of 32 frames).
 const ROUNDS: u32 = 32;
 
@@ -161,13 +159,5 @@ pub fn run(dev: Option<&mut Dev>, request: u32) {
         None => Err(Failure(0, 0, "init", 0x100 + Error::Precondition as u32)),
     };
     log_result("request=0x5b1", &result);
-    unsafe {
-        (LINK_REQUEST as *mut u32).write_volatile(0);
-        ((LINK_REQUEST + 4) as *mut u32).write_volatile(if result.is_ok() {
-            request
-        } else {
-            0xffff_ffff
-        });
-    }
-    rp1_proto::barrier();
+    super::proof_reply(request, result.is_ok());
 }

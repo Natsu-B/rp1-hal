@@ -11,7 +11,7 @@ spec.loader.exec_module(v)
 
 UART10 = """[t] DOORBELL_BEFORE_RC=0
 [t] RING up_batch n=1000000 missing=0 corrupt=0
-[t] PROFILE rp1_us=1234 (results on UART0)
+[t] PROFILE skipped
 [t] SHM_PASS
 [t] SHM_RC=0
 [t] DOORBELL_AFTER_RC=0
@@ -26,10 +26,7 @@ UART10 = """[t] DOORBELL_BEFORE_RC=0
 [t] CHECK_SHM_RESULT=PASS
 [t] DDR_INSPECT_END
 """
-UART0 = """[t] PROF ring_data_ddr batch push n=128 cyc=1 pop cyc=2
-[t] PROF_DONE
-[t] proc1 shm cmd=9 count=0 errors=0 us=99
-[t] I2C_PASS hz=100000 write16_us=1
+UART0 = """[t] I2C_PASS hz=100000 write16_us=1
 [t] I2C_PASS hz=400000 write16_us=1
 [t] I2C_PASS r64_w16 hz=400000
 [t] I2C_RESULT request=1 Ok(())
@@ -51,6 +48,20 @@ class Verify(unittest.TestCase):
     def test_full_run_passes(self):
         self.assertEqual(v.verify(UART0, UART10, DONE), [])
 
+    def test_profile_is_explicit_and_requires_completion(self):
+        profiled = UART10.replace("PROFILE skipped", "PROFILE rp1_us=99 (results on UART0)")
+        done = UART0 + "[t] p0 sram-profile\n[t] PROF_DONE\n[t] p1 shm cmd=9 count=0 errors=0 us=99\n"
+        self.assertEqual(v.verify(done, profiled, DONE, profile=True), [])
+        self.assertTrue(v.verify(UART0, profiled, DONE, profile=True))
+        self.assertTrue(v.verify(done.replace("PROF_DONE", ""), profiled, DONE, profile=True))
+        self.assertTrue(v.verify(done.replace("errors=0", "errors=1"), profiled, DONE, profile=True))
+        self.assertTrue(v.verify(done, UART10, DONE, profile=True))
+        self.assertTrue(v.verify(done, profiled, DONE))
+        self.assertTrue(v.verify(UART0, UART10.replace("PROFILE skipped", ""), DONE))
+        # Firmware/client profile mismatch, both directions.
+        self.assertTrue(v.verify(UART0 + "[t] p0 sram-profile\n", UART10, DONE))
+        self.assertTrue(v.verify(done.replace("p0 sram-profile", ""), profiled, DONE, profile=True))
+
     def test_incomplete_capture_fails(self):
         self.assertTrue(v.verify(UART0, UART10, {"complete": False}))
         self.assertTrue(v.verify(UART0, UART10, {}))
@@ -60,7 +71,7 @@ class Verify(unittest.TestCase):
         # Review 3 #2: both UARTs stop inside command 9; boot markers were all present.
         uart10 = "[t] DOORBELL_BEFORE_RC=0\n[t] ISOLATED up_push_batch n=256 rp1_us=293\n"
         uart0 = "[t] PROF ring_data_ddr single push n=128 cyc=1 pop cyc=2\n"
-        failures = v.verify(uart0, uart10, {"complete": False})
+        failures = v.verify(uart0, uart10, {"complete": False}, profile=True)
         for marker in ("SHM_PASS", "SHM_RC=0", "terminal marker", "I2C reply",
                        "profile done", "I2C 100 kHz"):
             self.assertTrue(any(marker in f for f in failures), (marker, failures))
@@ -84,7 +95,7 @@ class Verify(unittest.TestCase):
         self.assertTrue(v.verify(UART0 + "[t] ADC_RESULT boot Err(Precondition)\n", UART10, DONE))
         self.assertTrue(v.verify(UART0, UART10.replace("SPI_REPLY=0x000005B1", "SPI_REPLY=0xFFFFFFFF"), DONE))
         self.assertTrue(v.verify(UART0 + "[t] SPI_RESULT request=0x5b1 Err data hz=1000000 bits=8 code=0x3\n", UART10, DONE))
-        self.assertTrue(v.verify(UART0 + "[t] proc1 spi0 init Err 0x102\n", UART10, DONE))
+        self.assertTrue(v.verify(UART0 + "[t] p1 spi0 init Err 0x102\n", UART10, DONE))
         # 100 MHz must not satisfy the 10 MHz marker.
         self.assertTrue(v.verify(UART0.replace("hz=10000000 ", "hz=100000000 "), UART10, DONE))
         self.assertTrue(v.verify(UART0 + "[t] I2C_FAIL Bus(\"read\", Timeout)\n", UART10, DONE))

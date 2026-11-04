@@ -40,8 +40,6 @@ UART10_FORBIDDEN = [r"\bCHECK_FAIL\b", r"\bCHECK_SHM_RESULT=FAIL\b", r"Kernel pa
                     r"\b(ADC|SPI)_DT=(missing\b|\S+ status=(?!disabled(?!\S)))"]
 # UART0 (RP1 firmware log).
 UART0_REQUIRED = [
-    ("profile done", r"\bPROF_DONE\b"),
-    ("profile command", r"\bproc1 shm cmd=9 count=\d+ errors=0\b"),
     ("I2C 100 kHz", r"\bI2C_PASS hz=100000\b"),
     ("I2C 400 kHz", r"\bI2C_PASS hz=400000\b"),
     ("I2C r64_w16", r"\bI2C_PASS r64_w16\b"),
@@ -57,26 +55,36 @@ UART0_REQUIRED = [
     ("SPI request proof", r"\bSPI_P1REQ depth=\d+ .*\bPASS\b"),
     ("SPI request result", r"\bSPI_RESULT request=0x5b1 Ok\b"),
 ]
+UART0_PROFILE_REQUIRED = [
+    ("profile firmware", r"\bp0 sram-profile\b"),
+    ("profile done", r"\bPROF_DONE\b"),
+    ("profile command", r"\bp1 shm cmd=9 count=\d+ errors=0\b"),
+]
 UART0_FORBIDDEN = [r"\bI2C_FAIL\b", r"\bpanic", r"\bI2C_RESULT request=1 Err\b", r"\bADC_RESULT\b.*\bErr\b",
                    r"\bSPI_RESULT\b.*\bErr\b", r"\bspi0 init Err\b"]
 
 
-def verify(uart0, uart10, result):
+def verify(uart0, uart10, result, profile=False):
     """Returns the list of failures (empty = PASS)."""
     failures = []
     if not isinstance(result, dict) or result.get("complete") is not True:
         failures.append("capture not complete (timeout or missing terminal marker)")
+    ordered = list(UART10_ORDERED)
+    profile_pattern = r"\bPROFILE rp1_us=\d+ \(results on UART0\)" if profile else r"\bPROFILE skipped\b"
+    ordered.insert(1, ("profile mode", profile_pattern))
     at = 0
-    for name, pattern in UART10_ORDERED:
+    for name, pattern in ordered:
         m = re.compile(pattern).search(uart10, at)
         if m is None:
             missing = "missing" if re.search(pattern, uart10) is None else "out of order"
             failures.append(f"UART10 {name}: {missing} ({pattern})")
         else:
             at = m.end()
-    for name, pattern in UART0_REQUIRED:
+    for name, pattern in UART0_REQUIRED + (UART0_PROFILE_REQUIRED if profile else []):
         if re.search(pattern, uart0) is None:
             failures.append(f"UART0 {name}: missing ({pattern})")
+    if not profile and re.search(r"\bp0 sram-profile\b", uart0):
+        failures.append("UART0 firmware built with sram-profile but verifying without --profile")
     for text, label, patterns in ((uart10, "UART10", UART10_FORBIDDEN), (uart0, "UART0", UART0_FORBIDDEN)):
         for pattern in patterns:
             line = next((l for l in text.splitlines() if re.search(pattern, l)), None)
@@ -113,6 +121,7 @@ def read_text(path):
 
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--profile", action="store_true", help="require SRAM profile completion (both binaries built with sram-profile)")
     p.add_argument("--uart0")
     p.add_argument("--uart10")
     p.add_argument("--result", help="observer JSON with the `complete` flag")
@@ -125,10 +134,12 @@ def main(argv):
     uart1 = [a.uart1_host, a.uart1_nonce, a.uart1_console]
     if any(shm) and not all(shm) or any(uart1) and not all(uart1) or not any(shm + uart1):
         p.error("give --uart0/--uart10/--result and/or --uart1-host/--uart1-nonce/--uart1-console")
+    if a.profile and not all(shm):
+        p.error("--profile needs --uart0/--uart10/--result")
     failed = False
     if all(shm):
         result = load_result(a.result)
-        failures = verify(read_text(a.uart0), read_text(a.uart10), result)
+        failures = verify(read_text(a.uart0), read_text(a.uart10), result, profile=a.profile)
         for f in failures:
             print(f"FAIL {f}")
         print("SHM_REGRESSION=" + ("FAIL" if failures else "PASS"))
