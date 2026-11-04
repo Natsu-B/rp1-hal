@@ -289,7 +289,7 @@ pub const RECHECK: Duration = Duration::from_millis(10);
 /// line for every `notify = "irq"` ring: a wake for one ring is a spurious wake for another.
 /// [`RingRx::wait`] arms only its own ring, so while it sleeps (up to its timeout; `None`:
 /// until that ring has data) the other rings' writers do not notify. To serve several irq
-/// rings from one thread, give each wait a short timeout and poll the others.
+/// rings from one thread, wait on all of them with [`Irq::wait_any`].
 pub struct Irq {
     file: File,
     wakes: u64,
@@ -377,6 +377,51 @@ impl Irq {
     /// that merged into one wake).
     pub fn event_count(&self) -> u32 {
         self.count
+    }
+    /// [`RingRx::wait`] for several `notify = "irq"` rings at once (any message types): arm
+    /// every ring, re-check them all, sleep once (bounded by [`RECHECK`]), disarm all, and
+    /// repeat until one has messages or `timeout` passes. Returns whether one has; the caller
+    /// then pops every ring. No spin, and [`RingRx::wait_stats`] is not updated.
+    pub fn wait_any(
+        &mut self,
+        rings: &mut [&mut dyn IrqRing],
+        timeout: Option<Duration>,
+    ) -> Result<bool> {
+        let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+        loop {
+            let mut waiters = rings
+                .iter_mut()
+                .map(|r| r.waiter())
+                .collect::<std::result::Result<Vec<_>, Error>>()?;
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return Ok(waiters.iter().any(|w| w.available() != 0));
+            }
+            let bound = remaining(deadline);
+            let mut io = Ok(false);
+            let outcome = shm::wait_any_with(&mut waiters, || {
+                io = self.wait(bound);
+                matches!(io, Ok(true))
+            });
+            io?;
+            if outcome == shm::Wait::Ready {
+                return Ok(true);
+            }
+        }
+    }
+}
+
+/// A [`RingRx`] of any message type, for [`Irq::wait_any`].
+pub trait IrqRing {
+    /// Check the session and that the ring is `notify = "irq"`; the ring's wait handle.
+    fn waiter(&mut self) -> std::result::Result<&mut dyn shm::Waiter, Error>;
+}
+impl<T: Message> IrqRing for RingRx<T> {
+    fn waiter(&mut self) -> std::result::Result<&mut dyn shm::Waiter, Error> {
+        if !self.notify_irq {
+            return Err(Error::Invalid);
+        }
+        self.session.check()?;
+        Ok(&mut self.inner)
     }
 }
 
@@ -665,5 +710,21 @@ mod tests {
         peer.write_all(&[1, 2]).unwrap();
         let e = irq.wait(Duration::from_secs(5)).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn wait_any_returns_on_any_ring() {
+        let mut a = rig();
+        let mut b = rig();
+        let (mut irq, _peer) = irq();
+        let t = Instant::now();
+        let timeout = Some(Duration::from_millis(30));
+        assert!(!irq.wait_any(&mut [&mut a.rx, &mut b.rx], timeout).unwrap());
+        assert!(t.elapsed() >= Duration::from_millis(30));
+        b.tx.push(&9).unwrap();
+        assert!(irq.wait_any(&mut [&mut a.rx, &mut b.rx], None).unwrap());
+        assert_eq!(b.rx.pop().unwrap(), Some(9));
+        // Both rings were disarmed again: no notification is due.
+        assert!(!a.tx.wake_needed() && !b.tx.wake_needed());
     }
 }
