@@ -195,12 +195,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         break;
                     }
                     u32::MAX => return Err("BAR2 reads 0xffffffff: PCIe link down".into()),
+                    // Check the deadline first so a stream of early wakes cannot spin forever.
+                    _ if start.elapsed() > Duration::from_secs(1) => {
+                        return Err(format!("RP1 reply timed out (sequence {sequence})").into());
+                    }
                     _ if woke.is_some() => {
                         early += 1;
                         irq.enable()?;
-                    }
-                    _ if start.elapsed() > Duration::from_secs(1) => {
-                        return Err(format!("RP1 reply timed out (sequence {sequence})").into());
                     }
                     _ => {}
                 }
