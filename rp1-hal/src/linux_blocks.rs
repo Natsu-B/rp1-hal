@@ -240,6 +240,9 @@ impl Registers for Mmio {
     fn write(&mut self, address: usize, value: u32) {
         crate::write(address, value);
     }
+    fn write_relaxed(&mut self, address: usize, value: u32) {
+        unsafe { (address as *mut u32).write_volatile(value) };
+    }
 }
 impl Hardware for Mmio {
     fn now_us(&mut self) -> u32 {

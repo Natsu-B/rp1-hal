@@ -259,7 +259,9 @@ pub const fn max_block_bytes(width_log2: u32) -> u32 {
 
 impl<const N: u8> Channel<N> {
     /// Starts one memory-to-memory block of `len` bytes (at most one block,
-    /// [`max_block_bytes`]) and returns a handle to poll it.
+    /// [`max_block_bytes`]) and returns a handle to poll it. Unlike [`Self::copy`] it does not
+    /// re-check clk_dma (the SCMI server holds it for a declared DMA block), so the setup is
+    /// only the channel registers.
     ///
     /// # Safety
     /// `src..src+len` must be readable and `dst..dst+len` writable by the DMAC for as long as
@@ -287,6 +289,7 @@ impl<const N: u8> Channel<N> {
             return Err(Error::Invalid);
         }
         let len = src.len() as u32;
+        clock_current(&mut Mmio)?;
         let s = BusAddr::from_proc(src.as_ptr() as usize)?;
         let d = BusAddr::from_proc(dst.as_mut_ptr() as usize)?;
         BusAddr::from_proc(src.as_ptr() as usize + src.len() - 1)?;
@@ -352,6 +355,7 @@ unsafe fn copy_blocking(
 
 /// # Safety
 /// See [`Channel::start`].
+#[rp1_rt::isram]
 unsafe fn start_block(
     io: &mut impl Hardware,
     n: u8,
@@ -365,7 +369,6 @@ unsafe fn start_block(
     }
     src.range(len)?;
     dst.range(len)?;
-    clock_current(io)?;
     if io.read(BASE + common::CHEN) & (1 << n) != 0 {
         return Err(Error::Busy);
     }
@@ -375,10 +378,10 @@ unsafe fn start_block(
         (ch::DAR, dst.0),
         (ch::BLOCK_TS, u64::from((len >> w) - 1)),
     ] {
-        io.write(c + offset, v as u32);
-        io.write(c + offset + 4, (v >> 32) as u32);
+        io.write_relaxed(c + offset, v as u32);
+        io.write_relaxed(c + offset + 4, (v >> 32) as u32);
     }
-    io.write(
+    io.write_relaxed(
         c + ch::CTL_L,
         (ctl_l::MSIZE_4 << ctl_l::DST_MSIZE_SHIFT)
             | (ctl_l::MSIZE_4 << ctl_l::SRC_MSIZE_SHIFT)
@@ -386,7 +389,7 @@ unsafe fn start_block(
             | (w << ctl_l::SRC_TR_WIDTH_SHIFT),
     );
     let burst = BURST[n as usize];
-    io.write(
+    io.write_relaxed(
         c + ch::CTL_H,
         ctl_h::ARLEN_EN
             | (burst << ctl_h::ARLEN_SHIFT)
@@ -395,14 +398,16 @@ unsafe fn start_block(
     );
     // Contiguous source and destination (single block), memory to memory with DMAC flow
     // control, priority = channel number (Linux `snps,priority`).
-    io.write(c + ch::CFG_L, 0);
-    io.write(
+    io.write_relaxed(c + ch::CFG_L, 0);
+    io.write_relaxed(
         c + ch::CFG_H,
         (u32::from(n) << cfg2::PRIORITY_SHIFT) | cfg2::HS_SEL_SRC | cfg2::HS_SEL_DST,
     );
-    io.write(c + ch::INTCLEAR, int::ALL);
-    io.write(c + ch::INTSIGNAL_ENA, 0);
-    io.write(c + ch::INTSTATUS_ENA, int::DMA_TFR_DONE | int::ALL_ERR);
+    io.write_relaxed(c + ch::INTCLEAR, int::ALL);
+    io.write_relaxed(c + ch::INTSIGNAL_ENA, 0);
+    io.write_relaxed(c + ch::INTSTATUS_ENA, int::DMA_TFR_DONE | int::ALL_ERR);
+    // The channel registers above are posted in order on the same AHB port; this write is
+    // followed by `dsb`, so the source buffer and the setup are complete before return.
     io.write(
         BASE + common::CHEN,
         (1 << n) | (1 << (n as u32 + common::CHEN_WE_SHIFT)),
@@ -410,6 +415,7 @@ unsafe fn start_block(
     Ok(())
 }
 
+#[rp1_rt::isram]
 fn poll_block(io: &mut impl Hardware, n: u8) -> Option<Result<(), Error>> {
     let c = channel_base(n);
     let status = io.read(c + ch::INTSTATUS);
@@ -419,12 +425,13 @@ fn poll_block(io: &mut impl Hardware, n: u8) -> Option<Result<(), Error>> {
         return Some(Err(Error::Bus(status)));
     }
     if status & int::DMA_TFR_DONE != 0 && io.read(BASE + common::CHEN) & (1 << n) == 0 {
-        io.write(c + ch::INTCLEAR, int::ALL);
+        io.write_relaxed(c + ch::INTCLEAR, int::ALL);
         return Some(Ok(()));
     }
     None
 }
 
+#[rp1_rt::isram]
 fn wait_block(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<(), Error> {
     let start = io.now_us();
     loop {
@@ -686,12 +693,9 @@ mod tests {
     #[test]
     fn stale_clock_is_a_precondition_error() {
         let mut f = running();
+        clock_current(&mut f).unwrap();
         let ctrl = generator().ctrl;
         f.regs.insert(ctrl, 0);
-        let s = BusAddr(0xc0_2000_0000);
-        assert_eq!(
-            unsafe { start_block(&mut f, 0, s, s, 16) },
-            Err(Error::Precondition)
-        );
+        assert_eq!(clock_current(&mut f), Err(Error::Precondition));
     }
 }

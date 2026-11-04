@@ -105,6 +105,11 @@ const AUXSRC_MASK: u32 = 0x1f << AUXSRC_SHIFT;
 pub trait Registers {
     fn read(&mut self, address: usize) -> u32;
     fn write(&mut self, address: usize, value: u32);
+    /// A write without the trailing `dsb`: later writes to the same peripheral still arrive in
+    /// program order (Device memory), but completion is not awaited. Defaults to [`Self::write`].
+    fn write_relaxed(&mut self, address: usize, value: u32) {
+        self.write(address, value);
+    }
 }
 
 impl Generator {
