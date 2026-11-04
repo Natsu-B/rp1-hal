@@ -490,8 +490,8 @@ fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u3
     0
 }
 /// `events` stream (commands 14/15): batches of `seed >> 16` (1..=32, 0 = 32) messages,
-/// `seed & 0xffff` µs apart, each batch published with one `push_slice` and, with `notify`,
-/// followed by `notify_ring`. Returns (errors, pulses).
+/// `seed & 0xffff` µs apart, each batch published with one `push_slice` (and notified,
+/// with `notify`, through `HostIrq::push_slice_notify`). Returns (errors, pulses).
 #[rp1_rt::isram]
 fn events_stream(
     tx: &mut rp1_hal::shm::RingTx<Sample>,
@@ -515,13 +515,15 @@ fn events_stream(
         }
         let mut done = 0;
         while done < k {
-            done += tx.push_slice(&buf[done..k]);
             // Also while the ring is full: the reader may have armed meanwhile.
-            if let Some(irq) = notify.as_deref_mut()
-                && irq.notify_ring(tx)
-            {
-                pulses += 1;
-            }
+            done += match notify.as_deref_mut() {
+                Some(irq) => {
+                    let (n, pulsed) = irq.push_slice_notify(tx, &buf[done..k]);
+                    pulses += u32::from(pulsed);
+                    n
+                }
+                None => tx.push_slice(&buf[done..k]),
+            };
             if now().wrapping_sub(start) > 180_000_000 {
                 return (1, pulses);
             }
