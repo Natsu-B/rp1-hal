@@ -1309,7 +1309,10 @@ mod tests {
         });
         assert_eq!(r, Wait::Woken);
         assert!(!tx0.wake_needed() && !tx1.wake_needed(), "all disarmed");
-        assert_eq!(wait_any_with(&mut [&mut rx0, &mut rx1], || unreachable!()), Wait::Ready);
+        assert_eq!(
+            wait_any_with(&mut [&mut rx0, &mut rx1], || unreachable!()),
+            Wait::Ready
+        );
         assert_eq!(rx1.pop().unwrap(), Some(5));
         // A message that arrives on ring 1 between the first check and its arm: the re-check
         // cancels the sleep and ring 0's arm is undone.
@@ -1323,8 +1326,14 @@ mod tests {
             }
             fn finish_wait(&mut self) {}
         }
-        assert_eq!(wait_any_with(&mut [&mut rx0, &mut Arrives], || unreachable!()), Wait::Ready);
-        assert!(!tx0.wake_needed(), "ring 0 disarmed after the cancelled sleep");
+        assert_eq!(
+            wait_any_with(&mut [&mut rx0, &mut Arrives], || unreachable!()),
+            Wait::Ready
+        );
+        assert!(
+            !tx0.wake_needed(),
+            "ring 0 disarmed after the cancelled sleep"
+        );
         // Ring 0's writer notifies too.
         let r = wait_any_with(&mut [&mut rx0, &mut rx1], || {
             tx0.push(&7).unwrap();
