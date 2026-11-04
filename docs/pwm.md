@@ -136,7 +136,8 @@ block token reinitialization. It prints observations, not an automatic HW pass v
    then prints `PWM_DONE reinitialized=1`; measure the final A=1 kHz/B=500 Hz 50% outputs
    again. Require both cold boots to complete; a marker alone is not waveform evidence.
 5. Inspect the final DT and reserved GPIOs: Linux PWM0 is disabled, GPIO12/13/22/23 reserved,
-   Linux PWM1 remains usable. Attempting a conflicting Linux PWM0 consumer or pinctrl use
+   PWM1 is untouched (the stock CM5 IO DT already disables both PWM nodes;
+   a fan overlay would enable PWM1). Attempting a conflicting Linux PWM0 consumer or pinctrl use
    must invoke the established disable/refuse policy. Linux SCMI disable/rate requests for
    PWM0 must leave the waveform and 50 MHz clock intact; keep Ethernet/UART1 regression.
 6. Extend the diagnostic with C2/C3 on GPIO18/19 and spare input pins, avoiding UART0. Repeat
