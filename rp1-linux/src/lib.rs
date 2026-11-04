@@ -365,6 +365,9 @@ pub struct WaitStats {
     pub woken: u64,
     /// Sleeps that ran to their bound ([`RECHECK`] or the deadline) without one.
     pub rechecks: u64,
+    /// Of `rechecks`, those after which messages were available: data found by the re-check
+    /// rather than a wake (a lost, merged-away or slower-than-`RECHECK` notification).
+    pub late: u64,
 }
 
 pub struct RingRx<T> {
@@ -420,7 +423,12 @@ impl<T: Message> RingRx<T> {
             match outcome {
                 shm::Wait::Ready => return Ok(true),
                 shm::Wait::Woken => self.stats.woken += 1,
-                shm::Wait::Timeout => self.stats.rechecks += 1,
+                shm::Wait::Timeout => {
+                    self.stats.rechecks += 1;
+                    if self.inner.available() != 0 {
+                        self.stats.late += 1;
+                    }
+                }
             }
             self.stats.sleeps += 1;
             if deadline.is_some_and(|d| Instant::now() >= d) {
