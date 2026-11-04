@@ -153,3 +153,9 @@ open while it reads, because closing it shuts the PL011 down and drops received 
 `pwm-loopback` is a separate, focused firmware example. See [the PWM API, register evidence
 and HW test plan](../docs/pwm.md). It reserves PWM0 as one block and reports two GPIO loopbacks
 through UART counters while proc0 services SCMI. It has not been deployed or run on hardware.
+
+Interrupt-notified ring: the `events` ring (`notify = "irq"`, proc1 has `host_irq`) is
+streamed by commands 14 (with `HostIrq::notify_ring` after every batch) and 15 (without).
+`shm-linux ring-irq [count]` runs burst / paced / single-message streams with a polling and
+an `RingRx::wait` consumer, checks every message and prints one `RINGIRQ` line per run and
+`RINGIRQ_PASS` at the end. HW (2026-11-05, cold boot x3): docs/design.md §6.2.
