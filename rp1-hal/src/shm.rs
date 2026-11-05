@@ -256,9 +256,15 @@ impl<'s> RingDma<'s> {
         self.threshold
     }
     fn batch_len<T: Message>(&self, ring: &mut RingTx<T>, requested: usize) -> usize {
-        requested
-            .min(RingTx::<T>::staged_capacity(self.stage.len()))
-            .min(ring.writable() as usize)
+        let n = requested.min(RingTx::<T>::staged_capacity(self.stage.len()));
+        // CPU-only candidates need no tail read before push_slice checks the free slots.
+        if n == 0
+            || self.threshold == usize::MAX
+            || n.saturating_mul(rp1_proto::shm::slot_size(size_of::<T>())) < self.threshold
+        {
+            return n;
+        }
+        n.min(ring.writable() as usize)
     }
     /// Publishes up to `values.len()` messages like [`RingTx::push_slice`] (returns how many):
     /// by DMA on `channel` when the batch reaches the threshold (then at most
@@ -280,7 +286,7 @@ impl<'s> RingDma<'s> {
         {
             return Ok(ring.push_slice(values));
         }
-        ring.push_slice_staged(&values[..n], self.stage, channel)
+        ring.push_slice_staged(values, self.stage, channel)
     }
 }
 
@@ -363,6 +369,42 @@ mod tests {
                 assert_eq!(ring.head(), 3);
             }
         }
+    }
+
+    #[test]
+    fn overwrite_cpu_batch_ignores_staging_capacity() {
+        use super::*;
+        #[repr(align(8))]
+        struct Mem([u8; 2048]);
+        let (mut data, ctrl, mut stage) = (Mem([0; 2048]), Mem([0; 2048]), Mem([0; 2048]));
+        let mut ring = unsafe {
+            RingTx::<[u32; 64]>::attach(
+                data.0.as_mut_ptr(),
+                data.0.len(),
+                ctrl.0.as_ptr(),
+                ctrl.0.len(),
+                4,
+                Overflow::Overwrite,
+            )
+        }
+        .unwrap();
+        let mut helper = RingDma {
+            stage: &mut stage.0[..264],
+            threshold: RingDma::DEFAULT_THRESHOLD,
+        };
+        // Overwrite must use the CPU even when one staged slot reaches the DMA threshold.
+        let mut channel = unsafe { core::mem::zeroed::<crate::dma::Channel<1>>() };
+        assert_eq!(
+            helper.push_slice(&mut ring, &mut channel, &[[42; 64]; 3]),
+            Ok(3)
+        );
+        assert_eq!(ring.head(), 3);
+        // An overwrite CPU batch may also exceed the ring depth.
+        assert_eq!(
+            helper.push_slice(&mut ring, &mut channel, &[[43; 64]; 7]),
+            Ok(7)
+        );
+        assert_eq!(ring.head(), 10);
     }
 
     #[test]

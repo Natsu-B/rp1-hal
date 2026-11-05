@@ -189,9 +189,10 @@ let (n, pulsed) = host_irq.push_slice_dma_notify(&mut ring_dma, &mut tx, &mut dm
   (blocking, `dma::RING_TIMEOUT_US` per block, a failed block is stopped before return), then the
   barrier, then `head`. The batch is bounded by `RingTx::writable()` and stage capacity;
   the threshold uses that actual writable count, including when only one slot is free.
-  The CPU path takes the full input slice, bounded only by ring capacity, not the stage;
-  it also handles a stage smaller than one slot, even at threshold 0. `usize::MAX` always
-  selects the CPU path.
+  The CPU path takes the full input slice: reject rings stop at the writable capacity,
+  while overwrite rings process every input, even beyond the ring depth (STATIC: host tests).
+  Stage capacity limits only DMA; the CPU also handles a stage smaller than one slot, even
+  at threshold 0. `usize::MAX` always selects the CPU path.
 - `unsafe trait SlotCopy`: on success ALL copied bytes must reach the ordering point shared
   with subsequent CPU stores to the same mapping; no such store may overtake them. Source
   access must stop on every return. The Channel implementation relies on the HYP chain above.
