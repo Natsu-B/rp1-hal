@@ -322,6 +322,10 @@ RMW atomic のメソッドは持たない。
     suppressed-irq は眠り 13 回のうち再確認で拾った 12 回、最長の待ち 10.07 ms。
   - ホストのテスト: `wait_handshake_all_interleavings` は posted 書き込み（相手側のコピーへの着地が遅れる）をモデル化し、
     push + `wake_needed` と `wait_with` の全インターリーブを列挙する。再確認・どちらかの読み戻しを外すと失敗する。
+- **DMA で書くリング（`shm::RingDma`、HW 2026-11-05、cold boot 2 回）**: スロットの像を共有 SRAM に並べて DMA で 1〜2 ブロック、
+  各ブロックの最後の語を読み戻して一致してから `head`（順序の仮説に頼らない）。256 B 以上のバッチだけ DMA（それ未満は CPU が速い）。
+  RP1 側のリング処理の速さ（CPU → DMA）: 16 B × 32 件 14.6 → 22.1 MB/s、64 B × 32 件 17.7 → 40.0 MB/s、256 B × 8 件 18.4 → 43.3 MB/s。
+  欠落・破損 0。読み戻しを外した実験でも古いスロットは 0（観測）。詳細は dma.md「DMA ring producer」。
 - 未測定: M3 から見た Linux DDR の遅延・帯域。
 
 ## 7. BCM2712 third stage loader（`boot/rp1boot`）

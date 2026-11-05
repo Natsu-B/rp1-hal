@@ -61,6 +61,7 @@ dma = {}          # the whole controller: reset, clk_dma, the DMA interrupt line
   flow control no handshake is used either way (HW: both copy correctly). Single-block contiguous mode
   (no LLI) is not what Linux uses; it works on RP1 (HW below).
 - Not in v1: linked lists, interrupts (the line is RP1 IRQ 40, unused), peripheral handshakes.
+- Ring producer: `shm::RingDma` (below, "DMA ring producer").
 
 ## Cancellation and the abort register
 
@@ -116,8 +117,8 @@ processor `0x4040_0000` map to bus `0xC0_4020_0000` and are not translated (reje
   is then visible to both cores and to Linux (BAR2).
 - Linux DDR: the write response for a PCIe posted write comes from the endpoint when it accepts
   the write; later CPU posted writes through the same endpoint (e.g. a ring head) are ordered
-  behind it by PCIe posted-write ordering (DOC/HYP: not separately tested; the lab check below
-  reads the data only after RP1 reported completion).
+  behind it by PCIe posted-write ordering (HYP; no violation seen in the ring experiment below,
+  which is not a proof). The ring producer does not rely on it (read-back guard).
 
 ## HW results (2026-11-05, lab `shm-firmware --no-default-features --features dma`, clk_sys 200 MHz)
 
@@ -158,14 +159,83 @@ take 16.9 µs (ch0) and 18.3 µs (ch2) instead of 15.0 / 14.6 µs; SRAM→DDR nu
 (16 B 5.0 µs, 512 B 7.0 µs, 1 KiB blocks 86 MB/s, 64 KiB blocks 210 MB/s). The slowdown is
 attributed to the shorter bursts (HYP: not isolated from the other changes of that commit).
 
-### RP1 → Linux ring ceiling
+## DMA ring producer (RP1 → Linux)
 
-The CPU-written ring is bound by posted writes (0.54 µs/word; batched ring 4.58 MB/s, HW
-2026-10-29). Staging a 32-message batch (512 B) in shared SRAM and copying it with one DMA block
-takes 7.1 µs here, i.e. about 72 MB/s of payload before the head update and staging cost, so
-DMA lifts the ceiling by roughly an order of magnitude for batched rings (HYP until a ring
-producer uses it and is measured end to end). It does not help single 16 B messages (5.0 µs
-per DMA block vs about 2.7 µs for five posted words).
+`rp1_hal::shm::RingDma` moves batches of a `reject` RP1 → Linux ring into Linux DDR by DMA.
+The wire format is unchanged: a ring can mix DMA and CPU batches, and the Linux reader is the
+same (STATIC: rp1-proto tests).
+
+```rust
+#[unsafe(link_section = ".shared")]
+static STAGE: Stage = Stage(UnsafeCell::new([0; 4096])); // 8-byte aligned, shared SRAM
+let mut ring_dma = RingDma::new(unsafe { &mut *STAGE.0.get() })?;
+let (n, pulsed) = host_irq.push_slice_dma_notify(&mut ring_dma, &mut tx, &mut dma.ch1, &batch);
+```
+
+- `RingDma::push_slice(&mut ring, &mut channel, values)`: batches of at least the threshold
+  (`DEFAULT_THRESHOLD` = 256 staged bytes, `set_threshold`) go by DMA, smaller ones by the
+  CPU (`RingTx::push_slice`). The channel is lent per call (`&mut Channel<N>` of the declared
+  controller, `dma = {}`), so one channel can serve several rings; nothing else may use it
+  during the call. `HostIrq::push_slice_dma_notify` adds `notify_ring` for `notify = "irq"`.
+- DMA path (`rp1_proto::shm::RingTx::push_slice_staged` with the `SlotCopy` the channel
+  implements): stage whole slot images (`seq`, length, payload, zero padding) in the shared-SRAM
+  stage, copy them in one block, or two when the batch wraps around the end of the ring
+  (blocking, `dma::RING_TIMEOUT_US` per block, a failed block is stopped before return), then the
+  ordering guard, then `head`. The batch is bounded by the free slots and the stage size
+  (`RingTx::staged_capacity`). Errors (`Staged::Copy`, `Staged::NotVisible`, `Staged::Invalid`)
+  publish nothing; the slots are rewritten by the next call. `overwrite` rings use the CPU path.
+- Ordering guard: after the copy, the last word of each block is read back through the
+  processor's window and compared with the staged word (up to `GUARD_TRIES` reads); only then
+  `head` is stored. Correctness does not depend on whether a CPU store issued after the DMA
+  completion can overtake the DMA data on PCIe (the hypothesis below): the read is non-posted,
+  so it returns only after the posted writes queued before it (DOC: PCIe ordering), and the
+  value check catches a word that has not landed. Cost: one PCIe round trip per block.
+  `push_slice_staged_unguarded` (doc-hidden, unsafe) skips it, for the experiment only.
+
+### HW results (2026-11-05, lab `--no-default-features --features ring-dma`, 2 cold boots)
+
+Lab command 17 (`shm-linux ring-dma`): 10^6 messages per run, every one checked by Linux;
+batches of 32 (16 B, 64 B) or 8 (256 B) messages, channel 1, the stage in shared SRAM.
+`ring` = payload rate of the RP1 time inside the ring API (push and, by DMA, staging, copy,
+guard, `head`); `end-to-end` = Linux-measured payload rate including the lab's message
+generation on RP1 (from shared-SRAM code; not part of the ring). Polling consumer; the irq
+consumer gives the same RP1 rates (within 1 %) with 13–29 % consumer CPU. The two boots agree
+within 0.1 %.
+
+| Message | CPU ring | DMA ring | CPU end-to-end | DMA end-to-end |
+|---|---:|---:|---:|---:|
+| 16 B (24 B slots, 768 B per batch) | 14.6 MB/s | 22.1 MB/s | 8.9 MB/s | 11.3 MB/s |
+| 64 B (72 B slots, 2304 B) | 17.7 MB/s | 40.0 MB/s | 12.7 MB/s | 21.1 MB/s |
+| 256 B (264 B slots, 2112 B) | 18.4 MB/s | 43.3 MB/s | 14.4 MB/s | 26.2 MB/s |
+
+Every run: missing 0, corrupt 0, stale 0, guard retries 0, guard failures 0. The `irq`
+runs were notified (one pulse and one wake per batch, no 10 ms re-check found data), a paced
+DMA run (100 µs between batches) slept and was woken by interrupts. With the default
+threshold a single 16 B message stayed on the CPU (10^6 CPU batches) and a 32-message batch
+used DMA.
+
+Crossover (RP1 µs per batch inside the ring API, CPU / DMA): 16 B messages 10.1 / 12.0 at
+8 slots (192 B), 14.3 / 14.0 at 12 (288 B), 35.2 / 23.2 at 32; 64 B messages 9.0 / 11.2 at
+2 (144 B), 16.1 / 13.7 at 4 (288 B); 256 B messages 15.5 / 14.1 at 1 (264 B). Hence the
+256 B default. A DMA batch costs about 9 µs fixed (block setup and completion about 5 µs, the
+guard read, `head`) plus about 0.45 µs per 24 B slot; slots are 8-byte multiples, so the
+DMAC moves 64-bit beats, not the 128-bit beats of the bulk numbers above (HYP: the main reason
+the per-byte rate is below the 1 KiB-block figure).
+
+Staging uses volatile word stores: a plain copy loop became a `memcpy` call, which on RP1 runs
+from shared SRAM and made 256 B slots cost more by DMA than by CPU (HW, an earlier build:
+17.0 MB/s DMA vs 18.4 MB/s CPU).
+
+### Ordering experiment (DMA completion vs a later CPU `head` store)
+
+Hypothesis: a DMA write acknowledged to the DMAC (the PCIe controller accepted it) reaches the
+host before a CPU posted store issued afterwards through the same window. Test: the same
+streams with the guard off (`head` stored right after `DMA_TFR_DONE`), a busy-polling Linux
+reader that checks the sequence and every payload word of every message, the last word of
+each message being `!i`. Per cold boot 4 × 10^6 messages (16 B in batches of 32 and of 1,
+64 B × 32, 256 B × 8): 0 stale slots, 0 corrupt payloads (HW, 4 cold boots, 16 × 10^6 messages, two of the boots
+with earlier lab builds). This is an observation, not a proof (the reader polls from another CPU and
+may simply be slower than the window); the guard stays on by default.
 
 ## Mem-to-peripheral plan (not implemented)
 

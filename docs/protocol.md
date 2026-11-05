@@ -150,6 +150,13 @@ T   payload 8 バイト境界に 0 埋め
   ただし通知（MSI-X など別経路）が書き込みより先に着く恐れがあるので、通知の前に同じ窓へ 1 回読み出しをして到達を確定する
   （既存の SHM 契約: payload → barrier → 同じ窓の読み出し → barrier → 通知、HW 実績あり）。
 - Linux → RP1: Linux の BAR2 への書き込みは Device 属性で発行順。M3 はローカル SRAM を読む。
+- RP1 → Linux を DMA で書く場合（`RingTx::push_slice_staged`、rp1-hal `shm::RingDma`、dma.md「DMA ring producer」）:
+  スロットの像（seq・長さ・payload・0 埋め）を共有 SRAM に並べ、DMA が 1 ブロック（折り返すなら 2 ブロック）で読み手のスロットへ写す。
+  DMA の完了（最後の書き込み応答）の後、CPU の `head` 書き込みが DMA のデータを追い越さないかは仮説なので、それに頼らない:
+  各ブロックの最後の語を同じ窓から読み戻し（非 posted の読み出しは先行の posted 書き込みを追い越さない）、ステージの値と一致してから
+  barrier → `head` を書く。一致しなければ上限付きで読み直し、だめなら公開しない（`Staged::NotVisible`）。代償はブロックごとに読み出し往復 1 回。
+  読み戻しを省いた版（実験専用）でも 10^6 件 × 4 条件 × cold boot 複数で読み手が古いスロットを見たことは 0（HW、観測であって証明ではない）。
+  wire 形式は CPU 版と同じで、同じリングに CPU 版と混ぜて書ける（STATIC: rp1-proto 試験）。
 - 未確認（TODO）: M3 の outbound 窓が Normal 属性の領域（0x8000_0000..）にあることで、M3 側の書き込みが並べ替えられないか。
 
 ## 3. 通知

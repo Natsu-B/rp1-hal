@@ -49,7 +49,9 @@ size (`RINGDMA_THRESH`), and the ordering experiment without the read-back guard
 every judged run is `check=ok`. Build it with
 `cargo rp1 build -p shm-firmware ... --no-default-features --features ring-dma`; the DMA proof
 of command 16 needs the `dma` image. proc1's stack is 6 KiB (a batch of up to 2 KiB of
-messages is on the stack).
+messages is on the stack). Each `RINGDMA` line also has the RP1 time spent generating
+messages (`gen_us`, generation in ISRAM, the loop itself in shared SRAM), inside the ring API
+(`push_us`, and `ring_MBps` from it) and notifying (`notify_us`).
 
 STATIC: feature selection removes proof initialization, handlers and driver code from the
 linked image. The metadata, note ownership and overlay keep the existing I2C1/ADC/SPI0/pin
