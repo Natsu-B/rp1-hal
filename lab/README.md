@@ -22,6 +22,23 @@ cargo rp1 build -p shm-firmware --target thumbv7m-none-eabi --release \
 cargo build -p shm-linux --target aarch64-unknown-linux-musl --release --features sram-profile
 ```
 
+The `dma` feature (not default) adds the DMA proof (`src/dma_proof.rs`, proc1 declares
+`dma = {}` in every profile, so Linux's `rp1_dma` is always disabled in the lab): at boot an
+SRAM->SRAM check (`DMA_SRAM ... rc=0x0 bad_bytes=0`, `DMA_SRAM_RATE`, `DMA_SRAM_PASS` on
+UART0), and command 16 (`shm-linux dma`, after `shm-linux`): RP1 SRAM -> Linux DDR through
+the ATU window and the direct-mapped PCIe space, against CPU posted writes, verified word by
+word by Linux and by an RP1 read-back (`DMA_DDR_LINUX`, `DMA_DDR_VERIFY ... bad=0
+canary_left=0`, `DMA_DDR_PASS` on UART10). The default + `dma` image does not fit (about
+3.3 KiB over); use the focused image:
+
+```sh
+cargo rp1 build -p shm-firmware --target thumbv7m-none-eabi --release \
+    --no-default-features --features dma
+```
+
+With it, I2C/ADC/SPI requests are refused (`0xffffffff`) as for any focused image, so the
+full `check-shm.sh`/verifier does not apply; check SHM, doorbell, ring-irq and UART1 directly.
+
 STATIC: feature selection removes proof initialization, handlers and driver code from the
 linked image. The metadata, note ownership and overlay keep the existing I2C1/ADC/SPI0/pin
 reservations in every profile; disabling a proof does not return its resources to Linux.
@@ -50,7 +67,9 @@ host interrupt):
 | adc | 35840 | 13312 | 2116 | 16 |
 | spi | 37352 | 11800 | 2532 | 16 |
 | sram-profile | 35440 | 13712 | 2708 | 656 |
+| dma (2026-11-05, rustc of that date) | 39728 | 9424 | 3092 | 16 |
 | i2c, adc, spi, sram-profile | does not link (16 B over) | - | - | - |
+| i2c, adc, spi, dma | does not link (about 3.3 KiB over) | - | - | - |
 
 The SRAM image includes ISRAM/DSRAM load copies and linker alignment; ELF file length is
 not the SRAM budget. Numbers are compiler-dependent. The all-features image (default +
