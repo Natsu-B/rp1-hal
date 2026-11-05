@@ -223,8 +223,10 @@ pub struct RingDma<'s> {
     threshold: usize,
 }
 impl<'s> RingDma<'s> {
-    /// Default CPU/DMA crossover in staged bytes (HW, docs/dma.md).
-    pub const DEFAULT_THRESHOLD: usize = 96;
+    /// Default CPU/DMA crossover in staged bytes: below it the CPU's posted stores finish
+    /// first (HW 2026-11-05: 16 B messages, DMA wins from 12 slots = 288 B, loses at 8 = 192 B;
+    /// 64 B messages: wins at 4 = 288 B, loses at 2 = 144 B; docs/dma.md).
+    pub const DEFAULT_THRESHOLD: usize = 256;
     /// `stage` must be shared SRAM (`#[unsafe(link_section = ".shared")]`) and 8-byte aligned;
     /// its size bounds one DMA batch ([`RingTx::staged_capacity`]).
     pub fn new(stage: &'s mut [u8]) -> Result<Self, crate::dma::Error> {
