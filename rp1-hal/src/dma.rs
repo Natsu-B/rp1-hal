@@ -300,10 +300,12 @@ impl<const N: u8> Channel<N> {
     }
 
     /// Copies `src` into `dst` (equal lengths) and waits for completion, splitting into blocks
-    /// as needed. Both slices must be in DMAC-visible memory (shared SRAM, a peripheral, or the
-    /// or the outbound window; peripheral registers need [`Self::start`]). A timed-out or
+    /// as needed. Both slices must each be one contiguous range of shared SRAM or of the
+    /// outbound window; anything else (ISRAM, DSRAM, stack, peripherals) is refused with
+    /// `NotDmaVisible` — peripheral registers need the unsafe [`Self::start`]. A timed-out or
     /// failed block is stopped before this returns; if the DMAC cannot be stopped this never
-    /// returns (module docs, Cancellation).
+    /// returns (module docs, Cancellation). On error the contents of `dst` are unspecified
+    /// (a prefix may have been written).
     pub fn copy(&mut self, src: &[u8], dst: &mut [u8], timeout_us: u32) -> Result<(), Error> {
         if src.len() != dst.len() || src.is_empty() || src.len() > u32::MAX as usize {
             return Err(Error::Invalid);

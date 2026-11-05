@@ -65,9 +65,9 @@ dma = {}          # the whole controller: reset, clk_dma, the DMA interrupt line
 ## Cancellation and the abort register
 
 Linux 6.12 (`drivers/dma/dw-axi-dmac/`) picks the register map from `dma-channels`:
-`dw_probe` sets `reg_map_8_channels = true` for `dma-channels <= 8` (`DMA_REG_MAP_CH_REF`).
+`parse_device_properties` sets `reg_map_8_channels = true` for `dma-channels <= 8` (`DMA_REG_MAP_CH_REF`).
 With that map `CH_EN`/`CH_EN_WE` are `DMAC_CHEN[7:0]`/`[15:8]` and `CH_SUSP`/`CH_SUSP_WE` are
-`DMAC_CHEN[23:16]`/`[31:24]` (`axi_chan_enable`, `dw_axi_dma_set_pause`); only without it does
+`DMAC_CHEN[23:16]`/`[31:24]` (`axi_chan_enable`, `dma_chan_pause`); only without it does
 Linux use `DMAC_CHSUSPREG` (0x020) and the `EN2` write-enable at bit 16. RP1's `rp1.dtsi` has
 `dma-channels = <8>` and the datasheet says eight channels, so RP1 uses the 8-channel map. Linux
 never aborts a channel (`dma_chan_terminate_all` writes `CH_EN = 0` and polls). By the same
