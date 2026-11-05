@@ -256,6 +256,21 @@ contract violations are confined to `lab/`. Every run requires a response and ex
 marker; timeout/truncated capture fails. Zero production errors support only the measured
 conditions, not a universal proof of the endpoint ordering chain.
 
+### Review-fix HW attempt (2026-11-05, two cold boots): FAIL
+
+HW: production CTL_L readback `0x40046400` (bit30=1, AW_CACHE=0), comparison
+`0x00046400` (bit30=0, AW_CACHE=0); endpoint and root port DevCtl2 both IDOReq-/IDOCompl-.
+All 21 completed early-head controls detected violations (32,000 slots per case, all sizes).
+Bit30=0 comparisons observed no violations in 672,000 slots; necessity of bit30 is not proved.
+
+Production streams used batches 31/31/7 for 16/64/256 B, forcing physical ring wraps including
+two-block copies. Completed phases cover 90,000,000 items, zero missing/corrupt/stale. The
+last 256 B stream of boot2 reset unexpectedly, followed by a new BOOTSYS in UART, without
+the experiment's end markers. That phase is FAIL and its partial data is excluded; the
+requested 100,000,000-item complete campaign is therefore NOT VERIFIED. Reset cause remains
+unknown. Neither these finite observations nor the positive control prove the internal
+AXI-to-PCIe ordering chain. Error fencing remains STATIC-tested, not HW fault-injected.
+
 ## Mem-to-peripheral plan (not implemented)
 
 Peripherals with a DMA handshake (UART, SPI, I2C0..5, PWM FIFO, I2S, PIO, ADC FIFO, DMA_TICK)
