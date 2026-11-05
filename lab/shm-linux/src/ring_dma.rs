@@ -240,8 +240,9 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
     let sizes = [16.0, 64.0, 256.0];
     let mut failed = Vec::new();
     let mut thresh: Vec<(u32, u32, u32, f64)> = Vec::new();
-    for (k, (ring, run)) in plan.iter().enumerate() {
-        let id = 200 + k as u32;
+    for (ring, run) in &plan {
+        // Firmware ignores a repeated ID, including across separate client invocations.
+        let id = ctrl.read()?[0].wrapping_add(1).max(1);
         let n = run.count.unwrap_or(count);
         let ring = *ring;
         println!(
