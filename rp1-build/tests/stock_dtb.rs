@@ -54,6 +54,8 @@ fn predict(overlays: &[&str]) -> overlay::BootPrediction {
         ("Sample".into(), TypeInfo::of::<[u32; 4]>()),
         ("Control".into(), TypeInfo::of::<[u32; 16]>()),
         ("Bulk".into(), TypeInfo::of::<[u32; 262144]>()),
+        ("Wide64".into(), TypeInfo::of::<[u32; 16]>()),
+        ("Wide256".into(), TypeInfo::of::<[u32; 64]>()),
     ]);
     let a = generate(&name, &version, &d, [0; 32], [0; 20]).unwrap();
     let app = dtc(tmp.path(), "app", &a.dts, true);

@@ -39,6 +39,18 @@ cargo rp1 build -p shm-firmware --target thumbv7m-none-eabi --release \
 With it, I2C/ADC/SPI requests are refused (`0xffffffff`) as for any focused image, so the
 full `check-shm.sh`/verifier does not apply; check SHM, doorbell, ring-irq and UART1 directly.
 
+The `ring-dma` feature (not default; it does not fit together with `dma`) adds command 17
+(`src/ring_dma.rs`, `shm-linux ring-dma [count]`): RP1 -> Linux streams on `events` (16 B),
+`wide64` (64 B) and `wide256` (256 B, rings declared in every profile) written by the CPU
+(`RingTx::push_slice`) or by DMA (`rp1_hal::shm::RingDma`, channel 1, the 4 KiB cancellation
+buffer as stage), with polling and `notify = "irq"` consumers, the CPU/DMA crossover per batch
+size (`RINGDMA_THRESH`), and the ordering experiment without the read-back guard
+(`RINGDMA_ORDER`, reported, not judged). Every message is checked; `RINGDMA_PASS` only if
+every judged run is `check=ok`. Build it with
+`cargo rp1 build -p shm-firmware ... --no-default-features --features ring-dma`; the DMA proof
+of command 16 needs the `dma` image. proc1's stack is 6 KiB (a batch of up to 2 KiB of
+messages is on the stack).
+
 STATIC: feature selection removes proof initialization, handlers and driver code from the
 linked image. The metadata, note ownership and overlay keep the existing I2C1/ADC/SPI0/pin
 reservations in every profile; disabling a proof does not return its resources to Linux.

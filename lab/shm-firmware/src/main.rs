@@ -6,12 +6,14 @@ use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
 #[cfg(feature = "adc")]
 mod adc_proof;
-#[cfg(feature = "dma")]
+#[cfg(any(feature = "dma", feature = "ring-dma"))]
 mod dma_proof;
 #[cfg(feature = "i2c")]
 mod i2c_proof;
 #[cfg(feature = "sram-profile")]
 mod prof;
+#[cfg(feature = "ring-dma")]
+mod ring_dma;
 #[cfg(feature = "spi")]
 mod spi_proof;
 #[shared]
@@ -192,9 +194,19 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     log!("p1 ready bss=0x{:x}\n", bss_check(0xb55_1000)).unwrap();
     // The ADC is declared on proc1: its Clocks come from proc0's clock_authority.init
     // (published before proc0 launches proc1).
-    #[cfg(any(feature = "adc", feature = "spi", feature = "dma"))]
+    #[cfg(any(
+        feature = "adc",
+        feature = "spi",
+        feature = "dma",
+        feature = "ring-dma"
+    ))]
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000);
-    #[cfg(any(feature = "adc", feature = "spi", feature = "dma"))]
+    #[cfg(any(
+        feature = "adc",
+        feature = "spi",
+        feature = "dma",
+        feature = "ring-dma"
+    ))]
     log!("p1 clocks {:?}\n", clocks).unwrap();
     #[cfg(feature = "adc")]
     let mut adc = {
@@ -235,10 +247,13 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         }
         spi
     };
-    #[cfg(feature = "dma")]
+    #[cfg(any(feature = "dma", feature = "ring-dma"))]
+    #[allow(unused_mut)]
     let mut dma = {
         let dma = clocks.ok().and_then(|c| dma_proof::init(p.dma, &c));
+        #[allow(unused_mut)]
         let mut dma = dma;
+        #[cfg(feature = "dma")]
         if let Some(d) = dma.as_mut() {
             dma_proof::sram(d);
         }
@@ -262,6 +277,10 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut down = area.ring_rx::<Sample>("down").unwrap();
     let mut latest = area.ring_tx::<Sample>("latest").unwrap();
     let mut events = area.ring_tx::<Sample>("events").unwrap();
+    #[cfg(feature = "ring-dma")]
+    let mut wide64 = area.ring_tx::<ring_dma::Wide64>("wide64").unwrap();
+    #[cfg(feature = "ring-dma")]
+    let mut wide256 = area.ring_tx::<ring_dma::Wide256>("wide256").unwrap();
     let mut control = area.block::<Control>("control").unwrap();
     let mut bulk = area.block::<Bulk>("bulk").unwrap();
     let mut last = 0;
@@ -418,6 +437,40 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     None => errors = 1,
                 }
                 writer.commit();
+            }
+            // RP1 -> Linux ring stream written by the CPU or by DMA (ring_dma); request words
+            // 8..13 = ring, mode, notify, batch, gap_us; results replace words 8..12.
+            #[cfg(feature = "ring-dma")]
+            17 => {
+                let p = ring_dma::Params {
+                    mode: request[9],
+                    notify: request[10] != 0,
+                    batch: request[11],
+                    gap_us: request[12],
+                };
+                let irq = if p.notify { Some(&mut host_irq) } else { None };
+                use ring_dma::{stream, wide};
+                let o = match (dma.as_mut(), request[8]) {
+                    (Some(d), 0) => stream::<4, 32>(&mut events, d, irq, sample, count, &p, start),
+                    (Some(d), 1) => {
+                        stream::<16, 32>(&mut wide64, d, irq, wide::<16>, count, &p, start)
+                    }
+                    (Some(d), 2) => {
+                        stream::<64, 8>(&mut wide256, d, irq, wide::<64>, count, &p, start)
+                    }
+                    _ => ring_dma::Out {
+                        errors: 1,
+                        ..Default::default()
+                    },
+                };
+                errors = o.errors;
+                extra = o.pulses;
+                request[8..12].copy_from_slice(&[
+                    o.retries,
+                    o.not_visible,
+                    o.dma_batches,
+                    o.cpu_batches,
+                ]);
             }
             #[cfg(feature = "sram-profile")]
             9 => {

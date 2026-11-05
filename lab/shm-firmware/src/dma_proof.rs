@@ -15,6 +15,7 @@
 //!   channel must then copy the full block correctly. A last step writes `CH_ABORT` directly
 //!   (`DMAC_CHEN` high word, 0x01C) mid-transfer to confirm the 8-channel abort layout on HW
 //!   (`DMA_ABORT_RAW`): the enable bit must clear with `CH_ABORTED` set.
+#![cfg_attr(not(feature = "dma"), allow(unused_imports))]
 use crate::rp1;
 use core::cell::UnsafeCell;
 use rp1_hal::{
@@ -22,14 +23,20 @@ use rp1_hal::{
     log,
 };
 
+#[cfg(feature = "dma")]
 pub const WORDS: usize = 256;
+#[cfg(feature = "dma")]
 const TIMEOUT_US: u32 = 100_000;
+#[cfg(feature = "dma")]
 #[repr(C, align(16))]
 struct Buf(UnsafeCell<[u32; WORDS]>);
+#[cfg(feature = "dma")]
 unsafe impl Sync for Buf {}
 /// Shared SRAM (DMA-visible). Only proc1 touches these, and only here.
+#[cfg(feature = "dma")]
 #[unsafe(link_section = ".shared")]
 static SRC: Buf = Buf(UnsafeCell::new([0; WORDS]));
+#[cfg(feature = "dma")]
 #[unsafe(link_section = ".shared")]
 static DST: Buf = Buf(UnsafeCell::new([0; WORDS]));
 
@@ -41,18 +48,32 @@ unsafe impl Sync for Big {}
 #[unsafe(link_section = ".shared")]
 static BIG: Big = Big(UnsafeCell::new([0; BIG_BYTES]));
 
+/// The cancellation proof's source buffer, lent to the DMA ring proof (command 17) as its
+/// stage.
+///
+/// # Safety
+/// Only between commands (command 16 is not running) and only one borrow at a time.
+#[cfg(feature = "ring-dma")]
+pub unsafe fn ring_stage() -> &'static mut [u8] {
+    unsafe { &mut *BIG.0.get() }
+}
+#[cfg(feature = "dma")]
 fn now() -> u32 {
     unsafe { (0x400a_c028 as *const u32).read_volatile() }
 }
+#[cfg(feature = "dma")]
 pub const fn pattern(i: usize, seed: u32) -> u32 {
     (i as u32).wrapping_mul(0x9e37_79b9) ^ seed
 }
+#[cfg(feature = "dma")]
 fn src() -> *mut u32 {
     SRC.0.get().cast()
 }
+#[cfg(feature = "dma")]
 fn dst() -> *mut u32 {
     DST.0.get().cast()
 }
+#[cfg(feature = "dma")]
 fn fill(p: *mut u32, seed: u32) {
     for i in 0..WORDS {
         unsafe { p.add(i).write_volatile(pattern(i, seed)) };
@@ -84,6 +105,7 @@ fn code(r: Result<(), Error>) -> u32 {
 
 /// Boot SRAM -> SRAM proof on channel 0: every byte of the copy and the untouched tail.
 /// Logs `DMA_SRAM_PASS` when every size copied exactly.
+#[cfg(feature = "dma")]
 #[inline(never)]
 pub fn sram(dma: &mut Dma) {
     let mut ok = true;
@@ -142,6 +164,7 @@ pub fn sram(dma: &mut Dma) {
 }
 
 /// One block of `bytes` from SRC to `dst` on `ch`, `n` times; elapsed µs or the first error.
+#[cfg(feature = "dma")]
 fn repeat<const N: u8>(
     ch: &mut Channel<N>,
     dst: BusAddr,
@@ -158,6 +181,7 @@ fn repeat<const N: u8>(
 
 /// Command 16. `data` = M3 pointer of the bulk block data (1 MiB, outbound window), `phys` =
 /// its host physical address. Returns (errors, results for request[8..16]).
+#[cfg(feature = "dma")]
 #[inline(never)]
 pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8]) {
     let mut out = [0u32; 8];
@@ -269,11 +293,14 @@ pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8
     (errors, out)
 }
 
+#[cfg(feature = "dma")]
 const CANARY: u32 = 0xa5a5_a5a5;
+#[cfg(feature = "dma")]
 const fn big(i: usize) -> u8 {
     ((i * 13 + 1) % 0xa5) as u8
 }
 /// Canary-fills the first `BIG_BYTES` of the DDR block (CPU posted writes, completed).
+#[cfg(feature = "dma")]
 fn canary(data: *mut u32) {
     for w in 0..BIG_BYTES / 4 {
         unsafe { data.add(w).write_volatile(CANARY) };
@@ -282,6 +309,7 @@ fn canary(data: *mut u32) {
 }
 /// DDR bytes `1..BIG_BYTES - 1` against BIG: (copied prefix length, canary bytes missing after
 /// the prefix, guard bytes 0 / BIG_BYTES - 1 changed, FNV hash of the whole range).
+#[cfg(feature = "dma")]
 fn inspect(data: *mut u32) -> (u32, u32, u32, u32) {
     let (mut copied, mut tail_bad, mut guard_bad, mut hash) = (0u32, 0u32, 0u32, 0x811c_9dc5u32);
     let mut in_prefix = true;
@@ -302,9 +330,11 @@ fn inspect(data: *mut u32) -> (u32, u32, u32, u32) {
     }
     (copied, tail_bad, guard_bad, hash)
 }
+#[cfg(feature = "dma")]
 fn chen() -> u32 {
     unsafe { (0x4018_8018 as *const u32).read_volatile() }
 }
+#[cfg(feature = "dma")]
 fn stopped_code(s: Stopped) -> u32 {
     match s {
         Stopped::Finished(_) => 0,
@@ -317,6 +347,7 @@ fn stopped_code(s: Stopped) -> u32 {
 
 /// Cancellation proof on channel 2 (4-beat FIFO): byte-wide SRAM -> DDR (ATU window), so the
 /// block is slow enough to be cancelled mid-way. Logs `DMA_ABORT_PASS` or `DMA_ABORT_FAIL`.
+#[cfg(feature = "dma")]
 #[inline(never)]
 fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
     let b = BIG.0.get().cast::<u8>();
@@ -424,6 +455,7 @@ fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
 
 /// Register-layout probe: `CH_ABORT` for channel 2 at `DMAC_CHEN[39:32]` (+ write enable at
 /// `[47:40]`) only, no suspend/disable. Then the Transfer is dropped (finds the channel idle).
+#[cfg(feature = "dma")]
 fn raw_abort(
     dma: &mut Dma,
     data: *mut u32,
