@@ -18,8 +18,9 @@ pub type Wide256 = [u32; 64];
 
 /// Writes message `i` of a `W`-word stream in place: word 0 = `i`, the last word = `!i` (so the
 /// read-back guard and Linux both see a stale slot), the others `i ^ k * 0x9e37_79b9` (cheap:
-/// the generation is part of the measured loop). Same as lab/shm-linux `wide`.
-#[inline(always)]
+/// the generation is part of the measured loop; ISRAM, since code in shared SRAM runs several
+/// times slower). Same as lab/shm-linux `wide`.
+#[rp1_rt::isram]
 pub fn wide<const W: usize>(m: &mut [u32; W], i: u32) {
     for (k, w) in m.iter_mut().enumerate() {
         *w = i ^ (k as u32).wrapping_mul(0x9e37_79b9);
@@ -27,7 +28,7 @@ pub fn wide<const W: usize>(m: &mut [u32; W], i: u32) {
     m[W - 1] = !i;
 }
 /// [`crate::sample`] in place (the `events` stream).
-#[inline(always)]
+#[rp1_rt::isram]
 pub fn sample_into(m: &mut [u32; 4], i: u32) {
     *m = crate::sample(i);
 }
