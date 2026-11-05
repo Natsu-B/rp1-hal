@@ -109,6 +109,12 @@ pub mod ctl_l {
     pub const SRC_MSIZE_SHIFT: u32 = 14;
     pub const DST_MSIZE_SHIFT: u32 = 18;
     pub const MSIZE_4: u32 = 1;
+    /// AXI write cache attributes, bits 29:26 (DOC: DW AXI DMAC register layout).
+    pub const AW_CACHE_SHIFT: u32 = 26;
+    /// Device Non-bufferable: write response from final AXI destination (ARM IHI 0022).
+    pub const AW_CACHE_NONBUFFERABLE: u32 = 0;
+    /// NonPosted_LastWrite_En (DOC: Linux CH_CTL_L_LAST_WRITE_EN).
+    pub const NONPOSTED_LAST_WRITE_EN: u32 = 1 << 30;
 }
 
 /// `CH_CTL` high half. [DOC]

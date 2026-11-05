@@ -24,12 +24,12 @@
 //! posted without `dsb`; immediately before the channel-enable write a compiler fence + `dsb`
 //! ([`rp1_proto::barrier`]) completes every earlier CPU store to the source buffer and keeps
 //! the compiler from moving buffer stores past the enable. Completion is reported only after
-//! `DMA_TFR_DONE` *and* the channel-enable bit cleared, i.e. after the last AXI write response,
-//! and is followed by the same barrier, so later CPU accesses to either buffer (also the
-//! caller's ordinary, non-volatile ones) happen after the DMA. The same holds after a
-//! cancellation. For Linux DDR, a write response from the PCIe endpoint means the posted write
-//! was accepted, and later CPU posted writes through the same endpoint (e.g. a ring head) are
-//! ordered behind it by PCIe posted-write ordering (DOC/HYP, see `docs/dma.md`).
+//! `DMA_TFR_DONE` *and* the channel-enable bit cleared, followed by the same barrier.
+//! All blocks set `NonPosted_LastWrite_En` and explicitly select non-bufferable `AW_CACHE`.
+//! HYP: the final response covers earlier writes and establishes acceptance at the shared
+//! PCIe ordering point before later CPU window stores (see `docs/dma.md` for evidence limits).
+//! This does not mean a posted PCIe write has already reached host DDR.
+//! Cancellation stops the engine's buffer accesses, but does not drain accepted remote writes.
 //!
 //! # Cancellation
 //! A transfer is stopped (timeout, bus error, [`Transfer::cancel`], dropping a running
@@ -330,7 +330,9 @@ pub const RING_TIMEOUT_US: u32 = 10_000;
 /// the clk_dma check (the SCMI server holds the clock of a declared controller).
 ///
 /// SAFETY: returns only after every block finished or was stopped (`copy_blocking`), and writes
-/// nothing but `dst..dst + src.len()`.
+/// nothing but `dst..dst + src.len()`. All blocks set bit30 and AW_CACHE=0; the assumed
+/// response-to-PCIe-ordering-point chain is documented as HYP in docs/dma.md. On error the
+/// engine stops reading src, but accepted remote writes may remain: RingTx fences reuse.
 unsafe impl<const N: u8> rp1_proto::shm::SlotCopy for Channel<N> {
     type Error = Error;
     unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Error> {
@@ -475,7 +477,9 @@ unsafe fn start_block(
     }
     io.write_relaxed(
         c + ch::CTL_L,
-        (ctl_l::MSIZE_4 << ctl_l::DST_MSIZE_SHIFT)
+        ctl_l::NONPOSTED_LAST_WRITE_EN
+            | (ctl_l::AW_CACHE_NONBUFFERABLE << ctl_l::AW_CACHE_SHIFT)
+            | (ctl_l::MSIZE_4 << ctl_l::DST_MSIZE_SHIFT)
             | (ctl_l::MSIZE_4 << ctl_l::SRC_MSIZE_SHIFT)
             | (w << ctl_l::DST_TR_WIDTH_SHIFT)
             | (w << ctl_l::SRC_TR_WIDTH_SHIFT),
@@ -740,6 +744,9 @@ mod tests {
         let mut f = running();
         // 5 slots of 24 B from shared SRAM into ring slots in the outbound window.
         unsafe { ring_copy(&mut f, 1, 0x2000_1000, 0x8100_00c8, 120) }.unwrap();
+        let ctl = reg(&f, channel_base(1) + ch::CTL_L);
+        assert_ne!(ctl & ctl_l::NONPOSTED_LAST_WRITE_EN, 0);
+        assert_eq!((ctl >> ctl_l::AW_CACHE_SHIFT) & 15, 0);
         let c = channel_base(1);
         assert_eq!(reg(&f, c + ch::SAR), 0x2000_1000);
         assert_eq!(reg(&f, c + ch::SAR + 4), 0xc0);
@@ -834,7 +841,7 @@ mod tests {
         assert_eq!(reg(&f, c + ch::BLOCK_TS), 0x400 / 16 - 1);
         assert_eq!(
             reg(&f, c + ch::CTL_L),
-            (1 << 18) | (1 << 14) | (4 << 11) | (4 << 8)
+            ctl_l::NONPOSTED_LAST_WRITE_EN | (1 << 18) | (1 << 14) | (4 << 11) | (4 << 8)
         );
         assert_eq!(
             reg(&f, c + ch::CTL_H),

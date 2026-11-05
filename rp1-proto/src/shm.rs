@@ -299,17 +299,17 @@ fn check_ring<T>(
     if ok { Ok(()) } else { Err(Error::Invalid) }
 }
 
-/// Read-back attempts of the [`RingTx::push_slice_staged`] guard before it gives up (each is a
-/// PCIe round trip of about 1 µs on RP1, so about 10 ms).
-pub const GUARD_TRIES: u32 = 10_000;
-
 /// Copies staged slot images into the reader's memory for [`RingTx::push_slice_staged`]
 /// (`rp1-hal` implements it for a DMA channel).
 ///
 /// # Safety
-/// `copy_to_remote` must write exactly `src` to `dst..dst + src.len()` and touch nothing else,
-/// and must not return while it can still read `src` or write `dst` (also on error), because
-/// the caller reuses both right away.
+/// `copy_to_remote` writes exactly `src` to `dst..dst + src.len()` and nothing else.
+/// On every return the engine has stopped accessing `src` (the stage may be reused).
+/// On `Ok`, ALL writes must have reached the ordering point shared with the caller's
+/// subsequent stores through the ring mapping: those stores must not overtake the copy.
+/// This is an ordering contract, not a comparison of any particular payload value.
+/// On `Err`, remote writes may still be in flight; the caller must fence this ring and
+/// must not reuse its destination until an external reset/drain establishes quiescence.
 pub unsafe trait SlotCopy {
     type Error;
     /// # Safety
@@ -324,8 +324,8 @@ pub enum Staged<E> {
     Invalid,
     /// The copy failed.
     Copy(E),
-    /// The read-back guard did not see the copied data within [`GUARD_TRIES`] reads.
-    NotVisible,
+    /// An earlier copy failed; this writer cannot publish again.
+    Fenced,
 }
 
 /// Writes the slot image of message `index` (`seq`, length, payload, zero padding) at `dst`.
@@ -374,8 +374,8 @@ pub struct RingTx<T> {
     dropped_dirty: bool,
     /// The odd `waiting` value (reader sleep) already notified; 0 = none.
     woken: u32,
-    /// Guard reads of [`RingTx::push_slice_staged`] that did not yet see the staged word.
-    guard_retries: u32,
+    /// A failed copy may leave remote writes in flight.
+    fenced: bool,
     _t: PhantomData<fn(T)>,
 }
 unsafe impl<T> Send for RingTx<T> {}
@@ -384,7 +384,8 @@ impl<T: Message> RingTx<T> {
     ///
     /// # Safety
     /// `data`/`ctrl` are 8-byte aligned mappings of the given lengths that stay valid, use only
-    /// volatile access, and no other writer exists for this ring.
+    /// volatile access, and no other writer exists for this ring. No writes from a previous
+    /// failed copier may remain in flight: dropping a fenced handle does not drain them.
     pub unsafe fn attach(
         data: *mut u8,
         data_len: usize,
@@ -418,7 +419,7 @@ impl<T: Message> RingTx<T> {
             dropped_dirty: false,
             // A reader already asleep when this writer attaches is notified on the next call.
             woken: 0,
-            guard_retries: 0,
+            fenced: false,
             _t: PhantomData,
         })
     }
@@ -431,8 +432,26 @@ impl<T: Message> RingTx<T> {
     }
     /// Free slots as last seen (reads the local `tail`).
     pub fn free(&self) -> u32 {
+        if self.fenced {
+            return 0;
+        }
         let tail = unsafe { ld(self.ctrl, TAIL) };
         (self.mask + 1).saturating_sub(self.head.wrapping_sub(tail))
+    }
+    /// Slots this writer can publish now (all slots for overwrite, zero when fenced).
+    /// Reject mode refreshes the cached tail only when necessary.
+    pub fn writable(&mut self) -> u32 {
+        if self.fenced {
+            0
+        } else if self.overflow == Overflow::Overwrite {
+            self.mask + 1
+        } else {
+            self.reject_free(self.mask + 1)
+        }
+    }
+    /// A copy failed; only an external reset/drain can make destination reuse safe.
+    pub fn is_fenced(&self) -> bool {
+        self.fenced
     }
     /// Free slots for a reject-mode push, rereading `tail` only when the cached one says
     /// fewer than `want` are free.
@@ -467,6 +486,9 @@ impl<T: Message> RingTx<T> {
     /// Publish one message. Order: payload, seq, length → barrier → head (protocol.md §2.3).
     #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn push(&mut self, value: &T) -> Result<(), Error> {
+        if self.fenced {
+            return Err(Error::NotReady);
+        }
         let len = size_of::<T>() as u32;
         let slot = self.slot(self.head);
         match self.overflow {
@@ -510,6 +532,9 @@ impl<T: Message> RingTx<T> {
     /// `dropped`; the caller still holds the rest. `overwrite` rings push one by one.
     #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn push_slice(&mut self, values: &[T]) -> usize {
+        if self.fenced {
+            return 0;
+        }
         if self.overflow == Overflow::Overwrite {
             for v in values {
                 let _ = self.push(v);
@@ -544,48 +569,20 @@ impl<T: Message> RingTx<T> {
     /// [`RingTx::staged_capacity`]; `0` if the ring is full). `overwrite` rings use
     /// [`RingTx::push_slice`] (the CPU path).
     ///
-    /// Ordering (protocol.md §2.4): `copy` returns only after the last write of a block was
-    /// acknowledged. Whether a later CPU store of `head` through the same window can still
-    /// overtake those writes on the way to the reader is not something this relies on: after
-    /// the copy the writer reads the last word of every block back through its own mapping
-    /// (a non-posted read, which cannot pass posted writes queued before it) and compares it
-    /// with the staged word, retrying for a bounded time. `head` is stored only after every
-    /// block's word matched, so the reader cannot see `head` before the data. If a word never
-    /// matches the call returns [`Staged::NotVisible`] without publishing (the slots are
-    /// rewritten by the next call). Cost: one PCIe read round trip per block.
+    /// Ordering follows the unsafe [`SlotCopy`] contract for every block, then a barrier
+    /// and `head`. A failed copy leaves `head` unchanged and permanently fences this handle:
+    /// `push` returns `NotReady`, `push_slice` returns zero, staged pushes return `Fenced`.
+    /// Dropping/re-attaching does not drain remote writes; reset/drain the transport first.
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn push_slice_staged<C: SlotCopy>(
         &mut self,
         values: &[T],
         stage: &mut [u8],
         copy: &mut C,
     ) -> Result<usize, Staged<C::Error>> {
-        // SAFETY: the guard is on.
-        unsafe { self.staged(values, stage, copy, true) }
-    }
-    /// [`RingTx::push_slice_staged`] without the read-back guard: `head` is stored right after
-    /// `copy` returned. Only for measuring the ordering hypothesis (a DMA write acknowledged
-    /// to the DMAC lands before a later CPU store through the same window).
-    ///
-    /// # Safety
-    /// The reader may see `head` before the slots unless that hypothesis holds; use only in an
-    /// experiment whose reader checks every message.
-    #[doc(hidden)]
-    pub unsafe fn push_slice_staged_unguarded<C: SlotCopy>(
-        &mut self,
-        values: &[T],
-        stage: &mut [u8],
-        copy: &mut C,
-    ) -> Result<usize, Staged<C::Error>> {
-        unsafe { self.staged(values, stage, copy, false) }
-    }
-    #[cfg_attr(feature = "isram", rp1_macros::isram)]
-    unsafe fn staged<C: SlotCopy>(
-        &mut self,
-        values: &[T],
-        stage: &mut [u8],
-        copy: &mut C,
-        guard: bool,
-    ) -> Result<usize, Staged<C::Error>> {
+        if self.fenced {
+            return Err(Staged::Fenced);
+        }
         let slot = slot_size(size_of::<T>());
         if !aligned(stage.as_ptr()) || stage.len() < slot {
             return Err(Staged::Invalid);
@@ -616,38 +613,17 @@ impl<T: Message> RingTx<T> {
             let src = &stage[k as usize * slot..(k + m) as usize * slot];
             // SAFETY: the destination is the free slots `head + k ..` (reject mode: the reader
             // released them), contiguous inside the mapping `attach` was given.
-            unsafe { copy.copy_to_remote(src, self.slot(self.head.wrapping_add(k))) }
-                .map_err(Staged::Copy)?;
-        }
-        if guard {
-            for &(k, m) in &parts {
-                if m == 0 {
-                    continue;
-                }
-                let end = (k + m) as usize * slot - 4;
-                let want = u32::from_ne_bytes(stage[end..end + 4].try_into().unwrap());
-                let last = self.slot(self.head.wrapping_add(k + m - 1));
-                let mut tries = 0;
-                // SAFETY: the last word of the last slot of this part.
-                while unsafe { ld(last, slot - 4) } != want {
-                    tries += 1;
-                    if tries == GUARD_TRIES {
-                        self.guard_retries = self.guard_retries.wrapping_add(tries);
-                        return Err(Staged::NotVisible);
-                    }
-                }
-                self.guard_retries = self.guard_retries.wrapping_add(tries);
+            if let Err(e) =
+                unsafe { copy.copy_to_remote(src, self.slot(self.head.wrapping_add(k))) }
+            {
+                self.fenced = true;
+                return Err(Staged::Copy(e));
             }
         }
         barrier();
         self.head = self.head.wrapping_add(n);
         unsafe { st(self.data, HEAD, self.head) };
         Ok(n as usize)
-    }
-    /// Guard reads of [`RingTx::push_slice_staged`] that returned an old word and were retried
-    /// (diagnostic; `0` means every first read-back already matched).
-    pub fn guard_retries(&self) -> u32 {
-        self.guard_retries
     }
     /// Whether to notify the reader now; call after `push`/`push_slice` (once per batch is
     /// enough). Returns `true` at most once per reader sleep (an odd `waiting` value not
@@ -869,28 +845,53 @@ impl<T: Message> RingRx<T> {
             }
         }
     }
-    /// Read up to `out.len()` messages and release them with one `tail` store. Returns how
-    /// many were read (`Ok(0)` when empty). If a slot fails its check after some were read,
-    /// those are returned and the error repeats on the next call. `overwrite` rings pop one by
-    /// at most one message per call (and may return `Err(Lost(n))` as [`RingRx::pop`]).
-    #[cfg_attr(feature = "isram", rp1_macros::isram)]
-    pub fn pop_into(&mut self, out: &mut [T]) -> Result<usize, Error> {
+    /// Inspect the newest published reject-mode slot without releasing any slots.
+    /// The index is returned even on error, so observers can count each slot once.
+    #[allow(clippy::type_complexity)]
+    pub fn newest(&self) -> Result<Option<(u32, Result<T, Error>)>, Error> {
+        if self.overflow != Overflow::Reject {
+            return Err(Error::Invalid);
+        }
+        let head = unsafe { ld(self.data, HEAD) };
+        barrier();
+        let n = head.wrapping_sub(self.tail);
+        if n > self.mask + 1 {
+            return Err(Error::Corrupt);
+        }
+        Ok(if n == 0 {
+            None
+        } else {
+            Some((head.wrapping_sub(1), self.read_slot(n - 1)))
+        })
+    }
+    /// Batch read preserving an encountered error even after a valid prefix. The error
+    /// concerns the current `tail` after the prefix is released. Overwrite reads one slot.
+    pub fn pop_into_report(&mut self, out: &mut [T]) -> (usize, Option<Error>) {
         if self.overflow == Overflow::Overwrite {
-            // One message per call so `Err(Lost(n))` is never swallowed by a batch.
             return match out.first_mut() {
-                None => Ok(0),
-                Some(slot) => Ok(self.pop()?.map(|v| *slot = v).is_some() as usize),
+                None => (0, None),
+                Some(slot) => match self.pop() {
+                    Ok(Some(v)) => {
+                        *slot = v;
+                        (1, None)
+                    }
+                    Ok(None) => (0, None),
+                    Err(e) => (0, Some(e)),
+                },
             };
         }
         let want = out.len().min(u32::MAX as usize) as u32;
-        let n = self.reject_available(want)?.min(want);
+        let n = match self.reject_available(want) {
+            Ok(n) => n.min(want),
+            Err(e) => return (0, Some(e)),
+        };
         let mut done = 0;
-        let mut result = Ok(());
+        let mut error = None;
         while done < n {
             match self.read_slot(done) {
                 Ok(v) => out[done as usize] = v,
                 Err(e) => {
-                    result = Err(e);
+                    error = Some(e);
                     break;
                 }
             }
@@ -898,11 +899,20 @@ impl<T: Message> RingRx<T> {
         }
         if done > 0 {
             barrier();
-            self.tail = self.tail.wrapping_add(done);
-            unsafe { st(self.ctrl, TAIL, self.tail) };
-            return Ok(done as usize);
+            self.advance_tail(done);
         }
-        result.map(|()| 0)
+        (done as usize, error)
+    }
+    /// Read a batch; a valid prefix is returned even if the following slot failed its check.
+    /// Use [`Self::pop_into_report`] to observe transient errors after a valid prefix.
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
+    pub fn pop_into(&mut self, out: &mut [T]) -> Result<usize, Error> {
+        let (n, error) = self.pop_into_report(out);
+        if n > 0 {
+            Ok(n)
+        } else {
+            error.map_or(Ok(0), Err)
+        }
     }
     /// Arm `waiting` (next odd value), then re-check `head` so a push racing with the arm is
     /// not missed. Returns `true` if the ring is still empty and the caller may sleep; then it
@@ -1206,23 +1216,19 @@ mod tests {
         assert_eq!(again.pop(), Err(Error::Corrupt));
     }
 
-    /// `SlotCopy` for tests: a volatile byte copy that records each block; `skip_last` leaves
-    /// the last word of block `skip_last` unwritten (an acknowledged write not yet visible).
+    /// Synchronous copy satisfying the ordering contract; can fail after a copied block.
     struct MemCopy {
         blocks: vec::Vec<(usize, usize)>,
-        skip_last: Option<usize>,
-        fail: bool,
+        fail_at: Option<usize>,
     }
     unsafe impl SlotCopy for MemCopy {
         type Error = ();
         unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), ()> {
-            if self.fail {
+            if self.fail_at == Some(self.blocks.len()) {
                 return Err(());
             }
-            let skip = self.skip_last == Some(self.blocks.len());
             self.blocks.push((dst as usize, src.len()));
-            let n = if skip { src.len() - 4 } else { src.len() };
-            for (i, b) in src[..n].iter().enumerate() {
+            for (i, b) in src.iter().enumerate() {
                 unsafe { dst.add(i).write_volatile(*b) };
             }
             Ok(())
@@ -1231,8 +1237,7 @@ mod tests {
     fn mem_copy() -> MemCopy {
         MemCopy {
             blocks: vec::Vec::new(),
-            skip_last: None,
-            fail: false,
+            fail_at: None,
         }
     }
     #[repr(C, align(8))]
@@ -1275,7 +1280,6 @@ mod tests {
         assert_eq!(unsafe { ld(d, HEAD) }, (u32::MAX - 2).wrapping_add(5));
         assert_eq!(unsafe { ld(d, CONTROL_SIZE + 5 * 24 + 20) }, 0);
         assert_eq!(unsafe { ld(d, CONTROL_SIZE + 5 * 24 + 4) }, 12);
-        assert_eq!(tx.guard_retries(), 0);
         let mut out = [[0u32; 3]; 8];
         assert_eq!(rx.pop_into(&mut out), Ok(5));
         assert_eq!(out[..5], values[..5]);
@@ -1303,46 +1307,66 @@ mod tests {
     }
 
     #[test]
-    fn staged_guard_withholds_head_until_the_data_is_visible() {
+    fn failed_copy_fences_all_publish_paths() {
         let mut data = mem::<{ CONTROL_SIZE + 4 * 24 }>();
         let mut ctrl = mem::<CONTROL_SIZE>();
         let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
-        type M = [u32; 4];
-        let len = CONTROL_SIZE + 4 * 24;
-        let mut tx = unsafe { RingTx::<M>::attach(d, len, c, 128, 4, Overflow::Reject) }.unwrap();
-        let mut rx = unsafe { RingRx::<M>::attach(d, len, c, 128, 4, Overflow::Reject) }.unwrap();
+        let mut tx =
+            unsafe { RingTx::<[u32; 3]>::attach(d, data.0.len(), c, 128, 4, Overflow::Reject) }
+                .unwrap();
         let mut stage = Stage([0; 256]);
         let mut copy = mem_copy();
-        copy.skip_last = Some(0);
-        let v = [[1, 2, 3, 4], [5, 6, 7, 8]];
+        copy.fail_at = Some(0);
         assert_eq!(
-            tx.push_slice_staged(&v, &mut stage.0, &mut copy),
-            Err(Staged::NotVisible)
-        );
-        assert_eq!(tx.guard_retries(), GUARD_TRIES);
-        assert_eq!(unsafe { ld(d, HEAD) }, 0);
-        assert_eq!(rx.pop(), Ok(None));
-        // Unguarded (the ordering experiment) publishes regardless; the reader then sees the
-        // stale word (here: zero) in the last slot.
-        copy.skip_last = Some(1);
-        assert_eq!(
-            unsafe { tx.push_slice_staged_unguarded(&v, &mut stage.0, &mut copy) },
-            Ok(2)
-        );
-        assert_eq!(rx.pop(), Ok(Some([1, 2, 3, 4])));
-        assert_eq!(rx.pop(), Ok(Some([5, 6, 7, 0])));
-        // A failed copy publishes nothing either; the next call rewrites the same slots.
-        copy.fail = true;
-        assert_eq!(
-            tx.push_slice_staged(&v, &mut stage.0, &mut copy),
+            tx.push_slice_staged(&[[1, 2, 0]], &mut stage.0, &mut copy),
             Err(Staged::Copy(()))
         );
-        copy.fail = false;
-        copy.skip_last = None;
-        assert_eq!(tx.push_slice_staged(&v, &mut stage.0, &mut copy), Ok(2));
-        assert_eq!(rx.pop(), Ok(Some([1, 2, 3, 4])));
-        assert_eq!(rx.pop(), Ok(Some([5, 6, 7, 8])));
-        assert_eq!(rx.pop(), Ok(None));
+        assert!(tx.is_fenced());
+        assert_eq!(tx.writable(), 0);
+        assert_eq!(tx.free(), 0);
+        copy.fail_at = None;
+        assert_eq!(
+            tx.push_slice_staged(&[[9, 8, 0]], &mut stage.0, &mut copy),
+            Err(Staged::Fenced)
+        );
+        assert_eq!(tx.push(&[9, 8, 0]), Err(Error::NotReady));
+        assert_eq!(tx.push_slice(&[[9, 8, 0]]), 0);
+        assert_eq!(unsafe { ld(d, HEAD) }, 0);
+        assert!(copy.blocks.is_empty());
+    }
+
+    #[test]
+    fn second_wrap_block_failure_fences_even_with_equal_tails_and_padding() {
+        let mut data = mem::<{ CONTROL_SIZE + 4 * 24 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        unsafe {
+            st(d, HEAD, 3);
+            st(c, TAIL, 3);
+        }
+        let mut tx =
+            unsafe { RingTx::<[u32; 3]>::attach(d, data.0.len(), c, 128, 4, Overflow::Reject) }
+                .unwrap();
+        let mut stage = Stage([0; 256]);
+        let mut copy = mem_copy();
+        copy.fail_at = Some(1);
+        let values = [[1, 2, 0], [3, 4, 0]];
+        assert_eq!(
+            tx.push_slice_staged(&values, &mut stage.0, &mut copy),
+            Err(Staged::Copy(()))
+        );
+        assert_eq!(copy.blocks.len(), 1);
+        assert_eq!(unsafe { ld(d, HEAD) }, 3);
+        // A late interior write can still land, but no retry/CPU push reuses its slot.
+        unsafe {
+            st(d, CONTROL_SIZE + 8, 99);
+        }
+        assert_eq!(tx.push_slice(&[[8, 9, 0]]), 0);
+        assert_eq!(
+            tx.push_slice_staged(&[[8, 9, 0]], &mut stage.0, &mut copy),
+            Err(Staged::Fenced)
+        );
+        assert_eq!(unsafe { ld(d, CONTROL_SIZE + 8) }, 99);
     }
 
     #[test]
@@ -1415,9 +1439,13 @@ mod tests {
         assert_eq!(tx.push_slice(&[53, 54]), 2);
         let bad = rx.tail().wrapping_add(2);
         unsafe { st(d, CONTROL_SIZE + (bad & 7) as usize * 16, 7) };
-        assert_eq!(rx.pop_into(&mut out), Ok(2));
+        assert_eq!(rx.newest(), Ok(Some((bad, Err(Error::Corrupt)))));
+        assert_eq!(rx.pop_into_report(&mut out), (2, Some(Error::Corrupt)));
         assert_eq!(out[..2], [52, 53]);
-        assert_eq!(rx.pop_into(&mut out), Err(Error::Corrupt));
+        // The slot becomes valid before another call: the first report retained the error.
+        unsafe { st(d, CONTROL_SIZE + (bad & 7) as usize * 16, bad) };
+        assert_eq!(rx.pop_into_report(&mut out), (1, None));
+        assert_eq!(out[0], 54);
     }
 
     #[test]

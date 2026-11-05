@@ -461,6 +461,27 @@ impl<T: Message> RingRx<T> {
         self.session.check()?;
         Ok(r)
     }
+    /// Newest published slot and its index, without consuming it (reject rings only).
+    #[allow(clippy::type_complexity)]
+    pub fn newest(
+        &self,
+    ) -> std::result::Result<Option<(u32, std::result::Result<T, Error>)>, Error> {
+        self.session.check()?;
+        let r = self.inner.newest()?;
+        self.session.check()?;
+        Ok(r)
+    }
+    pub fn tail(&self) -> u32 {
+        self.inner.tail()
+    }
+    /// Batch read retaining an error encountered after a valid prefix.
+    pub fn pop_into_report(&mut self, out: &mut [T]) -> (usize, Option<Error>) {
+        if let Err(e) = self.session.check() {
+            return (0, Some(e));
+        }
+        let (n, error) = self.inner.pop_into_report(out);
+        (n, error.or_else(|| self.session.check().err()))
+    }
     /// Batch form of [`RingRx::pop`]: one `tail` store per call (`rp1_proto::shm::RingRx::pop_into`).
     pub fn pop_into(&mut self, out: &mut [T]) -> std::result::Result<usize, Error> {
         self.session.check()?;

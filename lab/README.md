@@ -44,7 +44,7 @@ The `ring-dma` feature (not default; it does not fit together with `dma`) adds c
 `wide64` (64 B) and `wide256` (256 B, rings declared in every profile) written by the CPU
 (`RingTx::push_slice`) or by DMA (`rp1_hal::shm::RingDma`, channel 1, the 4 KiB cancellation
 buffer as stage), with polling and `notify = "irq"` consumers, the CPU/DMA crossover per batch
-size (`RINGDMA_THRESH`), and the ordering experiment without the read-back guard
+size (`RINGDMA_THRESH`), and newest-first ordering checks with early-head positive controls and bit30=0 comparisons
 (`RINGDMA_ORDER`, reported, not judged). Every message is checked; `RINGDMA_PASS` only if
 every judged run is `check=ok`. Build it with
 `cargo rp1 build -p shm-firmware ... --no-default-features --features ring-dma`; the DMA proof
@@ -197,3 +197,8 @@ slept (`sleeps > 0`, `woken > 0`), else it is `INCONCLUSIVE` and no `RINGIRQ_PAS
 the 10 ms re-check still delivers the data; `suppressed-irq` (command 15, irq consumer) must
 recover through the re-check (`pulses=0`, `late > 0`, every wait under RECHECK + 40 ms).
 `RINGIRQ_PASS` only if every run passes, else `RINGIRQ_FAIL`. HW (2026-11-05, cold boot x3): docs/design.md §6.2.
+
+`shm-linux ring-dma-order [count]` runs only the three production DMA sizes and the six
+ordering controls. `count` applies to each production stream; each control is capped at
+32,000 items. `RINGDMA_PASS` also requires early-head violations for every size. The latest
+slot and batch-prefix errors are checked and deduplicated by logical slot index.

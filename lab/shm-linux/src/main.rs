@@ -135,13 +135,19 @@ fn main() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("dma") {
         return dma::main();
     }
-    if std::env::args().nth(1).as_deref() == Some("ring-dma") {
+    if matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("ring-dma" | "ring-dma-order")
+    ) {
         let count = std::env::args()
             .nth(2)
             .map(|v| v.parse())
             .transpose()?
             .unwrap_or(1_000_000);
-        return ring_dma::main(count);
+        return ring_dma::main(
+            count,
+            std::env::args().nth(1).as_deref() == Some("ring-dma-order"),
+        );
     }
     if std::env::args().nth(1).as_deref() == Some("ring-irq") {
         let count = std::env::args()

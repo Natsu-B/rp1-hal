@@ -1,19 +1,5 @@
-//! `shm-linux ring-dma [count]`: RP1 -> Linux rings written by DMA (`rp1_hal::shm::RingDma`,
-//! firmware feature `ring-dma`, command 17) against the CPU path on the same ring, same boot.
-//! Every message is checked. Output lines:
-//!
-//! - `RINGDMA name=.. ring=.. mode=cpu|dma|auto|dma-unguarded ... MBps=.. check=..` per run;
-//!   throughput runs on `events` (16 B), `wide64` and `wide256`, polling and `notify = "irq"`
-//!   consumers; `check=ok` needs no missing/corrupt/stale message, no guard failure, the
-//!   expected path (DMA batches only for `dma`, CPU only for `cpu`), and for the designated
-//!   paced irq run a consumer that slept and was woken by interrupts.
-//! - `RINGDMA_THRESH ring=.. batch=.. cpu_us_per_batch=.. dma_us_per_batch=..`: RP1 time per
-//!   batch inside the ring API on each path (polling consumer), for the CPU/DMA crossover.
-//! - `RINGDMA_ORDER name=.. guard=off n=.. stale=.. corrupt=..`: the ordering experiment, `head`
-//!   published right after DMA completion without the read-back guard. `stale` counts reads
-//!   that saw `head` but an old slot (`Corrupt` from the sequence check, retried until the slot
-//!   arrived), `corrupt` payload mismatches. Reported, not judged.
-//! - `RINGDMA_PASS count=..` only if every judged run is `ok`.
+//! Ring DMA production and ordering controls. Checks newest published slot first, then
+//! consumes with an explicit error report. Counts each offending logical slot once.
 use crate::{Control, response, sample};
 use rp1_linux::{BlockMap, Firmware, Irq, Result, RingRx};
 use rp1_proto::Error;
@@ -71,7 +57,7 @@ struct Run {
     must_sleep: bool,
     kind: Kind,
 }
-const MODES: [&str; 4] = ["cpu", "dma", "auto", "dma-unguarded"];
+const MODES: [&str; 5] = ["cpu", "dma", "auto", "early-head", "bit30-zero"];
 struct Res {
     got: u32,
     stale: u64,
@@ -90,6 +76,7 @@ fn one<const W: usize>(
     run: &Run,
     count: u32,
 ) -> Result<Res> {
+    let first = rx.tail();
     let start = request(
         ctrl,
         id,
@@ -98,19 +85,35 @@ fn one<const W: usize>(
     )?;
     let mut buf = vec![[0u32; W]; 64];
     let (mut got, mut corrupt, mut stale) = (0u32, 0u32, 0u64);
+    let mut seen = Seen::default();
     while got < count {
-        let n = match rx.pop_into(&mut buf) {
-            Ok(n) => n,
-            // `head` already covers a slot whose sequence is still the old one: retry.
-            Err(Error::Corrupt) => {
-                if stale == 0 {
-                    eprintln!("RINGDMA_STALE name={} at={got}", run.name);
+        // Inspect the newest committed slot before traversing the older prefix.
+        if let Some((index, value)) = rx.newest()? {
+            match value {
+                Ok(m) if m != message::<W>(index.wrapping_sub(first)) => {
+                    if seen.first(index) {
+                        corrupt += 1;
+                    }
                 }
-                stale += 1;
-                0
+                Err(Error::Corrupt | Error::Invalid) => {
+                    if seen.first(index) {
+                        stale += 1;
+                    }
+                }
+                Err(e) => return Err(e.into()),
+                _ => {}
             }
-            Err(e) => return Err(e.into()),
-        };
+        }
+        let (n, error) = rx.pop_into_report(&mut buf);
+        match error {
+            Some(Error::Corrupt | Error::Invalid) => {
+                if seen.first(rx.tail()) {
+                    stale += 1;
+                }
+            }
+            Some(e) => return Err(e.into()),
+            None => {}
+        }
         for m in &buf[..n] {
             if *m != message::<W>(got) {
                 if corrupt == 0 {
@@ -120,7 +123,9 @@ fn one<const W: usize>(
                         &m[..]
                     );
                 }
-                corrupt += 1;
+                if seen.first(first.wrapping_add(got)) {
+                    corrupt += 1;
+                }
             }
             got += 1;
         }
@@ -142,7 +147,7 @@ fn one<const W: usize>(
     })
 }
 
-pub fn main(count: u32) -> Result<()> {
+pub fn main(count: u32, ordering_only: bool) -> Result<()> {
     let mut fw = Firmware::open()?;
     let mut events = fw.ring_rx::<[u32; 4]>("events")?;
     let mut w64 = fw.ring_rx::<[u32; 16]>("wide64")?;
@@ -197,8 +202,35 @@ pub fn main(count: u32) -> Result<()> {
             }
         }
     }
-    for (ring, b) in [(0u32, 32u32), (1, 32), (2, 8), (0, 1)] {
-        plan.push((ring, r("order-unguarded", 3, false, b, Order)));
+    for (ring, b) in [(0u32, 32u32), (1, 32), (2, 8)] {
+        for mode in [3, 4] {
+            plan.push((
+                ring,
+                Run {
+                    count: Some(32_000.min(count)),
+                    ..r(
+                        if mode == 3 {
+                            "positive-control"
+                        } else {
+                            "bit30-comparison"
+                        },
+                        mode,
+                        false,
+                        b,
+                        Order,
+                    )
+                },
+            ));
+        }
+    }
+    if ordering_only {
+        plan.retain(|(_, run)| run.kind == Order);
+        for (ring, b) in [(0, 31), (1, 31), (2, 7)] {
+            plan.insert(
+                ring as usize,
+                (ring, r("production-order", 1, false, b, Judged)),
+            );
+        }
     }
     let names = ["events", "wide64", "wide256"];
     let sizes = [16.0, 64.0, 256.0];
@@ -234,8 +266,7 @@ pub fn main(count: u32) -> Result<()> {
         );
         let cpu = cpu_seconds() - cpu0;
         let rep = &res.report;
-        let (pulses, retries, not_visible, dma_b, cpu_b) =
-            (rep[7], rep[8], rep[9], rep[10], rep[11]);
+        let (pulses, ctl_l, wraps, dma_b, cpu_b) = (rep[7], rep[8], rep[9], rep[10], rep[11]);
         let (gen_us, push_us, notify_us) = (rep[12], rep[13], rep[14]);
         // Payload rate of the ring API alone (RP1 time inside push_slice / RingDma::push_slice).
         let ring_mbps = n as f64 * sizes[ring as usize] / push_us.max(1) as f64;
@@ -243,7 +274,7 @@ pub fn main(count: u32) -> Result<()> {
         let mbps = n as f64 * sizes[ring as usize] / res.seconds / 1e6;
         let path_ok = match run.mode {
             0 => dma_b == 0 && cpu_b > 0,
-            1 | 3 => cpu_b == 0 && dma_b > 0,
+            1 | 3 | 4 => cpu_b == 0 && dma_b > 0,
             _ if run.batch == 1 => dma_b == 0,
             _ => dma_b > 0,
         };
@@ -251,8 +282,8 @@ pub fn main(count: u32) -> Result<()> {
             "FAIL(missing)"
         } else if run.kind != Order && (res.corrupt != 0 || res.stale != 0) {
             "FAIL(messages)"
-        } else if not_visible != 0 {
-            "FAIL(guard)"
+        } else if rep[5] != 0 {
+            "FAIL(firmware)"
         } else if !path_ok {
             "FAIL(path)"
         } else if run.must_sleep && sleeps == 0 {
@@ -267,7 +298,7 @@ pub fn main(count: u32) -> Result<()> {
              corrupt={} stale={} seconds={:.6} MBps={mbps:.3} cpu_pct={:.1} rp1_us={} \
              pulses={pulses} wakes={} sleeps={sleeps} woken={woken} late={late} \
              gen_us={gen_us} push_us={push_us} notify_us={notify_us} ring_MBps={ring_mbps:.3} \
-             guard_retries={retries} guard_fail={not_visible} dma_batches={dma_b} cpu_batches={cpu_b}",
+             ctl_l=0x{ctl_l:08x} wraps={wraps} dma_batches={dma_b} cpu_batches={cpu_b}",
             run.name,
             names[ring as usize],
             MODES[run.mode as usize],
@@ -285,7 +316,7 @@ pub fn main(count: u32) -> Result<()> {
         match run.kind {
             Judged | Thresh => println!("RINGDMA {line} check={check}"),
             Order => println!(
-                "RINGDMA_ORDER guard=off {line} result={}",
+                "RINGDMA_ORDER {line} result={}",
                 if missing == 0 && res.corrupt == 0 && res.stale == 0 {
                     "no-violation"
                 } else {
@@ -293,7 +324,7 @@ pub fn main(count: u32) -> Result<()> {
                 }
             ),
         }
-        if check != "ok" && run.kind != Order || run.kind == Order && missing != 0 {
+        if check != "ok" || run.mode == 3 && res.corrupt == 0 && res.stale == 0 {
             failed.push(format!("{}/{}", names[ring as usize], run.name));
         }
         if run.kind == Thresh {
@@ -326,4 +357,37 @@ pub fn main(count: u32) -> Result<()> {
     }
     println!("RINGDMA_PASS count={count}");
     Ok(())
+}
+
+// Ring depths are <=256. A logical index occupies one physical slot until consumed;
+// remembering the last offending index per physical slot deduplicates newest/prefix/retries.
+struct Seen([Option<u32>; 256]);
+impl Default for Seen {
+    fn default() -> Self {
+        Self([None; 256])
+    }
+}
+impl Seen {
+    fn first(&mut self, index: u32) -> bool {
+        let entry = &mut self.0[(index & 255) as usize];
+        if *entry == Some(index) {
+            false
+        } else {
+            *entry = Some(index);
+            true
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::Seen;
+    #[test]
+    fn repeated_observations_count_once_and_reused_slot_counts_again() {
+        let mut s = Seen::default();
+        assert!(s.first(1));
+        assert!(s.first(0)); // newest is observed before prefix
+        assert!(!s.first(1)); // prefix/retry does not lose or double count it
+        assert!(s.first(257));
+        assert!(!s.first(257));
+    }
 }

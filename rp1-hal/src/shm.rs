@@ -214,7 +214,7 @@ impl<'a> Area<'a> {
 /// the slot images are staged in a shared-SRAM buffer and copied by a channel of the
 /// declared DMA controller (`dma = {}`; the caller lends the channel per call, so the same
 /// channel can serve several rings). `head` is published only after the copy finished and
-/// the read-back guard saw the data (docs/dma.md, "DMA ring producer").
+/// satisfies SlotCopy ordering (docs/dma.md, "DMA ring producer").
 ///
 /// Batches whose slot images are smaller than the threshold use the CPU path
 /// ([`RingTx::push_slice`], posted word stores), which is faster for them.
@@ -253,6 +253,11 @@ impl<'s> RingDma<'s> {
     pub fn threshold(&self) -> usize {
         self.threshold
     }
+    fn batch_len<T: Message>(&self, ring: &mut RingTx<T>, requested: usize) -> usize {
+        requested
+            .min(RingTx::<T>::staged_capacity(self.stage.len()))
+            .min(ring.writable() as usize)
+    }
     /// Publishes up to `values.len()` messages like [`RingTx::push_slice`] (returns how many):
     /// by DMA on `channel` when the batch reaches the threshold (then at most
     /// [`RingTx::staged_capacity`] of the stage), otherwise by the CPU. On error nothing was
@@ -263,26 +268,14 @@ impl<'s> RingDma<'s> {
         channel: &mut crate::dma::Channel<N>,
         values: &[T],
     ) -> Result<usize, Staged<crate::dma::Error>> {
-        let n = values
-            .len()
-            .min(RingTx::<T>::staged_capacity(self.stage.len()));
+        if ring.is_fenced() {
+            return Err(Staged::Fenced);
+        }
+        let n = self.batch_len(ring, values.len());
         if n.saturating_mul(rp1_proto::shm::slot_size(size_of::<T>())) < self.threshold {
-            return Ok(ring.push_slice(values));
+            return Ok(ring.push_slice(&values[..n]));
         }
         ring.push_slice_staged(&values[..n], self.stage, channel)
-    }
-    /// [`RingDma::push_slice`] by DMA without the read-back guard (lab ordering experiment).
-    ///
-    /// # Safety
-    /// See [`RingTx::push_slice_staged_unguarded`].
-    #[doc(hidden)]
-    pub unsafe fn push_slice_unguarded<T: Message, const N: u8>(
-        &mut self,
-        ring: &mut RingTx<T>,
-        channel: &mut crate::dma::Channel<N>,
-        values: &[T],
-    ) -> Result<usize, Staged<crate::dma::Error>> {
-        unsafe { ring.push_slice_staged_unguarded(values, self.stage, channel) }
     }
 }
 
@@ -301,6 +294,33 @@ mod tests {
         let size = 0x20_0000;
         assert_eq!(0x0100_0000 + size - 1, 0x011f_ffff);
         assert_eq!(0x10_0000_0000u64 + rp1_proto::SHM_PHYS, 0x10_2200_0000);
+    }
+
+    #[test]
+    fn dma_threshold_uses_only_writable_slots() {
+        use super::*;
+        #[repr(align(8))]
+        struct Mem([u8; 1024]);
+        let (mut data, ctrl, mut stage) = (Mem([0; 1024]), Mem([0; 1024]), Mem([0; 1024]));
+        let mut ring = unsafe {
+            RingTx::<[u32; 4]>::attach(
+                data.0.as_mut_ptr(),
+                1024,
+                ctrl.0.as_ptr(),
+                1024,
+                32,
+                Overflow::Reject,
+            )
+        }
+        .unwrap();
+        assert_eq!(ring.push_slice(&[[0; 4]; 31]), 31);
+        let helper = RingDma {
+            stage: &mut stage.0,
+            threshold: RingDma::DEFAULT_THRESHOLD,
+        };
+        let n = helper.batch_len(&mut ring, 32);
+        assert_eq!(n, 1);
+        assert!(n * rp1_proto::shm::slot_size(16) < helper.threshold());
     }
 
     #[test]

@@ -152,11 +152,13 @@ T   payload 8 バイト境界に 0 埋め
 - Linux → RP1: Linux の BAR2 への書き込みは Device 属性で発行順。M3 はローカル SRAM を読む。
 - RP1 → Linux を DMA で書く場合（`RingTx::push_slice_staged`、rp1-hal `shm::RingDma`、dma.md「DMA ring producer」）:
   スロットの像（seq・長さ・payload・0 埋め）を共有 SRAM に並べ、DMA が 1 ブロック（折り返すなら 2 ブロック）で読み手のスロットへ写す。
-  DMA の完了（最後の書き込み応答）の後、CPU の `head` 書き込みが DMA のデータを追い越さないかは仮説なので、それに頼らない:
-  各ブロックの最後の語を同じ窓から読み戻し（非 posted の読み出しは先行の posted 書き込みを追い越さない）、ステージの値と一致してから
-  barrier → `head` を書く。一致しなければ上限付きで読み直し、だめなら公開しない（`Staged::NotVisible`）。代償はブロックごとに読み出し往復 1 回。
-  読み戻しを省いた版（実験専用）でも 10^6 件 × 4 条件 × cold boot 複数で読み手が古いスロットを見たことは 0（HW、観測であって証明ではない）。
-  wire 形式は CPU 版と同じで、同じリングに CPU 版と混ぜて書ける（STATIC: rp1-proto 試験）。
+  `SlotCopy` の成功は全書き込みが後続 CPU 窓ストアと共通の順序点へ受理済みで、後続ストアが追い越さない契約。
+  各ブロック成功後に barrier → `head` を書く。Channel は bit30（NonPosted_LastWrite_En）と AW_CACHE=0 を明示する（STATIC）。
+  最終 AXI 応答から共通 PCIe 順序点までの接続は HYP（dma.md）。値比較 guard は全語の順序を保証しないため廃止。
+  copy 失敗なら `head` は不変、その RingTx は fenced となり全 push を拒否する。エンジン停止は受理済み遠隔書き込みの drain ではないため、
+  外部 reset/drain 前に再 attach してはならない。wire 形式は CPU 版と同じで、成功時は CPU 版と混在できる（STATIC）。
+  旧実験は prefix 後の stale を見逃せたため順序の証拠にしない。新実験は最新スロットを先に読み、`pop_into_report` で prefix 後の
+  異常も報告し、同じスロットを重複計数しない。early-head 陽性対照と bit30=0 比較を伴う（dma.md）。
 - 未確認（TODO）: M3 の outbound 窓が Normal 属性の領域（0x8000_0000..）にあることで、M3 側の書き込みが並べ替えられないか。
 
 ## 3. 通知

@@ -468,8 +468,8 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 errors = o.errors;
                 extra = o.pulses;
                 request[8..15].copy_from_slice(&[
-                    o.retries,
-                    o.not_visible,
+                    o.ctl_l,
+                    o.wraps,
                     o.dma_batches,
                     o.cpu_batches,
                     o.gen_us,

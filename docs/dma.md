@@ -111,14 +111,20 @@ processor `0x4040_0000` map to bus `0xC0_4020_0000` and are not translated (reje
   Right before the channel-enable write, `rp1_proto::barrier()` (compiler fence + `dsb`)
   completes earlier CPU stores to the source buffer and keeps the compiler from moving
   ordinary buffer stores past the enable.
-- Completion = `DMA_TFR_DONE` and the channel's `CHEN` bit clear, i.e. after the last AXI write
-  response, followed by the same barrier before returning (also after a cancellation), so
-  later ordinary CPU reads/writes of either buffer cannot be moved before it. For SRAM the data
-  is then visible to both cores and to Linux (BAR2).
-- Linux DDR: the write response for a PCIe posted write comes from the endpoint when it accepts
-  the write; later CPU posted writes through the same endpoint (e.g. a ring head) are ordered
-  behind it by PCIe posted-write ordering (HYP; no violation seen in the ring experiment below,
-  which is not a proof). The ring producer does not rely on it (read-back guard).
+- Completion is the observed `DMA_TFR_DONE` plus cleared `CHEN`, followed by a barrier
+  (STATIC). Every block explicitly sets `CTL_L.NonPosted_LastWrite_En` (bit30) and `AW_CACHE=0`
+  (Device Non-bufferable). The earlier claim that DONE alone implied the final AXI write
+  response was unsupported and is withdrawn. Linux names bit30 `CH_CTL_L_LAST_WRITE_EN` (DOC).
+- [ARM IHI 0022](https://documentation-service.arm.com/static/63ff0ebd56ea36189d4e7ee7) specifies that a non-bufferable write response comes from the final AXI
+  destination (DOC); that destination is the endpoint bridge, not host DDR. The interpretation
+  that bit30 waits for the last response, that it covers prior writes of the channel, and
+  that acceptance at the endpoint orders later M3 window stores behind them is HYP for RP1.
+  Register readback and finite error-free streams cannot prove those internal connections.
+- DOC cross-check: [CVITEK datasheet, pp. 152–153](https://github.com/milkv-duo/duo-files/blob/main/duo/datasheet/CV1800B-CV1801B-Preliminary-Datasheet-full-en.pdf)
+  documents AW_CACHE[29:26] and bit30 synchronizing completion with the last write in another
+  DW AXI DMAC integration. This supports the field interpretation, not RP1's internal wiring.
+- Error/cancellation stops the engine accessing the source; accepted outbound writes can
+  still be in flight. A barrier after cancellation is not a remote drain.
 
 ## HW results (2026-11-05, lab `shm-firmware --no-default-features --features dma`, clk_sys 200 MHz)
 
@@ -181,18 +187,20 @@ let (n, pulsed) = host_irq.push_slice_dma_notify(&mut ring_dma, &mut tx, &mut dm
   implements): stage whole slot images (`seq`, length, payload, zero padding) in the shared-SRAM
   stage, copy them in one block, or two when the batch wraps around the end of the ring
   (blocking, `dma::RING_TIMEOUT_US` per block, a failed block is stopped before return), then the
-  ordering guard, then `head`. The batch is bounded by the free slots and the stage size
-  (`RingTx::staged_capacity`). Errors (`Staged::Copy`, `Staged::NotVisible`, `Staged::Invalid`)
-  publish nothing; the slots are rewritten by the next call. `overwrite` rings use the CPU path.
-- Ordering guard: after the copy, the last word of each block is read back through the
-  processor's window and compared with the staged word (up to `GUARD_TRIES` reads); only then
-  `head` is stored. Correctness does not depend on whether a CPU store issued after the DMA
-  completion can overtake the DMA data on PCIe (the hypothesis below): the read is non-posted,
-  so it returns only after the posted writes queued before it (DOC: PCIe ordering), and the
-  value check catches a word that has not landed. Cost: one PCIe round trip per block.
-  `push_slice_staged_unguarded` (doc-hidden, unsafe) skips it, for the experiment only.
+  barrier, then `head`. The batch is bounded by `RingTx::writable()` and stage capacity;
+  the threshold uses that actual writable count, including when only one slot is free.
+- `unsafe trait SlotCopy`: on success ALL copied bytes must reach the ordering point shared
+  with subsequent CPU stores to the same mapping; no such store may overtake them. Source
+  access must stop on every return. The Channel implementation relies on the HYP chain above.
+  Value comparison is not an ordering guarantee, including repeated tails and zero padding;
+  the former last-word guard and its errors/counters/unguarded API have been removed.
+- `Staged::Invalid` publishes nothing. `Staged::Copy` also fences that writer permanently:
+  `push` returns `NotReady`, `push_slice` returns zero, staged pushes return `Staged::Fenced`,
+  and `writable()` returns zero. Pending remote writes could otherwise corrupt a retry.
+  Re-attaching requires an external drain/reset; merely dropping the handle is insufficient.
+  Overwrite rings use the CPU path (no copy is attempted).
 
-### HW results (2026-11-05, lab `--no-default-features --features ring-dma`, 2 cold boots)
+### Historical HW throughput (before review fixes, 2026-11-05, lab `--no-default-features --features ring-dma`, 2 cold boots)
 
 Lab command 17 (`shm-linux ring-dma`): 10^6 messages per run, every one checked by Linux;
 batches of 32 (16 B, 64 B) or 8 (256 B) messages, channel 1, the stage in shared SRAM.
@@ -208,7 +216,9 @@ within 0.1 %.
 | 64 B (72 B slots, 2304 B) | 17.7 MB/s | 40.0 MB/s | 12.7 MB/s | 21.1 MB/s |
 | 256 B (264 B slots, 2112 B) | 18.4 MB/s | 43.3 MB/s | 14.4 MB/s | 26.2 MB/s |
 
-Every run: missing 0, corrupt 0, stale 0, guard retries 0, guard failures 0. The `irq`
+Historical counters reported missing 0, corrupt 0, stale 0, guard retries 0, guard failures 0.
+The old batch reader could hide a transient stale slot after a valid prefix; its stale=0
+therefore does not establish absence of premature publication. These rates include the removed guard. The `irq`
 runs were notified (one pulse and one wake per batch, no 10 ms re-check found data), a paced
 DMA run (100 µs between batches) slept and was woken by interrupts. With the default
 threshold a single 16 B message stayed on the CPU (10^6 CPU batches) and a 32-message batch
@@ -228,14 +238,23 @@ from shared SRAM and made 256 B slots cost more by DMA than by CPU (HW, an earli
 
 ### Ordering experiment (DMA completion vs a later CPU `head` store)
 
-Hypothesis: a DMA write acknowledged to the DMAC (the PCIe controller accepted it) reaches the
-host before a CPU posted store issued afterwards through the same window. Test: the same
-streams with the guard off (`head` stored right after `DMA_TFR_DONE`), a busy-polling Linux
-reader that checks the sequence and every payload word of every message, the last word of
-each message being `!i`. Per cold boot 4 × 10^6 messages (16 B in batches of 32 and of 1,
-64 B × 32, 256 B × 8): 0 stale slots, 0 corrupt payloads (HW, 4 cold boots, 16 × 10^6 messages, two of the boots
-with earlier lab builds). This is an observation, not a proof (the reader polls from another CPU and
-may simply be slower than the window); the guard stays on by default.
+The previous guard-off experiment reported zero violations, but `pop_into` could hide an
+error after a valid prefix. Those counts cannot establish ordering (STATIC review finding).
+
+The revised lab command `shm-linux ring-dma-order [count]` checks the newest published slot
+first (seq, length, every payload word), then consumes using `pop_into_report` so a transient
+error after a prefix is retained. It counts each logical offending slot once across newest,
+prefix and repeated retry observations. The 16 B `events` payload ends in constant
+`0x5250_3148`; the 64/256 B payloads have word 0 = `i`, intermediate words
+`i ^ k * 0x9e37_79b9`, final word = `!i`. Seq alone cannot detect delayed interior payload.
+
+Mode 1 is the production Channel path. Mode 3 deliberately publishes head BEFORE DMA enable
+and delays 100 µs, with bit30=1, as a positive control; it MUST produce a violation for every
+size or the experiment is insensitive. Mode 4 uses the same lab register-copy path with
+bit30=0, AW_CACHE=0 and normal publication after DONE, as a comparison. These deliberate
+contract violations are confined to `lab/`. Every run requires a response and explicit end
+marker; timeout/truncated capture fails. Zero production errors support only the measured
+conditions, not a universal proof of the endpoint ordering chain.
 
 ## Mem-to-peripheral plan (not implemented)
 
