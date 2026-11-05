@@ -223,9 +223,10 @@ pub struct RingDma<'s> {
     threshold: usize,
 }
 impl<'s> RingDma<'s> {
-    /// Default CPU/DMA crossover in staged bytes: below it the CPU's posted stores finish
-    /// first (HW 2026-11-05: 16 B messages, DMA wins from 12 slots = 288 B, loses at 8 = 192 B;
-    /// 64 B messages: wins at 4 = 288 B, loses at 2 = 144 B; docs/dma.md).
+    /// Provisional CPU/DMA crossover in staged bytes, retained from historical HW measurements
+    /// with the removed guard (2026-11-05: 16 B messages, DMA wins at 12 slots = 288 B, loses
+    /// at 8 = 192 B; 64 B messages: wins at 4 = 288 B, loses at 2 = 144 B; docs/dma.md).
+    /// The current path's crossover has not been remeasured.
     pub const DEFAULT_THRESHOLD: usize = 256;
     /// `stage` must be shared SRAM (`#[unsafe(link_section = ".shared")]`) and 8-byte aligned;
     /// its size bounds one DMA batch ([`RingTx::staged_capacity`]).
@@ -246,7 +247,8 @@ impl<'s> RingDma<'s> {
             threshold: Self::DEFAULT_THRESHOLD,
         })
     }
-    /// Batches of at least `bytes` staged bytes go by DMA (`0` = always, `usize::MAX` = never).
+    /// Batches of at least `bytes` staged bytes go by DMA (`0` = always when a slot fits the
+    /// stage, `usize::MAX` = never).
     pub fn set_threshold(&mut self, bytes: usize) {
         self.threshold = bytes;
     }
@@ -272,8 +274,11 @@ impl<'s> RingDma<'s> {
             return Err(Staged::Fenced);
         }
         let n = self.batch_len(ring, values.len());
-        if n.saturating_mul(rp1_proto::shm::slot_size(size_of::<T>())) < self.threshold {
-            return Ok(ring.push_slice(&values[..n]));
+        if n == 0
+            || self.threshold == usize::MAX
+            || n.saturating_mul(rp1_proto::shm::slot_size(size_of::<T>())) < self.threshold
+        {
+            return Ok(ring.push_slice(values));
         }
         ring.push_slice_staged(&values[..n], self.stage, channel)
     }
@@ -321,6 +326,43 @@ mod tests {
         let n = helper.batch_len(&mut ring, 32);
         assert_eq!(n, 1);
         assert!(n * rp1_proto::shm::slot_size(16) < helper.threshold());
+    }
+
+    #[test]
+    fn cpu_fallback_progresses_without_staging_capacity() {
+        use super::*;
+        #[repr(align(8))]
+        struct Mem([u8; 2048]);
+        // Channel contains only (). The CPU path must not access DMA registers.
+        let mut channel = unsafe { core::mem::zeroed::<crate::dma::Channel<1>>() };
+        for (stage_len, threshold) in [
+            (256, RingDma::DEFAULT_THRESHOLD), // smaller than one 264-byte slot
+            (256, 0),                          // even "always DMA" must make progress
+            (256, usize::MAX),
+            (264, usize::MAX), // one staged slot must not cap the CPU batch
+        ] {
+            for overflow in [Overflow::Reject, Overflow::Overwrite] {
+                let (mut data, ctrl, mut stage) = (Mem([0; 2048]), Mem([0; 2048]), Mem([0; 2048]));
+                let mut ring = unsafe {
+                    RingTx::<[u32; 64]>::attach(
+                        data.0.as_mut_ptr(),
+                        data.0.len(),
+                        ctrl.0.as_ptr(),
+                        ctrl.0.len(),
+                        4,
+                        overflow,
+                    )
+                }
+                .unwrap();
+                let mut helper = RingDma {
+                    stage: &mut stage.0[..stage_len],
+                    threshold,
+                };
+                let values = [[42; 64]; 3];
+                assert_eq!(helper.push_slice(&mut ring, &mut channel, &values), Ok(3));
+                assert_eq!(ring.head(), 3);
+            }
+        }
     }
 
     #[test]
