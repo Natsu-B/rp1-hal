@@ -20,14 +20,26 @@
 //! `0x10_0000_0000 + p` ([`BusAddr::host_phys`], the RP1 `dma-ranges` Linux uses).
 //!
 //! # Ordering
-//! The Cortex-M3 has no data cache, so no cache maintenance is needed. Every register write of
-//! this driver is followed by `dsb` ([`crate::write`]), so CPU stores to a source buffer are
-//! complete before the channel is enabled. Completion is reported only after `DMA_TFR_DONE`
-//! *and* the channel-enable bit cleared, i.e. after the last AXI write response; reads of the
-//! destination after that see the data (SRAM). For Linux DDR, a write response from the PCIe
-//! endpoint means the posted write was accepted, and later CPU posted writes through the same
-//! endpoint (e.g. a ring head) are ordered behind it by PCIe posted-write ordering (DOC/HYP,
-//! see `docs/dma.md`).
+//! The Cortex-M3 has no data cache, so no cache maintenance is needed. Channel setup writes are
+//! posted without `dsb`; immediately before the channel-enable write a compiler fence + `dsb`
+//! ([`rp1_proto::barrier`]) completes every earlier CPU store to the source buffer and keeps
+//! the compiler from moving buffer stores past the enable. Completion is reported only after
+//! `DMA_TFR_DONE` *and* the channel-enable bit cleared, i.e. after the last AXI write response,
+//! and is followed by the same barrier, so later CPU accesses to either buffer (also the
+//! caller's ordinary, non-volatile ones) happen after the DMA. The same holds after a
+//! cancellation. For Linux DDR, a write response from the PCIe endpoint means the posted write
+//! was accepted, and later CPU posted writes through the same endpoint (e.g. a ring head) are
+//! ordered behind it by PCIe posted-write ordering (DOC/HYP, see `docs/dma.md`).
+//!
+//! # Cancellation
+//! A transfer is stopped (timeout, bus error, [`Transfer::cancel`], dropping a running
+//! [`Transfer`]) by: `CH_SUSP` and a bounded wait for `CH_SUSPENDED`, `CH_EN = 0` and a bounded
+//! wait for the enable bit to clear (the databook's graceful disable; Linux
+//! `dma_chan_terminate_all` writes only `CH_EN = 0`), then, if it is still set, `CH_ABORT` (in
+//! the high half of `DMAC_CHEN` on this 8-channel DMAC) and another bounded wait. If the channel
+//! is *still* enabled, the driver spins until it clears, without a deadline: no exit releases a
+//! buffer borrow while the DMAC may still access the buffer. A wedged DMAC (e.g. a PCIe target
+//! that never answers) therefore hangs the calling core instead of returning.
 use crate::{
     clocks::Clocks,
     linux_blocks::{Hardware, Mmio},
@@ -44,8 +56,13 @@ const RESETS_CLR0: usize = 0x4001_7000;
 const RESETS_DONE0: usize = 0x4001_4018;
 const RESET_BIT: u32 = 1 << 3;
 const INIT_TIMEOUT_US: u32 = 10_000;
-/// Linux `snps,axi-max-burst-len` of rp1.dtsi, written to ARLEN/AWLEN as the Linux driver does.
+/// AXI burst length in beats per channel: Linux `snps,axi-max-burst-len` of rp1.dtsi, which
+/// matches the datasheet's FIFO depths (8 beats on channels 0 and 1, 4 on the others). ARLEN /
+/// AWLEN take `beats - 1` (AXI encoding, Linux `DWAXIDMAC_ARWLEN_*`); Linux writes the DT value
+/// unchanged (one beat more than the FIFO), this driver writes `beats - 1`.
 const BURST: [u32; 8] = [8, 8, 4, 4, 4, 4, 4, 4];
+/// Bounded wait of each cancellation step (suspend, disable, abort).
+const CANCEL_STEP_US: u32 = 10_000;
 /// Largest transfer width: the 128-bit master (`snps,data-width = <4>`).
 const MAX_WIDTH_LOG2: u32 = 4;
 
@@ -58,10 +75,11 @@ pub enum Error {
     NotDmaVisible,
     /// Stale `Clocks`, or clk_dma is no longer running at 100 MHz.
     Precondition,
-    /// The transfer (or the reset / abort) did not finish in time. A timed-out transfer has
-    /// been aborted.
+    /// The transfer (or the reset) did not finish in time. A timed-out transfer has been
+    /// stopped (the channel is disabled) before this is returned.
     Timeout,
     /// The channel reported an error interrupt (`CH_INTSTATUS` value, decode / slave errors).
+    /// The channel has been stopped before this is returned.
     Bus(u32),
     /// The channel was found enabled when it should be idle.
     Busy,
@@ -233,7 +251,7 @@ impl Dma {
     }
 }
 
-/// One DMA channel. Idle whenever no [`Transfer`] borrows it (a dropped transfer is aborted).
+/// One DMA channel. Idle whenever no [`Transfer`] borrows it (a dropped transfer is stopped).
 #[derive(Debug)]
 pub struct Channel<const N: u8>(());
 
@@ -283,24 +301,50 @@ impl<const N: u8> Channel<N> {
 
     /// Copies `src` into `dst` (equal lengths) and waits for completion, splitting into blocks
     /// as needed. Both slices must be in DMAC-visible memory (shared SRAM, a peripheral, or the
-    /// outbound window); a timed-out block is aborted before this returns.
+    /// or the outbound window; peripheral registers need [`Self::start`]). A timed-out or
+    /// failed block is stopped before this returns; if the DMAC cannot be stopped this never
+    /// returns (module docs, Cancellation).
     pub fn copy(&mut self, src: &[u8], dst: &mut [u8], timeout_us: u32) -> Result<(), Error> {
         if src.len() != dst.len() || src.is_empty() || src.len() > u32::MAX as usize {
             return Err(Error::Invalid);
         }
         let len = src.len() as u32;
         clock_current(&mut Mmio)?;
-        let s = BusAddr::from_proc(src.as_ptr() as usize)?;
-        let d = BusAddr::from_proc(dst.as_mut_ptr() as usize)?;
-        BusAddr::from_proc(src.as_ptr() as usize + src.len() - 1)?;
-        BusAddr::from_proc(dst.as_ptr() as usize + dst.len() - 1)?;
-        // The borrows of `src` and `dst` outlive every block: each is finished (or aborted)
+        let s = memory(src.as_ptr() as usize, len)?;
+        let d = memory(dst.as_mut_ptr() as usize, len)?;
+        // The borrows of `src` and `dst` outlive every block: each is finished (or stopped)
         // before the next starts and before return.
         unsafe { copy_blocking(&mut Mmio, N, s, d, len, timeout_us) }
     }
 }
 
-/// A running block on channel `N`. Dropping it aborts the transfer if it has not finished.
+/// Translates a slice of memory for [`Channel::copy`]: shared SRAM or the outbound window, one
+/// contiguous range (16 B wide bursts are not for peripheral registers).
+fn memory(start: usize, len: u32) -> Result<BusAddr, Error> {
+    let first = BusAddr::from_proc(start)?;
+    let last = BusAddr::from_proc(start + (len as usize - 1))?;
+    if first.0 >= BusAddr::PERIPHERALS && first.0 < BusAddr::PERIPHERALS + 0x4000_0000
+        || last.0 != first.0 + u64::from(len - 1)
+    {
+        return Err(Error::NotDmaVisible);
+    }
+    Ok(first)
+}
+
+/// How [`Transfer::cancel`] found or stopped the channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stopped {
+    /// The block had already finished (with this result) before the cancellation.
+    Finished(Result<(), Error>),
+    /// Stopped by `CH_EN = 0`; `suspended` = `CH_SUSPENDED` was seen first.
+    Disabled { suspended: bool },
+    /// Disable did not take effect in time; stopped by `CH_ABORT`.
+    Aborted,
+    /// Neither took effect within the bounded waits; the channel cleared later.
+    Late,
+}
+
+/// A running block on channel `N`. Dropping it stops the transfer if it has not finished.
 #[derive(Debug)]
 pub struct Transfer<'a, const N: u8> {
     _channel: &'a mut Channel<N>,
@@ -314,7 +358,7 @@ impl<const N: u8> Transfer<'_, N> {
         }
         self.result
     }
-    /// Polls until done or `timeout_us` passed (then aborts and returns [`Error::Timeout`]).
+    /// Polls until done or `timeout_us` passed (then stops it and returns [`Error::Timeout`]).
     pub fn wait(mut self, timeout_us: u32) -> Result<(), Error> {
         let r = match self.result {
             Some(r) => r,
@@ -323,11 +367,21 @@ impl<const N: u8> Transfer<'_, N> {
         self.result = Some(r);
         r
     }
+    /// Stops the block now (module docs, Cancellation) and reports how. The destination then
+    /// holds a prefix of the copy; the channel is idle and reusable.
+    pub fn cancel(mut self) -> Stopped {
+        if let Some(r) = self.poll() {
+            return Stopped::Finished(r);
+        }
+        let s = cancel(&mut Mmio, N);
+        self.result = Some(Err(Error::Timeout));
+        s
+    }
 }
 impl<const N: u8> Drop for Transfer<'_, N> {
     fn drop(&mut self) {
         if self.poll().is_none() {
-            let _ = abort(&mut Mmio, N);
+            cancel(&mut Mmio, N);
         }
     }
 }
@@ -392,9 +446,9 @@ unsafe fn start_block(
     io.write_relaxed(
         c + ch::CTL_H,
         ctl_h::ARLEN_EN
-            | (burst << ctl_h::ARLEN_SHIFT)
+            | ((burst - 1) << ctl_h::ARLEN_SHIFT)
             | ctl_h::AWLEN_EN
-            | (burst << ctl_h::AWLEN_SHIFT),
+            | ((burst - 1) << ctl_h::AWLEN_SHIFT),
     );
     // Contiguous source and destination (single block), memory to memory with DMAC flow
     // control, priority = channel number (Linux `snps,priority`).
@@ -405,9 +459,14 @@ unsafe fn start_block(
     );
     io.write_relaxed(c + ch::INTCLEAR, int::ALL);
     io.write_relaxed(c + ch::INTSIGNAL_ENA, 0);
-    io.write_relaxed(c + ch::INTSTATUS_ENA, int::DMA_TFR_DONE | int::ALL_ERR);
-    // The channel registers above are posted in order on the same AHB port; this write is
-    // followed by `dsb`, so the source buffer and the setup are complete before return.
+    io.write_relaxed(
+        c + ch::INTSTATUS_ENA,
+        int::DMA_TFR_DONE | int::ALL_ERR | int::CH_SUSPENDED | int::CH_DISABLED | int::CH_ABORTED,
+    );
+    // The channel registers above are posted in order on the same AHB port. The barrier
+    // completes earlier CPU stores to the source buffer (and keeps the compiler from sinking
+    // them) before the enable; `write` is followed by `dsb` as well.
+    rp1_proto::barrier();
     io.write(
         BASE + common::CHEN,
         (1 << n) | (1 << (n as u32 + common::CHEN_WE_SHIFT)),
@@ -420,12 +479,13 @@ fn poll_block(io: &mut impl Hardware, n: u8) -> Option<Result<(), Error>> {
     let c = channel_base(n);
     let status = io.read(c + ch::INTSTATUS);
     if status & int::ALL_ERR != 0 {
-        let _ = abort(io, n);
-        io.write(c + ch::INTCLEAR, int::ALL);
+        cancel(io, n);
         return Some(Err(Error::Bus(status)));
     }
     if status & int::DMA_TFR_DONE != 0 && io.read(BASE + common::CHEN) & (1 << n) == 0 {
         io.write_relaxed(c + ch::INTCLEAR, int::ALL);
+        // The DMA's writes are complete; later CPU buffer accesses must not move above this.
+        rp1_proto::barrier();
         return Some(Ok(()));
     }
     None
@@ -442,22 +502,70 @@ fn wait_block(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<(), Erro
             if let Some(r) = poll_block(io, n) {
                 return r;
             }
-            abort(io, n)?;
+            cancel(io, n);
             return Err(Error::Timeout);
         }
     }
 }
 
-/// Aborts channel `n` and waits for its enable bit to clear (the DMAC finishes the current AXI
-/// burst first). Error only if the channel stays enabled for 10 ms.
-fn abort(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
-    if io.read(BASE + common::CHEN) & (1 << n) == 0 {
-        return Ok(());
+fn enabled(io: &mut impl Hardware, n: u8) -> bool {
+    io.read(BASE + common::CHEN) & (1 << n) != 0
+}
+/// Bounded wait (`CANCEL_STEP_US`) until channel `n` is disabled or `status & mask` is set.
+fn settle(io: &mut impl Hardware, n: u8, mask: u32) -> bool {
+    let start = io.now_us();
+    loop {
+        if !enabled(io, n) {
+            return true;
+        }
+        if mask != 0 && io.read(channel_base(n) + ch::INTSTATUS) & mask != 0 {
+            return false;
+        }
+        if io.now_us().wrapping_sub(start) > CANCEL_STEP_US {
+            return !enabled(io, n);
+        }
     }
-    io.write(BASE + common::CHABORT, (1 << n) | (1 << (n as u32 + 8)));
-    let r = wait(io, BASE + common::CHEN, 1 << n, 0);
-    io.write(channel_base(n) + ch::INTCLEAR, int::ALL);
-    r
+}
+
+/// Stops channel `n` (module docs, Cancellation) and returns only once its enable bit is
+/// clear, i.e. the DMAC no longer accesses the transfer's buffers. Leaves the channel idle
+/// with its status cleared.
+#[rp1_rt::isram]
+fn cancel(io: &mut impl Hardware, n: u8) -> Stopped {
+    let c = channel_base(n);
+    let susp = (1 << (n as u32 + common::CHEN_SUSP_SHIFT))
+        | (1 << (n as u32 + common::CHEN_SUSP_WE_SHIFT));
+    let how = if !enabled(io, n) {
+        Stopped::Disabled { suspended: false }
+    } else {
+        io.write(BASE + common::CHEN, susp);
+        settle(io, n, int::CH_SUSPENDED);
+        let suspended = io.read(c + ch::INTSTATUS) & int::CH_SUSPENDED != 0;
+        io.write(BASE + common::CHEN, 1 << (n as u32 + common::CHEN_WE_SHIFT));
+        if settle(io, n, 0) {
+            Stopped::Disabled { suspended }
+        } else {
+            io.write(
+                BASE + common::CHEN_H,
+                (1 << n) | (1 << (n as u32 + common::CHEN_H_ABORT_WE_SHIFT)),
+            );
+            if settle(io, n, 0) {
+                Stopped::Aborted
+            } else {
+                // No deadline from here: returning would release buffers the DMAC still uses.
+                while enabled(io, n) {}
+                Stopped::Late
+            }
+        }
+    };
+    // Clear the suspend request (write-enabled) so the next enable starts running.
+    io.write(
+        BASE + common::CHEN,
+        susp & !(0xff << common::CHEN_SUSP_SHIFT),
+    );
+    io.write(c + ch::INTCLEAR, int::ALL);
+    rp1_proto::barrier();
+    how
 }
 
 #[cfg(test)]
@@ -467,7 +575,9 @@ mod tests {
     use crate::scmi::Registers;
     use std::{collections::BTreeMap, vec::Vec};
 
-    /// Fake DMAC: enabling a channel completes it on the next CHEN read (or reports `fault`).
+    /// Fake DMAC: enabling a channel completes it on the next CHEN read (or reports `fault`, or
+    /// keeps running if `stuck`). `resist`: 0 = suspend and disable work, 1 = only abort works,
+    /// 2 = nothing works and the channel clears `late` CHEN reads after the abort write.
     #[derive(Default)]
     struct Fake {
         regs: BTreeMap<usize, u32>,
@@ -475,6 +585,19 @@ mod tests {
         now: u32,
         fault: u32,
         stuck: bool,
+        resist: u8,
+        late: u32,
+        after_abort: Option<(u32, u32)>,
+    }
+    impl Fake {
+        fn stop(&mut self, n: u32, status: u32) {
+            let chen = BASE + common::CHEN;
+            let v = self.regs.get(&chen).copied().unwrap_or(0) & !(1 << n);
+            self.regs.insert(chen, v);
+            let s = channel_base(n as u8) + ch::INTSTATUS;
+            let old = self.regs.get(&s).copied().unwrap_or(0);
+            self.regs.insert(s, old | status);
+        }
     }
     impl Registers for Fake {
         fn read(&mut self, a: usize) -> u32 {
@@ -484,35 +607,67 @@ mod tests {
             if a == RESETS_DONE0 {
                 return RESET_BIT;
             }
+            if a == BASE + common::CHEN
+                && let Some((n, k)) = self.after_abort
+            {
+                if k >= self.late {
+                    self.stop(n, int::CH_ABORTED);
+                    self.after_abort = None;
+                } else {
+                    self.after_abort = Some((n, k + 1));
+                }
+            }
             *self.regs.get(&a).unwrap_or(&0)
         }
         fn write(&mut self, a: usize, v: u32) {
             self.writes.push((a, v));
             match a {
                 _ if a == BASE + common::CHEN => {
-                    let we = v >> 8 & 0xff;
                     let old = self.regs.get(&a).copied().unwrap_or(0);
-                    let new = (old & !we) | (v & we);
-                    self.regs.insert(a, new);
-                    for n in 0..8u8 {
-                        if new & (1 << n) != 0 && !self.stuck {
-                            let status = if self.fault != 0 {
-                                self.fault
-                            } else {
-                                int::DMA_TFR_DONE | int::BLOCK_TFR_DONE
-                            };
-                            self.regs.insert(channel_base(n) + ch::INTSTATUS, status);
-                            if self.fault == 0 {
-                                self.regs.insert(a, new & !(1 << n));
+                    for n in 0..8u32 {
+                        let (en, susp) = (1 << n, 1 << (n + 16));
+                        if v & (susp << 8) != 0
+                            && v & susp != 0
+                            && old & en != 0
+                            && self.resist == 0
+                        {
+                            let s = channel_base(n as u8) + ch::INTSTATUS;
+                            let o = self.regs.get(&s).copied().unwrap_or(0);
+                            self.regs.insert(s, o | int::CH_SUSPENDED);
+                        }
+                        if v & (en << 8) == 0 {
+                            continue;
+                        }
+                        if v & en == 0 {
+                            if self.resist == 0 {
+                                self.stop(n, int::CH_DISABLED);
+                            }
+                        } else {
+                            let now = self.regs.get(&a).copied().unwrap_or(0);
+                            self.regs.insert(a, now | en);
+                            if !self.stuck {
+                                let status = if self.fault != 0 {
+                                    self.fault
+                                } else {
+                                    int::DMA_TFR_DONE | int::BLOCK_TFR_DONE
+                                };
+                                self.regs
+                                    .insert(channel_base(n as u8) + ch::INTSTATUS, status);
+                                if self.fault == 0 {
+                                    self.regs.insert(a, now);
+                                }
                             }
                         }
                     }
                 }
-                _ if a == BASE + common::CHABORT => {
-                    let we = v >> 8 & 0xff;
-                    let old = self.regs.get(&(BASE + common::CHEN)).copied().unwrap_or(0);
-                    if !self.stuck {
-                        self.regs.insert(BASE + common::CHEN, old & !(v & we));
+                _ if a == BASE + common::CHEN_H => {
+                    for n in 0..8u32 {
+                        if v & (1 << n) != 0 && v & (1 << (n + 8)) != 0 {
+                            match self.resist {
+                                0 | 1 => self.stop(n, int::CH_ABORTED),
+                                _ => self.after_abort = Some((n, 0)),
+                            }
+                        }
                     }
                 }
                 _ if a > BASE + CHANNEL_BASE && (a - BASE) % CHANNEL_STRIDE == ch::INTCLEAR => {
@@ -610,7 +765,7 @@ mod tests {
         );
         assert_eq!(
             reg(&f, c + ch::CTL_H),
-            (1 << 6) | (4 << 7) | (1 << 15) | (4 << 16)
+            (1 << 6) | (3 << 7) | (1 << 15) | (3 << 16)
         );
         assert_eq!(reg(&f, c + ch::CFG_L), 0);
         assert_eq!(reg(&f, c + ch::CFG_H), (2 << 20) | (1 << 3) | (1 << 4));
@@ -638,8 +793,63 @@ mod tests {
         assert!(!f.writes.iter().any(|w| w.0 == BASE + common::CHEN));
     }
 
+    const SUSP1: u32 = (1 << 17) | (1 << 25);
+
     #[test]
-    fn bus_errors_abort_and_report_status() {
+    fn timeouts_suspend_then_disable_and_leave_the_channel_reusable() {
+        let mut f = running();
+        f.stuck = true;
+        let s = BusAddr(0xc0_2000_0000);
+        unsafe { start_block(&mut f, 1, s, s, 64) }.unwrap();
+        assert_eq!(wait_block(&mut f, 1, 50), Err(Error::Timeout));
+        let chen: Vec<_> = f
+            .writes
+            .iter()
+            .filter(|w| w.0 == BASE + common::CHEN)
+            .map(|w| w.1)
+            .collect();
+        // enable, suspend, disable (EN = 0 with its write enable), clear the suspend request.
+        assert_eq!(chen, [(1 << 1) | (1 << 9), SUSP1, 1 << 9, 1 << 25]);
+        assert!(!f.writes.iter().any(|w| w.0 == BASE + common::CHEN_H));
+        assert_eq!(f.regs[&(BASE + common::CHEN)] & 2, 0);
+        assert_eq!(f.regs[&(channel_base(1) + ch::INTSTATUS)], 0);
+        f.stuck = false;
+        unsafe { start_block(&mut f, 1, s, s, 64) }.unwrap();
+        assert_eq!(wait_block(&mut f, 1, 50), Ok(()));
+    }
+
+    #[test]
+    fn a_disable_that_does_not_take_effect_falls_back_to_abort_in_chen_high() {
+        let mut f = running();
+        f.stuck = true;
+        f.resist = 1;
+        let s = BusAddr(0xc0_2000_0000);
+        unsafe { start_block(&mut f, 1, s, s, 64) }.unwrap();
+        let mut c = f;
+        assert_eq!(cancel(&mut c, 1), Stopped::Aborted);
+        assert!(
+            c.writes
+                .contains(&(BASE + common::CHEN_H, (1 << 1) | (1 << 9)))
+        );
+        assert_eq!(c.regs[&(BASE + common::CHEN)] & 2, 0);
+    }
+
+    #[test]
+    fn a_timeout_never_returns_while_the_channel_is_still_enabled() {
+        let mut f = running();
+        f.stuck = true;
+        f.resist = 2;
+        f.late = 100_000;
+        let s = BusAddr(0xc0_2000_0000);
+        unsafe { start_block(&mut f, 1, s, s, 64) }.unwrap();
+        assert_eq!(wait_block(&mut f, 1, 50), Err(Error::Timeout));
+        // Returned only after the (late) abort cleared the enable bit.
+        assert!(f.after_abort.is_none());
+        assert_eq!(f.regs[&(BASE + common::CHEN)] & 2, 0);
+    }
+
+    #[test]
+    fn bus_errors_stop_the_channel_before_reporting() {
         let mut f = running();
         f.fault = int::DST_DEC_ERR;
         let s = BusAddr(0xc0_2000_0000);
@@ -648,21 +858,32 @@ mod tests {
             wait_block(&mut f, 5, 100),
             Err(Error::Bus(int::DST_DEC_ERR))
         );
-        assert!(
-            f.writes
-                .contains(&(BASE + common::CHABORT, (1 << 5) | (1 << 13)))
-        );
+        assert!(f.writes.contains(&(BASE + common::CHEN, 1 << 13)));
         assert_eq!(f.regs[&(BASE + common::CHEN)] & (1 << 5), 0);
     }
 
     #[test]
-    fn timeouts_abort_and_a_stuck_abort_is_reported() {
+    fn a_bus_error_never_returns_while_the_channel_is_still_enabled() {
         let mut f = running();
-        f.stuck = true;
+        f.fault = int::SRC_SLV_ERR;
+        f.resist = 2;
+        f.late = 100_000;
         let s = BusAddr(0xc0_2000_0000);
-        unsafe { start_block(&mut f, 1, s, s, 64) }.unwrap();
-        assert_eq!(wait_block(&mut f, 1, 50), Err(Error::Timeout));
-        assert!(f.writes.iter().any(|w| w.0 == BASE + common::CHABORT));
+        unsafe { start_block(&mut f, 3, s, s, 64) }.unwrap();
+        assert_eq!(
+            poll_block(&mut f, 3),
+            Some(Err(Error::Bus(int::SRC_SLV_ERR)))
+        );
+        assert!(f.after_abort.is_none());
+        assert_eq!(f.regs[&(BASE + common::CHEN)] & (1 << 3), 0);
+    }
+
+    #[test]
+    fn copy_accepts_only_contiguous_memory() {
+        assert_eq!(memory(0x2000_0010, 16), Ok(BusAddr(0xc0_2000_0010)));
+        assert_eq!(memory(0x8000_0000, 4096), Ok(BusAddr(0x80_0000_0000)));
+        assert_eq!(memory(0x4005_0060, 4), Err(Error::NotDmaVisible));
+        assert_eq!(memory(0x2000_fff0, 0x20), Err(Error::NotDmaVisible));
     }
 
     #[test]

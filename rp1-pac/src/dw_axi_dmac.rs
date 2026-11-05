@@ -33,12 +33,17 @@ pub mod common {
     pub const COMPVER: usize = 0x008;
     /// RW: `DMAC_CFG`: bit 0 DMAC_EN, bit 1 INT_EN. [DOC]
     pub const CFG: usize = 0x010;
-    /// RW: `DMAC_CHEN` (8-channel map): bits 0..7 CH_EN, 8..15 CH_EN_WE, 16..23 CH_SUSP,
-    /// 24..31 CH_SUSP_WE. A bit is written only together with its write-enable. [DOC]
+    /// RW: `DMAC_CHEN` low half (8-channel map): bits 0..7 CH_EN, 8..15 CH_EN_WE, 16..23 CH_SUSP,
+    /// 24..31 CH_SUSP_WE. A bit is written only together with its write-enable. [DOC: Linux
+    /// `reg_map_8_channels` (chosen for `dma-channels <= 8`) puts EN and SUSP here]
     pub const CHEN: usize = 0x018;
-    /// RW: `DMAC_CHABORTREG` (8-channel map): bits 0..7 abort, 8..15 write-enable. Channel
-    /// abort is configured in on RP1 (datasheet). [DOC]
-    pub const CHABORT: usize = 0x028;
+    /// RW: `DMAC_CHEN` high half (8-channel map): bits 0..7 CH_ABORT, 8..15 CH_ABORT_WE, i.e.
+    /// `DMAC_ChEnReg[39:32]` / `[47:40]`. Channel abort is configured in on RP1 (datasheet).
+    /// The separate `DMAC_CHSUSPREG` (0x020) / `DMAC_CHABORTREG` (0x028) exist only in the
+    /// map for more than 8 channels; Linux uses 0x020 only when `reg_map_8_channels` is false.
+    /// [DOC: Synopsys DW_axi_dmac databook register table (not read here, layout as cited);
+    /// Linux has no abort code. HW: lab abort proof, see `docs/dma.md`]
+    pub const CHEN_H: usize = 0x01c;
     /// R: `DMAC_INTSTATUS`: bit n = channel n interrupt, bit 16 common. [DOC]
     pub const INTSTATUS: usize = 0x030;
     /// W: `DMAC_COMMON_INTCLEAR`. [DOC]
@@ -55,6 +60,10 @@ pub mod common {
     pub const CFG_DMAC_EN: u32 = 1 << 0;
     pub const CFG_INT_EN: u32 = 1 << 1;
     pub const CHEN_WE_SHIFT: u32 = 8;
+    pub const CHEN_SUSP_SHIFT: u32 = 16;
+    pub const CHEN_SUSP_WE_SHIFT: u32 = 24;
+    /// In [`CHEN_H`]: abort bit `n`, write-enable `n + 8`.
+    pub const CHEN_H_ABORT_WE_SHIFT: u32 = 8;
 }
 
 /// Channel registers (offsets within one channel's 0x100 window).
@@ -104,7 +113,8 @@ pub mod ctl_l {
 
 /// `CH_CTL` high half. [DOC]
 pub mod ctl_h {
-    /// Override the AXI read/write burst length with ARLEN / AWLEN.
+    /// Override the AXI read/write burst length with ARLEN / AWLEN. The fields carry the AXI
+    /// encoding, beats - 1 (Linux `DWAXIDMAC_ARWLEN_8 = 7`).
     pub const ARLEN_EN: u32 = 1 << 6;
     pub const ARLEN_SHIFT: u32 = 7;
     pub const AWLEN_EN: u32 = 1 << 15;
@@ -138,6 +148,7 @@ pub mod int {
     pub const DST_DEC_ERR: u32 = 1 << 6;
     pub const SRC_SLV_ERR: u32 = 1 << 7;
     pub const DST_SLV_ERR: u32 = 1 << 8;
+    pub const CH_SUSPENDED: u32 = 1 << 29;
     pub const CH_DISABLED: u32 = 1 << 30;
     pub const CH_ABORTED: u32 = 1 << 31;
     /// `DWAXIDMAC_IRQ_ALL_ERR`: bits 5..=14 and 16..=21.
