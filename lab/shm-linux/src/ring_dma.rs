@@ -8,7 +8,7 @@
 //!   expected path (DMA batches only for `dma`, CPU only for `cpu`), and for the designated
 //!   paced irq run a consumer that slept and was woken by interrupts.
 //! - `RINGDMA_THRESH ring=.. batch=.. cpu_us_per_batch=.. dma_us_per_batch=..`: RP1 time per
-//!   batch on each path (polling consumer), for the CPU/DMA crossover.
+//!   batch inside the ring API on each path (polling consumer), for the CPU/DMA crossover.
 //! - `RINGDMA_ORDER name=.. guard=off n=.. stale=.. corrupt=..`: the ordering experiment, `head`
 //!   published right after DMA completion without the read-back guard. `stale` counts reads
 //!   that saw `head` but an old slot (`Corrupt` from the sequence check, retried until the slot
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 fn wide<const W: usize>(i: u32) -> [u32; W] {
     let mut m = [0u32; W];
     for (k, w) in m.iter_mut().enumerate() {
-        *w = i.wrapping_mul(2 * k as u32 + 1) ^ (k as u32) << 24;
+        *w = i ^ (k as u32).wrapping_mul(0x9e37_79b9);
     }
     m[W - 1] = !i;
     m
@@ -236,6 +236,9 @@ pub fn main(count: u32) -> Result<()> {
         let rep = &res.report;
         let (pulses, retries, not_visible, dma_b, cpu_b) =
             (rep[7], rep[8], rep[9], rep[10], rep[11]);
+        let (gen_us, push_us, notify_us) = (rep[12], rep[13], rep[14]);
+        // Payload rate of the ring API alone (RP1 time inside push_slice / RingDma::push_slice).
+        let ring_mbps = n as f64 * sizes[ring as usize] / push_us.max(1) as f64;
         let missing = n - res.got;
         let mbps = n as f64 * sizes[ring as usize] / res.seconds / 1e6;
         let path_ok = match run.mode {
@@ -263,6 +266,7 @@ pub fn main(count: u32) -> Result<()> {
             "name={} ring={} mode={} irq={} batch={} gap_us={} n={} missing={missing} \
              corrupt={} stale={} seconds={:.6} MBps={mbps:.3} cpu_pct={:.1} rp1_us={} \
              pulses={pulses} wakes={} sleeps={sleeps} woken={woken} late={late} \
+             gen_us={gen_us} push_us={push_us} notify_us={notify_us} ring_MBps={ring_mbps:.3} \
              guard_retries={retries} guard_fail={not_visible} dma_batches={dma_b} cpu_batches={cpu_b}",
             run.name,
             names[ring as usize],
@@ -297,7 +301,8 @@ pub fn main(count: u32) -> Result<()> {
                 ring,
                 run.batch,
                 run.mode,
-                rep[6] as f64 / (cpu_b + dma_b).max(1) as f64,
+                // RP1 µs per batch inside the ring API (generation is the same on both paths).
+                push_us as f64 / (cpu_b + dma_b).max(1) as f64,
             ));
         }
         std::thread::sleep(Duration::from_millis(50));

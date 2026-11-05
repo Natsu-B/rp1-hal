@@ -439,7 +439,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 writer.commit();
             }
             // RP1 -> Linux ring stream written by the CPU or by DMA (ring_dma); request words
-            // 8..13 = ring, mode, notify, batch, gap_us; results replace words 8..12.
+            // 8..13 = ring, mode, notify, batch, gap_us; results replace words 8..15.
             #[cfg(feature = "ring-dma")]
             17 => {
                 let p = ring_dma::Params {
@@ -449,9 +449,11 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     gap_us: request[12],
                 };
                 let irq = if p.notify { Some(&mut host_irq) } else { None };
-                use ring_dma::{stream, wide};
+                use ring_dma::{sample_into, stream, wide};
                 let o = match (dma.as_mut(), request[8]) {
-                    (Some(d), 0) => stream::<4, 32>(&mut events, d, irq, sample, count, &p, start),
+                    (Some(d), 0) => {
+                        stream::<4, 32>(&mut events, d, irq, sample_into, count, &p, start)
+                    }
                     (Some(d), 1) => {
                         stream::<16, 32>(&mut wide64, d, irq, wide::<16>, count, &p, start)
                     }
@@ -465,11 +467,14 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 };
                 errors = o.errors;
                 extra = o.pulses;
-                request[8..12].copy_from_slice(&[
+                request[8..15].copy_from_slice(&[
                     o.retries,
                     o.not_visible,
                     o.dma_batches,
                     o.cpu_batches,
+                    o.gen_us,
+                    o.push_us,
+                    o.notify_us,
                 ]);
             }
             #[cfg(feature = "sram-profile")]

@@ -3,8 +3,9 @@
 //! the cancellation buffer as stage), on the `events` (16 B), `wide64` or `wide256` ring, with
 //! or without `HostIrq` notification. Parameters in the request words 8..13 (lab/shm-linux
 //! `ring-dma`): ring, mode (0 CPU, 1 DMA, 2 default threshold, 3 DMA without the read-back
-//! guard: the ordering experiment), notify, batch, gap_us. Returns (errors, pulses, guard
-//! retries, guard failures, DMA batches, CPU batches).
+//! guard: the ordering experiment), notify, batch, gap_us. Returns errors, pulses, guard
+//! retries and failures, DMA and CPU batches, and the RP1 time spent generating messages, in
+//! the ring API and notifying.
 use crate::dma_proof;
 use rp1_hal::{
     dma::Dma,
@@ -15,16 +16,20 @@ use rp1_hal::{
 pub type Wide64 = [u32; 16];
 pub type Wide256 = [u32; 64];
 
-/// Message `i` of a `W`-word stream (the last word changes with every message, so the
-/// read-back guard and Linux both see a stale slot). Same as lab/shm-linux `wide`.
+/// Writes message `i` of a `W`-word stream in place: word 0 = `i`, the last word = `!i` (so the
+/// read-back guard and Linux both see a stale slot), the others `i ^ k * 0x9e37_79b9` (cheap:
+/// the generation is part of the measured loop). Same as lab/shm-linux `wide`.
 #[inline(always)]
-pub fn wide<const W: usize>(i: u32) -> [u32; W] {
-    let mut m = [0u32; W];
+pub fn wide<const W: usize>(m: &mut [u32; W], i: u32) {
     for (k, w) in m.iter_mut().enumerate() {
-        *w = i.wrapping_mul(2 * k as u32 + 1) ^ (k as u32) << 24;
+        *w = i ^ (k as u32).wrapping_mul(0x9e37_79b9);
     }
     m[W - 1] = !i;
-    m
+}
+/// [`crate::sample`] in place (the `events` stream).
+#[inline(always)]
+pub fn sample_into(m: &mut [u32; 4], i: u32) {
+    *m = crate::sample(i);
 }
 
 fn now() -> u32 {
@@ -40,6 +45,10 @@ pub struct Params {
 
 #[derive(Default)]
 pub struct Out {
+    /// RP1 µs generating messages, in the ring API (calls that published), notifying.
+    pub gen_us: u32,
+    pub push_us: u32,
+    pub notify_us: u32,
     pub errors: u32,
     pub pulses: u32,
     pub retries: u32,
@@ -48,14 +57,15 @@ pub struct Out {
     pub cpu_batches: u32,
 }
 
-/// Streams `count` messages `message(i)` in batches of `p.batch` (at most `B`).
-#[rp1_rt::isram]
+/// Streams `count` messages `message(i)` in batches of `p.batch` (at most `B`). Not in ISRAM
+/// (no room for three instances); the ring API it calls is (`push_slice`, the staged push,
+/// the DMA copy, `wake_needed`), and the generation time is reported separately.
 #[allow(clippy::too_many_arguments)]
 pub fn stream<const W: usize, const B: usize>(
     tx: &mut RingTx<[u32; W]>,
     dma: &mut Dma,
     mut irq: Option<&mut HostIrq>,
-    message: fn(u32) -> [u32; W],
+    message: fn(&mut [u32; W], u32),
     count: u32,
     p: &Params,
     start: u32,
@@ -79,13 +89,16 @@ pub fn stream<const W: usize, const B: usize>(
     let mut i = 0;
     while i < count {
         let k = (count - i).min(batch as u32) as usize;
+        let t = now();
         for (j, b) in buf[..k].iter_mut().enumerate() {
-            *b = message(i + j as u32);
+            message(b, i + j as u32);
         }
+        out.gen_us = out.gen_us.wrapping_add(now().wrapping_sub(t));
         let mut done = 0;
         while done < k {
             let values = &buf[done..k];
             let by_dma = values.len() * slot >= stage.threshold();
+            let t = now();
             let r = if p.mode == 3 {
                 // SAFETY: lab ordering experiment; Linux checks every message.
                 unsafe { stage.push_slice_unguarded(tx, &mut dma.ch1, values) }
@@ -95,6 +108,7 @@ pub fn stream<const W: usize, const B: usize>(
             match r {
                 Ok(n) => {
                     if n > 0 {
+                        out.push_us = out.push_us.wrapping_add(now().wrapping_sub(t));
                         if by_dma {
                             out.dma_batches += 1;
                         } else {
@@ -109,10 +123,12 @@ pub fn stream<const W: usize, const B: usize>(
                     return out;
                 }
             }
-            if let Some(irq) = irq.as_deref_mut()
-                && irq.notify_ring(tx)
-            {
-                out.pulses += 1;
+            if let Some(irq) = irq.as_deref_mut() {
+                let t = now();
+                if irq.notify_ring(tx) {
+                    out.pulses += 1;
+                }
+                out.notify_us = out.notify_us.wrapping_add(now().wrapping_sub(t));
             }
             if now().wrapping_sub(start) > 180_000_000 {
                 out.errors += 1;
