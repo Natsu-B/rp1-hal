@@ -334,24 +334,26 @@ pub enum Staged<E> {
 /// `dst` is 8-byte aligned and `slot_size(size_of::<T>())` bytes are writable.
 #[inline(always)]
 unsafe fn stage_slot<T: Message>(dst: *mut u8, index: u32, value: &T) {
+    // Volatile word stores: a plain loop becomes a `memcpy` call, which on RP1 runs from shared
+    // SRAM and made a 256 B slot about 10x slower to stage (HW 2026-11-05).
     let size = size_of::<T>();
     unsafe {
-        dst.cast::<u32>().write(index);
-        dst.add(4).cast::<u32>().write(size as u32);
+        dst.cast::<u32>().write_volatile(index);
+        dst.add(4).cast::<u32>().write_volatile(size as u32);
         let src = ptr::from_ref(value).cast::<u8>();
         if size.is_multiple_of(4) && align_of::<T>() >= 4 {
             for i in 0..size / 4 {
                 dst.add(8 + 4 * i)
                     .cast::<u32>()
-                    .write(src.add(4 * i).cast::<u32>().read());
+                    .write_volatile(src.add(4 * i).cast::<u32>().read());
             }
         } else {
             for i in 0..size {
-                dst.add(8 + i).write(src.add(i).read());
+                dst.add(8 + i).write_volatile(src.add(i).read());
             }
         }
         for i in 8 + size..slot_size(size) {
-            dst.add(i).write(0);
+            dst.add(i).write_volatile(0);
         }
     }
 }
