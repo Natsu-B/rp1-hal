@@ -147,7 +147,7 @@ fn one<const W: usize>(
     })
 }
 
-pub fn main(count: u32, ordering_only: bool) -> Result<()> {
+pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Result<()> {
     let mut fw = Firmware::open()?;
     let mut events = fw.ring_rx::<[u32; 4]>("events")?;
     let mut w64 = fw.ring_rx::<[u32; 16]>("wide64")?;
@@ -232,6 +232,10 @@ pub fn main(count: u32, ordering_only: bool) -> Result<()> {
             );
         }
     }
+    if let Some(mode) = isolate_mode {
+        plan.clear();
+        plan.push((2, r("isolate-wide256", mode, false, 7, Judged)));
+    }
     let names = ["events", "wide64", "wide256"];
     let sizes = [16.0, 64.0, 256.0];
     let mut failed = Vec::new();
@@ -240,6 +244,10 @@ pub fn main(count: u32, ordering_only: bool) -> Result<()> {
         let id = 200 + k as u32;
         let n = run.count.unwrap_or(count);
         let ring = *ring;
+        println!(
+            "RINGDMA_BEGIN name={} ring={} mode={} n={n}",
+            run.name, names[ring as usize], MODES[run.mode as usize]
+        );
         let (stats0, wakes0, cpu0) = (
             match ring {
                 0 => events.wait_stats(),

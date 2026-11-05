@@ -137,7 +137,7 @@ fn main() -> Result<()> {
     }
     if matches!(
         std::env::args().nth(1).as_deref(),
-        Some("ring-dma" | "ring-dma-order")
+        Some("ring-dma" | "ring-dma-order" | "ring-dma-wide256-cpu" | "ring-dma-wide256-dma")
     ) {
         let count = std::env::args()
             .nth(2)
@@ -147,6 +147,11 @@ fn main() -> Result<()> {
         return ring_dma::main(
             count,
             std::env::args().nth(1).as_deref() == Some("ring-dma-order"),
+            match std::env::args().nth(1).as_deref() {
+                Some("ring-dma-wide256-cpu") => Some(0),
+                Some("ring-dma-wide256-dma") => Some(1),
+                _ => None,
+            },
         );
     }
     if std::env::args().nth(1).as_deref() == Some("ring-irq") {
