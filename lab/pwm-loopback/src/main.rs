@@ -1,4 +1,4 @@
-//! HW 未検証. Wire GPIO12 -> GPIO22 and GPIO13 -> GPIO23 (inputs only).
+//! PWM0 loopback: GPIO12 -> GPIO22 and GPIO13 -> GPIO23 (inputs only). See docs/pwm.md.
 #![no_std]
 #![no_main]
 use embedded_hal::{digital::InputPin, pwm::SetDutyCycle};

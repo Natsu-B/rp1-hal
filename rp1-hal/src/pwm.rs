@@ -1,6 +1,6 @@
 //! RP1 PWM0/1: four independent, trailing-edge PWM channels per owned block.
 //!
-//! STATIC register evidence and HW 未検証 acceptance plan: `docs/pwm.md`. No FIFO, DMA,
+//! Register evidence, scoped PWM0 HW results and extended acceptance plan: `docs/pwm.md`. No FIFO, DMA,
 //! interrupts or channel binding. The functional clock is XOSC / 1 = 50 MHz, held by SCMI
 //! for a declared PWM block. All four channels, the reset and the clock belong to one core;
 //! [`Channels`] must not be distributed between cores. GPIO routes are checked by [`PinRoute`].
