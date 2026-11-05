@@ -1,8 +1,29 @@
-# RP1 PWM driver — STATIC / HW 未検証
+# RP1 PWM driver — STATIC / PWM0 loopback HW
 
 `rp1_hal::pwm` owns PWM0 or PWM1 as a whole, with four trailing-edge channels,
 independent 32-bit periods and compares, and optional owned GPIO outputs. This implementation
-has host tests only. Waveform timing, reset release and update completion are **HW 未検証**.
+has host tests and the scoped PWM0 loopback results below. PWM1, exact update timing and
+one-tick period conventions remain **HW 未検証**.
+
+## PWM0 loopback results (HW, 2026-11-05)
+
+Two cold boots of `lab/pwm-loopback`, with 1 kΩ series connections GPIO12→22 and GPIO13→23,
+each completed 60 rounds: 300 `PWM_SAMPLE`, 60 `PWM_REPERIOD`, 60 `PWM_DISABLED` and
+`PWM_DONE reinitialized=1`, with no `PWM_FAIL`. GPIO input configuration sets both IE and
+OD; Linux-side readback after boot confirmed both input pads retained those bits.
+
+Every A sample met the 0/100% constant-level checks, or 1 kHz ±5% and requested
+25/50/75% high fraction ±0.05. Every B sample met 500 Hz ±5% and 50% ±0.05, including
+Linux boot and rounds after `clk_disable_unused`. Reperiod samples met 500 Hz ±5% and
+25% ±0.05; disabled samples had zero rising edges. Linux reached its root shell, SCMI
+v2.0 and UART1 bidirectional nonce checks passed, and both PWM DT nodes remained disabled
+with no Linux PWM probe. These are GPIO-polling observations, not oscilloscope measurements.
+
+Duty observations start after a 3 ms settling delay and reperiod observations after 5 ms.
+They establish settled behavior, but do not distinguish immediate from overflow latching
+after SET_UPDATE. The 100 ms edge-count windows and microsecond timer cannot resolve
+RANGE versus RANGE+1 at these periods (one tick is 20 ns). Those questions, PWM1 and the
+additional routes/periods in the extended plan remain unverified.
 
 ## Use and ownership
 
@@ -118,18 +139,26 @@ STATIC: `cargo test --workspace` includes fake-MMIO reset/clock/update failures,
 arithmetic, pin-route generation, compile-fail pin reuse and cross-core channel transfer,
 whole-block declaration conflicts, overlay reservations and held SCMI clocks.
 
-The diagnostic example is `lab/pwm-loopback` (HW 未検証). Build without deployment:
+The diagnostic example is `lab/pwm-loopback` (scoped HW results above). Build without deployment:
 
 ```sh
 CARGO_BUILD_JOBS=1 cargo rp1 build -p pwm-loopback --target thumbv7m-none-eabi --release
 ```
+
+Package it with `FIRMWARE_PKG=pwm-loopback lab/build-rp1boot.sh`, supplying the required
+input/output environment variables documented in that script and `RP1_ISRAM_PLAN` from
+the two-stage build. The default package remains `shm-firmware`; `FIRMWARE_FEATURES`
+selects feature arguments, with `SHM_FIRMWARE_FEATURES` retained as a compatibility fallback.
 
 On a memory-limited shared host, wait for any other cargo process before each invocation.
 The example keeps proc0 servicing SCMI/endpoint events while proc1 counts loopback samples.
 It exercises two channels, five duties, a disabled-only period change, pin return and whole
 block token reinitialization. It prints observations, not an automatic HW pass verdict.
 
-## Proposed HW acceptance — HW 未検証
+## HW acceptance and extended checks
+
+The results above cover the two-channel loopback subset. The remaining checks below are
+an extended plan, not a claim that all routes, periods or PWM1 have been verified.
 
 1. Schedule with the hardware owner. Save the active boot tuple and hashes, then cold-boot
    the example twice. Retain UART0/UART10 captures through terminal completion. Require
