@@ -6,7 +6,8 @@
 //!   base 0x4018_8000 (AHB, no atomic aliases). Channels "1 and 2" (Linux numbering 0 and 1)
 //!   have 8-beat FIFOs, the others 4-beat.
 //! - [DOC] Linux `drivers/dma/dw-axi-dmac/dw-axi-dmac.h` and `dw-axi-dmac-platform.c`
-//!   (rpi-6.12.y) for every offset and field below, and for the register layout variant:
+//!   (rpi-6.12.y) for offsets and fields below except AW_CACHE (see its evidence), and for
+//!   the register layout variant:
 //!   the RP1 node has `dma-channels = <8>` (8-channel map, `DMAC_CHEN` write-enable at bit 8)
 //!   and `snps,dma-targets = <64>` (> 16, so the driver uses the `CFG2` layout of `CH_CFG`).
 //! - [DOC] Linux `rp1.dtsi`: `snps,axi-max-burst-len = <8 8 4 4 4 4 4 4>`,
@@ -109,7 +110,9 @@ pub mod ctl_l {
     pub const SRC_MSIZE_SHIFT: u32 = 14;
     pub const DST_MSIZE_SHIFT: u32 = 18;
     pub const MSIZE_4: u32 = 1;
-    /// AXI write cache attributes, bits 29:26 (DOC: DW AXI DMAC register layout).
+    /// AXI write cache attributes, bits 29:26: DOC for the CV1800B/CV1801B DW AXI DMAC
+    /// integration, HYP for RP1. Linux defines bit30, not AW_CACHE. RP1 CTL_L readback
+    /// 0x40046400 (HW, 2026-11-05) is consistent with zero here, but does not prove the field.
     pub const AW_CACHE_SHIFT: u32 = 26;
     /// Device Non-bufferable: write response from final AXI destination (ARM IHI 0022).
     pub const AW_CACHE_NONBUFFERABLE: u32 = 0;
