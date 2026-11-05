@@ -1,3 +1,4 @@
+use crate::{linux_blocks::Mmio, scmi::Registers};
 use crate::{read, write};
 use core::{convert::Infallible, marker::PhantomData};
 use embedded_hal::digital::{ErrorType, InputPin, OutputPin, StatefulOutputPin};
@@ -49,12 +50,16 @@ impl<const N: u8> Pin<N> {
         Pin { _mode: PhantomData }
     }
     pub fn into_input(self) -> Pin<N, Input> {
-        write(0x4001_7004, 1 << 19);
-        write(0x400e_3004, 1 << N);
-        write(0x400d_0004 + N as usize * 8, 5);
-        write(0x400f_0004 + N as usize * 4, 0x46);
+        configure_input(&mut Mmio, N);
         Pin { _mode: PhantomData }
     }
+}
+fn configure_input(io: &mut impl Registers, n: u8) {
+    io.write(0x4001_7004, 1 << 19);
+    // Enable the input buffer and force the pad output off before switching the mux.
+    io.write(0x400f_0004 + n as usize * 4, 0xc6);
+    io.write(0x400e_3004, 1 << n);
+    io.write(0x400d_0004 + n as usize * 8, 5);
 }
 impl<const N: u8, M> ErrorType for Pin<N, M> {
     type Error = Infallible;
@@ -103,5 +108,50 @@ impl Doorbell {
     #[inline(always)]
     pub fn acknowledge(&mut self) {
         write(0x400d_3114, 1 << 27);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use std::{collections::BTreeMap, vec::Vec};
+
+    #[test]
+    fn input_enables_buffer_and_disables_pad_output_before_mux() {
+        struct Fake {
+            regs: BTreeMap<usize, u32>,
+            writes: Vec<(usize, u32)>,
+        }
+        impl Registers for Fake {
+            fn read(&mut self, address: usize) -> u32 {
+                self.regs.get(&address).copied().unwrap_or(0)
+            }
+            fn write(&mut self, address: usize, value: u32) {
+                self.regs.insert(address, value);
+                self.writes.push((address, value));
+            }
+        }
+        for n in [0, 22, 23, 27] {
+            let pad = 0x400f_0004 + n as usize * 4;
+            let mux = 0x400d_0004 + n as usize * 8;
+            // Linux leaves a reserved input with IE=0, OD=1.
+            let mut io = Fake {
+                regs: [(pad, 0x96)].into(),
+                writes: Vec::new(),
+            };
+            configure_input(&mut io, n);
+            assert_eq!(io.read(pad) & 0xc0, 0xc0);
+            assert_eq!(io.read(mux), 5);
+            assert_eq!(
+                io.writes,
+                [
+                    (0x4001_7004, 1 << 19),
+                    (pad, 0xc6),
+                    (0x400e_3004, 1 << n),
+                    (mux, 5),
+                ]
+            );
+        }
     }
 }
