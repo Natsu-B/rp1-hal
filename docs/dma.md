@@ -141,6 +141,23 @@ Throughput and latency (RP1 timer, 1 µs; per block = setup + transfer + complet
 same. Fixed per-block cost is about 5 µs (16 B block), so DMA beats CPU posted writes
 (0.54 µs per word) from about 10 words (40 B) per block upward.
 
+### Cancellation proof and burst-length change (2026-11-05, 3 cold boots)
+
+Lab step in command 16 (channel 2, byte-wide 4094 B SRAM→DDR block through the ATU window,
+full block 272 µs): cancelled at 68 / 136 / 204 µs, every time stopped by suspend + disable
+(`CH_SUSPENDED` seen, no abort needed) about 7 µs after the request; `CHEN` bit clear on
+return; the destination held a prefix (≈1070 / 2110 / 3150 bytes) followed by the untouched
+canary, guard bytes intact, no change during a further 2 × 272 µs; the same channel then copied
+the full block exactly. A separate step wrote only `CH_ABORT`/`CH_ABORT_WE` for channel 2 to
+0x01C mid-transfer: the enable bit cleared within 1 µs with `CH_INTSTATUS = 0x8000_0000`
+(`CH_ABORTED`), and the channel copied the full block afterwards. This confirms the 8-channel
+abort layout on HW (two cold boots with the probe).
+
+With ARLEN/AWLEN = `beats - 1` (8 / 4 beats instead of Linux's 9 / 5) SRAM→SRAM 1 KiB blocks
+take 16.9 µs (ch0) and 18.3 µs (ch2) instead of 15.0 / 14.6 µs; SRAM→DDR numbers are unchanged
+(16 B 5.0 µs, 512 B 7.0 µs, 1 KiB blocks 86 MB/s, 64 KiB blocks 210 MB/s). The slowdown is
+attributed to the shorter bursts (HYP: not isolated from the other changes of that commit).
+
 ### RP1 → Linux ring ceiling
 
 The CPU-written ring is bound by posted writes (0.54 µs/word; batched ring 4.58 MB/s, HW
