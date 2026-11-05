@@ -14,7 +14,7 @@
 use crate::{Error, Message, barrier};
 use core::{
     marker::PhantomData,
-    mem::{MaybeUninit, size_of},
+    mem::{MaybeUninit, align_of, size_of},
     ptr,
 };
 
@@ -299,6 +299,63 @@ fn check_ring<T>(
     if ok { Ok(()) } else { Err(Error::Invalid) }
 }
 
+/// Read-back attempts of the [`RingTx::push_slice_staged`] guard before it gives up (each is a
+/// PCIe round trip of about 1 µs on RP1, so about 10 ms).
+pub const GUARD_TRIES: u32 = 10_000;
+
+/// Copies staged slot images into the reader's memory for [`RingTx::push_slice_staged`]
+/// (`rp1-hal` implements it for a DMA channel).
+///
+/// # Safety
+/// `copy_to_remote` must write exactly `src` to `dst..dst + src.len()` and touch nothing else,
+/// and must not return while it can still read `src` or write `dst` (also on error), because
+/// the caller reuses both right away.
+pub unsafe trait SlotCopy {
+    type Error;
+    /// # Safety
+    /// `dst..dst + src.len()` is writable memory of the ring's `data` mapping.
+    unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Self::Error>;
+}
+
+/// Error of [`RingTx::push_slice_staged`]. Nothing was published in either case.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Staged<E> {
+    /// The stage is not 8-byte aligned or smaller than one slot.
+    Invalid,
+    /// The copy failed.
+    Copy(E),
+    /// The read-back guard did not see the copied data within [`GUARD_TRIES`] reads.
+    NotVisible,
+}
+
+/// Writes the slot image of message `index` (`seq`, length, payload, zero padding) at `dst`.
+///
+/// # Safety
+/// `dst` is 8-byte aligned and `slot_size(size_of::<T>())` bytes are writable.
+#[inline(always)]
+unsafe fn stage_slot<T: Message>(dst: *mut u8, index: u32, value: &T) {
+    let size = size_of::<T>();
+    unsafe {
+        dst.cast::<u32>().write(index);
+        dst.add(4).cast::<u32>().write(size as u32);
+        let src = ptr::from_ref(value).cast::<u8>();
+        if size.is_multiple_of(4) && align_of::<T>() >= 4 {
+            for i in 0..size / 4 {
+                dst.add(8 + 4 * i)
+                    .cast::<u32>()
+                    .write(src.add(4 * i).cast::<u32>().read());
+            }
+        } else {
+            for i in 0..size {
+                dst.add(8 + i).write(src.add(i).read());
+            }
+        }
+        for i in 8 + size..slot_size(size) {
+            dst.add(i).write(0);
+        }
+    }
+}
+
 /// Writer end of a ring. Writes `data` (remote), reads `ctrl` (local).
 pub struct RingTx<T> {
     data: *mut u8,
@@ -315,6 +372,8 @@ pub struct RingTx<T> {
     dropped_dirty: bool,
     /// The odd `waiting` value (reader sleep) already notified; 0 = none.
     woken: u32,
+    /// Guard reads of [`RingTx::push_slice_staged`] that did not yet see the staged word.
+    guard_retries: u32,
     _t: PhantomData<fn(T)>,
 }
 unsafe impl<T> Send for RingTx<T> {}
@@ -357,6 +416,7 @@ impl<T: Message> RingTx<T> {
             dropped_dirty: false,
             // A reader already asleep when this writer attaches is notified on the next call.
             woken: 0,
+            guard_retries: 0,
             _t: PhantomData,
         })
     }
@@ -468,6 +528,124 @@ impl<T: Message> RingTx<T> {
         self.head = self.head.wrapping_add(n);
         unsafe { st(self.data, HEAD, self.head) };
         n as usize
+    }
+    /// How many messages of `values` one [`RingTx::push_slice_staged`] call can stage in
+    /// `stage_len` bytes (whole slot images, [`slot_size`] each).
+    pub const fn staged_capacity(stage_len: usize) -> usize {
+        stage_len / slot_size(size_of::<T>())
+    }
+    /// Like [`RingTx::push_slice`], but the slots are written by `copy` (a DMA channel) from
+    /// slot images staged in `stage` (8-byte aligned, at least one slot): for each message the
+    /// writer stages `seq`, the length and the zero-padded payload, `copy` moves them to the
+    /// reader's slots in one block, or two when the batch wraps around the end of the ring, and
+    /// only then is `head` published. Returns how many were written (at most
+    /// [`RingTx::staged_capacity`]; `0` if the ring is full). `overwrite` rings use
+    /// [`RingTx::push_slice`] (the CPU path).
+    ///
+    /// Ordering (protocol.md §2.4): `copy` returns only after the last write of a block was
+    /// acknowledged. Whether a later CPU store of `head` through the same window can still
+    /// overtake those writes on the way to the reader is not something this relies on: after
+    /// the copy the writer reads the last word of every block back through its own mapping
+    /// (a non-posted read, which cannot pass posted writes queued before it) and compares it
+    /// with the staged word, retrying for a bounded time. `head` is stored only after every
+    /// block's word matched, so the reader cannot see `head` before the data. If a word never
+    /// matches the call returns [`Staged::NotVisible`] without publishing (the slots are
+    /// rewritten by the next call). Cost: one PCIe read round trip per block.
+    pub fn push_slice_staged<C: SlotCopy>(
+        &mut self,
+        values: &[T],
+        stage: &mut [u8],
+        copy: &mut C,
+    ) -> Result<usize, Staged<C::Error>> {
+        // SAFETY: the guard is on.
+        unsafe { self.staged(values, stage, copy, true) }
+    }
+    /// [`RingTx::push_slice_staged`] without the read-back guard: `head` is stored right after
+    /// `copy` returned. Only for measuring the ordering hypothesis (a DMA write acknowledged
+    /// to the DMAC lands before a later CPU store through the same window).
+    ///
+    /// # Safety
+    /// The reader may see `head` before the slots unless that hypothesis holds; use only in an
+    /// experiment whose reader checks every message.
+    #[doc(hidden)]
+    pub unsafe fn push_slice_staged_unguarded<C: SlotCopy>(
+        &mut self,
+        values: &[T],
+        stage: &mut [u8],
+        copy: &mut C,
+    ) -> Result<usize, Staged<C::Error>> {
+        unsafe { self.staged(values, stage, copy, false) }
+    }
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
+    unsafe fn staged<C: SlotCopy>(
+        &mut self,
+        values: &[T],
+        stage: &mut [u8],
+        copy: &mut C,
+        guard: bool,
+    ) -> Result<usize, Staged<C::Error>> {
+        let slot = slot_size(size_of::<T>());
+        if !aligned(stage.as_ptr()) || stage.len() < slot {
+            return Err(Staged::Invalid);
+        }
+        if self.overflow == Overflow::Overwrite {
+            return Ok(self.push_slice(values));
+        }
+        let want = values
+            .len()
+            .min(Self::staged_capacity(stage.len()))
+            .min(u32::MAX as usize) as u32;
+        let n = self.reject_free(want).min(want);
+        if n == 0 {
+            return Ok(0);
+        }
+        let base = stage.as_mut_ptr();
+        for (k, v) in values[..n as usize].iter().enumerate() {
+            // SAFETY: k < capacity, so the slot image lies inside `stage` (8-byte aligned).
+            unsafe { stage_slot(base.add(k * slot), self.head.wrapping_add(k as u32), v) };
+        }
+        let first = n.min(self.mask + 1 - (self.head & self.mask));
+        let parts = [(0, first), (first, n - first)];
+        self.store_dropped();
+        for &(k, m) in &parts {
+            if m == 0 {
+                continue;
+            }
+            let src = &stage[k as usize * slot..(k + m) as usize * slot];
+            // SAFETY: the destination is the free slots `head + k ..` (reject mode: the reader
+            // released them), contiguous inside the mapping `attach` was given.
+            unsafe { copy.copy_to_remote(src, self.slot(self.head.wrapping_add(k))) }
+                .map_err(Staged::Copy)?;
+        }
+        if guard {
+            for &(k, m) in &parts {
+                if m == 0 {
+                    continue;
+                }
+                let end = (k + m) as usize * slot - 4;
+                let want = u32::from_ne_bytes(stage[end..end + 4].try_into().unwrap());
+                let last = self.slot(self.head.wrapping_add(k + m - 1));
+                let mut tries = 0;
+                // SAFETY: the last word of the last slot of this part.
+                while unsafe { ld(last, slot - 4) } != want {
+                    tries += 1;
+                    if tries == GUARD_TRIES {
+                        self.guard_retries = self.guard_retries.wrapping_add(tries);
+                        return Err(Staged::NotVisible);
+                    }
+                }
+                self.guard_retries = self.guard_retries.wrapping_add(tries);
+            }
+        }
+        barrier();
+        self.head = self.head.wrapping_add(n);
+        unsafe { st(self.data, HEAD, self.head) };
+        Ok(n as usize)
+    }
+    /// Guard reads of [`RingTx::push_slice_staged`] that returned an old word and were retried
+    /// (diagnostic; `0` means every first read-back already matched).
+    pub fn guard_retries(&self) -> u32 {
+        self.guard_retries
     }
     /// Whether to notify the reader now; call after `push`/`push_slice` (once per batch is
     /// enough). Returns `true` at most once per reader sleep (an odd `waiting` value not
@@ -1024,6 +1202,172 @@ mod tests {
         // Corruption of a slot sequence is detected.
         unsafe { st(d, CONTROL_SIZE + 16, 7) };
         assert_eq!(again.pop(), Err(Error::Corrupt));
+    }
+
+    /// `SlotCopy` for tests: a volatile byte copy that records each block; `skip_last` leaves
+    /// the last word of block `skip_last` unwritten (an acknowledged write not yet visible).
+    struct MemCopy {
+        blocks: vec::Vec<(usize, usize)>,
+        skip_last: Option<usize>,
+        fail: bool,
+    }
+    unsafe impl SlotCopy for MemCopy {
+        type Error = ();
+        unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), ()> {
+            if self.fail {
+                return Err(());
+            }
+            let skip = self.skip_last == Some(self.blocks.len());
+            self.blocks.push((dst as usize, src.len()));
+            let n = if skip { src.len() - 4 } else { src.len() };
+            for (i, b) in src[..n].iter().enumerate() {
+                unsafe { dst.add(i).write_volatile(*b) };
+            }
+            Ok(())
+        }
+    }
+    fn mem_copy() -> MemCopy {
+        MemCopy {
+            blocks: vec::Vec::new(),
+            skip_last: None,
+            fail: false,
+        }
+    }
+    #[repr(C, align(8))]
+    struct Stage([u8; 256]);
+
+    #[test]
+    fn staged_batch_wraps_in_two_blocks_and_publishes_after_copy() {
+        // [u32; 3]: 12 B payload, 24 B slots (4 B of padding).
+        let mut data = mem::<{ CONTROL_SIZE + 8 * 24 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        unsafe {
+            st(d, HEAD, u32::MAX - 2);
+            st(c, TAIL, u32::MAX - 2);
+        }
+        type M = [u32; 3];
+        let len = CONTROL_SIZE + 8 * 24;
+        let mut tx = unsafe { RingTx::<M>::attach(d, len, c, 128, 8, Overflow::Reject) }.unwrap();
+        let mut rx = unsafe { RingRx::<M>::attach(d, len, c, 128, 8, Overflow::Reject) }.unwrap();
+        // Garbage in the padding of the remote slots is overwritten with zeros.
+        for i in 0..8 {
+            unsafe { st(d, CONTROL_SIZE + i * 24 + 20, 0xdead_beef) };
+        }
+        let mut stage = Stage([0xa5; 256]);
+        let values: vec::Vec<M> = (0..20u32).map(|i| [i, !i, i * 7]).collect();
+        let mut copy = mem_copy();
+        // head & 7 = 5: three slots up to the end of the ring, then two from slot 0.
+        assert_eq!(RingTx::<M>::staged_capacity(256), 10);
+        assert_eq!(
+            tx.push_slice_staged(&values[..5], &mut stage.0, &mut copy),
+            Ok(5)
+        );
+        assert_eq!(
+            copy.blocks,
+            [
+                (d as usize + CONTROL_SIZE + 5 * 24, 3 * 24),
+                (d as usize + CONTROL_SIZE, 2 * 24)
+            ]
+        );
+        assert_eq!(unsafe { ld(d, HEAD) }, (u32::MAX - 2).wrapping_add(5));
+        assert_eq!(unsafe { ld(d, CONTROL_SIZE + 5 * 24 + 20) }, 0);
+        assert_eq!(unsafe { ld(d, CONTROL_SIZE + 5 * 24 + 4) }, 12);
+        assert_eq!(tx.guard_retries(), 0);
+        let mut out = [[0u32; 3]; 8];
+        assert_eq!(rx.pop_into(&mut out), Ok(5));
+        assert_eq!(out[..5], values[..5]);
+        // Bounded by the free slots (8) and the stage (10 slots); wraps again (6 + 2).
+        copy.blocks.clear();
+        assert_eq!(
+            tx.push_slice_staged(&values[5..], &mut stage.0, &mut copy),
+            Ok(8)
+        );
+        assert_eq!(copy.blocks.len(), 2);
+        assert_eq!(
+            tx.push_slice_staged(&values[13..], &mut stage.0, &mut copy),
+            Ok(0)
+        );
+        assert_eq!(rx.pop_into(&mut out), Ok(8));
+        assert_eq!(out[..8], values[5..13]);
+        // Mixed with CPU pushes on the same ring.
+        assert_eq!(tx.push_slice(&values[13..15]), 2);
+        assert_eq!(
+            tx.push_slice_staged(&values[15..], &mut stage.0, &mut copy),
+            Ok(5)
+        );
+        assert_eq!(rx.pop_into(&mut out), Ok(7));
+        assert_eq!(out[..7], values[13..20]);
+    }
+
+    #[test]
+    fn staged_guard_withholds_head_until_the_data_is_visible() {
+        let mut data = mem::<{ CONTROL_SIZE + 4 * 24 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        type M = [u32; 4];
+        let len = CONTROL_SIZE + 4 * 24;
+        let mut tx = unsafe { RingTx::<M>::attach(d, len, c, 128, 4, Overflow::Reject) }.unwrap();
+        let mut rx = unsafe { RingRx::<M>::attach(d, len, c, 128, 4, Overflow::Reject) }.unwrap();
+        let mut stage = Stage([0; 256]);
+        let mut copy = mem_copy();
+        copy.skip_last = Some(0);
+        let v = [[1, 2, 3, 4], [5, 6, 7, 8]];
+        assert_eq!(
+            tx.push_slice_staged(&v, &mut stage.0, &mut copy),
+            Err(Staged::NotVisible)
+        );
+        assert_eq!(tx.guard_retries(), GUARD_TRIES);
+        assert_eq!(unsafe { ld(d, HEAD) }, 0);
+        assert_eq!(rx.pop(), Ok(None));
+        // Unguarded (the ordering experiment) publishes regardless; the reader then sees the
+        // stale word (here: zero) in the last slot.
+        copy.skip_last = Some(1);
+        assert_eq!(
+            unsafe { tx.push_slice_staged_unguarded(&v, &mut stage.0, &mut copy) },
+            Ok(2)
+        );
+        assert_eq!(rx.pop(), Ok(Some([1, 2, 3, 4])));
+        assert_eq!(rx.pop(), Ok(Some([5, 6, 7, 0])));
+        // A failed copy publishes nothing either; the next call rewrites the same slots.
+        copy.fail = true;
+        assert_eq!(
+            tx.push_slice_staged(&v, &mut stage.0, &mut copy),
+            Err(Staged::Copy(()))
+        );
+        copy.fail = false;
+        copy.skip_last = None;
+        assert_eq!(tx.push_slice_staged(&v, &mut stage.0, &mut copy), Ok(2));
+        assert_eq!(rx.pop(), Ok(Some([1, 2, 3, 4])));
+        assert_eq!(rx.pop(), Ok(Some([5, 6, 7, 8])));
+        assert_eq!(rx.pop(), Ok(None));
+    }
+
+    #[test]
+    fn staged_rejects_bad_stages_and_overwrite_uses_the_cpu_path() {
+        let mut data = mem::<{ CONTROL_SIZE + 4 * 16 }>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+        let len = CONTROL_SIZE + 4 * 16;
+        let mut tx = unsafe { RingTx::<u64>::attach(d, len, c, 128, 4, Overflow::Reject) }.unwrap();
+        let mut stage = Stage([0; 256]);
+        let mut copy = mem_copy();
+        assert_eq!(
+            tx.push_slice_staged(&[1], &mut stage.0[4..], &mut copy),
+            Err(Staged::Invalid)
+        );
+        assert_eq!(
+            tx.push_slice_staged(&[1], &mut stage.0[..15], &mut copy),
+            Err(Staged::Invalid)
+        );
+        assert!(copy.blocks.is_empty());
+        let mut ow =
+            unsafe { RingTx::<u64>::attach(d, len, c, 128, 4, Overflow::Overwrite) }.unwrap();
+        assert_eq!(
+            ow.push_slice_staged(&[1, 2], &mut stage.0, &mut copy),
+            Ok(2)
+        );
+        assert!(copy.blocks.is_empty());
     }
 
     #[test]
