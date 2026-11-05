@@ -120,6 +120,21 @@ impl HostIrq {
 
     /// Set and clear go through the atomic aliases, so they do not race Linux's own ENABLE /
     /// IACK writes to the same register. `write` ends each store with a barrier.
+    /// [`crate::shm::RingDma::push_slice`] followed by [`HostIrq::notify_ring`] (also after
+    /// an error or a full ring: the reader may have armed meanwhile). The DMA path has already
+    /// read the data back before publishing `head`; the notification reads `head` back.
+    #[inline(always)]
+    pub fn push_slice_dma_notify<T: rp1_proto::Message, const N: u8>(
+        &mut self,
+        dma: &mut crate::shm::RingDma<'_>,
+        ring: &mut crate::shm::RingTx<T>,
+        channel: &mut crate::dma::Channel<N>,
+        values: &[T],
+    ) -> (Result<usize, crate::shm::Staged<crate::dma::Error>>, bool) {
+        let n = dma.push_slice(ring, channel, values);
+        (n, self.notify_ring(ring))
+    }
+
     #[inline(always)]
     fn pulse(&mut self) {
         write(irq::MSIX_CFG_SET as usize, irq::MSIX_CFG_TEST);

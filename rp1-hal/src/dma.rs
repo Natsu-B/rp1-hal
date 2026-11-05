@@ -320,6 +320,42 @@ impl<const N: u8> Channel<N> {
     }
 }
 
+/// Bound of one block of a ring copy ([`rp1_proto::shm::SlotCopy`]); a 64 KiB block takes
+/// about 0.3 ms (HW, docs/dma.md).
+pub const RING_TIMEOUT_US: u32 = 10_000;
+
+/// A channel moves staged ring slots into the reader's memory for
+/// [`rp1_proto::shm::RingTx::push_slice_staged`] (see `shm::RingDma`): blocking like
+/// [`Channel::copy`] (blocks of [`RING_TIMEOUT_US`], stopped before return on error), without
+/// the clk_dma check (the SCMI server holds the clock of a declared controller).
+///
+/// SAFETY: returns only after every block finished or was stopped (`copy_blocking`), and writes
+/// nothing but `dst..dst + src.len()`.
+unsafe impl<const N: u8> rp1_proto::shm::SlotCopy for Channel<N> {
+    type Error = Error;
+    unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Error> {
+        unsafe { ring_copy(&mut Mmio, N, src.as_ptr() as usize, dst as usize, src.len()) }
+    }
+}
+
+/// # Safety
+/// `src..src+len` readable and `dst..dst+len` writable by the DMAC, nothing else writes `dst`.
+unsafe fn ring_copy(
+    io: &mut impl Hardware,
+    n: u8,
+    src: usize,
+    dst: usize,
+    len: usize,
+) -> Result<(), Error> {
+    if len == 0 || len > u32::MAX as usize {
+        return Err(Error::Invalid);
+    }
+    let len = len as u32;
+    let s = memory(src, len)?;
+    let d = memory(dst, len)?;
+    unsafe { copy_blocking(io, n, s, d, len, RING_TIMEOUT_US) }
+}
+
 /// Translates a slice of memory for [`Channel::copy`]: shared SRAM or the outbound window, one
 /// contiguous range (16 B wide bursts are not for peripheral registers).
 fn memory(start: usize, len: u32) -> Result<BusAddr, Error> {
@@ -697,6 +733,41 @@ mod tests {
     }
     fn reg(f: &Fake, a: usize) -> u32 {
         f.writes.iter().rev().find(|w| w.0 == a).unwrap().1
+    }
+
+    #[test]
+    fn ring_copy_moves_staged_slots_from_sram_to_the_window() {
+        let mut f = running();
+        // 5 slots of 24 B from shared SRAM into ring slots in the outbound window.
+        unsafe { ring_copy(&mut f, 1, 0x2000_1000, 0x8100_00c8, 120) }.unwrap();
+        let c = channel_base(1);
+        assert_eq!(reg(&f, c + ch::SAR), 0x2000_1000);
+        assert_eq!(reg(&f, c + ch::SAR + 4), 0xc0);
+        assert_eq!(reg(&f, c + ch::DAR), 0x0100_00c8);
+        assert_eq!(reg(&f, c + ch::DAR + 4), 0x80);
+        // 8-byte aligned destination: 64-bit beats, 15 of them.
+        assert_eq!(reg(&f, c + ch::BLOCK_TS), 14);
+        assert_eq!(f.regs[&(BASE + common::CHEN)] & 0xff, 0);
+        // Only shared SRAM / the outbound window; nothing is started otherwise.
+        f.writes.clear();
+        for (s, d) in [(0x1000_0000, 0x8100_0000), (0x2000_1000, 0x4005_0000)] {
+            assert_eq!(
+                unsafe { ring_copy(&mut f, 1, s, d, 16) },
+                Err(Error::NotDmaVisible)
+            );
+        }
+        assert_eq!(
+            unsafe { ring_copy(&mut f, 1, 0x2000_1000, 0x8100_0000, 0) },
+            Err(Error::Invalid)
+        );
+        assert!(f.writes.is_empty());
+        // A stuck block is stopped before the call returns.
+        f.stuck = true;
+        assert_eq!(
+            unsafe { ring_copy(&mut f, 1, 0x2000_1000, 0x8100_0000, 64) },
+            Err(Error::Timeout)
+        );
+        assert_eq!(f.regs[&(BASE + common::CHEN)] & 2, 0);
     }
 
     #[test]

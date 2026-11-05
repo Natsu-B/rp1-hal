@@ -1,5 +1,7 @@
 //! Reader-local SPSC rings and DDR blocks. Cold boot only (ATU is lost on PERSTn).
-pub use rp1_proto::shm::{Block, BlockReader, BlockWriter, Overflow, RingRx, RingTx, Wait};
+pub use rp1_proto::shm::{
+    Block, BlockReader, BlockWriter, Overflow, RingRx, RingTx, SlotCopy, Staged, Wait,
+};
 use rp1_proto::{
     Error, Message, SHM_WINDOW, barrier, link,
     note::{Note, SHM_AREA, SHM_REGION, ShmArea, ShmKind, ShmRegion},
@@ -208,6 +210,80 @@ impl<'a> Area<'a> {
         unsafe { Block::attach((SHM_WINDOW + r.ddr_offset) as *mut u8, r.ddr_len as usize) }
     }
 }
+/// Moves RP1 → Linux ring batches into Linux DDR by DMA ([`RingTx::push_slice_staged`]):
+/// the slot images are staged in a shared-SRAM buffer and copied by a channel of the
+/// declared DMA controller (`dma = {}`; the caller lends the channel per call, so the same
+/// channel can serve several rings). `head` is published only after the copy finished and
+/// the read-back guard saw the data (docs/dma.md, "DMA ring producer").
+///
+/// Batches whose slot images are smaller than the threshold use the CPU path
+/// ([`RingTx::push_slice`], posted word stores), which is faster for them.
+pub struct RingDma<'s> {
+    stage: &'s mut [u8],
+    threshold: usize,
+}
+impl<'s> RingDma<'s> {
+    /// Default CPU/DMA crossover in staged bytes (HW, docs/dma.md).
+    pub const DEFAULT_THRESHOLD: usize = 96;
+    /// `stage` must be shared SRAM (`#[unsafe(link_section = ".shared")]`) and 8-byte aligned;
+    /// its size bounds one DMA batch ([`RingTx::staged_capacity`]).
+    pub fn new(stage: &'s mut [u8]) -> Result<Self, crate::dma::Error> {
+        use crate::dma::{BusAddr, Error};
+        let start = stage.as_ptr() as usize;
+        let sram = BusAddr::SRAM..BusAddr::SRAM + 0x1_0000;
+        if stage.is_empty() || !start.is_multiple_of(8) {
+            return Err(Error::Invalid);
+        }
+        let first = BusAddr::from_proc(start)?.0;
+        let last = BusAddr::from_proc(start + stage.len() - 1)?.0;
+        if !sram.contains(&first) || !sram.contains(&last) {
+            return Err(Error::NotDmaVisible);
+        }
+        Ok(Self {
+            stage,
+            threshold: Self::DEFAULT_THRESHOLD,
+        })
+    }
+    /// Batches of at least `bytes` staged bytes go by DMA (`0` = always, `usize::MAX` = never).
+    pub fn set_threshold(&mut self, bytes: usize) {
+        self.threshold = bytes;
+    }
+    pub fn threshold(&self) -> usize {
+        self.threshold
+    }
+    /// Publishes up to `values.len()` messages like [`RingTx::push_slice`] (returns how many):
+    /// by DMA on `channel` when the batch reaches the threshold (then at most
+    /// [`RingTx::staged_capacity`] of the stage), otherwise by the CPU. On error nothing was
+    /// published.
+    pub fn push_slice<T: Message, const N: u8>(
+        &mut self,
+        ring: &mut RingTx<T>,
+        channel: &mut crate::dma::Channel<N>,
+        values: &[T],
+    ) -> Result<usize, Staged<crate::dma::Error>> {
+        let n = values
+            .len()
+            .min(RingTx::<T>::staged_capacity(self.stage.len()));
+        if n.saturating_mul(rp1_proto::shm::slot_size(size_of::<T>())) < self.threshold {
+            return Ok(ring.push_slice(values));
+        }
+        ring.push_slice_staged(&values[..n], self.stage, channel)
+    }
+    /// [`RingDma::push_slice`] by DMA without the read-back guard (lab ordering experiment).
+    ///
+    /// # Safety
+    /// See [`RingTx::push_slice_staged_unguarded`].
+    #[doc(hidden)]
+    pub unsafe fn push_slice_unguarded<T: Message, const N: u8>(
+        &mut self,
+        ring: &mut RingTx<T>,
+        channel: &mut crate::dma::Channel<N>,
+        values: &[T],
+    ) -> Result<usize, Staged<crate::dma::Error>> {
+        unsafe { ring.push_slice_staged_unguarded(values, self.stage, channel) }
+    }
+}
+
 fn overflow(overwrite: bool) -> Overflow {
     if overwrite {
         Overflow::Overwrite
@@ -223,5 +299,18 @@ mod tests {
         let size = 0x20_0000;
         assert_eq!(0x0100_0000 + size - 1, 0x011f_ffff);
         assert_eq!(0x10_0000_0000u64 + rp1_proto::SHM_PHYS, 0x10_2200_0000);
+    }
+
+    #[test]
+    fn ring_dma_stage_must_be_aligned_shared_sram() {
+        use super::RingDma;
+        use crate::dma::Error;
+        // Host memory is not DMAC-visible; a stage is checked before any use.
+        #[repr(align(8))]
+        struct S([u8; 64]);
+        let mut s = S([0; 64]);
+        assert!(matches!(RingDma::new(&mut s.0), Err(Error::NotDmaVisible)));
+        assert!(matches!(RingDma::new(&mut s.0[1..]), Err(Error::Invalid)));
+        assert!(matches!(RingDma::new(&mut []), Err(Error::Invalid)));
     }
 }
