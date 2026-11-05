@@ -12,7 +12,9 @@
 //!   byte-wide 4 KiB SRAM -> DDR block on channel 2 is cancelled at 1/4, 1/2 and 3/4 of its
 //!   measured duration; the channel must be disabled on return, the destination must hold a
 //!   prefix of the copy followed by the untouched canary (and not change afterwards), and the
-//!   channel must then copy the full block correctly.
+//!   channel must then copy the full block correctly. A last step writes `CH_ABORT` directly
+//!   (`DMAC_CHEN` high word, 0x01C) mid-transfer to confirm the 8-channel abort layout on HW
+//!   (`DMA_ABORT_RAW`): the enable bit must clear with `CH_ABORTED` set.
 use crate::rp1;
 use core::cell::UnsafeCell;
 use rp1_hal::{
@@ -406,6 +408,7 @@ fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
         ok &= good && reuse_ok;
     }
     ok &= midway > 0;
+    ok &= raw_abort(dma, data, src, dst, len, full_us);
     log!(
         "{} midway={}\n",
         if ok {
@@ -417,4 +420,54 @@ fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
     )
     .unwrap();
     ok
+}
+
+/// Register-layout probe: `CH_ABORT` for channel 2 at `DMAC_CHEN[39:32]` (+ write enable at
+/// `[47:40]`) only, no suspend/disable. Then the Transfer is dropped (finds the channel idle).
+fn raw_abort(
+    dma: &mut Dma,
+    data: *mut u32,
+    src: BusAddr,
+    dst: BusAddr,
+    len: u32,
+    full_us: u32,
+) -> bool {
+    const CHEN_H: usize = 0x4018_801c;
+    const CH2_INTSTATUS: usize = 0x4018_8000 + 0x100 + 2 * 0x100 + 0x88;
+    canary(data);
+    let (mut en, mut clear_us, mut status) = (1, 0, 0);
+    if let Ok(x) = unsafe { dma.ch2.start(src, dst, len) } {
+        let t = now();
+        while now().wrapping_sub(t) < full_us / 2 {}
+        unsafe { (CHEN_H as *mut u32).write_volatile((1 << 2) | (1 << 10)) };
+        let t = now();
+        while chen() & (1 << 2) != 0 && now().wrapping_sub(t) < 10_000 {}
+        clear_us = now().wrapping_sub(t);
+        en = chen() & (1 << 2);
+        status = unsafe { (CH2_INTSTATUS as *const u32).read_volatile() };
+        drop(x);
+    }
+    let (copied, tail_bad, guard_bad, _) = inspect(data);
+    let (r, _, reuse_ok, _) = {
+        canary(data);
+        let r = code(unsafe { dma.ch2.start(src, dst, len) }.and_then(|x| x.wait(TIMEOUT_US)));
+        let (c, t, g, _) = inspect(data);
+        (r, 0, r == 0 && c == len && t == 0 && g == 0, c)
+    };
+    let good = en == 0 && status & (1 << 31) != 0 && copied < len && guard_bad == 0 && reuse_ok;
+    log!(
+        "DMA_ABORT_RAW reg=0x01c chen_after={} clear_us={} intstatus=0x{:08x} aborted={} copied={} tail_bad={} guard_bad={} reuse_rc=0x{:x} reuse_ok={} ok={}\n",
+        en,
+        clear_us,
+        status,
+        status >> 31,
+        copied,
+        tail_bad,
+        guard_bad,
+        r,
+        reuse_ok as u32,
+        good as u32
+    )
+    .unwrap();
+    good
 }
