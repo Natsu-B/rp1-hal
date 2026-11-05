@@ -1,5 +1,7 @@
 //! Ring DMA production and ordering controls. Checks newest published slot first, then
 //! consumes with an explicit error report. Counts each offending logical slot once.
+//! Stale/corrupt records only its first observed violation kind, not a reliable breakdown;
+//! only violation presence is meaningful for the ordering check.
 use crate::{Control, response, sample};
 use rp1_linux::{BlockMap, Firmware, Irq, Result, RingRx};
 use rp1_proto::Error;
@@ -368,8 +370,10 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
     Ok(())
 }
 
-// Ring depths are <=256. A logical index occupies one physical slot until consumed;
-// remembering the last offending index per physical slot deduplicates newest/prefix/retries.
+// Requires ring depths <=256: lab/shm-firmware declares events/wide64=256, wide256=128.
+// Revisit this bound before adding deeper rings. A logical index occupies one physical slot
+// until consumed; remembering its last violation deduplicates newest/prefix/retries across
+// kinds. The first observed kind wins; stale/corrupt counts are not a reliable breakdown.
 struct Seen([Option<u32>; 256]);
 impl Default for Seen {
     fn default() -> Self {
