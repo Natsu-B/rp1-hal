@@ -8,10 +8,15 @@
 //!   final layout (lab/shm-linux `dma`):
 //!   words [0, 128K) = ATU copies, [128K, 256K) = direct copies, each 1 KiB copy `k` is the
 //!   pattern of [`pattern`] with word 0 replaced by `k`.
+//! - Command 16, before the final layout: cancellation proof ([`abort`], `DMA_ABORT ...`): a
+//!   byte-wide 4 KiB SRAM -> DDR block on channel 2 is cancelled at 1/4, 1/2 and 3/4 of its
+//!   measured duration; the channel must be disabled on return, the destination must hold a
+//!   prefix of the copy followed by the untouched canary (and not change afterwards), and the
+//!   channel must then copy the full block correctly.
 use crate::rp1;
 use core::cell::UnsafeCell;
 use rp1_hal::{
-    dma::{BusAddr, Channel, Dma, Error},
+    dma::{BusAddr, Channel, Dma, Error, Stopped},
     log,
 };
 
@@ -25,6 +30,14 @@ unsafe impl Sync for Buf {}
 static SRC: Buf = Buf(UnsafeCell::new([0; WORDS]));
 #[unsafe(link_section = ".shared")]
 static DST: Buf = Buf(UnsafeCell::new([0; WORDS]));
+
+const BIG_BYTES: usize = 4096;
+#[repr(C, align(16))]
+struct Big(UnsafeCell<[u8; BIG_BYTES]>);
+unsafe impl Sync for Big {}
+/// Source of the cancellation proof (shared SRAM; bytes never equal the canary 0xa5).
+#[unsafe(link_section = ".shared")]
+static BIG: Big = Big(UnsafeCell::new([0; BIG_BYTES]));
 
 fn now() -> u32 {
     unsafe { (0x400a_c028 as *const u32).read_volatile() }
@@ -97,19 +110,16 @@ pub fn sram(dma: &mut Dma) {
     }
     // Throughput: 1 KiB SRAM -> SRAM, 1000 copies on channel 0 (8-beat FIFO) and 2 (4-beat),
     // against a CPU word copy (code in shared SRAM).
-    let (s, d) = unsafe {
-        (
-            core::slice::from_raw_parts(s8, 1024),
-            core::slice::from_raw_parts_mut(d8, 1024),
-        )
-    };
+    // The slices are created per copy, so no `&mut` to DST is live during the CPU loop.
+    let s = || unsafe { core::slice::from_raw_parts(s8, 1024) };
+    let d = || unsafe { core::slice::from_raw_parts_mut(d8, 1024) };
     let mut us = [0u32; 3];
     for (slot, u) in us.iter_mut().enumerate() {
         let t = now();
         for _ in 0..1000 {
             match slot {
-                0 => ok &= dma.ch0.copy(s, d, TIMEOUT_US).is_ok(),
-                1 => ok &= dma.ch2.copy(s, d, TIMEOUT_US).is_ok(),
+                0 => ok &= dma.ch0.copy(s(), d(), TIMEOUT_US).is_ok(),
+                1 => ok &= dma.ch2.copy(s(), d(), TIMEOUT_US).is_ok(),
                 _ => {
                     for i in 0..WORDS {
                         unsafe { dst().add(i).write_volatile(src().add(i).read_volatile()) };
@@ -203,6 +213,10 @@ pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8
         }
         out[slot] = now().wrapping_sub(t);
     }
+    // Cancellation proof in the first 4 KiB of the block (overwritten by the layout below).
+    if !abort(dma, data, atu) {
+        errors += 1;
+    }
     // 512 KiB per path in 1 KiB blocks, copy k carries k in word 0.
     for (half, base) in [(0usize, atu), (1, direct)] {
         let t = now();
@@ -251,4 +265,156 @@ pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8
     )
     .unwrap();
     (errors, out)
+}
+
+const CANARY: u32 = 0xa5a5_a5a5;
+const fn big(i: usize) -> u8 {
+    ((i * 13 + 1) % 0xa5) as u8
+}
+/// Canary-fills the first `BIG_BYTES` of the DDR block (CPU posted writes, completed).
+fn canary(data: *mut u32) {
+    for w in 0..BIG_BYTES / 4 {
+        unsafe { data.add(w).write_volatile(CANARY) };
+    }
+    rp1_hal::shm::complete_posted_writes();
+}
+/// DDR bytes `1..BIG_BYTES - 1` against BIG: (copied prefix length, canary bytes missing after
+/// the prefix, guard bytes 0 / BIG_BYTES - 1 changed, FNV hash of the whole range).
+fn inspect(data: *mut u32) -> (u32, u32, u32, u32) {
+    let (mut copied, mut tail_bad, mut guard_bad, mut hash) = (0u32, 0u32, 0u32, 0x811c_9dc5u32);
+    let mut in_prefix = true;
+    for w in 0..BIG_BYTES / 4 {
+        let word = unsafe { data.add(w).read_volatile() }.to_le_bytes();
+        for (k, b) in word.into_iter().enumerate() {
+            let i = w * 4 + k;
+            hash = (hash ^ u32::from(b)).wrapping_mul(0x0100_0193);
+            if i == 0 || i == BIG_BYTES - 1 {
+                guard_bad += u32::from(b != 0xa5);
+            } else if in_prefix && b == big(i) {
+                copied += 1;
+            } else {
+                in_prefix = false;
+                tail_bad += u32::from(b != 0xa5);
+            }
+        }
+    }
+    (copied, tail_bad, guard_bad, hash)
+}
+fn chen() -> u32 {
+    unsafe { (0x4018_8018 as *const u32).read_volatile() }
+}
+fn stopped_code(s: Stopped) -> u32 {
+    match s {
+        Stopped::Finished(_) => 0,
+        Stopped::Disabled { suspended: false } => 1,
+        Stopped::Disabled { suspended: true } => 2,
+        Stopped::Aborted => 3,
+        Stopped::Late => 4,
+    }
+}
+
+/// Cancellation proof on channel 2 (4-beat FIFO): byte-wide SRAM -> DDR (ATU window), so the
+/// block is slow enough to be cancelled mid-way. Logs `DMA_ABORT_PASS` or `DMA_ABORT_FAIL`.
+#[inline(never)]
+fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
+    let b = BIG.0.get().cast::<u8>();
+    for i in 0..BIG_BYTES {
+        unsafe { b.add(i).write_volatile(big(i)) };
+    }
+    let len = BIG_BYTES as u32 - 2;
+    let (src, dst) = match BusAddr::from_proc(b as usize + 1) {
+        Ok(s) => (s, BusAddr(atu.0 + 1)),
+        Err(_) => return false,
+    };
+    // Full block: timing and the reference result.
+    let full = |dma: &mut Dma| {
+        canary(data);
+        let t = now();
+        let r = code(unsafe { dma.ch2.start(src, dst, len) }.and_then(|x| x.wait(TIMEOUT_US)));
+        let us = now().wrapping_sub(t);
+        let (copied, tail_bad, guard_bad, _) = inspect(data);
+        (
+            r,
+            us,
+            r == 0 && copied == len && tail_bad == 0 && guard_bad == 0,
+            copied,
+        )
+    };
+    let (r, full_us, mut ok, copied) = full(dma);
+    log!(
+        "DMA_ABORT_FULL bytes={} width=1 rc=0x{:x} us={} copied={} ok={}\n",
+        len,
+        r,
+        full_us,
+        copied,
+        ok as u32
+    )
+    .unwrap();
+    let mut midway = 0;
+    for quarter in 1..4u32 {
+        canary(data);
+        let delay = full_us * quarter / 4;
+        let t = now();
+        let how = match unsafe { dma.ch2.start(src, dst, len) } {
+            Ok(x) => {
+                while now().wrapping_sub(t) < delay {}
+                x.cancel()
+            }
+            Err(e) => Stopped::Finished(Err(e)),
+        };
+        let elapsed = now().wrapping_sub(t);
+        let en = chen() & (1 << 2);
+        let (copied, tail_bad, guard_bad, hash) = inspect(data);
+        // Nothing may change after cancel() returned.
+        let t2 = now();
+        while now().wrapping_sub(t2) < 2 * full_us + 100 {}
+        let (_, _, _, hash2) = inspect(data);
+        let late_change = u32::from(hash != hash2);
+        let good = !matches!(how, Stopped::Finished(_))
+            && en == 0
+            && copied < len
+            && tail_bad == 0
+            && guard_bad == 0
+            && late_change == 0;
+        midway += u32::from(good && copied > 0);
+        log!(
+            "DMA_ABORT q={} delay_us={} how={} chen_after={} copied={} len={} tail_bad={} guard_bad={} late_change={} elapsed_us={} ok={}\n",
+            quarter,
+            delay,
+            stopped_code(how),
+            en,
+            copied,
+            len,
+            tail_bad,
+            guard_bad,
+            late_change,
+            elapsed,
+            good as u32
+        )
+        .unwrap();
+        // The same channel copies the whole block correctly afterwards.
+        let (r, us, reuse_ok, copied) = full(dma);
+        log!(
+            "DMA_ABORT_REUSE q={} rc=0x{:x} us={} copied={} ok={}\n",
+            quarter,
+            r,
+            us,
+            copied,
+            reuse_ok as u32
+        )
+        .unwrap();
+        ok &= good && reuse_ok;
+    }
+    ok &= midway > 0;
+    log!(
+        "{} midway={}\n",
+        if ok {
+            "DMA_ABORT_PASS"
+        } else {
+            "DMA_ABORT_FAIL"
+        },
+        midway
+    )
+    .unwrap();
+    ok
 }
