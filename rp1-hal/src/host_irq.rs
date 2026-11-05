@@ -118,11 +118,11 @@ impl HostIrq {
         (n, self.notify_ring(ring))
     }
 
-    /// Set and clear go through the atomic aliases, so they do not race Linux's own ENABLE /
-    /// IACK writes to the same register. `write` ends each store with a barrier.
     /// [`crate::shm::RingDma::push_slice`] followed by [`HostIrq::notify_ring`] (also after
     /// an error or a full ring: the reader may have armed meanwhile). The DMA path has already
-    /// read the data back before publishing `head`; the notification reads `head` back.
+    /// completed the copy under the SlotCopy ordering contract before publishing `head`;
+    /// Channel's AXI-to-PCIe ordering chain remains HYP (docs/dma.md). The notification reads
+    /// `head` back; it does not verify the payload or establish that ordering chain.
     #[inline(always)]
     pub fn push_slice_dma_notify<T: rp1_proto::Message, const N: u8>(
         &mut self,

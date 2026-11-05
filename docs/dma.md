@@ -189,6 +189,9 @@ let (n, pulsed) = host_irq.push_slice_dma_notify(&mut ring_dma, &mut tx, &mut dm
   (blocking, `dma::RING_TIMEOUT_US` per block, a failed block is stopped before return), then the
   barrier, then `head`. The batch is bounded by `RingTx::writable()` and stage capacity;
   the threshold uses that actual writable count, including when only one slot is free.
+  The CPU path takes the full input slice, bounded only by ring capacity, not the stage;
+  it also handles a stage smaller than one slot, even at threshold 0. `usize::MAX` always
+  selects the CPU path.
 - `unsafe trait SlotCopy`: on success ALL copied bytes must reach the ordering point shared
   with subsequent CPU stores to the same mapping; no such store may overtake them. Source
   access must stop on every return. The Channel implementation relies on the HYP chain above.
@@ -204,8 +207,8 @@ let (n, pulsed) = host_irq.push_slice_dma_notify(&mut ring_dma, &mut tx, &mut dm
 
 Lab command 17 (`shm-linux ring-dma`): 10^6 messages per run, every one checked by Linux;
 batches of 32 (16 B, 64 B) or 8 (256 B) messages, channel 1, the stage in shared SRAM.
-`ring` = payload rate of the RP1 time inside the ring API (push and, by DMA, staging, copy,
-guard, `head`); `end-to-end` = Linux-measured payload rate including the lab's message
+`ring` = payload rate of the RP1 time inside the historical ring API (CPU push, or DMA
+staging, copy, the former guard and `head`); `end-to-end` = Linux-measured payload rate including the lab's message
 generation on RP1 (from shared-SRAM code; not part of the ring). Polling consumer; the irq
 consumer gives the same RP1 rates (within 1 %) with 13–29 % consumer CPU. The two boots agree
 within 0.1 %.
@@ -224,13 +227,16 @@ DMA run (100 µs between batches) slept and was woken by interrupts. With the de
 threshold a single 16 B message stayed on the CPU (10^6 CPU batches) and a 32-message batch
 used DMA.
 
-Crossover (RP1 µs per batch inside the ring API, CPU / DMA): 16 B messages 10.1 / 12.0 at
+Historical crossover with the former guard (RP1 µs per batch inside the ring API, CPU / DMA): 16 B messages 10.1 / 12.0 at
 8 slots (192 B), 14.3 / 14.0 at 12 (288 B), 35.2 / 23.2 at 32; 64 B messages 9.0 / 11.2 at
 2 (144 B), 16.1 / 13.7 at 4 (288 B); 256 B messages 15.5 / 14.1 at 1 (264 B). Hence the
-256 B default. A DMA batch costs about 9 µs fixed (block setup and completion about 5 µs, the
-guard read, `head`) plus about 0.45 µs per 24 B slot; slots are 8-byte multiples, so the
-DMAC moves 64-bit beats, not the 128-bit beats of the bulk numbers above (HYP: the main reason
-the per-byte rate is below the 1 KiB-block figure).
+256 B default was selected from these historical measurements. The historical cost model was
+about 9 µs fixed (block setup/completion, the former guard and `head`) plus about 0.45 µs per
+24 B slot. The current path stages and copies the slots, waits for completion, then performs
+the barrier and publishes `head`; it has no guard read. Its fixed cost and crossover have
+not been remeasured, so the retained 256 B default is provisional. Slots are 8-byte multiples,
+so the DMAC moves 64-bit beats rather than the bulk tests' 128-bit beats (STATIC); attributing
+the rate difference mainly to beat width is HYP.
 
 Staging uses volatile word stores: a plain copy loop became a `memcpy` call, which on RP1 runs
 from shared SRAM and made 256 B slots cost more by DMA than by CPU (HW, an earlier build:
@@ -239,12 +245,15 @@ from shared SRAM and made 256 B slots cost more by DMA than by CPU (HW, an earli
 ### Ordering experiment (DMA completion vs a later CPU `head` store)
 
 The previous guard-off experiment reported zero violations, but `pop_into` could hide an
-error after a valid prefix. Those counts cannot establish ordering (STATIC review finding).
+error after a valid prefix. Those counts are withdrawn as ordering evidence (STATIC review finding).
 
 The revised lab command `shm-linux ring-dma-order [count]` checks the newest published slot
 first (seq, length, every payload word), then consumes using `pop_into_report` so a transient
 error after a prefix is retained. It counts each logical offending slot once across newest,
-prefix and repeated retry observations. The 16 B `events` payload ends in constant
+prefix and repeated retry observations. Deduplication assumes ring depths <=256 (events and
+wide64: 256, wide256: 128). A slot is classified by its first observed violation; later stale
+or corrupt observations of the same index are suppressed. Only violation presence is meaningful,
+not the stale/corrupt breakdown. The 16 B `events` payload ends in constant
 `0x5250_3148`; the 64/256 B payloads have word 0 = `i`, intermediate words
 `i ^ k * 0x9e37_79b9`, final word = `!i`. Seq alone cannot detect delayed interior payload.
 
@@ -270,6 +279,11 @@ the experiment's end markers. That phase is FAIL and its partial data is exclude
 requested 100,000,000-item complete campaign is therefore NOT VERIFIED. Reset cause remains
 unknown. Neither these finite observations nor the positive control prove the internal
 AXI-to-PCIe ordering chain. Error fencing remains STATIC-tested, not HW fault-injected.
+
+HW rerun (2026-11-05/06): FAIL as well. A spontaneous restart had power-on-reset telemetry;
+another phase was interrupted without end markers. The requested two-boot complete campaign
+remains NOT VERIFIED. Separate 6M-item wide256 DMA and CPU diagnostics completed, but do not
+replace the failed campaign or establish a reset cause. The ordering chain remains HYP.
 
 ## Mem-to-peripheral plan (not implemented)
 

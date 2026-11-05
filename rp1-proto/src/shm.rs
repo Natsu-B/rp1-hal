@@ -317,7 +317,7 @@ pub unsafe trait SlotCopy {
     unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Self::Error>;
 }
 
-/// Error of [`RingTx::push_slice_staged`]. Nothing was published in either case.
+/// Error of [`RingTx::push_slice_staged`]. No messages were published by the failed call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Staged<E> {
     /// The stage is not 8-byte aligned or smaller than one slot.
