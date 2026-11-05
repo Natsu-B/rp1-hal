@@ -47,7 +47,6 @@ pub mod board {
         ("ETH", "rp1_eth"),
         ("USBHOST0", "rp1_usb0"),
         ("USBHOST1", "rp1_usb1"),
-        ("DMA", "rp1_dma"),
         ("PCIE", "pcie2"),
         ("PIO", "rp1_pio"),
     ];

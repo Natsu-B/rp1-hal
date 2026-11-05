@@ -355,7 +355,7 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
             _ => {}
         }
     }
-    pwm_consumers(fdt, &mut out)?;
+    provider_consumers(fdt, &mut out)?;
     let reserved = reserved_gpios(fdt)?;
     let withheld: BTreeSet<u32> = reserved.union(&out.pins).copied().collect();
     // An RP1-owned instance with no owned pins still needs the pinctrl check, but only when
@@ -705,40 +705,49 @@ fn rp1_irq_lines(
     Ok(lines)
 }
 
-/// A disabled PWM provider must not leave its Linux consumers eligible to probe.
-/// Parse each specifier with its provider's #pwm-cells; raw cell matching could mistake a
-/// period or duty argument for an owned provider's phandle.
-fn pwm_consumers(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
-    if !out.blocks.iter().any(|id| (48..=49).contains(id)) {
-        return Ok(());
-    }
-    for n in 0..fdt.nodes.len() {
-        if !fdt.enabled(n) || metadata_node(fdt, n) || fdt.prop(n, "pwms").is_none() {
+/// A disabled PWM or DMA provider must not leave its Linux consumers eligible to probe
+/// (a `dmas` consumer of a disabled DMAC defers forever: of-dma returns -EPROBE_DEFER when the
+/// provider is not registered, DOC Linux of-dma.c). Parse each specifier with its provider's
+/// `#pwm-cells` / `#dma-cells`; raw cell matching could mistake an argument (a period, a DREQ
+/// number) for an owned provider's phandle.
+fn provider_consumers(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
+    type Kind = (&'static str, &'static str, fn(u16) -> bool);
+    const KINDS: [Kind; 2] = [
+        ("pwms", "#pwm-cells", |id| (48..=49).contains(&id)),
+        ("dmas", "#dma-cells", |id| id == 65),
+    ];
+    for (prop, cells_prop, owned) in KINDS {
+        if !out.blocks.iter().any(|id| owned(*id)) {
             continue;
         }
-        let values = cells(fdt, n, "pwms")?;
-        let mut at = 0;
-        while at < values.len() {
-            let handle = values[at];
-            at += 1;
-            if handle == 0 {
+        for n in 0..fdt.nodes.len() {
+            if !fdt.enabled(n) || metadata_node(fdt, n) || fdt.prop(n, prop).is_none() {
                 continue;
-            } // Empty phandle slot (of_parse_phandle_with_args).
-            let provider = fdt
-                .phandle(handle)
-                .ok_or_else(|| format!("{} pwms: unresolved provider {handle:#x}", fdt.path(n)))?;
-            let count = cells(fdt, provider, "#pwm-cells")?;
-            let count = match count.as_slice() {
-                [count] if *count > 0 => *count as usize,
-                _ => return Err(format!("{}: unsupported #pwm-cells", fdt.path(provider))),
-            };
-            if count > values.len() - at {
-                return Err(format!("{} pwms: truncated specifier", fdt.path(n)));
             }
-            if let Some(label) = out.owned_blocks.get(&provider) {
-                out.add(n, format!("pwms uses RP1-owned block {label}"));
+            let values = cells(fdt, n, prop)?;
+            let mut at = 0;
+            while at < values.len() {
+                let handle = values[at];
+                at += 1;
+                if handle == 0 {
+                    continue;
+                } // Empty phandle slot (of_parse_phandle_with_args).
+                let provider = fdt.phandle(handle).ok_or_else(|| {
+                    format!("{} {prop}: unresolved provider {handle:#x}", fdt.path(n))
+                })?;
+                let count = cells(fdt, provider, cells_prop)?;
+                let count = match count.as_slice() {
+                    [count] if *count > 0 => *count as usize,
+                    _ => return Err(format!("{}: unsupported {cells_prop}", fdt.path(provider))),
+                };
+                if count > values.len() - at {
+                    return Err(format!("{} {prop}: truncated specifier", fdt.path(n)));
+                }
+                if let Some(label) = out.owned_blocks.get(&provider) {
+                    out.add(n, format!("{prop} uses RP1-owned block {label}"));
+                }
+                at += count;
             }
-            at += count;
         }
     }
     Ok(())

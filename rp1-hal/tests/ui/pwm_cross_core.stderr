@@ -4,13 +4,13 @@ error[E0277]: `*mut ()` cannot be sent between threads safely
 4 |     needs_send::<Channel<0, 0>>();
   |                  ^^^^^^^^^^^^^ `*mut ()` cannot be sent between threads safely
   |
-  = help: within `Channel<0, 0>`, the trait `Send` is not implemented for `*mut ()`
+  = help: within `rp1_hal::pwm::Channel<0, 0>`, the trait `Send` is not implemented for `*mut ()`
 note: required because it appears within the type `PhantomData<*mut ()>`
  --> $RUST/core/src/marker.rs
   |
   | pub struct PhantomData<T: PointeeSized>;
   |            ^^^^^^^^^^^
-note: required because it appears within the type `Channel<0, 0>`
+note: required because it appears within the type `rp1_hal::pwm::Channel<0, 0>`
  --> src/pwm.rs
   |
   | pub struct Channel<const N: u8, const C: u8> {

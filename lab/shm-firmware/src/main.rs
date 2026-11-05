@@ -6,6 +6,8 @@ use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
 #[cfg(feature = "adc")]
 mod adc_proof;
+#[cfg(feature = "dma")]
+mod dma_proof;
 #[cfg(feature = "i2c")]
 mod i2c_proof;
 #[cfg(feature = "sram-profile")]
@@ -190,9 +192,9 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     log!("p1 ready bss=0x{:x}\n", bss_check(0xb55_1000)).unwrap();
     // The ADC is declared on proc1: its Clocks come from proc0's clock_authority.init
     // (published before proc0 launches proc1).
-    #[cfg(any(feature = "adc", feature = "spi"))]
+    #[cfg(any(feature = "adc", feature = "spi", feature = "dma"))]
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000);
-    #[cfg(any(feature = "adc", feature = "spi"))]
+    #[cfg(any(feature = "adc", feature = "spi", feature = "dma"))]
     log!("p1 clocks {:?}\n", clocks).unwrap();
     #[cfg(feature = "adc")]
     let mut adc = {
@@ -232,6 +234,15 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             spi_proof::log_result("boot", &spi_proof::prove(dev, "P1BOOT"));
         }
         spi
+    };
+    #[cfg(feature = "dma")]
+    let mut dma = {
+        let dma = clocks.ok().and_then(|c| dma_proof::init(p.dma, &c));
+        let mut dma = dma;
+        if let Some(d) = dma.as_mut() {
+            dma_proof::sram(d);
+        }
+        dma
     };
     VALUES.producer(&mut core).push(42).unwrap();
     let mut doorbell = Doorbell::new(p.pins.gpio27);
@@ -392,6 +403,22 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 (errors, extra) = events_stream(&mut events, notify, count, seed, start);
             }
             11 | 13 => errors = down_batch(&mut down, count, start),
+            #[cfg(feature = "dma")]
+            16 => {
+                // RP1 holds the bulk writer role; DMA and CPU write the DDR block (dma_proof).
+                let mut writer = unsafe { bulk.begin_write() };
+                let data = unsafe { writer.as_ptr() };
+                let phys = rp1_proto::SHM_PHYS + (data as u64 - u64::from(rp1_proto::SHM_WINDOW));
+                match dma.as_mut() {
+                    Some(d) => {
+                        let (e, out) = dma_proof::ddr(d, data, phys, seed);
+                        errors = e;
+                        request[8..16].copy_from_slice(&out);
+                    }
+                    None => errors = 1,
+                }
+                writer.commit();
+            }
             #[cfg(feature = "sram-profile")]
             9 => {
                 // Lab micro-profile (ends with PROF_DONE); RP1 holds the bulk writer role and uses

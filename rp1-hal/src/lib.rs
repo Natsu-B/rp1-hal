@@ -3,6 +3,7 @@ pub use rp1_pac as pac;
 pub mod adc;
 pub mod clocks;
 pub mod cold;
+pub mod dma;
 pub mod gpio;
 #[cfg(feature = "unstable-host-irq")]
 pub mod host_irq;

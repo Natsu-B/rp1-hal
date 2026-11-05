@@ -72,6 +72,7 @@ fn every_owned_instance_disables_its_linux_node_and_keeps_its_reset_and_clock() 
         ("adc", "", 0, 0),
         ("pwm0", "channel0=12", 1, 4),
         ("pwm1", "", 1, 5),
+        ("dma", "", 0, 3),
     ];
     for (name, pins, bank, bit) in cases {
         for core in [0, 1] {
@@ -95,6 +96,7 @@ fn every_owned_instance_disables_its_linux_node_and_keeps_its_reset_and_clock() 
                     "adc" => 1 << rp1_hal::scmi::id::ADC,
                     "pwm0" => 1 << rp1_hal::scmi::id::PWM0,
                     "pwm1" => 1 << rp1_hal::scmi::id::PWM1,
+                    "dma" => 1 << rp1_hal::scmi::id::DMA,
                     _ => 0,
                 },
                 "{name}"
@@ -865,4 +867,16 @@ fn pwm_resources_keep_pins_and_note_block_ids_without_channel_subownership() {
     assert!(a.dts.contains("gpio-reserved-ranges = <12 1 18 1>;"));
     assert_eq!(rp1_build::metadata::peripheral_id("PWM0").unwrap(), (2, 48));
     assert_eq!(rp1_build::metadata::peripheral_id("PWM1").unwrap(), (2, 49));
+}
+
+#[test]
+fn dma_resource_is_a_controller_token_with_block_id_65() {
+    let d: Declaration = toml::from_str("schema=2\n[proc1]\ndma={}").unwrap();
+    let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    assert!(a.dts.contains("target = <&rp1_dma>"));
+    assert_eq!(rp1_build::metadata::peripheral_id("DMA").unwrap(), (2, 65));
+    assert_eq!(
+        rp1_build::metadata::peripheral_type("DMA").unwrap(),
+        "::rp1_hal::dma::Token"
+    );
 }

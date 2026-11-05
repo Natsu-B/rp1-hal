@@ -51,6 +51,7 @@ pub enum Instance {
     I2c(I2cPins),
     Spi(SpiPins),
     Adc {},
+    Dma {},
 }
 
 fn signal_name(signal: Signal) -> String {
@@ -143,11 +144,15 @@ impl Instance {
                 }
                 Self::Spi(parse_pin_table(value, &path)?)
             }
-            Kind::Adc => {
+            Kind::Adc | Kind::Dma => {
                 if value.as_table().is_none_or(|t| !t.is_empty()) {
                     return Err(format!("E0: {path} must be an empty table").into());
                 }
-                Self::Adc {}
+                if info.kind == Kind::Adc {
+                    Self::Adc {}
+                } else {
+                    Self::Dma {}
+                }
             }
         })
     }
@@ -191,7 +196,7 @@ impl Instance {
                     Signal::Pwm(n, rp1_pinmux::PwmSignal::Channel3),
                 ),
             ],
-            Self::Adc {} => vec![],
+            Self::Adc {} | Self::Dma {} => vec![],
         }
     }
     fn required(&self) -> &'static [&'static str] {
@@ -199,7 +204,7 @@ impl Instance {
             Self::Uart(_) => &["tx", "rx"],
             Self::I2c(_) => &["sda", "scl"],
             Self::Spi(_) => &["sck", "mosi", "miso"],
-            Self::Adc {} | Self::Pwm(_) => &[],
+            Self::Adc {} | Self::Dma {} | Self::Pwm(_) => &[],
         }
     }
     /// Schema 1 listed raw pins next to a block name. Infer only the required signals, each
@@ -258,6 +263,7 @@ impl Instance {
                 miso: pin("miso"),
             }),
             Self::Adc {} => Self::Adc {},
+            Self::Dma {} => Self::Dma {},
             Self::Pwm(_) => Self::Pwm(PwmPins::default()),
         })
     }

@@ -284,6 +284,7 @@ pub fn peripheral_type(p: &str) -> Result<String> {
             Kind::Spi => format!("::rp1_hal::spi::Token<{}>", i.number),
             Kind::Adc => "::rp1_hal::adc::Token".into(),
             Kind::Pwm => format!("::rp1_hal::pwm::Token<{}>", i.number),
+            Kind::Dma => "::rp1_hal::dma::Token".into(),
         }),
         None => Err(crate::board::undeclarable(&name)
             .filter(|_| p == name.to_ascii_uppercase())
@@ -303,6 +304,8 @@ pub fn peripheral_id(p: &str) -> Result<(u8, u16)> {
         (2, rp1_proto::BlockId::Pwm0 as u16 + n.parse::<u16>()?)
     } else if p == "ADC" {
         (2, rp1_proto::BlockId::Adc as u16)
+    } else if p == "DMA" {
+        (2, rp1_proto::BlockId::Dma as u16)
     } else {
         (3, p.strip_prefix("TIMER.ALARM").unwrap().parse()?)
     })

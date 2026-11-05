@@ -55,6 +55,7 @@ gpio = [8, 27]                            # 8 = SPI0 のチップセレクト（
 gpio_irq = [27]                           # 割り込みを受けるピン（gpio の部分集合）
 timer = ["ALARM1"]
 adc = {}                                  # ピンの無いブロック
+dma = {}                                  # DMA コントローラー全体（8 チャネル、docs/dma.md）
 spi0 = { sck = 11, mosi = 10, miso = 9 }  # ハードの csN は未対応（エラー）
 host_irq = true                           # 不安定: RP1 → Linux 割り込み（rp1-hal の unstable-host-irq、design.md §6.2）
 
@@ -93,7 +94,7 @@ on_conflict = "disable"                   # "disable"（既定）| "refuse"。�
 ```
 
 - 所有は**ブロックのインスタンス単位**で 1 つ（`proc0` / `proc1` / Linux）。宣言に書かれていないインスタンスとピンは Linux のもの。
-- インスタンスのキー: `uart0`..`uart4`、`i2c0`..`i2c3`、`spi0`/`spi1`/`spi3`/`spi5`、`adc`。信号名: UART `tx rx`、
+- インスタンスのキー: `uart0`..`uart4`、`i2c0`..`i2c3`、`spi0`/`spi1`/`spi3`/`spi5`、`adc`、`pwm0`/`pwm1`、`dma`。信号名: UART `tx rx`、
   I2C `sda scl`、SPI `sck mosi miso`（すべて必須）。UART の `cts`/`rts` は RP1 側のフロー制御が未実装なので、`proc0`/`proc1` では
   E4（`UART flow control is not supported yet`）。そのピンを GPIO として使うなら `gpio` に書く。`linux.keep` では Linux のフロー制御
   ピンとして書ける（機能表で検査し、保護する）。
@@ -135,7 +136,7 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 | Linux | `linux.keep`（省略時はボード既定。書くと既定を置き換える） | インスタンスとピン | 宣言できない（E3/E4） |
 
 PCIe、mailbox ch0（SCMI 用）、共有 SRAM の予約域は、ボード表が「RP1 システム」として固定で持ち、宣言はできない。
-rpi-cm5 のボード表は GPIO 28..53（ETH_RST_N、VBUS など）と Ethernet・USB・DMA・PCIe・PIO を Linux に残す。この「Linux に要る
+rpi-cm5 のボード表は GPIO 28..53（ETH_RST_N、VBUS など）と Ethernet・USB・PCIe・PIO を Linux に残す（DMA は 2026-11-05 から宣言できる。宣言しなければ Linux のまま。`dmas` で `rp1_dma` を使う有効なノードは衝突として扱う。[dma.md](dma.md)）。この「Linux に要る
 ブロック」の表は、ビルドの宣言検査とローダーの保護ノード（§3.2）が共有する。
 
 ### 1.4 ビルド時のエラー（build.rs が止める）

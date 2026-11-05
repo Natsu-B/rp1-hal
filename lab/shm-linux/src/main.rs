@@ -1,4 +1,5 @@
 use rp1_linux::{BlockMap, Firmware, Result};
+mod dma;
 mod ring_irq;
 use rp1_proto::Error;
 use std::time::{Duration, Instant};
@@ -130,6 +131,9 @@ fn probe_window() -> Result<()> {
     result
 }
 fn main() -> Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("dma") {
+        return dma::main();
+    }
     if std::env::args().nth(1).as_deref() == Some("ring-irq") {
         let count = std::env::args()
             .nth(2)
