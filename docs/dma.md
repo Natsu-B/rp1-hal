@@ -28,7 +28,10 @@ dma = {}          # the whole controller: reset, clk_dma, the DMA interrupt line
   provider's `#dma-cells` (a DREQ number equal to a phandle is not a reference). STATIC:
   `rp1-dt` resolve test. HW (2026-11-05): with the standard CM5 IO DTB + `uart1-pi5` no enabled
   node uses `rp1_dma`; the loader disabled only `gpiomem` (as before). An overlay enabling an
-  RP1 SPI/I2S/PIO node (all carry `dmas = <&rp1_dma ..>`) would now lose that node.
+  RP1 SPI/I2S node (they carry `dmas = <&rp1_dma ..>`) would now lose that node. `rp1_pio` is
+  different: it is a protected node (in the board's Linux-required list), so a `dmas` conflict
+  on an enabled `rp1_pio` makes the resolver **refuse** the plan even with
+  `on_conflict = "disable"` (STATIC: `rp1-dt` resolve, protected nodes are never disabled).
 
 ## API
 
@@ -36,20 +39,52 @@ dma = {}          # the whole controller: reset, clk_dma, the DMA interrupt line
   `DMAC_RESET` soft reset, every channel disabled with interrupts masked, `DMAC_CFG.DMAC_EN`.
   Returns `Dma { ch0..ch7 }`.
 - `Channel<N>::copy(&[u8], &mut [u8], timeout_us)`: safe, blocking. Both slices must be
-  DMAC-visible (shared SRAM, APB/AHB peripherals, outbound window); splits into blocks; a
-  timed-out block is aborted (`DMAC_CHABORTREG`) before return.
+  contiguous DMAC-visible memory (shared SRAM or the outbound window; peripheral registers are
+  refused, use `start`); splits into blocks. A timed-out or failed block is stopped before
+  return (see Cancellation); `copy` never returns while the channel can still access a buffer.
 - `unsafe Channel<N>::start(src: BusAddr, dst: BusAddr, len) -> Transfer`: one block,
-  `Transfer::poll()` / `wait(timeout_us)`; dropping an unfinished transfer aborts it. The
-  caller guarantees the memory (a leaked `Transfer` keeps the DMA running).
-- Errors: `Bus(CH_INTSTATUS)` on decode/slave errors (the channel is aborted), `Timeout`,
-  `Busy`, `Invalid`, `NotDmaVisible`, `Precondition` (clk_dma not 100 MHz).
+  `Transfer::poll()` / `wait(timeout_us)` / `cancel() -> Stopped`; dropping an unfinished
+  transfer stops it the same way. The caller guarantees the memory (a leaked `Transfer` keeps
+  the DMA running).
+- Errors: `Bus(CH_INTSTATUS)` on decode/slave errors, `Timeout`, `Busy`, `Invalid`,
+  `NotDmaVisible`, `Precondition` (clk_dma not 100 MHz). With `Bus` and `Timeout` the channel
+  has already been stopped.
 - Programming (DOC, Linux `dw-axi-dmac` with the RP1 DT properties): 8-channel register map
   (`CHEN` write enables at bit 8), `CFG2` layout (`snps,dma-targets = <64>`), contiguous
   source/destination, memory-to-memory with DMAC flow control, priority = channel, MSIZE 4,
-  width = largest power of two dividing addresses and length (max 16 B), ARLEN/AWLEN from
-  `snps,axi-max-burst-len = <8 8 4 4 4 4 4 4>` as Linux writes them. Single-block contiguous mode
+  width = largest power of two dividing addresses and length (max 16 B). AXI burst length from
+  `snps,axi-max-burst-len = <8 8 4 4 4 4 4 4>` (= the datasheet FIFO depths, 8 / 4 beats),
+  written as `beats - 1`: ARLEN/AWLEN use the AXI encoding (Linux `DWAXIDMAC_ARWLEN_8 = 7`).
+  Linux validates the DT value as a beat count (`<= ARWLEN_MAX + 1`) but writes it unchanged,
+  i.e. one beat more than the FIFO (DOC: `dw-axi-dmac-platform.c`); this driver does not copy
+  that. `HS_SEL_SRC/DST = 1` (software) where Linux leaves 0; for memory-to-memory with DMAC
+  flow control no handshake is used either way (HW: both copy correctly). Single-block contiguous mode
   (no LLI) is not what Linux uses; it works on RP1 (HW below).
 - Not in v1: linked lists, interrupts (the line is RP1 IRQ 40, unused), peripheral handshakes.
+
+## Cancellation and the abort register
+
+Linux 6.12 (`drivers/dma/dw-axi-dmac/`) picks the register map from `dma-channels`:
+`dw_probe` sets `reg_map_8_channels = true` for `dma-channels <= 8` (`DMA_REG_MAP_CH_REF`).
+With that map `CH_EN`/`CH_EN_WE` are `DMAC_CHEN[7:0]`/`[15:8]` and `CH_SUSP`/`CH_SUSP_WE` are
+`DMAC_CHEN[23:16]`/`[31:24]` (`axi_chan_enable`, `dw_axi_dma_set_pause`); only without it does
+Linux use `DMAC_CHSUSPREG` (0x020) and the `EN2` write-enable at bit 16. RP1's `rp1.dtsi` has
+`dma-channels = <8>` and the datasheet says eight channels, so RP1 uses the 8-channel map. Linux
+never aborts a channel (`dma_chan_terminate_all` writes `CH_EN = 0` and polls). By the same
+layout (the Synopsys databook as cited in review; not read here) `CH_ABORT`/`CH_ABORT_WE` are
+`DMAC_CHEN[39:32]`/`[47:40]`, i.e. bits 0..7 / 8..15 of the high word at 0x01C;
+`DMAC_CHABORTREG` (0x028) belongs to the >8-channel map. The first version wrote 0x028, which
+on RP1 does not request an abort (that path was never exercised on HW).
+
+The driver now stops a channel with: `CH_SUSP` and up to 10 ms for `CH_SUSPENDED`; `CH_EN = 0`
+and up to 10 ms for the enable bit to clear; only then `CH_ABORT` (0x01C) and another 10 ms. If
+the channel is still enabled it spins without a deadline: a safe API must not end the buffer
+borrows while the DMAC can still access them, and spinning is sound under any panic strategy
+(a panic could unwind on a host target). A wedged DMAC therefore hangs the calling core. The
+suspend request is cleared afterwards so the next enable runs. This applies to `wait`/`copy`
+timeouts, bus errors, `Transfer::cancel` and `Drop for Transfer`. STATIC: unit tests with a
+fake DMAC whose disable, abort, or both take effect late (the call returns only after the
+enable bit cleared). HW: lab abort proof below.
 
 ## Address map
 
@@ -71,11 +106,14 @@ processor `0x4040_0000` map to bus `0xC0_4020_0000` and are not translated (reje
 ## Ordering and caches
 
 - The Cortex-M3 has no data cache: no clean/invalidate is needed for DMA buffers.
-- Channel setup writes are posted in program order to the DMAC (Device memory, one AHB port);
-  the channel-enable write is followed by `dsb`, which also completes earlier CPU stores to the
-  source buffer.
+- Channel setup writes are posted in program order to the DMAC (Device memory, one AHB port).
+  Right before the channel-enable write, `rp1_proto::barrier()` (compiler fence + `dsb`)
+  completes earlier CPU stores to the source buffer and keeps the compiler from moving
+  ordinary buffer stores past the enable.
 - Completion = `DMA_TFR_DONE` and the channel's `CHEN` bit clear, i.e. after the last AXI write
-  response. For SRAM the data is then visible to both cores and to Linux (BAR2).
+  response, followed by the same barrier before returning (also after a cancellation), so
+  later ordinary CPU reads/writes of either buffer cannot be moved before it. For SRAM the data
+  is then visible to both cores and to Linux (BAR2).
 - Linux DDR: the write response for a PCIe posted write comes from the endpoint when it accepts
   the write; later CPU posted writes through the same endpoint (e.g. a ring head) are ordered
   behind it by PCIe posted-write ordering (DOC/HYP: not separately tested; the lab check below
