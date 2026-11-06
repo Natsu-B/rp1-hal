@@ -254,8 +254,9 @@ prepare time, no-progress push time (`blocked_us`), total blocks, two-block batc
 generation is timed per batch. Preparation is elapsed push time minus measured generation,
 copy and publication; CPU publication is included in that residual. Timer reads and wrapper
 bookkeeping cost time (1 µs resolution); compare timer-on/off e2e and total time, and treat
-components as diagnostics. Without `--timed`, direct `gen_us=0` means generation is included
-in push time, and detailed fields are unavailable (zero). The shared lab loop uses the same
+components as diagnostics. Generated payloads start zeroed on every path; the in-place DMA
+path zeroes each whole slot before filling it. The HW speed run must measure that cost in
+end-to-end/total and preparation time. Without `--timed`, direct `gen_us=0` means generation is included in push time, and detailed fields are unavailable (zero). The shared lab loop uses the same
 per-batch dispatch for each payload type and mode.
 
 At each candidate cold boot, run `shm-linux ring-dma-order 32000` first. Each size's early-head

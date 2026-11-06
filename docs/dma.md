@@ -222,15 +222,17 @@ Both notification helpers accept any `C: SlotCopy` and return `Staged<C::Error>`
 explicit channel-number generic arguments must be replaced by the copier type (pre-1.0
 breaking change). They call `notify_ring` on full rings and errors as well.
 
-The callback receives the offset **within this call** and an initialized `&mut T` whose
-initial value is unspecified. Fill every field for deterministic output. Reject rings call it
+The callback receives the offset **within this call** and a zero-initialized `&mut T`,
+regardless of threshold or payload alignment. Reject rings call it
 exactly once for each accepted message, in increasing offset order, never for unavailable
 slots. `seq`, length and zero padding belong to the library. The callback's reference ends
 before copying starts; no references into the remote Device mapping are created.
 
 Payloads aligned for `T` are filled directly in ordinary stage memory. Each payload address
 is checked (including slot stride); higher alignment requirements use an aligned local
-zero-initialized temporary followed by the existing staging copy. All bit patterns of a
+zero-initialized temporary followed by the existing staging copy. The aligned in-place
+branch zeroes the entire slot before `fill`; the next HW speed run must include this cost
+in end-to-end and preparation timings. All bit patterns of a
 `Message` must be valid and its layout padding-free. CPU fallback also fills one local
 value once per accepted message. A panic in reject mode leaves head unchanged, and staged
 generation starts no copy until all callbacks have returned. Overwrite can already have

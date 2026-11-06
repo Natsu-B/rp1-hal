@@ -291,8 +291,8 @@ impl<'s> RingDma<'s> {
     }
     /// Generate accepted payloads directly in the stage when the writable batch reaches
     /// the DMA threshold. Otherwise use [`RingTx::push_with`] (including overwrite rings).
-    /// `fill` receives the offset within this call and an initialized payload; fill all
-    /// fields. See [`RingTx::push_with_staged`] for alignment, panic and failure semantics.
+    /// `fill` receives the offset within this call and a zero-initialized payload.
+    /// See [`RingTx::push_with_staged`] for alignment, panic and failure semantics.
     /// No callback is invoked when fenced, full, or when stage validation fails.
     pub fn push_with<T: Message, C: SlotCopy>(
         &mut self,
