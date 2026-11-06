@@ -18,6 +18,8 @@ mod prof;
 mod ring_dma;
 #[cfg(feature = "spi")]
 mod spi_proof;
+#[cfg(feature = "ring-dma")]
+mod stack_watermark;
 #[shared]
 static VALUES: Spsc<u32, 8> = Spsc::new();
 /// Zero-initialised, so it lands in .bss. Each core zeroes its own DSRAM copy at startup;
@@ -193,6 +195,9 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
 
 #[entry(proc1)]
 fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
+    #[cfg(feature = "ring-dma")]
+    // SAFETY: proc1 owns its private DSRAM; interrupts are still masked at entry.
+    let stack = unsafe { stack_watermark::paint() };
     log!("p1 ready bss=0x{:x}\n", bss_check(0xb55_1000)).unwrap();
     // The ADC is declared on proc1: its Clocks come from proc0's clock_authority.init
     // (published before proc0 launches proc1).
@@ -506,6 +511,11 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         request[7] = if command == 1 { up.dropped() } else { extra };
         unsafe { control.write(&request) };
         rp1_hal::shm::complete_posted_writes();
+        #[cfg(feature = "ring-dma")]
+        if command == 17 {
+            let free = stack.free_bytes();
+            log!("RINGDMA_STACK run_id={} free_bytes={}\n", request[0], free).unwrap();
+        }
         log!(
             "p1 shm cmd={} count={} errors={} us={}\n",
             command,

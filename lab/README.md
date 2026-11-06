@@ -47,7 +47,15 @@ controls; 5/6/7 are generated DMA/CPU/auto. Generation uses identical message fu
 Linux verifies every payload word, newest-first and when consumed. The preferred larger
 batches are 128/56/15; former 32/32/8 batches remain selectable. The generated path has no
 batch array; the slice comparison has a separate stack frame (maximum 3840 B), within
-proc1's declared 6 KiB stack (STATIC: build and disassembly; no HW stack watermark yet).
+proc1's declared 6 KiB stack (STATIC: build and disassembly). The focused image paints unused
+proc1 stack words at entry and scans after each command 17, outside the measured interval.
+UART0 `RINGDMA_STACK run_id=... free_bytes=...` reports cumulative untouched stack space
+since entry, in bytes (4-byte granularity). Used bytes = 6144 - free_bytes, including the
+unpainted active entry frame; the scan never counts that frame as free.
+Retain these lines for every slice-comparison condition, especially batches 128/56/15, and
+report the minimum free margin per boot. Require nonzero free_bytes before accepting a
+speed comparison. A watermark is diagnostic, not an overflow guard;
+no HW margin has been measured yet.
 
 STATIC: the focused ring image omits generic DDR microbench command 5 and up/down batch
 commands 10–13 to fit the 48 KiB image budget. Omitted commands return an error. Use the
