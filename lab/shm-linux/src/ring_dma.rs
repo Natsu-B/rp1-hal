@@ -32,10 +32,10 @@ fn cpu_seconds() -> f64 {
     let t = |v: libc::timeval| v.tv_sec as f64 + v.tv_usec as f64 / 1e6;
     t(u.ru_utime) + t(u.ru_stime)
 }
-fn request(ctrl: &mut BlockMap<Control>, id: u32, count: u32, ext: [u32; 5]) -> Result<Instant> {
+fn request(ctrl: &mut BlockMap<Control>, id: u32, count: u32, ext: [u32; 6]) -> Result<Instant> {
     let mut words = [0; 16];
     words[..5].copy_from_slice(&[id, 17, count, 0, 1]);
-    words[8..13].copy_from_slice(&ext);
+    words[8..14].copy_from_slice(&ext);
     let mut writer = unsafe { ctrl.begin_write() }?;
     writer.write_words(0, &words)?;
     writer.commit();
@@ -58,14 +58,26 @@ struct Run {
     count: Option<u32>,
     must_sleep: bool,
     kind: Kind,
+    timed: bool,
+    odd_head: bool,
 }
-const MODES: [&str; 5] = ["cpu", "dma", "auto", "early-head", "bit30-zero"];
+const MODES: [&str; 8] = [
+    "cpu",
+    "dma",
+    "auto",
+    "early-head",
+    "bit30-zero",
+    "generate-dma",
+    "generate-cpu",
+    "generate-auto",
+];
 struct Res {
     got: u32,
     stale: u64,
     corrupt: u32,
     seconds: f64,
     report: Control,
+    perf: [u32; 8],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -83,7 +95,14 @@ fn one<const W: usize>(
         ctrl,
         id,
         count,
-        [ring, run.mode, run.irq as u32, run.batch, run.gap_us],
+        [
+            ring,
+            run.mode,
+            run.irq as u32,
+            run.batch,
+            run.gap_us,
+            run.timed as u32,
+        ],
     )?;
     let mut buf = vec![[0u32; W]; 64];
     let (mut got, mut corrupt, mut stale) = (0u32, 0u32, 0u64);
@@ -140,7 +159,18 @@ fn one<const W: usize>(
     }
     let seconds = start.elapsed().as_secs_f64();
     let report = response(ctrl, id, start)?;
+    let mut perf = [0; 8];
+    if run.timed {
+        let perf_id = id.wrapping_add(1).max(1);
+        let mut words = [0; 16];
+        words[..5].copy_from_slice(&[perf_id, 18, 0, 0, 1]);
+        let mut writer = unsafe { ctrl.begin_write() }?;
+        writer.write_words(0, &words)?;
+        writer.commit();
+        perf.copy_from_slice(&response(ctrl, perf_id, Instant::now())?[8..16]);
+    }
     Ok(Res {
+        perf,
         got,
         stale,
         corrupt,
@@ -150,13 +180,6 @@ fn one<const W: usize>(
 }
 
 pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Result<()> {
-    let mut fw = Firmware::open()?;
-    let mut events = fw.ring_rx::<[u32; 4]>("events")?;
-    let mut w64 = fw.ring_rx::<[u32; 16]>("wide64")?;
-    let mut w256 = fw.ring_rx::<[u32; 64]>("wide256")?;
-    let mut ctrl = fw.block::<Control>("control")?;
-    drop(fw);
-    let mut irq = Irq::open()?;
     let r = |name, mode, irq, batch, kind| Run {
         name,
         mode,
@@ -166,6 +189,8 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
         count: None,
         must_sleep: false,
         kind,
+        timed: false,
+        odd_head: false,
     };
     use Kind::*;
     // (ring, max batch, runs)
@@ -175,6 +200,21 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
         plan.push((ring, r("dma-poll", 1, false, b, Judged)));
         plan.push((ring, r("cpu-irq", 0, true, b, Judged)));
         plan.push((ring, r("dma-irq", 1, true, b, Judged)));
+    }
+    for (ring, old, large) in [(0, 32, 128), (1, 32, 56), (2, 8, 15)] {
+        for b in [old, large] {
+            for mode in [0, 1, 5, 6] {
+                plan.push((ring, r("speed-poll", mode, false, b, Judged)));
+            }
+        }
+        plan.push((
+            ring,
+            Run {
+                gap_us: 100,
+                must_sleep: true,
+                ..r("generated-paced-irq", 5, true, large, Judged)
+            },
+        ));
     }
     plan.push((
         0,
@@ -227,29 +267,218 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
     }
     if ordering_only {
         plan.retain(|(_, run)| run.kind == Order);
-        for (ring, b) in [(0, 31), (1, 31), (2, 7)] {
-            plan.insert(
-                ring as usize,
-                (ring, r("production-order", 1, false, b, Judged)),
-            );
+        for (ring, b) in [(0, 31), (1, 31), (2, 7), (0, 127), (1, 55), (2, 15)] {
+            plan.push((ring, r("production-order", 5, false, b, Judged)));
         }
     }
     if let Some(mode) = isolate_mode {
         plan.clear();
         plan.push((2, r("isolate-wide256", mode, false, 7, Judged)));
     }
+    execute(count, plan)
+}
+
+/// Reproducible throughput plan; flags allow the same client to measure baseline firmware.
+pub fn perf(args: impl Iterator<Item = String>) -> Result<()> {
+    let options = PerfOptions::parse(args)?;
+    execute(options.count, options.plan())
+}
+
+struct PerfOptions {
+    count: u32,
+    warmup: u32,
+    repeat: u32,
+    timed: bool,
+    baseline: bool,
+    ring: Option<u32>,
+    batch: Option<u32>,
+    mode: Option<u32>,
+    irq: bool,
+    gap_us: u32,
+    odd_head: bool,
+}
+impl PerfOptions {
+    fn parse(mut args: impl Iterator<Item = String>) -> Result<Self> {
+        let mut o = Self {
+            count: 1_000_000,
+            warmup: 100_000,
+            repeat: 5,
+            timed: false,
+            baseline: false,
+            ring: None,
+            batch: None,
+            mode: None,
+            irq: false,
+            gap_us: 0,
+            odd_head: false,
+        };
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--timed" => o.timed = true,
+                "--baseline" => o.baseline = true,
+                "--irq" => o.irq = true,
+                "--odd-head" => o.odd_head = true,
+                "--count" | "--warmup" | "--repeat" | "--ring" | "--batch" | "--mode"
+                | "--gap-us" => {
+                    let n = args.next().ok_or("missing flag value")?.parse()?;
+                    match arg.as_str() {
+                        "--count" => o.count = n,
+                        "--warmup" => o.warmup = n,
+                        "--repeat" => o.repeat = n,
+                        "--ring" => o.ring = Some(n),
+                        "--batch" => o.batch = Some(n),
+                        "--mode" => o.mode = Some(n),
+                        _ => o.gap_us = n,
+                    }
+                }
+                _ => return Err(format!("unknown ring-dma-perf option: {arg}").into()),
+            }
+        }
+        if o.count == 0
+            || o.repeat == 0
+            || o.ring.is_some_and(|r| r > 2)
+            || o.mode.is_some_and(|m| ![0, 1, 2, 5, 6, 7].contains(&m))
+            || o.baseline && (o.timed || o.mode.is_some_and(|m| m > 2))
+        {
+            return Err(
+                "invalid ring-dma-perf options (baseline supports modes 0/1/2 without timing)"
+                    .into(),
+            );
+        }
+        for ring in 0..3 {
+            if o.ring.is_some_and(|r| r != ring) {
+                continue;
+            }
+            let cap = if o.baseline {
+                [32, 32, 8]
+            } else {
+                [170, 56, 15]
+            }[ring as usize];
+            if o.batch.is_some_and(|b| b == 0 || b > cap) {
+                return Err(
+                    format!("batch exceeds firmware capacity {cap} for ring {ring}").into(),
+                );
+            }
+        }
+        Ok(o)
+    }
+    fn plan(&self) -> Vec<(u32, Run)> {
+        let mut plan = Vec::new();
+        for (ring, batches) in [
+            (0, &[1, 2, 4, 8, 12, 16, 31, 32, 64, 127, 128, 170][..]),
+            (1, &[1, 2, 4, 8, 12, 16, 31, 32, 48, 55, 56][..]),
+            (2, &[1, 2, 4, 7, 8, 12, 14, 15][..]),
+        ] {
+            if self.ring.is_some_and(|r| r != ring) {
+                continue;
+            }
+            let candidates = if self.batch.is_some() {
+                self.batch.as_slice()
+            } else {
+                batches
+            };
+            for &batch in candidates {
+                if self.baseline && batch > [32, 32, 8][ring as usize] {
+                    continue;
+                }
+                let modes = self.mode.as_slice();
+                let modes = if modes.is_empty() {
+                    if self.baseline {
+                        &[0, 1][..]
+                    } else {
+                        &[0, 1, 5, 6][..]
+                    }
+                } else {
+                    modes
+                };
+                for &mode in modes {
+                    let run = Run {
+                        name: "measure",
+                        mode,
+                        irq: self.irq,
+                        batch,
+                        gap_us: self.gap_us,
+                        count: Some(self.count),
+                        must_sleep: self.irq && self.gap_us > 0,
+                        kind: Kind::Judged,
+                        timed: self.timed,
+                        odd_head: self.odd_head,
+                    };
+                    if self.warmup > 0 {
+                        plan.push((
+                            ring,
+                            Run {
+                                name: "warmup",
+                                count: Some(self.warmup),
+                                ..run
+                            },
+                        ));
+                    }
+                    for _ in 0..self.repeat {
+                        plan.push((ring, run));
+                    }
+                }
+            }
+        }
+        plan
+    }
+}
+
+fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
+    use Kind::*;
+    let mut fw = Firmware::open()?;
+    let mut events = fw.ring_rx::<[u32; 4]>("events")?;
+    let mut w64 = fw.ring_rx::<[u32; 16]>("wide64")?;
+    let mut w256 = fw.ring_rx::<[u32; 64]>("wide256")?;
+    let mut ctrl = fw.block::<Control>("control")?;
+    drop(fw);
+    let mut irq = Irq::open()?;
     let names = ["events", "wide64", "wide256"];
     let sizes = [16.0, 64.0, 256.0];
     let mut failed = Vec::new();
     let mut thresh: Vec<(u32, u32, u32, f64)> = Vec::new();
     for (ring, run) in &plan {
+        let tail = match *ring {
+            0 => events.tail(),
+            1 => w64.tail(),
+            _ => w256.tail(),
+        };
+        if run.odd_head && tail.is_multiple_of(2) {
+            let id = ctrl.read()?[0].wrapping_add(1).max(1);
+            let prime = Run {
+                mode: 0,
+                irq: false,
+                batch: 1,
+                gap_us: 0,
+                timed: false,
+                ..*run
+            };
+            let res = match *ring {
+                0 => one(&mut events, &mut ctrl, &mut irq, 0, id, &prime, 1)?,
+                1 => one(&mut w64, &mut ctrl, &mut irq, 1, id, &prime, 1)?,
+                _ => one(&mut w256, &mut ctrl, &mut irq, 2, id, &prime, 1)?,
+            };
+            if res.got != 1 || res.corrupt != 0 || res.stale != 0 || res.report[5] != 0 {
+                return Err("odd-head priming failed".into());
+            }
+        }
         // Firmware ignores a repeated ID, including across separate client invocations.
         let id = ctrl.read()?[0].wrapping_add(1).max(1);
         let n = run.count.unwrap_or(count);
         let ring = *ring;
         println!(
-            "RINGDMA_BEGIN name={} ring={} mode={} n={n}",
-            run.name, names[ring as usize], MODES[run.mode as usize]
+            "RINGDMA_PERF_BEGIN run_id={id} name={} ring={} mode={} size={} batch={} timed={} count={n} start_head={}",
+            run.name,
+            names[ring as usize],
+            MODES[run.mode as usize],
+            sizes[ring as usize],
+            run.batch,
+            run.timed,
+            match ring {
+                0 => events.tail(),
+                1 => w64.tail(),
+                _ => w256.tail(),
+            }
         );
         let (stats0, wakes0, cpu0) = (
             match ring {
@@ -284,8 +513,8 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
         let missing = n - res.got;
         let mbps = n as f64 * sizes[ring as usize] / res.seconds / 1e6;
         let path_ok = match run.mode {
-            0 => dma_b == 0 && cpu_b > 0,
-            1 | 3 | 4 => cpu_b == 0 && dma_b > 0,
+            0 | 6 => dma_b == 0 && cpu_b > 0,
+            1 | 3 | 4 | 5 => cpu_b == 0 && dma_b > 0,
             _ if run.batch == 1 => dma_b == 0,
             _ => dma_b > 0,
         };
@@ -297,6 +526,8 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
             "FAIL(firmware)"
         } else if !path_ok {
             "FAIL(path)"
+        } else if run.must_sleep && late != 0 {
+            "FAIL(late-wake)"
         } else if run.must_sleep && sleeps == 0 {
             "INCONCLUSIVE(never-slept)"
         } else if run.irq && sleeps > 0 && (woken == 0 || late * 100 > sleeps) {
@@ -304,12 +535,27 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
         } else {
             "ok"
         };
+        let [
+            copy_us,
+            prepare_us,
+            publish_us,
+            blocked_us,
+            blocks,
+            two_block_batches,
+            width8,
+            width16,
+        ] = res.perf;
+        let total_us = rep[6];
+        let rp1_us_per_message = total_us as f64 / n.max(1) as f64;
         let line = format!(
-            "name={} ring={} mode={} irq={} batch={} gap_us={} n={} missing={missing} \
+            "run_id={id} name={} ring={} mode={} irq={} batch={} gap_us={} got={} missing={missing} \
              corrupt={} stale={} seconds={:.6} MBps={mbps:.3} cpu_pct={:.1} rp1_us={} \
              pulses={pulses} wakes={} sleeps={sleeps} woken={woken} late={late} \
              gen_us={gen_us} push_us={push_us} notify_us={notify_us} ring_MBps={ring_mbps:.3} \
-             ctl_l=0x{ctl_l:08x} wraps={wraps} dma_batches={dma_b} cpu_batches={cpu_b}",
+             ctl_l=0x{ctl_l:08x} wraps={wraps} dma_batches={dma_b} cpu_batches={cpu_b} \
+             timed={} total_us={total_us} rp1_us_per_message={rp1_us_per_message:.4} \
+             copy_us={copy_us} prepare_us={prepare_us} publish_us={publish_us} blocked_us={blocked_us} \
+             blocks={blocks} two_block_batches={two_block_batches} width8={width8} width16={width16} errors={}",
             run.name,
             names[ring as usize],
             MODES[run.mode as usize],
@@ -323,6 +569,8 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
             100.0 * cpu / res.seconds,
             rep[6],
             irq.wakes() - wakes0,
+            run.timed,
+            rep[5],
         );
         match run.kind {
             Judged | Thresh => println!("RINGDMA {line} check={check}"),
@@ -335,7 +583,12 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
                 }
             ),
         }
-        if check != "ok" || run.mode == 3 && res.corrupt == 0 && res.stale == 0 {
+        let passed = check == "ok" && (run.mode != 3 || res.corrupt != 0 || res.stale != 0);
+        println!(
+            "RINGDMA_PERF_END run_id={id} status={}",
+            if passed { "PASS" } else { "FAIL" }
+        );
+        if !passed {
             failed.push(format!("{}/{}", names[ring as usize], run.name));
         }
         if run.kind == Thresh {
@@ -394,6 +647,38 @@ impl Seen {
 #[cfg(test)]
 mod tests {
     use super::Seen;
+    #[test]
+    fn perf_plan_preserves_baseline_and_repeats_identical_conditions() {
+        let parse = |args: &[&str]| super::PerfOptions::parse(args.iter().map(|s| s.to_string()));
+        let o = parse(&["--ring", "0", "--batch", "128", "--mode", "5", "--odd-head"]).unwrap();
+        let plan = o.plan();
+        assert_eq!(plan.len(), 6);
+        assert_eq!(plan[0].1.count, Some(100_000));
+        for (ring, run) in &plan[1..] {
+            assert_eq!(
+                (*ring, run.mode, run.batch, run.count),
+                (0, 5, 128, Some(1_000_000))
+            );
+            assert!(run.odd_head);
+        }
+        let base = parse(&["--baseline"]).unwrap().plan();
+        assert!(
+            base.iter().all(|(r, run)| run.mode <= 1
+                && run.batch <= [32, 32, 8][*r as usize]
+                && !run.timed)
+        );
+        for args in [
+            &["--count", "0"][..],
+            &["--repeat", "0"],
+            &["--mode", "3"],
+            &["--baseline", "--timed"],
+            &["--ring", "2", "--batch", "16"],
+            &["--wat"],
+        ] {
+            assert!(parse(args).is_err());
+        }
+    }
+
     #[test]
     fn repeated_observations_count_once_and_reused_slot_counts_again() {
         let mut s = Seen::default();

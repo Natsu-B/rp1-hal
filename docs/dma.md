@@ -180,9 +180,10 @@ let (n, pulsed) = host_irq.push_slice_dma_notify(&mut ring_dma, &mut tx, &mut dm
 
 - `RingDma::push_slice(&mut ring, &mut channel, values)`: batches of at least the threshold
   (`DEFAULT_THRESHOLD` = 256 staged bytes, `set_threshold`) go by DMA, smaller ones by the
-  CPU (`RingTx::push_slice`). The channel is lent per call (`&mut Channel<N>` of the declared
-  controller, `dma = {}`), so one channel can serve several rings; nothing else may use it
-  during the call. `HostIrq::push_slice_dma_notify` adds `notify_ring` for `notify = "irq"`.
+  CPU (`RingTx::push_slice`). The copier is lent per call (`C: SlotCopy`, normally
+  `&mut Channel<N>` of the declared controller, `dma = {}`). Wrappers can implement the
+  same blocking contract, so lab timing needs no HAL diagnostics. One channel can serve
+  several rings; nothing else may use it during the call. `HostIrq::push_slice_dma_notify` adds `notify_ring` for `notify = "irq"`.
 - DMA path (`rp1_proto::shm::RingTx::push_slice_staged` with the `SlotCopy` the channel
   implements): stage whole slot images (`seq`, length, payload, zero padding) in the shared-SRAM
   stage, copy them in one block, or two when the batch wraps around the end of the ring
@@ -203,6 +204,48 @@ let (n, pulsed) = host_irq.push_slice_dma_notify(&mut ring_dma, &mut tx, &mut dm
   and `writable()` returns zero. Pending remote writes could otherwise corrupt a retry.
   Re-attaching requires an external drain/reset; merely dropping the handle is insufficient.
   Overwrite rings use the CPU path (no copy is attempted).
+
+### Direct generation (STATIC, 2026-11-06; throughput not measured)
+
+```rust
+let (n, pulsed) = host_irq.push_with_dma_notify(
+    &mut ring_dma, &mut tx, &mut dma.ch1, count,
+    |offset, payload| fill_message(first + offset as u32, payload),
+);
+// Retry from first + n, using the remaining count.
+```
+
+`RingDma::push_with` uses the same threshold decision as `push_slice`, based on the actual
+writable count and stage capacity. Small batches use `RingTx::push_with`; DMA batches use
+`RingTx::push_with_staged`. Overwrite always uses CPU and accepts the full requested count.
+The notification wrapper calls `notify_ring` on full rings and errors as well.
+
+The callback receives the offset **within this call** and an initialized `&mut T` whose
+initial value is unspecified. Fill every field for deterministic output. Reject rings call it
+exactly once for each accepted message, in increasing offset order, never for unavailable
+slots. `seq`, length and zero padding belong to the library. The callback's reference ends
+before copying starts; no references into the remote Device mapping are created.
+
+Payloads aligned for `T` are filled directly in ordinary stage memory. Each payload address
+is checked (including slot stride); higher alignment requirements use an aligned local
+zero-initialized temporary followed by the existing staging copy. All bit patterns of a
+`Message` must be valid and its layout padding-free. CPU fallback also fills one local
+value once per accepted message. A panic in reject mode leaves head unchanged, and staged
+generation starts no copy until all callbacks have returned. Overwrite can already have
+published its earlier messages, like `push_slice`.
+
+Both staged APIs use one private commit routine: copy the one or two physical blocks,
+permanently fence on either block's error, then barrier and publish head. The ordering
+contract and the Channel implementation's **HYP** qualification above are unchanged.
+Host tests cover wire equivalence/padding, CPU mixing, capacity/full/partial rings, physical
+and u32 wrap, publication after both copies, callback panic, high alignment, byte messages,
+overwrite, error fencing and the actual-writable threshold decision.
+
+The lab retains the 4 KiB stage (170/56/15 slots for 16/64/256 B messages). Its preferred
+large batches are **128/56/15**, alongside the former **32/32/8** and intermediate/odd-wrap
+candidates. 56 and 15 use almost the whole stage but can require two blocks; these are
+measurement candidates, not HW-proven optimal values. No double buffer or threshold retuning
+is included. See [the reproducible measurement plan](../lab/README.md#ring-dma-speed-measurement).
 
 ### Historical HW throughput (before review fixes, 2026-11-05, lab `--no-default-features --features ring-dma`, 2 cold boots)
 

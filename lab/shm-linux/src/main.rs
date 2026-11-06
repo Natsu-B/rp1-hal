@@ -135,6 +135,9 @@ fn main() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("dma") {
         return dma::main();
     }
+    if std::env::args().nth(1).as_deref() == Some("ring-dma-perf") {
+        return ring_dma::perf(std::env::args().skip(2));
+    }
     if matches!(
         std::env::args().nth(1).as_deref(),
         Some("ring-dma" | "ring-dma-order" | "ring-dma-wide256-cpu" | "ring-dma-wide256-dma")

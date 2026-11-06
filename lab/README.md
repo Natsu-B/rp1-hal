@@ -39,19 +39,23 @@ cargo rp1 build -p shm-firmware --target thumbv7m-none-eabi --release \
 With it, I2C/ADC/SPI requests are refused (`0xffffffff`) as for any focused image, so the
 full `check-shm.sh`/verifier does not apply; check SHM, doorbell, ring-irq and UART1 directly.
 
-The `ring-dma` feature (not default; it does not fit together with `dma`) adds command 17
-(`src/ring_dma.rs`, `shm-linux ring-dma [count]`): RP1 -> Linux streams on `events` (16 B),
-`wide64` (64 B) and `wide256` (256 B, rings declared in every profile) written by the CPU
-(`RingTx::push_slice`) or by DMA (`rp1_hal::shm::RingDma`, channel 1, the 4 KiB cancellation
-buffer as stage), with polling and `notify = "irq"` consumers, the CPU/DMA crossover per batch
-size (`RINGDMA_THRESH`), and newest-first ordering checks with early-head positive controls and bit30=0 comparisons
-(`RINGDMA_ORDER`, reported, not judged). Every message is checked; `RINGDMA_PASS` only if
-every judged run is `check=ok`. Build it with
-`cargo rp1 build -p shm-firmware ... --no-default-features --features ring-dma`; the DMA proof
-of command 16 needs the `dma` image. proc1's stack is 6 KiB (a batch of up to 2 KiB of
-messages is on the stack). Each `RINGDMA` line also has the RP1 time spent generating
-messages (`gen_us`, generation in ISRAM, the loop itself in shared SRAM), inside the ring API
-(`push_us`, and `ring_MBps` from it) and notifying (`notify_us`).
+The `ring-dma` feature (not default; use `--no-default-features --features ring-dma`) adds
+command 17 (`shm-linux ring-dma [count]`): RP1 -> Linux streams on `events` (16 B), `wide64`
+(64 B), `wide256` (256 B), with channel 1 and the 4 KiB cancellation buffer as stage.
+Modes 0/1/2 are CPU slice/DMA slice/auto; 3/4 are deliberate early-head/bit30-zero ordering
+controls; 5/6/7 are generated DMA/CPU/auto. Generation uses identical message functions;
+Linux verifies every payload word, newest-first and when consumed. The preferred larger
+batches are 128/56/15; former 32/32/8 batches remain selectable. The generated path has no
+batch array; the slice comparison has a separate stack frame (maximum 3840 B), within
+proc1's declared 6 KiB stack (STATIC: build and disassembly; no HW stack watermark yet).
+
+STATIC: the focused ring image omits generic DDR microbench command 5 and up/down batch
+commands 10–13 to fit the 48 KiB image budget. Omitted commands return an error. Use the
+ordinary image for `shm-linux`'s full suite; ring-irq commands 14/15 remain available.
+Command 18 fetches detailed timing from the last command 17 without changing its response.
+The separate `dma` image's command 16 also emits pre-generated `RINGDMA_RAW` controls
+(channel 1, 768/2304/2112/3072/4032/3960/4080 B, aligned and +8 offsets, 1000 copies each,
+width and final data verification), before its existing bulk proof.
 
 STATIC: feature selection removes proof initialization, handlers and driver code from the
 linked image. The metadata, note ownership and overlay keep the existing I2C1/ADC/SPI0/pin
@@ -198,7 +202,86 @@ the 10 ms re-check still delivers the data; `suppressed-irq` (command 15, irq co
 recover through the re-check (`pulses=0`, `late > 0`, every wait under RECHECK + 40 ms).
 `RINGIRQ_PASS` only if every run passes, else `RINGIRQ_FAIL`. HW (2026-11-05, cold boot x3): docs/design.md §6.2.
 
-`shm-linux ring-dma-order [count]` runs only the three production DMA sizes and the six
-ordering controls. `count` applies to each production stream; each control is capped at
+`shm-linux ring-dma-order [count]` runs the three production DMA sizes with both
+legacy and enlarged odd-wrap batches, plus the six ordering controls. `count` applies to each production stream; each control is capped at
 32,000 items. `RINGDMA_PASS` also requires early-head violations for every size. The latest
 slot and batch-prefix errors are checked and deduplicated by logical slot index.
+
+## Ring DMA speed measurement
+
+STATIC: `lab/build-ring-dma.sh` stages a boot set containing the focused firmware, loader,
+overlay and a rootfs with the current client, and records `SHA256SUMS`. Set
+`RP1BOOT_ARTIFACT_ROOT`, `RP1_KERNEL` and `RP1_INITRAMFS` (base rootfs). Supply
+`RP1_BOARD_CHECK_DTB` as an offline board DTB including the stepping/UART overlays, or the
+firmware inputs documented by `build-rp1boot.sh`. It only builds local output; deployment
+and hardware control are separate. `CARGO_BUILD_JOBS` defaults to 2. Use the same kernel,
+rootfs, DTB, client and loader for baseline and candidate; only RP1.elf/bundle identifiers
+should change. Build baseline firmware from `368854d`, not from the historical guard image.
+
+HW plan (not executed here): fix clk_sys=200 MHz, clk_dma=100 MHz, channel 1, Linux mappings
+and consumer. Record exact artifact hashes, toolchain and clocks. Use two cold boots for
+each firmware. Every throughput condition warms 100,000 messages, then measures
+1,000,000 messages five times. Compare per-boot median and range of Linux payload MB/s and
+RP1 `total_us/count`; `push_us` alone excludes slice generation but includes direct generation.
+`shm-linux ring-dma-perf` implements that plan and fails if any response/phase is missing,
+corrupt, stale or erroneous. Each phase has a 180 s limit. Run IDs, size, requested batch,
+start head, count, mode and timing flag appear in `RINGDMA_PERF_BEGIN`; every completed
+phase has `RINGDMA_PERF_END ... status=PASS`. An absent end marker is failure.
+
+```sh
+# Baseline firmware: this uses only modes 0/1 and batches the original firmware accepts.
+shm-linux ring-dma-perf --baseline
+# Candidate: modes 0/1/5/6, same small batches plus the large candidates.
+shm-linux ring-dma-perf
+# Same baseline conditions on candidate, to isolate changes in the slice path.
+shm-linux ring-dma-perf --baseline
+# Repeat candidate sweep starting each phase at an odd logical head.
+shm-linux ring-dma-perf --odd-head
+```
+
+The default batch sweeps are 16 B: 1/2/4/8/12/16/31/32/64/127/128/170;
+64 B: 1/2/4/8/12/16/31/32/48/55/56; 256 B: 1/2/4/7/8/12/14/15.
+`--ring 0|1|2`, `--batch N`, `--mode 0|1|2|5|6|7`, `--count N`, `--warmup N`,
+`--repeat N` narrow the plan. Invalid or firmware-clamped batch sizes are rejected.
+Run poll first; repeat selected conditions with `--irq`. For sleep/wake validation run
+`--irq --gap-us 100` on each size's old and large batch, modes 1 and 5 (mode 1 on baseline).
+Paced runs require sleeps > 0, woken > 0 and late=0; never sleeping is inconclusive/failing.
+
+Add `--timed` on the candidate to repeat selected conditions with lab-only `TimedCopy`.
+It records block copy time, last-copy-return to API-return time (`publish_us`), residual
+prepare time, no-progress push time (`blocked_us`), total blocks, two-block batches and
+8/16-byte width counts per block. Direct generation is timed inside each callback; slice
+generation is timed per batch. Preparation is elapsed push time minus measured generation,
+copy and publication; CPU publication is included in that residual. Timer reads and wrapper
+bookkeeping cost time (1 µs resolution); compare timer-on/off e2e and total time, and treat
+components as diagnostics. Without `--timed`, direct `gen_us=0` means generation is included
+in push time, and detailed fields are unavailable (zero). The shared lab loop uses the same
+per-batch dispatch for each payload type and mode.
+
+At each candidate cold boot, run `shm-linux ring-dma-order 32000` first. Each size's early-head
+control must detect a violation; bit30-zero controls are reported, not judged by violation
+presence. Then run the following ordering stress, using the same full-word observer:
+
+```sh
+for pair in '0 31' '0 127' '1 31' '1 55' '2 7' '2 15'; do
+    set -- $pair
+    repeat=10
+    if [ "$1" = 2 ]; then repeat=5; fi
+    shm-linux ring-dma-perf --ring "$1" --batch "$2" --mode 5 \
+        --count 1000000 --warmup 0 --repeat "$repeat" --odd-head || exit 1
+done
+```
+
+This is 20M/20M/10M messages per boot, 100M over two candidate boots. Split further if any
+phase approaches 180 s. Require got=count, missing/corrupt/stale/errors=0 and all end markers.
+A separate `dma`-feature image plus `shm-linux dma` supplies the raw-copy controls; retain
+UART0 `RINGDMA_RAW ... bad=0` for each size/width. No ring publication occurs in that control.
+Copy-failure injection is a separate transport experiment: fail/stop the second wrap block,
+verify unchanged head and fencing on all retries, source stopped, and no destination reuse
+until an external reset/drain. Host tests cover both block failures; this image does not add
+a hardware failure-injection command.
+
+Adopt only after direct generation improves e2e at the same batch, larger batches improve
+selected workloads, and all validation completes. Finite HW runs qualify only those measured
+conditions; they do not prove the HYP AXI-to-PCIe ordering chain. Larger stages (8 KiB),
+double buffering and threshold retuning are outside this implementation.

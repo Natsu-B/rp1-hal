@@ -18,6 +18,8 @@
 #![cfg_attr(not(feature = "dma"), allow(unused_imports))]
 use crate::rp1;
 use core::cell::UnsafeCell;
+#[cfg(feature = "dma")]
+use rp1_hal::shm::SlotCopy;
 use rp1_hal::{
     dma::{BusAddr, Channel, Dma, Error, Stopped},
     log,
@@ -179,6 +181,57 @@ fn repeat<const N: u8>(
     Ok(now().wrapping_sub(t))
 }
 
+/// Pre-generated single-block control for the ring batch sizes, on the same channel 1.
+/// Offset 8 forces 8-byte beats; aligned even-length blocks also exercise 16-byte beats.
+#[cfg(feature = "dma")]
+fn ring_raw(dma: &mut Dma, data: *mut u32) -> bool {
+    // SAFETY: command 16 exclusively owns BIG and the bulk block until its response.
+    let src = unsafe { &mut *BIG.0.get() };
+    for (i, b) in src.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(7);
+    }
+    let dst = ((data as usize + 15) & !15) as *mut u8;
+    for bytes in [768usize, 2304, 2112, 3072, 4032, 3960, 4080] {
+        for offset in [0, 8] {
+            let source = &src[offset..offset + bytes];
+            let destination = unsafe { dst.add(offset) };
+            let t = now();
+            for _ in 0..1000 {
+                if unsafe { dma.ch1.copy_to_remote(source, destination) }.is_err() {
+                    return false;
+                }
+            }
+            let us = now().wrapping_sub(t);
+            rp1_hal::shm::complete_posted_writes();
+            let mut bad = 0;
+            for i in (0..bytes).step_by(4) {
+                let expected = u32::from_le_bytes(source[i..i + 4].try_into().unwrap());
+                if unsafe { destination.add(i).cast::<u32>().read_volatile() } != expected {
+                    bad += 1;
+                }
+            }
+            let width = 1
+                << rp1_hal::dma::width_log2(
+                    source.as_ptr() as u64,
+                    destination as u64,
+                    bytes as u32,
+                );
+            log!(
+                "RINGDMA_RAW bytes={} width={} count=1000 total_us={} bad={}\n",
+                bytes,
+                width,
+                us,
+                bad
+            )
+            .unwrap();
+            if bad != 0 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Command 16. `data` = M3 pointer of the bulk block data (1 MiB, outbound window), `phys` =
 /// its host physical address. Returns (errors, results for request[8..16]).
 #[cfg(feature = "dma")]
@@ -191,6 +244,9 @@ pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8
         Err(_) => return (1, out),
     };
     let direct = BusAddr::host_phys(phys);
+    if !ring_raw(dma, data) {
+        return (1, out);
+    }
     fill(src(), seed);
     // Small-transfer latency (the ring case): 16 B and 512 B blocks, 1000 each, ATU window.
     for (slot, bytes) in [(0, 16u32), (1, 512)] {

@@ -36,7 +36,7 @@ board = "rpi-cm5"
 clock = { authority = "rp1", clk_sys_hz = 200000000 }
 # UART0 (GPIO 14/15) carries the RP1 log. Linux keeps UART1 (GPIO 0/1) by the board default.
 log = { sink = "uart0", baudrate = 115200 }
-# proc1: the DMA ring proof (command 17) keeps a batch of up to 2 KiB of messages on the stack.
+# proc1: the DMA ring proof (command 17) keeps a slice comparison batch of up to 3840 B of messages on the stack.
 stack = { proc0 = "2KiB", proc1 = "6KiB" }
 
 [package.metadata.rp1.proc0]
@@ -93,7 +93,7 @@ overflow = "reject"
 notify = "irq"
 
 # Wider RP1 -> Linux rings for the DMA ring producer (rp1_hal::shm::RingDma, command 17 with
-# the `dma` feature); declared in every profile.
+# the `ring-dma` feature); declared in every profile.
 [[package.metadata.rp1.shm]]
 name = "wide64"
 kind = "ring"

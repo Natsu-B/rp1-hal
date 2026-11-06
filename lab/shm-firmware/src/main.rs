@@ -281,6 +281,8 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut wide64 = area.ring_tx::<ring_dma::Wide64>("wide64").unwrap();
     #[cfg(feature = "ring-dma")]
     let mut wide256 = area.ring_tx::<ring_dma::Wide256>("wide256").unwrap();
+    #[cfg(feature = "ring-dma")]
+    let mut last_ring_perf = [0u32; 8];
     let mut control = area.block::<Control>("control").unwrap();
     let mut bulk = area.block::<Bulk>("bulk").unwrap();
     let mut last = 0;
@@ -369,6 +371,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 });
                 errors = checked.unwrap_or(1);
             }
+            #[cfg(not(feature = "ring-dma"))]
             5 => {
                 let pointer = unsafe { bulk.raw().as_ptr() };
                 let mut sum = 0u32;
@@ -410,6 +413,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     }
                 }
             }
+            #[cfg(not(feature = "ring-dma"))]
             10 | 12 => errors = up_batch(&mut up, count, start),
             // `events` stream: seed = batch << 16 | gap_us; 14 notifies after every batch
             // (HostIrq::notify_ring), 15 does not (polling baseline on the same ring).
@@ -421,6 +425,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 };
                 (errors, extra) = events_stream(&mut events, notify, count, seed, start);
             }
+            #[cfg(not(feature = "ring-dma"))]
             11 | 13 => errors = down_batch(&mut down, count, start),
             #[cfg(feature = "dma")]
             16 => {
@@ -447,18 +452,19 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     notify: request[10] != 0,
                     batch: request[11],
                     gap_us: request[12],
+                    timed: request[13] != 0,
                 };
                 let irq = if p.notify { Some(&mut host_irq) } else { None };
                 use ring_dma::{sample_into, stream, wide};
                 let o = match (dma.as_mut(), request[8]) {
                     (Some(d), 0) => {
-                        stream::<4, 32>(&mut events, d, irq, sample_into, count, &p, start)
+                        stream::<4, 170>(&mut events, d, irq, sample_into, count, &p, start)
                     }
                     (Some(d), 1) => {
-                        stream::<16, 32>(&mut wide64, d, irq, wide::<16>, count, &p, start)
+                        stream::<16, 56>(&mut wide64, d, irq, wide::<16>, count, &p, start)
                     }
                     (Some(d), 2) => {
-                        stream::<64, 8>(&mut wide256, d, irq, wide::<64>, count, &p, start)
+                        stream::<64, 15>(&mut wide256, d, irq, wide::<64>, count, &p, start)
                     }
                     _ => ring_dma::Out {
                         errors: 1,
@@ -466,6 +472,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     },
                 };
                 errors = o.errors;
+                last_ring_perf = o.perf;
                 extra = o.pulses;
                 request[8..15].copy_from_slice(&[
                     o.ctl_l,
@@ -477,6 +484,9 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     o.notify_us,
                 ]);
             }
+            // Fetch command 17's optional detailed timing, after its response was consumed.
+            #[cfg(feature = "ring-dma")]
+            18 => request[8..16].copy_from_slice(&last_ring_perf),
             #[cfg(feature = "sram-profile")]
             9 => {
                 // Lab micro-profile (ends with PROF_DONE); RP1 holds the bulk writer role and uses
@@ -554,6 +564,7 @@ fn idle0(
 }
 const BATCH: usize = 32;
 /// Batched RP1→Linux stream: one `head` store per `push_slice`; the loop itself runs from ISRAM.
+#[cfg(not(feature = "ring-dma"))]
 #[rp1_rt::isram]
 fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u32 {
     let mut buf = [[0u32; 4]; BATCH];
@@ -620,6 +631,7 @@ fn events_stream(
     (0, pulses)
 }
 /// Batched Linux→RP1 stream: one `tail` store per `pop_into`, every message checked.
+#[cfg(not(feature = "ring-dma"))]
 #[rp1_rt::isram]
 fn down_batch(rx: &mut rp1_hal::shm::RingRx<Sample>, count: u32, start: u32) -> u32 {
     let mut buf = [[0u32; 4]; BATCH];
@@ -647,6 +659,7 @@ fn down_batch(rx: &mut rp1_hal::shm::RingRx<Sample>, count: u32, start: u32) -> 
     errors
 }
 // ISRAM removes shared-SRAM instruction fetches from the DDR measurement; identical baseline loop.
+#[cfg(not(feature = "ring-dma"))]
 #[rp1_rt::isram]
 unsafe fn repeat_read(pointer: *const u32, count: usize) -> u32 {
     let mut sum = 0u32;
@@ -655,6 +668,7 @@ unsafe fn repeat_read(pointer: *const u32, count: usize) -> u32 {
     }
     sum
 }
+#[cfg(not(feature = "ring-dma"))]
 #[rp1_rt::isram]
 unsafe fn scan_read(pointer: *const u32, count: usize) -> u32 {
     let mut sum = 0u32;
@@ -663,6 +677,7 @@ unsafe fn scan_read(pointer: *const u32, count: usize) -> u32 {
     }
     sum
 }
+#[cfg(not(feature = "ring-dma"))]
 #[rp1_rt::isram]
 unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
     for i in 0..count {
