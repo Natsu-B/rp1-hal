@@ -195,6 +195,12 @@ fn ring_raw(dma: &mut Dma, data: *mut u32) -> bool {
         for offset in [0, 8] {
             let source = &src[offset..offset + bytes];
             let destination = unsafe { dst.add(offset) };
+            // Every word differs from its expected value, even after a preceding condition.
+            for i in (0..bytes).step_by(4) {
+                let expected = u32::from_le_bytes(source[i..i + 4].try_into().unwrap());
+                unsafe { destination.add(i).cast::<u32>().write_volatile(!expected) };
+            }
+            rp1_hal::shm::complete_posted_writes();
             let t = now();
             for _ in 0..1000 {
                 if unsafe { dma.ch1.copy_to_remote(source, destination) }.is_err() {

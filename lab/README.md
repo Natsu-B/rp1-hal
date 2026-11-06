@@ -55,7 +55,9 @@ ordinary image for `shm-linux`'s full suite; ring-irq commands 14/15 remain avai
 Command 18 fetches detailed timing from the last command 17 without changing its response.
 The separate `dma` image's command 16 also emits pre-generated `RINGDMA_RAW` controls
 (channel 1, 768/2304/2112/3072/4032/3960/4080 B, aligned and +8 offsets, 1000 copies each,
-width and final data verification), before its existing bulk proof.
+width and final data verification), before its existing bulk proof. Each condition poisons
+its destination with the complement of the expected words and drains posted writes before
+starting its timer, so a condition that writes nothing cannot reuse an earlier success.
 
 STATIC: feature selection removes proof initialization, handlers and driver code from the
 linked image. The metadata, note ownership and overlay keep the existing I2C1/ADC/SPI0/pin
