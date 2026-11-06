@@ -135,6 +135,22 @@ impl HostIrq {
         (n, self.notify_ring(ring))
     }
 
+    /// [`crate::shm::RingDma::push_with`] then [`HostIrq::notify_ring`], including on full
+    /// rings and errors. Uses the same ordering and notification contract as
+    /// [`HostIrq::push_slice_dma_notify`].
+    #[inline(always)]
+    pub fn push_with_dma_notify<T: rp1_proto::Message, const N: u8>(
+        &mut self,
+        dma: &mut crate::shm::RingDma<'_>,
+        ring: &mut crate::shm::RingTx<T>,
+        channel: &mut crate::dma::Channel<N>,
+        count: usize,
+        fill: impl FnMut(usize, &mut T),
+    ) -> (Result<usize, crate::shm::Staged<crate::dma::Error>>, bool) {
+        let n = dma.push_with(ring, channel, count, fill);
+        (n, self.notify_ring(ring))
+    }
+
     #[inline(always)]
     fn pulse(&mut self) {
         write(irq::MSIX_CFG_SET as usize, irq::MSIX_CFG_TEST);
