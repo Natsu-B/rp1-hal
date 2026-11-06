@@ -593,6 +593,7 @@ name = "shm-linux"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rp1-hal",
  "rp1-linux",
  "rp1-proto",
 ]

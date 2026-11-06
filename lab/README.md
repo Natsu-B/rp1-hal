@@ -256,7 +256,10 @@ copy and publication; CPU publication is included in that residual. Timer reads 
 bookkeeping cost time (1 µs resolution); compare timer-on/off e2e and total time, and treat
 components as diagnostics. Generated payloads start zeroed on every path; the in-place DMA
 path zeroes each whole slot before filling it. The HW speed run must measure that cost in
-end-to-end/total and preparation time. Without `--timed`, direct `gen_us=0` means generation is included in push time, and detailed fields are unavailable (zero). The shared lab loop uses the same
+end-to-end/total and preparation time. DMA/CPU batch counts use actual copier invocation,
+also without timing. Auto modes 2/7 require at least one DMA batch when the requested wire
+batch reaches 256 B; an entirely CPU run fails the path check even under backpressure.
+Without `--timed`, direct `gen_us=0` means generation is included in push time, and detailed fields are unavailable (zero). The shared lab loop uses the same
 per-batch dispatch for each payload type and mode.
 
 At each candidate cold boot, run `shm-linux ring-dma-order 32000` first. Each size's early-head

@@ -6,6 +6,8 @@ use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
 #[cfg(feature = "adc")]
 mod adc_proof;
+#[cfg(feature = "ring-dma")]
+mod copy_stats;
 #[cfg(any(feature = "dma", feature = "ring-dma"))]
 mod dma_proof;
 #[cfg(feature = "i2c")]

@@ -360,6 +360,74 @@ mod tests {
     }
 
     #[test]
+    fn copier_records_dma_after_consumer_progress_between_check_and_push() {
+        use super::*;
+        #[repr(align(8))]
+        struct Mem([u8; 1024]);
+        struct Copy {
+            called: bool,
+            head: *const u32,
+        }
+        // SAFETY: copies synchronously into the exclusively owned in-memory ring.
+        unsafe impl SlotCopy for Copy {
+            type Error = ();
+            unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), ()> {
+                self.called = true;
+                assert_eq!(unsafe { self.head.read_volatile() }, 32);
+                unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len()) };
+                Ok(())
+            }
+        }
+        for generated in [false, true] {
+            let (mut data, mut ctrl, mut stage) = (Mem([0; 1024]), Mem([0; 1024]), Mem([0; 1024]));
+            let mut ring = unsafe {
+                RingTx::<[u32; 4]>::attach(
+                    data.0.as_mut_ptr(),
+                    1024,
+                    ctrl.0.as_ptr(),
+                    1024,
+                    32,
+                    Overflow::Reject,
+                )
+            }
+            .unwrap();
+            let mut helper = RingDma {
+                stage: &mut stage.0,
+                threshold: RingDma::DEFAULT_THRESHOLD,
+            };
+            assert_eq!(ring.push_slice(&[[0; 4]; 32]), 32);
+            assert_eq!(ring.writable(), 0); // The old lab snapshot would predict CPU.
+            unsafe { ctrl.0.as_mut_ptr().cast::<u32>().write_volatile(32) };
+            let mut copy = Copy {
+                called: false,
+                head: data.0.as_ptr().cast(),
+            };
+            let result = if generated {
+                helper.push_with(&mut ring, &mut copy, 32, |_, v| *v = [42; 4])
+            } else {
+                helper.push_slice(&mut ring, &mut copy, &[[42; 4]; 32])
+            };
+            assert_eq!(result, Ok(32));
+            assert!(copy.called);
+            assert_eq!(ring.head(), 64);
+            let mut rx = unsafe {
+                RingRx::<[u32; 4]>::attach(
+                    data.0.as_mut_ptr(),
+                    1024,
+                    ctrl.0.as_mut_ptr(),
+                    1024,
+                    32,
+                    Overflow::Reject,
+                )
+            }
+            .unwrap();
+            for _ in 0..32 {
+                assert_eq!(rx.pop(), Ok(Some([42; 4])));
+            }
+        }
+    }
+
+    #[test]
     fn generated_threshold_uses_writable_count_and_copy_failure_fences() {
         use super::*;
         #[repr(align(8))]

@@ -428,12 +428,10 @@ fn path_matches(mode: u32, batch: u32, size: usize, dma: u32, cpu: u32) -> bool 
     match mode {
         0 | 6 => dma == 0 && cpu > 0,
         1 | 3 | 4 | 5 => cpu == 0 && dma > 0,
-        // Mirrors RingDma::DEFAULT_THRESHOLD. Backpressure can make any larger
-        // auto batch fall back to CPU, but a smaller batch must never use DMA.
-        2 | 7 => {
-            (dma > 0 || cpu > 0)
-                && (batch as usize * rp1_proto::shm::slot_size(size) >= 256 || dma == 0)
-        }
+        // Mirrors RingDma::DEFAULT_THRESHOLD. Large batches must exercise DMA at least
+        // once, while backpressure may send partial batches through the CPU.
+        2 | 7 if batch as usize * rp1_proto::shm::slot_size(size) >= 256 => dma > 0,
+        2 | 7 => dma == 0 && cpu > 0,
         _ => false,
     }
 }
@@ -669,7 +667,7 @@ mod tests {
             assert!(path_matches(mode, 2, 16, 0, 10));
             assert!(!path_matches(mode, 2, 16, 10, 0));
             assert!(path_matches(mode, 1, 256, 10, 0));
-            assert!(path_matches(mode, 128, 16, 0, 10));
+            assert!(!path_matches(mode, 128, 16, 0, 10));
             assert!(path_matches(mode, 128, 16, 2, 8));
             assert!(!path_matches(mode, 128, 16, 0, 0));
         }

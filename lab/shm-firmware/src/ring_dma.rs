@@ -1,6 +1,9 @@
 //! Command 17: CPU/DMA slice (0/1/2), ordering controls (3/4), and generated
 //! DMA/CPU/auto (5/6/7). Optional timing stays in the lab, not in the HAL.
-use crate::dma_proof;
+use crate::{
+    copy_stats::{CopyStats, TimedCopy},
+    dma_proof,
+};
 use rp1_hal::{
     dma::Dma,
     host_irq::HostIrq,
@@ -119,7 +122,6 @@ fn run<const W: usize>(
         message,
         buf,
         stage,
-        threshold,
         slot,
         depth,
     };
@@ -145,7 +147,6 @@ struct TypedProducer<'a, const W: usize> {
     message: fn(&mut [u32; W], u32),
     buf: &'a mut [[u32; W]],
     stage: RingDma<'a>,
-    threshold: usize,
     slot: usize,
     depth: u32,
 }
@@ -167,17 +168,14 @@ impl<const W: usize> Producer for TypedProducer<'_, W> {
             message,
             buf,
             stage,
-            threshold,
             slot,
             depth,
         } = self;
-        let (threshold, slot, depth) = (*threshold, *slot, *depth);
+        let (slot, depth) = (*slot, *depth);
         let generated = p.mode >= 5;
         let experiment_mode = matches!(p.mode, 3 | 4);
         let head = tx.head();
         let t = now();
-        let n = (k - done).min(tx.writable() as usize);
-        let by_dma = n > 0 && n * slot >= threshold;
         let mut gen_us = 0u32;
         let mut fill = |j: usize, value: &mut [u32; W]| {
             if p.timed {
@@ -194,7 +192,7 @@ impl<const W: usize> Producer for TypedProducer<'_, W> {
                 early: p.mode == 3,
                 nonposted: p.mode == 3,
                 head,
-                n: n as u32,
+                n: (k - done).min(tx.writable() as usize) as u32,
                 depth,
                 slot,
             })
@@ -216,7 +214,7 @@ impl<const W: usize> Producer for TypedProducer<'_, W> {
         stats.return_time = end;
         Attempt {
             head,
-            by_dma,
+            by_dma: stats.blocks > 0,
             elapsed: end.wrapping_sub(t),
             gen_us,
             stats,
@@ -318,15 +316,6 @@ fn run_batches(
     out
 }
 
-#[derive(Default)]
-struct CopyStats {
-    return_time: u32,
-    us: u32,
-    last_end: u32,
-    blocks: u32,
-    width8: u32,
-    width16: u32,
-}
 enum LabCopy<'a> {
     Production(&'a mut rp1_hal::dma::Channel<1>),
     Experiment(ExperimentCopy),
@@ -341,31 +330,6 @@ unsafe impl SlotCopy for LabCopy<'_> {
             Self::Production(channel) => unsafe { channel.copy_to_remote(src, dst) },
             Self::Experiment(copy) => unsafe { copy.copy_to_remote(src, dst) },
         }
-    }
-}
-struct TimedCopy<'a, C> {
-    inner: &'a mut C,
-    stats: &'a mut CopyStats,
-    timed: bool,
-}
-// SAFETY: delegates unchanged to the same blocking copier, preserving its contract.
-unsafe impl<C: SlotCopy> SlotCopy for TimedCopy<'_, C> {
-    type Error = C::Error;
-    #[inline(always)]
-    unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Self::Error> {
-        if !self.timed {
-            return unsafe { self.inner.copy_to_remote(src, dst) };
-        }
-        let t = now();
-        let r = unsafe { self.inner.copy_to_remote(src, dst) };
-        let end = now();
-        self.stats.us = self.stats.us.wrapping_add(end.wrapping_sub(t));
-        self.stats.last_end = end;
-        self.stats.blocks += 1;
-        let w = rp1_hal::dma::width_log2(src.as_ptr() as u64, dst as u64, src.len() as u32);
-        self.stats.width8 += u32::from(w == 3);
-        self.stats.width16 += u32::from(w == 4);
-        r
     }
 }
 
