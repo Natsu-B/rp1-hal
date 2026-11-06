@@ -218,7 +218,9 @@ let (n, pulsed) = host_irq.push_with_dma_notify(
 `RingDma::push_with` uses the same threshold decision as `push_slice`, based on the actual
 writable count and stage capacity. Small batches use `RingTx::push_with`; DMA batches use
 `RingTx::push_with_staged`. Overwrite always uses CPU and accepts the full requested count.
-The notification wrapper calls `notify_ring` on full rings and errors as well.
+Both notification helpers accept any `C: SlotCopy` and return `Staged<C::Error>`;
+explicit channel-number generic arguments must be replaced by the copier type (pre-1.0
+breaking change). They call `notify_ring` on full rings and errors as well.
 
 The callback receives the offset **within this call** and an initialized `&mut T` whose
 initial value is unspecified. Fill every field for deterministic output. Reject rings call it

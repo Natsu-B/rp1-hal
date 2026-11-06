@@ -123,15 +123,16 @@ impl HostIrq {
     /// completed the copy under the SlotCopy ordering contract before publishing `head`;
     /// Channel's AXI-to-PCIe ordering chain remains HYP (docs/dma.md). The notification reads
     /// `head` back; it does not verify the payload or establish that ordering chain.
+    /// Accepts any blocking [`SlotCopy`](crate::shm::SlotCopy), including channel wrappers.
     #[inline(always)]
-    pub fn push_slice_dma_notify<T: rp1_proto::Message, const N: u8>(
+    pub fn push_slice_dma_notify<T: rp1_proto::Message, C: crate::shm::SlotCopy>(
         &mut self,
         dma: &mut crate::shm::RingDma<'_>,
         ring: &mut crate::shm::RingTx<T>,
-        channel: &mut crate::dma::Channel<N>,
+        copy: &mut C,
         values: &[T],
-    ) -> (Result<usize, crate::shm::Staged<crate::dma::Error>>, bool) {
-        let n = dma.push_slice(ring, channel, values);
+    ) -> (Result<usize, crate::shm::Staged<C::Error>>, bool) {
+        let n = dma.push_slice(ring, copy, values);
         (n, self.notify_ring(ring))
     }
 
@@ -139,15 +140,15 @@ impl HostIrq {
     /// rings and errors. Uses the same ordering and notification contract as
     /// [`HostIrq::push_slice_dma_notify`].
     #[inline(always)]
-    pub fn push_with_dma_notify<T: rp1_proto::Message, const N: u8>(
+    pub fn push_with_dma_notify<T: rp1_proto::Message, C: crate::shm::SlotCopy>(
         &mut self,
         dma: &mut crate::shm::RingDma<'_>,
         ring: &mut crate::shm::RingTx<T>,
-        channel: &mut crate::dma::Channel<N>,
+        copy: &mut C,
         count: usize,
         fill: impl FnMut(usize, &mut T),
-    ) -> (Result<usize, crate::shm::Staged<crate::dma::Error>>, bool) {
-        let n = dma.push_with(ring, channel, count, fill);
+    ) -> (Result<usize, crate::shm::Staged<C::Error>>, bool) {
+        let n = dma.push_with(ring, copy, count, fill);
         (n, self.notify_ring(ring))
     }
 
@@ -161,6 +162,27 @@ impl HostIrq {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notify_helpers_accept_a_copier_with_its_own_error_type() {
+        struct Copy;
+        // SAFETY: never accesses the source or destination, fails synchronously.
+        unsafe impl crate::shm::SlotCopy for Copy {
+            type Error = &'static str;
+            unsafe fn copy_to_remote(&mut self, _: &[u8], _: *mut u8) -> Result<(), Self::Error> {
+                Err("test")
+            }
+        }
+        // Type-check the calls without accessing the host IRQ registers on the test host.
+        let _check = |irq: &mut HostIrq,
+                      dma: &mut crate::shm::RingDma<'_>,
+                      ring: &mut crate::shm::RingTx<u32>,
+                      copy: &mut Copy| {
+            let (slice, _) = irq.push_slice_dma_notify(dma, ring, copy, &[1]);
+            let (generated, _) = irq.push_with_dma_notify(dma, ring, copy, 1, |_, v| *v = 1);
+            let _: [Result<usize, crate::shm::Staged<&'static str>>; 2] = [slice, generated];
+        };
+    }
 
     #[test]
     fn timer_registers_match_the_pac() {
