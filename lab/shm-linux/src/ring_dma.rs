@@ -424,6 +424,20 @@ impl PerfOptions {
     }
 }
 
+fn path_matches(mode: u32, batch: u32, size: usize, dma: u32, cpu: u32) -> bool {
+    match mode {
+        0 | 6 => dma == 0 && cpu > 0,
+        1 | 3 | 4 | 5 => cpu == 0 && dma > 0,
+        // Mirrors RingDma::DEFAULT_THRESHOLD. Backpressure can make any larger
+        // auto batch fall back to CPU, but a smaller batch must never use DMA.
+        2 | 7 => {
+            (dma > 0 || cpu > 0)
+                && (batch as usize * rp1_proto::shm::slot_size(size) >= 256 || dma == 0)
+        }
+        _ => false,
+    }
+}
+
 fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
     use Kind::*;
     let mut fw = Firmware::open()?;
@@ -512,12 +526,13 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
         let ring_mbps = n as f64 * sizes[ring as usize] / push_us.max(1) as f64;
         let missing = n - res.got;
         let mbps = n as f64 * sizes[ring as usize] / res.seconds / 1e6;
-        let path_ok = match run.mode {
-            0 | 6 => dma_b == 0 && cpu_b > 0,
-            1 | 3 | 4 | 5 => cpu_b == 0 && dma_b > 0,
-            _ if run.batch == 1 => dma_b == 0,
-            _ => dma_b > 0,
-        };
+        let path_ok = path_matches(
+            run.mode,
+            run.batch,
+            sizes[ring as usize] as usize,
+            dma_b,
+            cpu_b,
+        );
         let check = if missing != 0 {
             "FAIL(missing)"
         } else if run.kind != Order && (res.corrupt != 0 || res.stale != 0) {
@@ -647,6 +662,21 @@ impl Seen {
 #[cfg(test)]
 mod tests {
     use super::Seen;
+    #[test]
+    fn auto_path_matches_wire_size_and_allows_partial_cpu_batches() {
+        use super::path_matches;
+        for mode in [2, 7] {
+            assert!(path_matches(mode, 2, 16, 0, 10));
+            assert!(!path_matches(mode, 2, 16, 10, 0));
+            assert!(path_matches(mode, 1, 256, 10, 0));
+            assert!(path_matches(mode, 128, 16, 0, 10));
+            assert!(path_matches(mode, 128, 16, 2, 8));
+            assert!(!path_matches(mode, 128, 16, 0, 0));
+        }
+        assert!(!path_matches(0, 32, 16, 1, 0));
+        assert!(!path_matches(5, 32, 16, 0, 1));
+    }
+
     #[test]
     fn perf_plan_preserves_baseline_and_repeats_identical_conditions() {
         let parse = |args: &[&str]| super::PerfOptions::parse(args.iter().map(|s| s.to_string()));
