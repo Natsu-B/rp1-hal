@@ -96,6 +96,7 @@ host interrupt):
 | spi | 37352 | 11800 | 2532 | 16 |
 | sram-profile | 35440 | 13712 | 2708 | 656 |
 | dma (2026-11-05, rustc of that date) | 39728 | 9424 | 3092 | 16 |
+| ring-dma (2026-11-07, focused image) | 49024 | 128 | 7848 | 16 |
 | i2c, adc, spi, sram-profile | does not link (16 B over) | - | - | - |
 | i2c, adc, spi, dma | does not link (about 3.3 KiB over) | - | - | - |
 
