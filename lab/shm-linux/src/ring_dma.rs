@@ -424,13 +424,15 @@ impl PerfOptions {
     }
 }
 
-fn path_matches(mode: u32, batch: u32, size: usize, dma: u32, cpu: u32) -> bool {
+fn path_matches(mode: u32, batch: u32, phase_count: u32, size: usize, dma: u32, cpu: u32) -> bool {
     match mode {
         0 | 6 => dma == 0 && cpu > 0,
         1 | 3 | 4 | 5 => cpu == 0 && dma > 0,
-        // Mirrors RingDma::DEFAULT_THRESHOLD. Large batches must exercise DMA at least
-        // once, while backpressure may send partial batches through the CPU.
-        2 | 7 if batch as usize * rp1_proto::shm::slot_size(size) >= 256 => dma > 0,
+        // Mirrors RingDma::DEFAULT_THRESHOLD, using the largest batch this phase can send.
+        // Backpressure may send partial batches through the CPU.
+        2 | 7 if batch.min(phase_count) as usize * rp1_proto::shm::slot_size(size) >= 256 => {
+            dma > 0
+        }
         2 | 7 => dma == 0 && cpu > 0,
         _ => false,
     }
@@ -527,6 +529,7 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
         let path_ok = path_matches(
             run.mode,
             run.batch,
+            n,
             sizes[ring as usize] as usize,
             dma_b,
             cpu_b,
@@ -664,15 +667,68 @@ mod tests {
     fn auto_path_matches_wire_size_and_allows_partial_cpu_batches() {
         use super::path_matches;
         for mode in [2, 7] {
-            assert!(path_matches(mode, 2, 16, 0, 10));
-            assert!(!path_matches(mode, 2, 16, 10, 0));
-            assert!(path_matches(mode, 1, 256, 10, 0));
-            assert!(!path_matches(mode, 128, 16, 0, 10));
-            assert!(path_matches(mode, 128, 16, 2, 8));
-            assert!(!path_matches(mode, 128, 16, 0, 0));
+            assert!(path_matches(mode, 2, 1000, 16, 0, 10));
+            assert!(!path_matches(mode, 2, 1000, 16, 10, 0));
+            assert!(path_matches(mode, 1, 1000, 256, 10, 0));
+            assert!(!path_matches(mode, 128, 1000, 16, 0, 10));
+            assert!(path_matches(mode, 128, 1000, 16, 2, 8));
+            assert!(!path_matches(mode, 128, 1000, 16, 0, 0));
         }
-        assert!(!path_matches(0, 32, 16, 1, 0));
-        assert!(!path_matches(5, 32, 16, 0, 1));
+        assert!(!path_matches(0, 32, 1000, 16, 1, 0));
+        assert!(!path_matches(5, 32, 1000, 16, 0, 1));
+    }
+
+    #[test]
+    fn auto_path_uses_each_phase_count() {
+        for mode in ["2", "7"] {
+            for (count, warmup) in [("1", "0"), ("128", "1")] {
+                let options = super::PerfOptions::parse(
+                    [
+                        "--ring", "0", "--batch", "128", "--mode", mode, "--count", count,
+                        "--warmup", warmup, "--repeat", "1",
+                    ]
+                    .into_iter()
+                    .map(str::to_string),
+                )
+                .unwrap();
+                for (_, run) in options.plan() {
+                    let count = run.count.unwrap();
+                    let expects_dma = run.name != "warmup" && count == 128;
+                    assert!(super::path_matches(
+                        run.mode,
+                        run.batch,
+                        count,
+                        16,
+                        u32::from(expects_dma),
+                        u32::from(!expects_dma),
+                    ));
+                    assert!(!super::path_matches(
+                        run.mode,
+                        run.batch,
+                        count,
+                        16,
+                        u32::from(!expects_dma),
+                        u32::from(expects_dma),
+                    ));
+                }
+            }
+            for (size, count, expects_dma) in [
+                (16, 10, false),
+                (16, 11, true),
+                (64, 3, false),
+                (64, 4, true),
+                (256, 1, true),
+            ] {
+                assert!(super::path_matches(
+                    mode.parse().unwrap(),
+                    128,
+                    count,
+                    size,
+                    u32::from(expects_dma),
+                    u32::from(!expects_dma),
+                ));
+            }
+        }
     }
 
     #[test]
