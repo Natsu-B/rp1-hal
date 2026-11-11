@@ -26,13 +26,13 @@ __rp1_reset1:
     .section .vectors.proc0,"a",%progbits
     .word 0x10004000
     .word __rp1_reset0
-    .rept 78
+    .rept 14
     .word __rp1_default
     .endr
     .section .vectors.proc1,"a",%progbits
     .word 0x10004000
     .word __rp1_reset1
-    .rept 78
+    .rept 14
     .word __rp1_default
     .endr
 "#
@@ -72,7 +72,18 @@ unsafe extern "C" fn __rp1_initialize(core: u32) -> ! {
         };
         (0xe000_ed08 as *mut u32).write_volatile(vectors as u32);
         core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags));
-        // IRQs remain masked until the application installs and enables its handlers.
+        // STATIC: NVIC is core-local. Enter main unmasked, with every line disabled.
+        (0xe000_e180 as *mut u32).write_volatile(u32::MAX);
+        (0xe000_e184 as *mut u32).write_volatile(u32::MAX);
+        for irq in 0..64 {
+            (0xe000_e400 as *mut u8).add(irq).write_volatile(4 << 5);
+        }
+        core::arch::asm!(
+            "dsb sy",
+            "isb sy",
+            "cpsie i",
+            options(nostack, preserves_flags)
+        );
         if core == 0 {
             __rp1_proc0_main()
         } else {

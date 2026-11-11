@@ -127,6 +127,10 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../../rp1-rt/link.x").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../rp1-pac/irq.x")
+    );
     println!("cargo:rerun-if-env-changed=RP1_DTC");
     // A new commit changes the provenance record even when Cargo.toml stays identical.
     for p in git_watch_paths(&manifest_dir) {
@@ -192,10 +196,11 @@ pub fn generate(
     d.validate()?;
     let note = wire::descriptor(name, version, d, hash, source)?;
     let layout = format!(
-        "__stack_size0 = {};\n__stack_size1 = {};\n{}",
+        "__stack_size0 = {};\n__stack_size1 = {};\n{}\n{}",
         d.stack_size(0)?,
         d.stack_size(1)?,
-        include_str!("../../rp1-rt/link.x")
+        include_str!("../../rp1-rt/link.x"),
+        include_str!("../../rp1-pac/irq.x")
     );
     let dts = overlay::dts(d, &note)?;
     Ok(Artifacts { note, layout, dts })

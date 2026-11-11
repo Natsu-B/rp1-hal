@@ -36,7 +36,7 @@ pub fn generate(db: &Database, pac_src: &Path) -> Result<()> {
     fs::write(pac_src.join("peripherals.rs"), peripherals(db))?;
     fs::write(pac_src.join("interrupts.rs"), interrupts(db))?;
     fs::write(pac_src.join("metadata.rs"), metadata(db))?;
-    fs::write(pac_root.join("device.x"), device_x(db))?;
+    fs::write(pac_root.join("irq.x"), irq_x(db))?;
     format_generated(pac_src)?;
     Ok(())
 }
@@ -966,44 +966,53 @@ fn interrupts(db: &Database) -> String {
 
     writeln!(
         out,
-        "#[cfg(feature = \"vectors\")]\n#[allow(non_snake_case)]\nunsafe extern \"C\" {{"
+        "#[cfg(all(feature = \"rt\", target_arch = \"arm\", target_os = \"none\"))]\n#[allow(non_snake_case)]\nunsafe extern \"C\" {{"
     )
     .unwrap();
-    for interrupt in &interrupts {
-        writeln!(out, "    fn {}();", interrupt.name).unwrap();
+    writeln!(out, "    fn __rp1_default_irq();").unwrap();
+    for core in 0..2 {
+        for interrupt in &interrupts {
+            writeln!(out, "    fn __rp1_p{core}_{}();", interrupt.name).unwrap();
+        }
     }
     writeln!(out, "}}\n").unwrap();
-
-    writeln!(out, "#[cfg(feature = \"vectors\")]\n#[doc(hidden)]\n#[repr(C)]\npub union Vector {{\n    _handler: unsafe extern \"C\" fn(),\n    _reserved: u32,\n}}\n").unwrap();
-    writeln!(out, "#[cfg(feature = \"vectors\")]\n#[doc(hidden)]\n#[used]\n#[unsafe(no_mangle)]\n#[unsafe(link_section = \".vector_table.interrupts\")]\npub static __INTERRUPTS: [Vector; NVIC_INTERRUPT_COUNT] = [").unwrap();
-    for number in 0..db.core.nvic.external_slots {
-        if let Some(interrupt) = interrupts_by_number.get(&number) {
+    writeln!(out, "#[cfg(all(feature = \"rt\", target_arch = \"arm\", target_os = \"none\"))]\n#[doc(hidden)]\n#[repr(C)]\npub union Vector {{\n    _handler: unsafe extern \"C\" fn(),\n    _reserved: u32,\n}}\n").unwrap();
+    for core in 0..2 {
+        writeln!(out, "#[cfg(all(feature = \"rt\", target_arch = \"arm\", target_os = \"none\"))]\n#[doc(hidden)]\n#[used]\n#[unsafe(no_mangle)]\n#[unsafe(link_section = \".vectors.proc{core}.irq\")]\npub static __RP1_IRQS{core}: [Vector; NVIC_INTERRUPT_COUNT] = [").unwrap();
+        for number in 0..db.core.nvic.external_slots {
+            let (name, handler) = match interrupts_by_number.get(&number) {
+                Some(interrupt) => (
+                    interrupt.name.as_str(),
+                    format!("__rp1_p{core}_{}", interrupt.name),
+                ),
+                None => ("reserved", "__rp1_default_irq".into()),
+            };
             writeln!(
                 out,
-                "    // IRQ {number}: {}\n    Vector {{ _handler: {} }},",
-                interrupt.name, interrupt.name
-            )
-            .unwrap();
-        } else {
-            writeln!(
-                out,
-                "    // IRQ {number}: reserved\n    Vector {{ _reserved: 0 }},"
+                "    // IRQ {number}: {name}\n    Vector {{ _handler: {handler} }},"
             )
             .unwrap();
         }
+        writeln!(out, "];\n").unwrap();
     }
-    writeln!(out, "];\n").unwrap();
     out
 }
 
-fn device_x(db: &Database) -> String {
+fn irq_x(db: &Database) -> String {
     let mut interrupts: Vec<_> = db.interrupts.iter().collect();
     interrupts.sort_by_key(|interrupt| (interrupt.number, interrupt.name.as_str()));
     let mut out = String::from(
         "/* Generated from rp1-regdb/data/device.toml. */\n/* Do not edit manually. */\n/* Regenerate with: cargo run -p rp1-regdb -- generate */\n\n",
     );
-    for interrupt in interrupts {
-        writeln!(out, "PROVIDE({} = DefaultHandler);", interrupt.name).unwrap();
+    for core in 0..2 {
+        for interrupt in &interrupts {
+            writeln!(
+                out,
+                "PROVIDE(__rp1_p{core}_{} = __rp1_default_irq);",
+                interrupt.name
+            )
+            .unwrap();
+        }
     }
     out
 }

@@ -1,15 +1,15 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
-    println!("cargo:rerun-if-changed=device.x");
+    println!("cargo:rerun-if-changed=irq.x");
 
-    if env::var_os("CARGO_FEATURE_VECTORS").is_none() {
+    if env::var_os("CARGO_FEATURE_RT").is_none() {
         return;
     }
 
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo must set OUT_DIR"));
 
-    fs::copy("device.x", out.join("device.x")).expect("copy generated device.x");
+    fs::copy("irq.x", out.join("irq.x")).expect("copy generated irq.x");
 
     println!("cargo:rustc-link-search={}", out.display());
 }

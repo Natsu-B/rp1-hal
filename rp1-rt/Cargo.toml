@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+rp1-pac = { path = "../rp1-pac", features = ["rt"] }
 rp1-proto = { path = "../rp1-proto" }
 rp1-macros = { path = "../rp1-macros" }
 

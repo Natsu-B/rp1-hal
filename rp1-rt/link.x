@@ -1,5 +1,6 @@
 ENTRY(__rp1_reset0)
 EXTERN(__rp1_reset0 __rp1_reset1)
+EXTERN(__RP1_IRQS0 __RP1_IRQS1)
 MEMORY {
   SRAM  (rwx) : ORIGIN = 0x20000000, LENGTH = 48K
   ISRAM (rwx) : ORIGIN = 0x10000000, LENGTH = 8K
@@ -9,8 +10,8 @@ MEMORY {
 PHDRS { text PT_LOAD; isram PT_LOAD; code PT_LOAD; data PT_LOAD; shared PT_LOAD; }
 SECTIONS {
   .vectors ORIGIN(SRAM) : ALIGN(512) {
-    __vectors0 = .; KEEP(*(.vectors.proc0));
-    . = ALIGN(512); __vectors1 = .; KEEP(*(.vectors.proc1));
+    __vectors0 = .; KEEP(*(.vectors.proc0)); KEEP(*(.vectors.proc0.irq));
+    . = ALIGN(512); __vectors1 = .; KEEP(*(.vectors.proc1)); KEEP(*(.vectors.proc1.irq));
   } > SRAM :text
   .boot 0x20000400 : { KEEP(*(.text.rp1_reset)); } > SRAM :text
   /* Before .text, which is in its own PT_LOAD so the load images do not overlap: an input
@@ -41,6 +42,8 @@ SECTIONS {
   .rp1.dtbo 0 (INFO) : { KEEP(*(.rp1.dtbo)); } :NONE
   /DISCARD/ : { *(.ARM.extab*); *(.eh_frame*); }
 }
+ASSERT(__vectors1 - __vectors0 == 512, "vector table 0 is not 80 words")
+ASSERT(SIZEOF(.vectors) == 832, "vector table 1 is not 80 words")
 ASSERT(SIZEOF(.isram) <= 8192, "ISRAM budget exceeded")
 ASSERT(__ebss + MAX(__stack_size0, __stack_size1) <= 0x10004000, "DSRAM + stack budget exceeded")
 ASSERT(__image_end <= 0x2000c000, "shared SRAM image exceeds 48 KiB")

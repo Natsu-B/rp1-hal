@@ -216,8 +216,8 @@ fn generated_output_is_stable_and_has_source_banner() {
         );
     }
     assert_eq!(
-        fs::read(first.parent().unwrap().join("device.x")).unwrap(),
-        fs::read(second.parent().unwrap().join("device.x")).unwrap()
+        fs::read(first.parent().unwrap().join("irq.x")).unwrap(),
+        fs::read(second.parent().unwrap().join("irq.x")).unwrap()
     );
     let timer = fs::read_to_string(first.join("generated/timer.rs")).unwrap();
     assert!(timer.contains("Generated from rp1-regdb/data/peripherals/timer.toml"));
@@ -319,63 +319,50 @@ fn all_rp1_interrupts_are_generated() {
             .lines()
             .any(|line| line == "pub const DEFINED_INTERRUPT_COUNT: usize = 61;")
     );
-    assert!(interrupts.contains("pub static __INTERRUPTS: [Vector; NVIC_INTERRUPT_COUNT] = ["));
-    assert!(interrupts.contains("#[unsafe(no_mangle)]"));
-    assert!(interrupts.contains("#[unsafe(link_section = \".vector_table.interrupts\")]"));
-    assert_eq!(
-        interrupts.matches("#[cfg(feature = \"vectors\")]").count(),
-        3
-    );
-    assert!(!interrupts.contains("#[cfg(feature = \"rt\")]"));
-
-    let vectors = interrupts
-        .split("pub static __INTERRUPTS")
-        .nth(1)
-        .expect("generated vector table");
-    let irq_comments: Vec<_> = vectors
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("// IRQ "))
-        .collect();
-    assert_eq!(irq_comments.len(), 64);
-    assert_eq!(irq_comments[60], "// IRQ 60: VBUSCTRL");
-    assert_eq!(irq_comments[61], "// IRQ 61: reserved");
-    assert_eq!(irq_comments[62], "// IRQ 62: reserved");
-    assert_eq!(irq_comments[63], "// IRQ 63: reserved");
-    assert_eq!(
-        vectors
-            .lines()
-            .filter(|line| line.contains("_handler:"))
-            .count(),
-        61
-    );
-    assert_eq!(
-        vectors
-            .lines()
-            .filter(|line| line.contains("_reserved: 0"))
-            .count(),
-        3
-    );
-
-    let device_x = fs::read_to_string(source.parent().unwrap().join("device.x")).unwrap();
-    let provide_lines: Vec<_> = device_x
+    assert!(!interrupts.contains("feature = \"vectors\""));
+    for core in 0..2 {
+        assert!(interrupts.contains(&format!(
+            "pub static __RP1_IRQS{core}: [Vector; NVIC_INTERRUPT_COUNT] = ["
+        )));
+        assert!(interrupts.contains(&format!(".vectors.proc{core}.irq")));
+        let vectors = interrupts
+            .split(&format!("pub static __RP1_IRQS{core}"))
+            .nth(1)
+            .unwrap()
+            .split("];\n")
+            .next()
+            .unwrap();
+        assert_eq!(vectors.matches("_handler:").count(), 64);
+        for (name, number) in &expected {
+            assert!(vectors.contains(&format!("// IRQ {number}: {name}")));
+            assert!(vectors.contains(&format!("_handler: __rp1_p{core}_{name}")));
+        }
+        for irq in 61..64 {
+            assert!(vectors.contains(&format!(
+                "// IRQ {irq}: reserved\n    Vector {{\n        _handler: __rp1_default_irq,"
+            )));
+        }
+    }
+    let irq_x = fs::read_to_string(source.parent().unwrap().join("irq.x")).unwrap();
+    let provide_lines: Vec<_> = irq_x
         .lines()
         .filter(|line| line.starts_with("PROVIDE("))
         .collect();
-    let expected_provides: Vec<_> = expected
-        .iter()
-        .map(|(name, _)| format!("PROVIDE({name} = DefaultHandler);"))
+    let expected_provides: Vec<_> = (0..2)
+        .flat_map(|core| {
+            expected
+                .iter()
+                .map(move |(name, _)| format!("PROVIDE(__rp1_p{core}_{name} = __rp1_default_irq);"))
+        })
         .collect();
-    assert_eq!(provide_lines.len(), 61);
+    assert_eq!(provide_lines.len(), 122);
     assert_eq!(provide_lines, expected_provides);
-    assert!(device_x.contains("PROVIDE(UART0 = DefaultHandler);"));
-    assert!(device_x.ends_with('\n'));
     assert!(peripherals.contains("pub type Uart0 = UART0;"));
     assert!(peripherals.contains("pub type Uart5 = UART5;"));
 }
 
 #[test]
-fn generate_check_includes_device_x() {
+fn generate_check_includes_irq_x() {
     let (_directory, source) = generated();
     let device = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/device.toml");
     let binary = env!("CARGO_BIN_EXE_rp1-regdb");
@@ -390,7 +377,7 @@ fn generate_check_includes_device_x() {
     assert!(current.success());
 
     fs::write(
-        source.parent().unwrap().join("device.x"),
+        source.parent().unwrap().join("irq.x"),
         "/* deliberately stale */\n",
     )
     .unwrap();

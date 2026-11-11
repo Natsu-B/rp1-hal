@@ -444,6 +444,7 @@ name = "rp1-rt"
 version = "0.1.0"
 dependencies = [
  "rp1-macros",
+ "rp1-pac",
  "rp1-proto",
  "trybuild",
 ]

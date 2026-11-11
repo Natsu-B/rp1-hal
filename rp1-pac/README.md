@@ -15,7 +15,7 @@ Generated code:
 - `src/interrupts.rs`
 - `src/metadata.rs`
 - `src/generated/*.rs`
-- `device.x`
+- `irq.x`
 
 Do not edit generated files manually. Regenerate and verify with:
 
@@ -60,7 +60,7 @@ Generation treats each RP1 MSI-X source ID as the identical local NVIC IRQn.
 UART0 through UART5 retain `hardware`/`hardware` evidence, while the other
 named IRQs retain `linux`/`static` evidence.
 
-The optional, non-default `vectors` feature makes this PAC own the 64-entry
-`__INTERRUPTS` table and supplies generated `device.x` weak aliases for all 61
-named handlers. Reserved entries are zero. Attribute macros and core exception
-vectors belong to the consuming runtime rather than the PAC.
+The optional, non-default `rt` feature supplies two 64-entry external interrupt tables,
+`__RP1_IRQS0` and `__RP1_IRQS1`, for rp1-rt. Generated `irq.x` aliases the 61 named
+handlers on each core to `__rp1_default_irq`; reserved slots also use that handler.
+The runtime supplies the first 16 words and places each complete table at 512-byte alignment.

@@ -1,11 +1,19 @@
 #![no_std]
 //! Two cores share code; ordinary statics have a private DSRAM copy on each core.
+//!
+//! STATIC startup contract: each core installs its own vector table, disables all 64 NVIC
+//! lines, sets their priority to 4, and enters main with PRIMASK cleared. Peripheral IRQs
+//! remain disabled until explicitly enabled. Unhandled external IRQs mask themselves and
+//! update [`interrupt::unhandled`]; system exceptions still stop in the default handler.
+//! Hardware regression of this startup contract is pending.
 use core::{cell::UnsafeCell, marker::PhantomData};
 pub use rp1_macros::{cold, entry, isram, proc0, proc1, shared};
 pub use rp1_proto::SharedSafe;
+pub mod interrupt;
 #[cfg(target_arch = "arm")]
 mod startup;
 pub mod sync;
+pub use rp1_pac as pac;
 
 mod sealed {
     pub trait Sealed {}

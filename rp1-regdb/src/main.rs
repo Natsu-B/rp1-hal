@@ -142,7 +142,7 @@ fn check_generation(db: &model::Database, expected: &Path) -> Result<()> {
 fn generated_files(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
     let mut files = BTreeMap::new();
     let pac_root = root.parent().context("PAC src directory has no parent")?;
-    files.insert(PathBuf::from("device.x"), read(&pac_root.join("device.x"))?);
+    files.insert(PathBuf::from("irq.x"), read(&pac_root.join("irq.x"))?);
     for name in ["peripherals.rs", "interrupts.rs", "metadata.rs"] {
         let path = root.join(name);
         files.insert(PathBuf::from(name), read(&path)?);

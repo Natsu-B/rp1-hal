@@ -24,3 +24,13 @@ fn image_is_asserted_below_the_fixed_scratch_floor() {
     assert!(LINK_X.contains("__rp1_fixed_scratch_floor = ORIGIN(LINK);"));
     assert!(LINK_X.contains("ASSERT(__image_end <= __rp1_fixed_scratch_floor,"));
 }
+
+#[test]
+fn per_core_irq_tables_are_retained_and_aligned() {
+    assert!(LINK_X.contains("EXTERN(__RP1_IRQS0 __RP1_IRQS1)"));
+    for core in 0..2 {
+        assert!(LINK_X.contains(&format!("KEEP(*(.vectors.proc{core}.irq))")));
+    }
+    assert!(LINK_X.contains("ASSERT(__vectors1 - __vectors0 == 512,"));
+    assert!(LINK_X.contains("ASSERT(SIZEOF(.vectors) == 832,"));
+}

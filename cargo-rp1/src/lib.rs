@@ -217,6 +217,7 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
             return Err("DSRAM + stack budget exceeded".into());
         }
     }
+    check_irq_tables(&file)?;
     validate_regions(&note)?;
     let overlay = file
         .section_by_name(".rp1.dtbo")
@@ -260,6 +261,41 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
         exclusive_instructions,
     })
 }
+/// Validate all 64 external IRQ vectors on each core, including reserved slots.
+fn check_irq_tables(file: &object::File<'_>) -> Result<()> {
+    let vectors = file.section_by_name(".vectors").ok_or("missing vectors")?;
+    let data = vectors.data()?;
+    if vectors.address() != 0x2000_0000 || data.len() != 512 + 80 * 4 {
+        return Err("expected two 80-word vector tables at 0x20000000 and 0x20000200".into());
+    }
+    for core in 0..2 {
+        for irq in 0..64 {
+            let handler = word(data, core * 512 + (16 + irq) * 4)?;
+            let address = u64::from(handler & !1);
+            let executable = file.sections().any(|s| {
+                s.kind() == object::SectionKind::Text
+                    && matches!(s.flags(), object::SectionFlags::Elf { sh_flags }
+                        if sh_flags & u64::from(object::elf::SHF_ALLOC | object::elf::SHF_EXECINSTR)
+                            == u64::from(object::elf::SHF_ALLOC | object::elf::SHF_EXECINSTR))
+                    && within(
+                        address,
+                        2,
+                        s.address(),
+                        s.address().saturating_add(s.size()),
+                    )
+            });
+            if handler & 1 == 0
+                || !(within(address, 2, 0x1000_0000, 0x1000_2000)
+                    || within(address, 2, 0x2000_0000, 0x2000_c000))
+                || !executable
+            {
+                return Err(format!("proc{core} IRQ{irq} vector 0x{handler:08x} is not a Thumb handler in image code or ISRAM").into());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A section whose contents cannot change at run time: allocated, not writable and not NOBITS.
 fn literal_section(section: &object::Section<'_, '_>) -> bool {
     use object::{SectionFlags, SectionKind, elf};
@@ -819,5 +855,88 @@ mod tests {
         assert!(!pc_literal("r1, [r1, #4]"));
         assert!(pc_literal("r1, [pc, #12]"));
         assert!(pc_literal("r1, [pc]"));
+    }
+}
+
+#[cfg(test)]
+mod irq_table_tests {
+    use super::*;
+
+    // Minimal synthetic ARM ELF32: two tables and one executable section, no program headers.
+    fn elf(handler: u32, address: u32, flags: u32, length: usize) -> Vec<u8> {
+        let names = b"\0.vectors\0.text\0.shstrtab\0";
+        let mut out = vec![0; 52];
+        let mut vectors = vec![0; length];
+        for core in 0..2 {
+            for irq in 0..64 {
+                let offset = core * 512 + (16 + irq) * 4;
+                if let Some(word) = vectors.get_mut(offset..offset + 4) {
+                    word.copy_from_slice(&handler.to_le_bytes());
+                }
+            }
+        }
+        let mut sections = Vec::new();
+        for (name, kind, flags, address, data) in [
+            (1u32, 1u32, 2, 0x2000_0000, vectors.as_slice()),
+            (10, 1, flags, address, &[0x70, 0x47][..]),
+            (16, 3, 0, 0, names.as_slice()),
+        ] {
+            sections.push((
+                name,
+                kind,
+                flags,
+                address,
+                out.len() as u32,
+                data.len() as u32,
+            ));
+            out.extend_from_slice(data);
+            while !out.len().is_multiple_of(4) {
+                out.push(0);
+            }
+        }
+        let shoff = out.len() as u32;
+        out.extend_from_slice(&[0; 40]);
+        for (name, kind, flags, address, offset, size) in sections {
+            for v in [name, kind, flags, address, offset, size, 0, 0, 4, 0] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        out[..7].copy_from_slice(b"\x7fELF\x01\x01\x01");
+        for (offset, value) in [(16, 2u16), (18, 40), (40, 52), (46, 40), (48, 4), (50, 3)] {
+            out[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        out[20..24].copy_from_slice(&1u32.to_le_bytes());
+        out[32..36].copy_from_slice(&shoff.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn every_irq_on_both_cores_must_be_thumb_executable_code() {
+        for address in [0x1000_0000, 0x2000_0400] {
+            let bytes = elf(address | 1, address, 6, 832);
+            check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap()).unwrap();
+            for core in 0..2 {
+                for irq in 0..64 {
+                    for bad in [address, 0, 0x1000_2001, 0x2000_c001, address + 3] {
+                        let mut broken = bytes.clone();
+                        let offset = 52 + core * 512 + (16 + irq) * 4;
+                        broken[offset..offset + 4].copy_from_slice(&bad.to_le_bytes());
+                        let error =
+                            check_irq_tables(&object::File::parse(broken.as_slice()).unwrap())
+                                .unwrap_err();
+                        assert!(error.to_string().contains(&format!("proc{core} IRQ{irq}")));
+                    }
+                }
+            }
+        }
+        for (address, flags, length) in [
+            (0x2000_0400, 2, 832),
+            (0x2000_c000, 6, 832),
+            (0x2000_0400, 6, 831),
+            (0x2000_0400, 6, 1024),
+        ] {
+            let bytes = elf(address | 1, address, flags, length);
+            assert!(check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap()).is_err());
+        }
     }
 }

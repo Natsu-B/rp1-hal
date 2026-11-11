@@ -11,7 +11,7 @@ critical-section = { version = "1.1", optional = true }
 [features]
 default = []
 critical-section = ["dep:critical-section"]
-vectors = []
+rt = []
 
 [dev-dependencies]
 trybuild = "1"

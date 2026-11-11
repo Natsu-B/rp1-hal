@@ -79,73 +79,135 @@ unsafe impl cortex_m::interrupt::InterruptNumber for Interrupt {
     }
 }
 
-#[cfg(feature = "vectors")]
+#[cfg(all(feature = "rt", target_arch = "arm", target_os = "none"))]
 #[allow(non_snake_case)]
 unsafe extern "C" {
-    fn IO_BANK0();
-    fn IO_BANK1();
-    fn IO_BANK2();
-    fn AUDIO_IN();
-    fn AUDIO_OUT();
-    fn PWM0();
-    fn ETH();
-    fn I2C0();
-    fn I2C1();
-    fn I2C2();
-    fn I2C3();
-    fn I2C4();
-    fn I2C5();
-    fn I2C6();
-    fn I2S0();
-    fn I2S1();
-    fn I2S2();
-    fn SDIO0();
-    fn SDIO1();
-    fn SPI0();
-    fn SPI1();
-    fn SPI2();
-    fn SPI3();
-    fn SPI4();
-    fn SPI5();
-    fn UART0();
-    fn TIMER_0();
-    fn TIMER_1();
-    fn TIMER_2();
-    fn TIMER_3();
-    fn USBHOST0();
-    fn USBHOST0_0();
-    fn USBHOST0_1();
-    fn USBHOST0_2();
-    fn USBHOST0_3();
-    fn USBHOST1();
-    fn USBHOST1_0();
-    fn USBHOST1_1();
-    fn USBHOST1_2();
-    fn USBHOST1_3();
-    fn DMA();
-    fn PWM1();
-    fn UART1();
-    fn UART2();
-    fn UART3();
-    fn UART4();
-    fn UART5();
-    fn MIPI0();
-    fn MIPI1();
-    fn VIDEO_OUT();
-    fn PIO_0();
-    fn PIO_1();
-    fn ADC_FIFO();
-    fn PCIE_OUT();
-    fn SPI6();
-    fn SPI7();
-    fn SPI8();
-    fn PROC_MISC();
-    fn SYSCFG();
-    fn CLOCKS_DEFAULT();
-    fn VBUSCTRL();
+    fn __rp1_default_irq();
+    fn __rp1_p0_IO_BANK0();
+    fn __rp1_p0_IO_BANK1();
+    fn __rp1_p0_IO_BANK2();
+    fn __rp1_p0_AUDIO_IN();
+    fn __rp1_p0_AUDIO_OUT();
+    fn __rp1_p0_PWM0();
+    fn __rp1_p0_ETH();
+    fn __rp1_p0_I2C0();
+    fn __rp1_p0_I2C1();
+    fn __rp1_p0_I2C2();
+    fn __rp1_p0_I2C3();
+    fn __rp1_p0_I2C4();
+    fn __rp1_p0_I2C5();
+    fn __rp1_p0_I2C6();
+    fn __rp1_p0_I2S0();
+    fn __rp1_p0_I2S1();
+    fn __rp1_p0_I2S2();
+    fn __rp1_p0_SDIO0();
+    fn __rp1_p0_SDIO1();
+    fn __rp1_p0_SPI0();
+    fn __rp1_p0_SPI1();
+    fn __rp1_p0_SPI2();
+    fn __rp1_p0_SPI3();
+    fn __rp1_p0_SPI4();
+    fn __rp1_p0_SPI5();
+    fn __rp1_p0_UART0();
+    fn __rp1_p0_TIMER_0();
+    fn __rp1_p0_TIMER_1();
+    fn __rp1_p0_TIMER_2();
+    fn __rp1_p0_TIMER_3();
+    fn __rp1_p0_USBHOST0();
+    fn __rp1_p0_USBHOST0_0();
+    fn __rp1_p0_USBHOST0_1();
+    fn __rp1_p0_USBHOST0_2();
+    fn __rp1_p0_USBHOST0_3();
+    fn __rp1_p0_USBHOST1();
+    fn __rp1_p0_USBHOST1_0();
+    fn __rp1_p0_USBHOST1_1();
+    fn __rp1_p0_USBHOST1_2();
+    fn __rp1_p0_USBHOST1_3();
+    fn __rp1_p0_DMA();
+    fn __rp1_p0_PWM1();
+    fn __rp1_p0_UART1();
+    fn __rp1_p0_UART2();
+    fn __rp1_p0_UART3();
+    fn __rp1_p0_UART4();
+    fn __rp1_p0_UART5();
+    fn __rp1_p0_MIPI0();
+    fn __rp1_p0_MIPI1();
+    fn __rp1_p0_VIDEO_OUT();
+    fn __rp1_p0_PIO_0();
+    fn __rp1_p0_PIO_1();
+    fn __rp1_p0_ADC_FIFO();
+    fn __rp1_p0_PCIE_OUT();
+    fn __rp1_p0_SPI6();
+    fn __rp1_p0_SPI7();
+    fn __rp1_p0_SPI8();
+    fn __rp1_p0_PROC_MISC();
+    fn __rp1_p0_SYSCFG();
+    fn __rp1_p0_CLOCKS_DEFAULT();
+    fn __rp1_p0_VBUSCTRL();
+    fn __rp1_p1_IO_BANK0();
+    fn __rp1_p1_IO_BANK1();
+    fn __rp1_p1_IO_BANK2();
+    fn __rp1_p1_AUDIO_IN();
+    fn __rp1_p1_AUDIO_OUT();
+    fn __rp1_p1_PWM0();
+    fn __rp1_p1_ETH();
+    fn __rp1_p1_I2C0();
+    fn __rp1_p1_I2C1();
+    fn __rp1_p1_I2C2();
+    fn __rp1_p1_I2C3();
+    fn __rp1_p1_I2C4();
+    fn __rp1_p1_I2C5();
+    fn __rp1_p1_I2C6();
+    fn __rp1_p1_I2S0();
+    fn __rp1_p1_I2S1();
+    fn __rp1_p1_I2S2();
+    fn __rp1_p1_SDIO0();
+    fn __rp1_p1_SDIO1();
+    fn __rp1_p1_SPI0();
+    fn __rp1_p1_SPI1();
+    fn __rp1_p1_SPI2();
+    fn __rp1_p1_SPI3();
+    fn __rp1_p1_SPI4();
+    fn __rp1_p1_SPI5();
+    fn __rp1_p1_UART0();
+    fn __rp1_p1_TIMER_0();
+    fn __rp1_p1_TIMER_1();
+    fn __rp1_p1_TIMER_2();
+    fn __rp1_p1_TIMER_3();
+    fn __rp1_p1_USBHOST0();
+    fn __rp1_p1_USBHOST0_0();
+    fn __rp1_p1_USBHOST0_1();
+    fn __rp1_p1_USBHOST0_2();
+    fn __rp1_p1_USBHOST0_3();
+    fn __rp1_p1_USBHOST1();
+    fn __rp1_p1_USBHOST1_0();
+    fn __rp1_p1_USBHOST1_1();
+    fn __rp1_p1_USBHOST1_2();
+    fn __rp1_p1_USBHOST1_3();
+    fn __rp1_p1_DMA();
+    fn __rp1_p1_PWM1();
+    fn __rp1_p1_UART1();
+    fn __rp1_p1_UART2();
+    fn __rp1_p1_UART3();
+    fn __rp1_p1_UART4();
+    fn __rp1_p1_UART5();
+    fn __rp1_p1_MIPI0();
+    fn __rp1_p1_MIPI1();
+    fn __rp1_p1_VIDEO_OUT();
+    fn __rp1_p1_PIO_0();
+    fn __rp1_p1_PIO_1();
+    fn __rp1_p1_ADC_FIFO();
+    fn __rp1_p1_PCIE_OUT();
+    fn __rp1_p1_SPI6();
+    fn __rp1_p1_SPI7();
+    fn __rp1_p1_SPI8();
+    fn __rp1_p1_PROC_MISC();
+    fn __rp1_p1_SYSCFG();
+    fn __rp1_p1_CLOCKS_DEFAULT();
+    fn __rp1_p1_VBUSCTRL();
 }
 
-#[cfg(feature = "vectors")]
+#[cfg(all(feature = "rt", target_arch = "arm", target_os = "none"))]
 #[doc(hidden)]
 #[repr(C)]
 pub union Vector {
@@ -153,162 +215,530 @@ pub union Vector {
     _reserved: u32,
 }
 
-#[cfg(feature = "vectors")]
+#[cfg(all(feature = "rt", target_arch = "arm", target_os = "none"))]
 #[doc(hidden)]
 #[used]
 #[unsafe(no_mangle)]
-#[unsafe(link_section = ".vector_table.interrupts")]
-pub static __INTERRUPTS: [Vector; NVIC_INTERRUPT_COUNT] = [
+#[unsafe(link_section = ".vectors.proc0.irq")]
+pub static __RP1_IRQS0: [Vector; NVIC_INTERRUPT_COUNT] = [
     // IRQ 0: IO_BANK0
-    Vector { _handler: IO_BANK0 },
+    Vector {
+        _handler: __rp1_p0_IO_BANK0,
+    },
     // IRQ 1: IO_BANK1
-    Vector { _handler: IO_BANK1 },
+    Vector {
+        _handler: __rp1_p0_IO_BANK1,
+    },
     // IRQ 2: IO_BANK2
-    Vector { _handler: IO_BANK2 },
+    Vector {
+        _handler: __rp1_p0_IO_BANK2,
+    },
     // IRQ 3: AUDIO_IN
-    Vector { _handler: AUDIO_IN },
+    Vector {
+        _handler: __rp1_p0_AUDIO_IN,
+    },
     // IRQ 4: AUDIO_OUT
     Vector {
-        _handler: AUDIO_OUT,
+        _handler: __rp1_p0_AUDIO_OUT,
     },
     // IRQ 5: PWM0
-    Vector { _handler: PWM0 },
+    Vector {
+        _handler: __rp1_p0_PWM0,
+    },
     // IRQ 6: ETH
-    Vector { _handler: ETH },
+    Vector {
+        _handler: __rp1_p0_ETH,
+    },
     // IRQ 7: I2C0
-    Vector { _handler: I2C0 },
+    Vector {
+        _handler: __rp1_p0_I2C0,
+    },
     // IRQ 8: I2C1
-    Vector { _handler: I2C1 },
+    Vector {
+        _handler: __rp1_p0_I2C1,
+    },
     // IRQ 9: I2C2
-    Vector { _handler: I2C2 },
+    Vector {
+        _handler: __rp1_p0_I2C2,
+    },
     // IRQ 10: I2C3
-    Vector { _handler: I2C3 },
+    Vector {
+        _handler: __rp1_p0_I2C3,
+    },
     // IRQ 11: I2C4
-    Vector { _handler: I2C4 },
+    Vector {
+        _handler: __rp1_p0_I2C4,
+    },
     // IRQ 12: I2C5
-    Vector { _handler: I2C5 },
+    Vector {
+        _handler: __rp1_p0_I2C5,
+    },
     // IRQ 13: I2C6
-    Vector { _handler: I2C6 },
+    Vector {
+        _handler: __rp1_p0_I2C6,
+    },
     // IRQ 14: I2S0
-    Vector { _handler: I2S0 },
+    Vector {
+        _handler: __rp1_p0_I2S0,
+    },
     // IRQ 15: I2S1
-    Vector { _handler: I2S1 },
+    Vector {
+        _handler: __rp1_p0_I2S1,
+    },
     // IRQ 16: I2S2
-    Vector { _handler: I2S2 },
+    Vector {
+        _handler: __rp1_p0_I2S2,
+    },
     // IRQ 17: SDIO0
-    Vector { _handler: SDIO0 },
+    Vector {
+        _handler: __rp1_p0_SDIO0,
+    },
     // IRQ 18: SDIO1
-    Vector { _handler: SDIO1 },
+    Vector {
+        _handler: __rp1_p0_SDIO1,
+    },
     // IRQ 19: SPI0
-    Vector { _handler: SPI0 },
+    Vector {
+        _handler: __rp1_p0_SPI0,
+    },
     // IRQ 20: SPI1
-    Vector { _handler: SPI1 },
+    Vector {
+        _handler: __rp1_p0_SPI1,
+    },
     // IRQ 21: SPI2
-    Vector { _handler: SPI2 },
+    Vector {
+        _handler: __rp1_p0_SPI2,
+    },
     // IRQ 22: SPI3
-    Vector { _handler: SPI3 },
+    Vector {
+        _handler: __rp1_p0_SPI3,
+    },
     // IRQ 23: SPI4
-    Vector { _handler: SPI4 },
+    Vector {
+        _handler: __rp1_p0_SPI4,
+    },
     // IRQ 24: SPI5
-    Vector { _handler: SPI5 },
+    Vector {
+        _handler: __rp1_p0_SPI5,
+    },
     // IRQ 25: UART0
-    Vector { _handler: UART0 },
+    Vector {
+        _handler: __rp1_p0_UART0,
+    },
     // IRQ 26: TIMER_0
-    Vector { _handler: TIMER_0 },
+    Vector {
+        _handler: __rp1_p0_TIMER_0,
+    },
     // IRQ 27: TIMER_1
-    Vector { _handler: TIMER_1 },
+    Vector {
+        _handler: __rp1_p0_TIMER_1,
+    },
     // IRQ 28: TIMER_2
-    Vector { _handler: TIMER_2 },
+    Vector {
+        _handler: __rp1_p0_TIMER_2,
+    },
     // IRQ 29: TIMER_3
-    Vector { _handler: TIMER_3 },
+    Vector {
+        _handler: __rp1_p0_TIMER_3,
+    },
     // IRQ 30: USBHOST0
-    Vector { _handler: USBHOST0 },
+    Vector {
+        _handler: __rp1_p0_USBHOST0,
+    },
     // IRQ 31: USBHOST0_0
     Vector {
-        _handler: USBHOST0_0,
+        _handler: __rp1_p0_USBHOST0_0,
     },
     // IRQ 32: USBHOST0_1
     Vector {
-        _handler: USBHOST0_1,
+        _handler: __rp1_p0_USBHOST0_1,
     },
     // IRQ 33: USBHOST0_2
     Vector {
-        _handler: USBHOST0_2,
+        _handler: __rp1_p0_USBHOST0_2,
     },
     // IRQ 34: USBHOST0_3
     Vector {
-        _handler: USBHOST0_3,
+        _handler: __rp1_p0_USBHOST0_3,
     },
     // IRQ 35: USBHOST1
-    Vector { _handler: USBHOST1 },
+    Vector {
+        _handler: __rp1_p0_USBHOST1,
+    },
     // IRQ 36: USBHOST1_0
     Vector {
-        _handler: USBHOST1_0,
+        _handler: __rp1_p0_USBHOST1_0,
     },
     // IRQ 37: USBHOST1_1
     Vector {
-        _handler: USBHOST1_1,
+        _handler: __rp1_p0_USBHOST1_1,
     },
     // IRQ 38: USBHOST1_2
     Vector {
-        _handler: USBHOST1_2,
+        _handler: __rp1_p0_USBHOST1_2,
     },
     // IRQ 39: USBHOST1_3
     Vector {
-        _handler: USBHOST1_3,
+        _handler: __rp1_p0_USBHOST1_3,
     },
     // IRQ 40: DMA
-    Vector { _handler: DMA },
+    Vector {
+        _handler: __rp1_p0_DMA,
+    },
     // IRQ 41: PWM1
-    Vector { _handler: PWM1 },
+    Vector {
+        _handler: __rp1_p0_PWM1,
+    },
     // IRQ 42: UART1
-    Vector { _handler: UART1 },
+    Vector {
+        _handler: __rp1_p0_UART1,
+    },
     // IRQ 43: UART2
-    Vector { _handler: UART2 },
+    Vector {
+        _handler: __rp1_p0_UART2,
+    },
     // IRQ 44: UART3
-    Vector { _handler: UART3 },
+    Vector {
+        _handler: __rp1_p0_UART3,
+    },
     // IRQ 45: UART4
-    Vector { _handler: UART4 },
+    Vector {
+        _handler: __rp1_p0_UART4,
+    },
     // IRQ 46: UART5
-    Vector { _handler: UART5 },
+    Vector {
+        _handler: __rp1_p0_UART5,
+    },
     // IRQ 47: MIPI0
-    Vector { _handler: MIPI0 },
+    Vector {
+        _handler: __rp1_p0_MIPI0,
+    },
     // IRQ 48: MIPI1
-    Vector { _handler: MIPI1 },
+    Vector {
+        _handler: __rp1_p0_MIPI1,
+    },
     // IRQ 49: VIDEO_OUT
     Vector {
-        _handler: VIDEO_OUT,
+        _handler: __rp1_p0_VIDEO_OUT,
     },
     // IRQ 50: PIO_0
-    Vector { _handler: PIO_0 },
+    Vector {
+        _handler: __rp1_p0_PIO_0,
+    },
     // IRQ 51: PIO_1
-    Vector { _handler: PIO_1 },
+    Vector {
+        _handler: __rp1_p0_PIO_1,
+    },
     // IRQ 52: ADC_FIFO
-    Vector { _handler: ADC_FIFO },
+    Vector {
+        _handler: __rp1_p0_ADC_FIFO,
+    },
     // IRQ 53: PCIE_OUT
-    Vector { _handler: PCIE_OUT },
+    Vector {
+        _handler: __rp1_p0_PCIE_OUT,
+    },
     // IRQ 54: SPI6
-    Vector { _handler: SPI6 },
+    Vector {
+        _handler: __rp1_p0_SPI6,
+    },
     // IRQ 55: SPI7
-    Vector { _handler: SPI7 },
+    Vector {
+        _handler: __rp1_p0_SPI7,
+    },
     // IRQ 56: SPI8
-    Vector { _handler: SPI8 },
+    Vector {
+        _handler: __rp1_p0_SPI8,
+    },
     // IRQ 57: PROC_MISC
     Vector {
-        _handler: PROC_MISC,
+        _handler: __rp1_p0_PROC_MISC,
     },
     // IRQ 58: SYSCFG
-    Vector { _handler: SYSCFG },
+    Vector {
+        _handler: __rp1_p0_SYSCFG,
+    },
     // IRQ 59: CLOCKS_DEFAULT
     Vector {
-        _handler: CLOCKS_DEFAULT,
+        _handler: __rp1_p0_CLOCKS_DEFAULT,
     },
     // IRQ 60: VBUSCTRL
-    Vector { _handler: VBUSCTRL },
+    Vector {
+        _handler: __rp1_p0_VBUSCTRL,
+    },
     // IRQ 61: reserved
-    Vector { _reserved: 0 },
+    Vector {
+        _handler: __rp1_default_irq,
+    },
     // IRQ 62: reserved
-    Vector { _reserved: 0 },
+    Vector {
+        _handler: __rp1_default_irq,
+    },
     // IRQ 63: reserved
-    Vector { _reserved: 0 },
+    Vector {
+        _handler: __rp1_default_irq,
+    },
+];
+
+#[cfg(all(feature = "rt", target_arch = "arm", target_os = "none"))]
+#[doc(hidden)]
+#[used]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".vectors.proc1.irq")]
+pub static __RP1_IRQS1: [Vector; NVIC_INTERRUPT_COUNT] = [
+    // IRQ 0: IO_BANK0
+    Vector {
+        _handler: __rp1_p1_IO_BANK0,
+    },
+    // IRQ 1: IO_BANK1
+    Vector {
+        _handler: __rp1_p1_IO_BANK1,
+    },
+    // IRQ 2: IO_BANK2
+    Vector {
+        _handler: __rp1_p1_IO_BANK2,
+    },
+    // IRQ 3: AUDIO_IN
+    Vector {
+        _handler: __rp1_p1_AUDIO_IN,
+    },
+    // IRQ 4: AUDIO_OUT
+    Vector {
+        _handler: __rp1_p1_AUDIO_OUT,
+    },
+    // IRQ 5: PWM0
+    Vector {
+        _handler: __rp1_p1_PWM0,
+    },
+    // IRQ 6: ETH
+    Vector {
+        _handler: __rp1_p1_ETH,
+    },
+    // IRQ 7: I2C0
+    Vector {
+        _handler: __rp1_p1_I2C0,
+    },
+    // IRQ 8: I2C1
+    Vector {
+        _handler: __rp1_p1_I2C1,
+    },
+    // IRQ 9: I2C2
+    Vector {
+        _handler: __rp1_p1_I2C2,
+    },
+    // IRQ 10: I2C3
+    Vector {
+        _handler: __rp1_p1_I2C3,
+    },
+    // IRQ 11: I2C4
+    Vector {
+        _handler: __rp1_p1_I2C4,
+    },
+    // IRQ 12: I2C5
+    Vector {
+        _handler: __rp1_p1_I2C5,
+    },
+    // IRQ 13: I2C6
+    Vector {
+        _handler: __rp1_p1_I2C6,
+    },
+    // IRQ 14: I2S0
+    Vector {
+        _handler: __rp1_p1_I2S0,
+    },
+    // IRQ 15: I2S1
+    Vector {
+        _handler: __rp1_p1_I2S1,
+    },
+    // IRQ 16: I2S2
+    Vector {
+        _handler: __rp1_p1_I2S2,
+    },
+    // IRQ 17: SDIO0
+    Vector {
+        _handler: __rp1_p1_SDIO0,
+    },
+    // IRQ 18: SDIO1
+    Vector {
+        _handler: __rp1_p1_SDIO1,
+    },
+    // IRQ 19: SPI0
+    Vector {
+        _handler: __rp1_p1_SPI0,
+    },
+    // IRQ 20: SPI1
+    Vector {
+        _handler: __rp1_p1_SPI1,
+    },
+    // IRQ 21: SPI2
+    Vector {
+        _handler: __rp1_p1_SPI2,
+    },
+    // IRQ 22: SPI3
+    Vector {
+        _handler: __rp1_p1_SPI3,
+    },
+    // IRQ 23: SPI4
+    Vector {
+        _handler: __rp1_p1_SPI4,
+    },
+    // IRQ 24: SPI5
+    Vector {
+        _handler: __rp1_p1_SPI5,
+    },
+    // IRQ 25: UART0
+    Vector {
+        _handler: __rp1_p1_UART0,
+    },
+    // IRQ 26: TIMER_0
+    Vector {
+        _handler: __rp1_p1_TIMER_0,
+    },
+    // IRQ 27: TIMER_1
+    Vector {
+        _handler: __rp1_p1_TIMER_1,
+    },
+    // IRQ 28: TIMER_2
+    Vector {
+        _handler: __rp1_p1_TIMER_2,
+    },
+    // IRQ 29: TIMER_3
+    Vector {
+        _handler: __rp1_p1_TIMER_3,
+    },
+    // IRQ 30: USBHOST0
+    Vector {
+        _handler: __rp1_p1_USBHOST0,
+    },
+    // IRQ 31: USBHOST0_0
+    Vector {
+        _handler: __rp1_p1_USBHOST0_0,
+    },
+    // IRQ 32: USBHOST0_1
+    Vector {
+        _handler: __rp1_p1_USBHOST0_1,
+    },
+    // IRQ 33: USBHOST0_2
+    Vector {
+        _handler: __rp1_p1_USBHOST0_2,
+    },
+    // IRQ 34: USBHOST0_3
+    Vector {
+        _handler: __rp1_p1_USBHOST0_3,
+    },
+    // IRQ 35: USBHOST1
+    Vector {
+        _handler: __rp1_p1_USBHOST1,
+    },
+    // IRQ 36: USBHOST1_0
+    Vector {
+        _handler: __rp1_p1_USBHOST1_0,
+    },
+    // IRQ 37: USBHOST1_1
+    Vector {
+        _handler: __rp1_p1_USBHOST1_1,
+    },
+    // IRQ 38: USBHOST1_2
+    Vector {
+        _handler: __rp1_p1_USBHOST1_2,
+    },
+    // IRQ 39: USBHOST1_3
+    Vector {
+        _handler: __rp1_p1_USBHOST1_3,
+    },
+    // IRQ 40: DMA
+    Vector {
+        _handler: __rp1_p1_DMA,
+    },
+    // IRQ 41: PWM1
+    Vector {
+        _handler: __rp1_p1_PWM1,
+    },
+    // IRQ 42: UART1
+    Vector {
+        _handler: __rp1_p1_UART1,
+    },
+    // IRQ 43: UART2
+    Vector {
+        _handler: __rp1_p1_UART2,
+    },
+    // IRQ 44: UART3
+    Vector {
+        _handler: __rp1_p1_UART3,
+    },
+    // IRQ 45: UART4
+    Vector {
+        _handler: __rp1_p1_UART4,
+    },
+    // IRQ 46: UART5
+    Vector {
+        _handler: __rp1_p1_UART5,
+    },
+    // IRQ 47: MIPI0
+    Vector {
+        _handler: __rp1_p1_MIPI0,
+    },
+    // IRQ 48: MIPI1
+    Vector {
+        _handler: __rp1_p1_MIPI1,
+    },
+    // IRQ 49: VIDEO_OUT
+    Vector {
+        _handler: __rp1_p1_VIDEO_OUT,
+    },
+    // IRQ 50: PIO_0
+    Vector {
+        _handler: __rp1_p1_PIO_0,
+    },
+    // IRQ 51: PIO_1
+    Vector {
+        _handler: __rp1_p1_PIO_1,
+    },
+    // IRQ 52: ADC_FIFO
+    Vector {
+        _handler: __rp1_p1_ADC_FIFO,
+    },
+    // IRQ 53: PCIE_OUT
+    Vector {
+        _handler: __rp1_p1_PCIE_OUT,
+    },
+    // IRQ 54: SPI6
+    Vector {
+        _handler: __rp1_p1_SPI6,
+    },
+    // IRQ 55: SPI7
+    Vector {
+        _handler: __rp1_p1_SPI7,
+    },
+    // IRQ 56: SPI8
+    Vector {
+        _handler: __rp1_p1_SPI8,
+    },
+    // IRQ 57: PROC_MISC
+    Vector {
+        _handler: __rp1_p1_PROC_MISC,
+    },
+    // IRQ 58: SYSCFG
+    Vector {
+        _handler: __rp1_p1_SYSCFG,
+    },
+    // IRQ 59: CLOCKS_DEFAULT
+    Vector {
+        _handler: __rp1_p1_CLOCKS_DEFAULT,
+    },
+    // IRQ 60: VBUSCTRL
+    Vector {
+        _handler: __rp1_p1_VBUSCTRL,
+    },
+    // IRQ 61: reserved
+    Vector {
+        _handler: __rp1_default_irq,
+    },
+    // IRQ 62: reserved
+    Vector {
+        _handler: __rp1_default_irq,
+    },
+    // IRQ 63: reserved
+    Vector {
+        _handler: __rp1_default_irq,
+    },
 ];
