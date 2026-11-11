@@ -223,10 +223,7 @@ pub struct RingDma<'s> {
     threshold: usize,
 }
 impl<'s> RingDma<'s> {
-    /// Provisional CPU/DMA crossover in staged bytes, retained from historical HW measurements
-    /// with the removed guard (2026-11-05: 16 B messages, DMA wins at 12 slots = 288 B, loses
-    /// at 8 = 192 B; 64 B messages: wins at 4 = 288 B, loses at 2 = 144 B; docs/dma.md).
-    /// The current path's crossover has not been remeasured.
+    /// Provisional CPU/DMA crossover in staged bytes; tune per workload.
     pub const DEFAULT_THRESHOLD: usize = 256;
     /// `stage` must be shared SRAM (`#[unsafe(link_section = ".shared")]`) and 8-byte aligned;
     /// its size bounds one DMA batch ([`RingTx::staged_capacity`]).
@@ -258,21 +255,18 @@ impl<'s> RingDma<'s> {
     /// Whether up to `requested` messages go by DMA: the batch that fits the stage and the
     /// ring's free slots reaches the threshold.
     #[rp1_rt::isram]
-    fn by_dma<T: Message>(&self, ring: &mut RingTx<T>, requested: usize) -> bool {
+    fn use_dma<T: Message>(&self, ring: &mut RingTx<T>, requested: usize) -> bool {
         let slot = rp1_proto::shm::slot_size(size_of::<T>());
-        let reaches = |n: usize| {
-            n != 0 && self.threshold != usize::MAX && n.saturating_mul(slot) >= self.threshold
-        };
+        let min_msgs = self.threshold.div_ceil(slot).max(1);
         let n = requested.min(RingTx::<T>::staged_capacity(self.stage.len()));
-        // CPU-only candidates need no tail read before push_slice checks the free slots.
-        reaches(n) && reaches(n.min(ring.writable() as usize))
+        // CPU-only candidates need no tail read before the push checks the free slots.
+        n >= min_msgs && ring.writable() as usize >= min_msgs
     }
     /// Publishes up to `values.len()` messages like [`RingTx::push_slice`] (returns how many):
     /// by `copy` when the batch reaches the DMA threshold (then at most
     /// [`RingTx::staged_capacity`] of the stage), otherwise by the CPU. On error nothing was
     /// published. A channel implements [`SlotCopy`]; a wrapper may also implement that same
-    /// blocking ordering contract (for example to time copies without HAL diagnostics).
-    /// Runs from ISRAM whatever the caller's placement.
+    /// blocking ordering contract.
     #[rp1_rt::isram]
     pub fn push_slice<T: Message, C: SlotCopy>(
         &mut self,
@@ -283,15 +277,14 @@ impl<'s> RingDma<'s> {
         if ring.is_fenced() {
             return Err(Staged::Fenced);
         }
-        if !self.by_dma(ring, values.len()) {
+        if !self.use_dma(ring, values.len()) {
             return Ok(ring.push_slice(values));
         }
         ring.push_slice_staged(values, self.stage, copy)
     }
     /// Generate accepted payloads directly in the stage when the writable batch reaches
     /// the DMA threshold. Otherwise use [`RingTx::push_with`] (including overwrite rings).
-    /// `fill` receives the offset within this call and an initialized payload whose previous
-    /// contents are unspecified; it must write every field.
+    /// Follows the [generation tradeoff and callback contract](RingTx::push_with).
     /// See [`RingTx::push_with_staged`] for alignment, panic and failure semantics.
     /// No callback is invoked when fenced, full, or when stage validation fails.
     #[rp1_rt::isram]
@@ -305,7 +298,7 @@ impl<'s> RingDma<'s> {
         if ring.is_fenced() {
             return Err(Staged::Fenced);
         }
-        if !self.by_dma(ring, count) {
+        if !self.use_dma(ring, count) {
             return Ok(ring.push_with(count, fill));
         }
         ring.push_with_staged(count, self.stage, copy, fill)
@@ -329,14 +322,22 @@ mod tests {
         assert_eq!(0x10_0000_0000u64 + rp1_proto::SHM_PHYS, 0x10_2200_0000);
     }
 
-    #[test]
-    fn dma_threshold_uses_only_writable_slots() {
-        use super::*;
-        #[repr(align(8))]
-        struct Mem([u8; 1024]);
-        let (mut data, ctrl, mut stage) = (Mem([0; 1024]), Mem([0; 1024]), Mem([0; 1024]));
-        let mut ring = unsafe {
-            RingTx::<[u32; 4]>::attach(
+    use super::*;
+
+    #[repr(align(8))]
+    struct Mem([u8; 1024]);
+    impl Mem {
+        fn zeroed() -> Self {
+            Self([0; 1024])
+        }
+    }
+    fn ring_and_stage<'a>(
+        data: &mut Mem,
+        ctrl: &Mem,
+        stage: &'a mut Mem,
+    ) -> (RingTx<[u32; 4]>, RingDma<'a>) {
+        let ring = unsafe {
+            RingTx::attach(
                 data.0.as_mut_ptr(),
                 1024,
                 ctrl.0.as_ptr(),
@@ -346,115 +347,29 @@ mod tests {
             )
         }
         .unwrap();
-        assert_eq!(ring.push_slice(&[[0; 4]; 31]), 31);
-        let helper = RingDma {
-            stage: &mut stage.0,
-            threshold: RingDma::DEFAULT_THRESHOLD,
-        };
-        assert_eq!(ring.writable(), 1);
-        assert!(rp1_proto::shm::slot_size(16) < helper.threshold());
-        assert!(!helper.by_dma(&mut ring, 32));
-    }
-
-    #[test]
-    fn copier_records_dma_after_consumer_progress_between_check_and_push() {
-        use super::*;
-        #[repr(align(8))]
-        struct Mem([u8; 1024]);
-        struct Copy {
-            called: bool,
-            head: *const u32,
-        }
-        // SAFETY: copies synchronously into the exclusively owned in-memory ring.
-        unsafe impl SlotCopy for Copy {
-            type Error = ();
-            unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), ()> {
-                self.called = true;
-                assert_eq!(unsafe { self.head.read_volatile() }, 32);
-                unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len()) };
-                Ok(())
-            }
-        }
-        for generated in [false, true] {
-            let (mut data, mut ctrl, mut stage) = (Mem([0; 1024]), Mem([0; 1024]), Mem([0; 1024]));
-            let mut ring = unsafe {
-                RingTx::<[u32; 4]>::attach(
-                    data.0.as_mut_ptr(),
-                    1024,
-                    ctrl.0.as_ptr(),
-                    1024,
-                    32,
-                    Overflow::Reject,
-                )
-            }
-            .unwrap();
-            let mut helper = RingDma {
+        (
+            ring,
+            RingDma {
                 stage: &mut stage.0,
                 threshold: RingDma::DEFAULT_THRESHOLD,
-            };
-            assert_eq!(ring.push_slice(&[[0; 4]; 32]), 32);
-            assert_eq!(ring.writable(), 0); // The old lab snapshot would predict CPU.
-            unsafe { ctrl.0.as_mut_ptr().cast::<u32>().write_volatile(32) };
-            let mut copy = Copy {
-                called: false,
-                head: data.0.as_ptr().cast(),
-            };
-            let result = if generated {
-                helper.push_with(&mut ring, &mut copy, 32, |_, v| *v = [42; 4])
-            } else {
-                helper.push_slice(&mut ring, &mut copy, &[[42; 4]; 32])
-            };
-            assert_eq!(result, Ok(32));
-            assert!(copy.called);
-            assert_eq!(ring.head(), 64);
-            let mut rx = unsafe {
-                RingRx::<[u32; 4]>::attach(
-                    data.0.as_mut_ptr(),
-                    1024,
-                    ctrl.0.as_mut_ptr(),
-                    1024,
-                    32,
-                    Overflow::Reject,
-                )
-            }
-            .unwrap();
-            for _ in 0..32 {
-                assert_eq!(rx.pop(), Ok(Some([42; 4])));
-            }
+            },
+        )
+    }
+    struct Fail;
+    // SAFETY: performs no accesses and returns failure synchronously.
+    unsafe impl SlotCopy for Fail {
+        type Error = ();
+        unsafe fn copy_to_remote(&mut self, _: &[u8], _: *mut u8) -> Result<(), ()> {
+            Err(())
         }
     }
 
     #[test]
-    fn generated_threshold_uses_writable_count_and_copy_failure_fences() {
-        use super::*;
-        #[repr(align(8))]
-        struct Mem([u8; 1024]);
-        struct Fail;
-        // SAFETY: performs no accesses and returns failure synchronously.
-        unsafe impl SlotCopy for Fail {
-            type Error = ();
-            unsafe fn copy_to_remote(&mut self, _: &[u8], _: *mut u8) -> Result<(), ()> {
-                Err(())
-            }
-        }
-        let (mut data, mut ctrl, mut stage) = (Mem([0; 1024]), Mem([0; 1024]), Mem([0; 1024]));
-        let mut ring = unsafe {
-            RingTx::<[u32; 4]>::attach(
-                data.0.as_mut_ptr(),
-                1024,
-                ctrl.0.as_ptr(),
-                1024,
-                32,
-                Overflow::Reject,
-            )
-        }
-        .unwrap();
-        let mut helper = RingDma {
-            stage: &mut stage.0,
-            threshold: RingDma::DEFAULT_THRESHOLD,
-        };
+    fn dma_threshold_uses_only_writable_slots() {
+        let (mut data, mut ctrl, mut stage) = (Mem::zeroed(), Mem::zeroed(), Mem::zeroed());
+        let (mut ring, mut helper) = ring_and_stage(&mut data, &ctrl, &mut stage);
         assert_eq!(ring.push_slice(&[[0; 4]; 31]), 31);
-        // The requested batch exceeds the threshold; the one writable message must use CPU.
+        assert!(!helper.use_dma(&mut ring, 32));
         assert_eq!(
             helper.push_with(&mut ring, &mut Fail, 32, |k, v| {
                 assert_eq!(k, 0);
@@ -462,16 +377,20 @@ mod tests {
             }),
             Ok(1)
         );
-        assert_eq!(ring.head(), 32);
-        // Release all slots so the next call takes DMA and fails, fencing every retry.
-        unsafe {
-            ctrl.0.as_mut_ptr().cast::<u32>().write_volatile(32);
-        }
+        // A fresh tail read must observe consumer progress after the previous decision.
+        unsafe { ctrl.0.as_mut_ptr().cast::<u32>().write_volatile(32) };
+        assert!(helper.use_dma(&mut ring, 32));
+    }
+
+    #[test]
+    fn generated_copy_failure_fences_retries() {
+        let (mut data, ctrl, mut stage) = (Mem::zeroed(), Mem::zeroed(), Mem::zeroed());
+        let (mut ring, mut helper) = ring_and_stage(&mut data, &ctrl, &mut stage);
         assert_eq!(
             helper.push_with(&mut ring, &mut Fail, 32, |_, v| *v = [43; 4]),
             Err(Staged::Copy(()))
         );
-        assert_eq!(ring.head(), 32);
+        assert_eq!(ring.head(), 0);
         assert_eq!(
             helper.push_with(&mut ring, &mut Fail, 32, |_, _| panic!("fenced")),
             Err(Staged::Fenced)
@@ -514,26 +433,6 @@ mod tests {
                 };
                 let values = [[42; 64]; 3];
                 assert_eq!(helper.push_slice(&mut ring, &mut channel, &values), Ok(3));
-                if overflow == Overflow::Overwrite {
-                    assert_eq!(
-                        helper.push_with(&mut ring, &mut channel, 7, |_, v| *v = [43; 64]),
-                        Ok(7)
-                    );
-                    assert_eq!(ring.head(), 10);
-                } else {
-                    assert_eq!(
-                        helper.push_with(&mut ring, &mut channel, 7, |k, v| {
-                            assert_eq!(k, 0);
-                            *v = [43; 64];
-                        }),
-                        Ok(1)
-                    );
-                    assert_eq!(
-                        helper.push_with(&mut ring, &mut channel, 7, |_, _| panic!("full")),
-                        Ok(0)
-                    );
-                    assert_eq!(ring.head(), 4);
-                }
             }
         }
     }

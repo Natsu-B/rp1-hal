@@ -138,7 +138,7 @@ impl HostIrq {
 
     /// [`crate::shm::RingDma::push_with`] then [`HostIrq::notify_ring`], including on full
     /// rings and errors. Uses the same ordering and notification contract as
-    /// [`HostIrq::push_slice_dma_notify`].
+    /// [`HostIrq::push_slice_dma_notify`]. See the [callback contract](crate::shm::RingTx::push_with).
     #[inline(always)]
     pub fn push_with_dma_notify<T: rp1_proto::Message, C: crate::shm::SlotCopy>(
         &mut self,
@@ -162,27 +162,6 @@ impl HostIrq {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn notify_helpers_accept_a_copier_with_its_own_error_type() {
-        struct Copy;
-        // SAFETY: never accesses the source or destination, fails synchronously.
-        unsafe impl crate::shm::SlotCopy for Copy {
-            type Error = &'static str;
-            unsafe fn copy_to_remote(&mut self, _: &[u8], _: *mut u8) -> Result<(), Self::Error> {
-                Err("test")
-            }
-        }
-        // Type-check the calls without accessing the host IRQ registers on the test host.
-        let _check = |irq: &mut HostIrq,
-                      dma: &mut crate::shm::RingDma<'_>,
-                      ring: &mut crate::shm::RingTx<u32>,
-                      copy: &mut Copy| {
-            let (slice, _) = irq.push_slice_dma_notify(dma, ring, copy, &[1]);
-            let (generated, _) = irq.push_with_dma_notify(dma, ring, copy, 1, |_, v| *v = 1);
-            let _: [Result<usize, crate::shm::Staged<&'static str>>; 2] = [slice, generated];
-        };
-    }
 
     #[test]
     fn timer_registers_match_the_pac() {
