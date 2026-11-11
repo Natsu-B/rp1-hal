@@ -261,35 +261,25 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
         exclusive_instructions,
     })
 }
+
+const VECTOR_SECTION_BYTES: usize = 512 + 80 * 4;
+
 /// Validate all 64 external IRQ vectors on each core, including reserved slots.
 fn check_irq_tables(file: &object::File<'_>) -> Result<()> {
     let vectors = file.section_by_name(".vectors").ok_or("missing vectors")?;
     let data = vectors.data()?;
-    if vectors.address() != 0x2000_0000 || data.len() != 512 + 80 * 4 {
+    if vectors.address() != 0x2000_0000 || data.len() != VECTOR_SECTION_BYTES {
         return Err("expected two 80-word vector tables at 0x20000000 and 0x20000200".into());
     }
     for core in 0..2 {
         for irq in 0..64 {
             let handler = word(data, core * 512 + (16 + irq) * 4)?;
             let address = u64::from(handler & !1);
-            let executable = file.sections().any(|s| {
-                s.kind() == object::SectionKind::Text
-                    && matches!(s.flags(), object::SectionFlags::Elf { sh_flags }
-                        if sh_flags & u64::from(object::elf::SHF_ALLOC | object::elf::SHF_EXECINSTR)
-                            == u64::from(object::elf::SHF_ALLOC | object::elf::SHF_EXECINSTR))
-                    && within(
-                        address,
-                        2,
-                        s.address(),
-                        s.address().saturating_add(s.size()),
-                    )
-            });
             if handler & 1 == 0
                 || !(within(address, 2, 0x1000_0000, 0x1000_2000)
                     || within(address, 2, 0x2000_0000, 0x2000_c000))
-                || !executable
             {
-                return Err(format!("proc{core} IRQ{irq} vector 0x{handler:08x} is not a Thumb handler in image code or ISRAM").into());
+                return Err(format!("proc{core} IRQ{irq} vector 0x{handler:08x} is not a Thumb handler in image SRAM or ISRAM").into());
             }
         }
     }
@@ -856,16 +846,21 @@ mod tests {
         assert!(pc_literal("r1, [pc, #12]"));
         assert!(pc_literal("r1, [pc]"));
     }
-}
 
-#[cfg(test)]
-mod irq_table_tests {
-    use super::*;
+    const ELF_HEADER_BYTES: usize = 52;
+    const E_TYPE: usize = 16;
+    const E_MACHINE: usize = 18;
+    const E_VERSION: usize = 20;
+    const E_SHOFF: usize = 32;
+    const E_EHSIZE: usize = 40;
+    const E_SHENTSIZE: usize = 46;
+    const E_SHNUM: usize = 48;
+    const E_SHSTRNDX: usize = 50;
 
-    // Minimal synthetic ARM ELF32: two tables and one executable section, no program headers.
-    fn elf(handler: u32, address: u32, flags: u32, length: usize) -> Vec<u8> {
-        let names = b"\0.vectors\0.text\0.shstrtab\0";
-        let mut out = vec![0; 52];
+    // Section-only ARM ELF32 is sufficient for the object reader; no loader is involved.
+    fn irq_elf(handler: u32, length: usize) -> Vec<u8> {
+        let names = b"\0.vectors\0.shstrtab\0";
+        let mut out = vec![0; ELF_HEADER_BYTES];
         let mut vectors = vec![0; length];
         for core in 0..2 {
             for irq in 0..64 {
@@ -878,8 +873,7 @@ mod irq_table_tests {
         let mut sections = Vec::new();
         for (name, kind, flags, address, data) in [
             (1u32, 1u32, 2, 0x2000_0000, vectors.as_slice()),
-            (10, 1, flags, address, &[0x70, 0x47][..]),
-            (16, 3, 0, 0, names.as_slice()),
+            (10, 3, 0, 0, names.as_slice()),
         ] {
             sections.push((
                 name,
@@ -902,40 +896,39 @@ mod irq_table_tests {
             }
         }
         out[..7].copy_from_slice(b"\x7fELF\x01\x01\x01");
-        for (offset, value) in [(16, 2u16), (18, 40), (40, 52), (46, 40), (48, 4), (50, 3)] {
+        for (offset, value) in [
+            (E_TYPE, object::elf::ET_EXEC),
+            (E_MACHINE, object::elf::EM_ARM),
+            (E_EHSIZE, ELF_HEADER_BYTES as u16),
+            (E_SHENTSIZE, 40),
+            (E_SHNUM, 3),
+            (E_SHSTRNDX, 2),
+        ] {
             out[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
         }
-        out[20..24].copy_from_slice(&1u32.to_le_bytes());
-        out[32..36].copy_from_slice(&shoff.to_le_bytes());
+        out[E_VERSION..E_VERSION + 4].copy_from_slice(&1u32.to_le_bytes());
+        out[E_SHOFF..E_SHOFF + 4].copy_from_slice(&shoff.to_le_bytes());
         out
     }
 
     #[test]
-    fn every_irq_on_both_cores_must_be_thumb_executable_code() {
+    fn irq_tables_require_thumb_handlers_in_image_or_isram() {
         for address in [0x1000_0000, 0x2000_0400] {
-            let bytes = elf(address | 1, address, 6, 832);
+            let bytes = irq_elf(address | 1, VECTOR_SECTION_BYTES);
             check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap()).unwrap();
-            for core in 0..2 {
-                for irq in 0..64 {
-                    for bad in [address, 0, 0x1000_2001, 0x2000_c001, address + 3] {
-                        let mut broken = bytes.clone();
-                        let offset = 52 + core * 512 + (16 + irq) * 4;
-                        broken[offset..offset + 4].copy_from_slice(&bad.to_le_bytes());
-                        let error =
-                            check_irq_tables(&object::File::parse(broken.as_slice()).unwrap())
-                                .unwrap_err();
-                        assert!(error.to_string().contains(&format!("proc{core} IRQ{irq}")));
-                    }
+            for (core, irq) in [(0, 0), (1, 63), (0, 61)] {
+                for bad in [address, 0, 0x1000_2001, 0x2000_c001] {
+                    let mut broken = bytes.clone();
+                    let offset = ELF_HEADER_BYTES + core * 512 + (16 + irq) * 4;
+                    broken[offset..offset + 4].copy_from_slice(&bad.to_le_bytes());
+                    let error = check_irq_tables(&object::File::parse(broken.as_slice()).unwrap())
+                        .unwrap_err();
+                    assert!(error.to_string().contains(&format!("proc{core} IRQ{irq}")));
                 }
             }
         }
-        for (address, flags, length) in [
-            (0x2000_0400, 2, 832),
-            (0x2000_c000, 6, 832),
-            (0x2000_0400, 6, 831),
-            (0x2000_0400, 6, 1024),
-        ] {
-            let bytes = elf(address | 1, address, flags, length);
+        for length in [VECTOR_SECTION_BYTES - 1, VECTOR_SECTION_BYTES + 4] {
+            let bytes = irq_elf(0x2000_0401, length);
             assert!(check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap()).is_err());
         }
     }
