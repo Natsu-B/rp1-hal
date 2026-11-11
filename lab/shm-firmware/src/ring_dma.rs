@@ -350,6 +350,8 @@ struct ExperimentCopy {
 // Deliberately violates SlotCopy ordering for controls; only used by this lab command.
 unsafe impl rp1_proto::shm::SlotCopy for ExperimentCopy {
     type Error = Error;
+    // Not a throughput path: keep it out of the ISRAM that the measured loop needs.
+    #[rp1_rt::cold]
     unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Error> {
         use core::ptr::{read_volatile as rd, write_volatile as wr};
         let s = BusAddr::from_proc(src.as_ptr() as usize)?.0;
