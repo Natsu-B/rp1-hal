@@ -317,6 +317,36 @@ pub unsafe trait SlotCopy {
     unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Self::Error>;
 }
 
+/// Copies the first `n` slot images of `stage` to the ring slots from index `head` on (one
+/// block, or two when they wrap around the end of the ring), then publishes `head + n`.
+/// `ring` is the `data` mapping, the index mask and the slot size: the message type is not
+/// needed, so all rings share this code. On `Err` nothing was published and the caller
+/// must fence the ring.
+///
+/// # Safety
+/// `data` is a ring's writable `data` mapping in which the `n` slots from `head` on are free.
+#[cfg_attr(feature = "isram", rp1_macros::isram)]
+unsafe fn commit_slots<C: SlotCopy>(
+    copy: &mut C,
+    stage: &[u8],
+    (data, mask, size): (*mut u8, u32, usize),
+    head: &mut u32,
+    n: u32,
+) -> Result<(), C::Error> {
+    let first = n.min(mask + 1 - (*head & mask));
+    for (k, m) in [(0, first), (first, n - first)] {
+        if m != 0 {
+            let src = &stage[k as usize * size..(k + m) as usize * size];
+            let slot = CONTROL_SIZE + (head.wrapping_add(k) & mask) as usize * size;
+            unsafe { copy.copy_to_remote(src, data.add(slot))? };
+        }
+    }
+    barrier();
+    *head = head.wrapping_add(n);
+    unsafe { st(data, HEAD, *head) };
+    Ok(())
+}
+
 /// Error of [`RingTx::push_slice_staged`]. No messages were published by the failed call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Staged<E> {
@@ -618,7 +648,7 @@ impl<T: Message> RingTx<T> {
     /// and `head`. A failed copy leaves `head` unchanged and permanently fences this handle:
     /// `push` returns `NotReady`, `push_slice` returns zero, staged pushes return `Fenced`.
     /// Dropping/re-attaching does not drain remote writes; reset/drain the transport first.
-    #[inline]
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn push_slice_staged<C: SlotCopy>(
         &mut self,
         values: &[T],
@@ -635,26 +665,17 @@ impl<T: Message> RingTx<T> {
         if self.overflow == Overflow::Overwrite {
             return Ok(self.push_slice(values));
         }
-        let n = self.prepare_slice(values, stage);
-        self.commit_staged(n, stage, copy)
-    }
-    #[cfg_attr(feature = "isram", rp1_macros::isram)]
-    fn prepare_slice(&mut self, values: &[T], stage: &mut [u8]) -> u32 {
-        let slot = slot_size(size_of::<T>());
         let want = values
             .len()
             .min(Self::staged_capacity(stage.len()))
             .min(u32::MAX as usize) as u32;
         let n = self.reject_free(want).min(want);
-        if n == 0 {
-            return 0;
-        }
         let base = stage.as_mut_ptr();
         for (k, v) in values[..n as usize].iter().enumerate() {
             // SAFETY: k < capacity, so the slot image lies inside `stage` (8-byte aligned).
             unsafe { stage_slot(base.add(k * slot), self.head.wrapping_add(k as u32), v) };
         }
-        n
+        self.commit_staged(n, stage, copy)
     }
     /// Generate payloads directly into staged slot images, then copy and publish them as
     /// in [`RingTx::push_slice_staged`]. `fill` has the contract of [`RingTx::push_with`]:
@@ -667,35 +688,24 @@ impl<T: Message> RingTx<T> {
     /// unchanged and starts no copy. Overwrite uses the CPU and publishes one message at a
     /// time. Stage bytes are ordinary initialized memory, not a Device mapping.
     /// Copy errors permanently fence every publication path, just as for the slice API.
-    #[inline]
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn push_with_staged<C: SlotCopy>(
         &mut self,
         count: usize,
         stage: &mut [u8],
         copy: &mut C,
-        fill: impl FnMut(usize, &mut T),
+        mut fill: impl FnMut(usize, &mut T),
     ) -> Result<usize, Staged<C::Error>> {
         if self.fenced {
             return Err(Staged::Fenced);
         }
-        let slot = slot_size(size_of::<T>());
+        let (size, slot) = (size_of::<T>(), slot_size(size_of::<T>()));
         if !aligned(stage.as_ptr()) || stage.len() < slot {
             return Err(Staged::Invalid);
         }
         if self.overflow == Overflow::Overwrite {
             return Ok(self.push_with(count, fill));
         }
-        let n = self.prepare_with(count, stage, fill);
-        self.commit_staged(n, stage, copy)
-    }
-    #[cfg_attr(feature = "isram", rp1_macros::isram)]
-    fn prepare_with(
-        &mut self,
-        count: usize,
-        stage: &mut [u8],
-        mut fill: impl FnMut(usize, &mut T),
-    ) -> u32 {
-        let (size, slot) = (size_of::<T>(), slot_size(size_of::<T>()));
         let want = count
             .min(Self::staged_capacity(stage.len()))
             .min(u32::MAX as usize) as u32;
@@ -726,10 +736,10 @@ impl<T: Message> RingTx<T> {
                 unsafe { stage_slot(base.add(k * slot), self.head.wrapping_add(k as u32), &value) };
             }
         }
-        n
+        self.commit_staged(n, stage, copy)
     }
     /// Commit fully initialized slot images. Both staged APIs share failure and ordering rules.
-    #[cfg_attr(feature = "isram", rp1_macros::isram)]
+    #[inline(always)]
     fn commit_staged<C: SlotCopy>(
         &mut self,
         n: u32,
@@ -739,28 +749,17 @@ impl<T: Message> RingTx<T> {
         if n == 0 {
             return Ok(0);
         }
-        let slot = slot_size(size_of::<T>());
-        let first = n.min(self.mask + 1 - (self.head & self.mask));
-        let parts = [(0, first), (first, n - first)];
         self.store_dropped();
-        for &(k, m) in &parts {
-            if m == 0 {
-                continue;
-            }
-            let src = &stage[k as usize * slot..(k + m) as usize * slot];
-            // SAFETY: the destination is the free slots `head + k ..` (reject mode: the reader
-            // released them), contiguous inside the mapping `attach` was given.
-            if let Err(e) =
-                unsafe { copy.copy_to_remote(src, self.slot(self.head.wrapping_add(k))) }
-            {
+        let ring = (self.data, self.mask, slot_size(size_of::<T>()));
+        // SAFETY: the destination is the free slots from `head` on (reject mode: the reader
+        // released them), inside the mapping `attach` was given.
+        match unsafe { commit_slots(copy, stage, ring, &mut self.head, n) } {
+            Ok(()) => Ok(n as usize),
+            Err(e) => {
                 self.fenced = true;
-                return Err(Staged::Copy(e));
+                Err(Staged::Copy(e))
             }
         }
-        barrier();
-        self.head = self.head.wrapping_add(n);
-        unsafe { st(self.data, HEAD, self.head) };
-        Ok(n as usize)
     }
     /// Whether to notify the reader now; call after `push`/`push_slice` (once per batch is
     /// enough). Returns `true` at most once per reader sleep (an odd `waiting` value not
