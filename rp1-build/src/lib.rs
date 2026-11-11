@@ -320,7 +320,7 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         s.push_str("} } }\n");
     }
     if let Some(log) = &d.log {
-        s.push_str(&format!("pub mod log {{\n#[unsafe(link_section=\".shared\")] static LOGGER: ::rp1_hal::logging::Logger = unsafe {{ ::rp1_hal::logging::Logger::new() }};\npub fn init(core: &mut ::rp1_rt::Proc0) -> Result<(),::rp1_hal::Error> {{ LOGGER.init(core,{}) }}\npub fn write(args: ::core::fmt::Arguments<'_>) -> ::core::fmt::Result {{ LOGGER.write(args) }}\n}}\n",log.baudrate));
+        s.push_str(&format!("pub mod log {{\n#[unsafe(link_section=\".shared\")] static LOGGER: ::rp1_hal::logging::Logger = unsafe {{ ::rp1_hal::logging::Logger::new() }};\npub fn init(core: &mut ::rp1_rt::Proc0) -> Result<(),::rp1_hal::Error> {{ LOGGER.init(core,{}) }}\npub fn write(args: ::core::fmt::Arguments<'_>) -> ::core::fmt::Result {{ LOGGER.write(args) }}\npub fn dropped() -> u32 {{ ::rp1_hal::logging::dropped() }}\n}}\n",log.baudrate));
     }
     s.push_str("}\n");
     Ok(s)

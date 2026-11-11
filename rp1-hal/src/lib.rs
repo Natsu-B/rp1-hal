@@ -58,7 +58,9 @@ pub(crate) fn poll(address: usize, mask: u32, value: u32) -> Result<(), Error> {
 pub(crate) const TIMER_RAWL: usize = 0x400a_c028;
 const POLL_TIMEOUT_US: u32 = 10_000;
 
-/// The calling firmware must declare and initialize the generated `rp1::log` module.
+/// The calling firmware must declare and initialize the generated `rp1::log` module. Interrupts
+/// stay enabled while a message is written; in a handler a message may be dropped instead of
+/// waited for ([`logging::Logger::write`]).
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => { rp1::log::write(core::format_args!($($arg)*)) };
