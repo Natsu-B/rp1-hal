@@ -255,22 +255,25 @@ impl<'s> RingDma<'s> {
     pub fn threshold(&self) -> usize {
         self.threshold
     }
-    fn batch_len<T: Message>(&self, ring: &mut RingTx<T>, requested: usize) -> usize {
+    /// Whether up to `requested` messages go by DMA: the batch that fits the stage and the
+    /// ring's free slots reaches the threshold.
+    #[rp1_rt::isram]
+    fn by_dma<T: Message>(&self, ring: &mut RingTx<T>, requested: usize) -> bool {
+        let slot = rp1_proto::shm::slot_size(size_of::<T>());
+        let reaches = |n: usize| {
+            n != 0 && self.threshold != usize::MAX && n.saturating_mul(slot) >= self.threshold
+        };
         let n = requested.min(RingTx::<T>::staged_capacity(self.stage.len()));
         // CPU-only candidates need no tail read before push_slice checks the free slots.
-        if n == 0
-            || self.threshold == usize::MAX
-            || n.saturating_mul(rp1_proto::shm::slot_size(size_of::<T>())) < self.threshold
-        {
-            return n;
-        }
-        n.min(ring.writable() as usize)
+        reaches(n) && reaches(n.min(ring.writable() as usize))
     }
     /// Publishes up to `values.len()` messages like [`RingTx::push_slice`] (returns how many):
     /// by `copy` when the batch reaches the DMA threshold (then at most
     /// [`RingTx::staged_capacity`] of the stage), otherwise by the CPU. On error nothing was
     /// published. A channel implements [`SlotCopy`]; a wrapper may also implement that same
     /// blocking ordering contract (for example to time copies without HAL diagnostics).
+    /// Runs from ISRAM whatever the caller's placement.
+    #[rp1_rt::isram]
     pub fn push_slice<T: Message, C: SlotCopy>(
         &mut self,
         ring: &mut RingTx<T>,
@@ -280,11 +283,7 @@ impl<'s> RingDma<'s> {
         if ring.is_fenced() {
             return Err(Staged::Fenced);
         }
-        let n = self.batch_len(ring, values.len());
-        if n == 0
-            || self.threshold == usize::MAX
-            || n.saturating_mul(rp1_proto::shm::slot_size(size_of::<T>())) < self.threshold
-        {
+        if !self.by_dma(ring, values.len()) {
             return Ok(ring.push_slice(values));
         }
         ring.push_slice_staged(values, self.stage, copy)
@@ -295,6 +294,7 @@ impl<'s> RingDma<'s> {
     /// contents are unspecified; it must write every field.
     /// See [`RingTx::push_with_staged`] for alignment, panic and failure semantics.
     /// No callback is invoked when fenced, full, or when stage validation fails.
+    #[rp1_rt::isram]
     pub fn push_with<T: Message, C: SlotCopy>(
         &mut self,
         ring: &mut RingTx<T>,
@@ -305,11 +305,7 @@ impl<'s> RingDma<'s> {
         if ring.is_fenced() {
             return Err(Staged::Fenced);
         }
-        let n = self.batch_len(ring, count);
-        if n == 0
-            || self.threshold == usize::MAX
-            || n.saturating_mul(rp1_proto::shm::slot_size(size_of::<T>())) < self.threshold
-        {
+        if !self.by_dma(ring, count) {
             return Ok(ring.push_with(count, fill));
         }
         ring.push_with_staged(count, self.stage, copy, fill)
@@ -355,9 +351,9 @@ mod tests {
             stage: &mut stage.0,
             threshold: RingDma::DEFAULT_THRESHOLD,
         };
-        let n = helper.batch_len(&mut ring, 32);
-        assert_eq!(n, 1);
-        assert!(n * rp1_proto::shm::slot_size(16) < helper.threshold());
+        assert_eq!(ring.writable(), 1);
+        assert!(rp1_proto::shm::slot_size(16) < helper.threshold());
+        assert!(!helper.by_dma(&mut ring, 32));
     }
 
     #[test]
