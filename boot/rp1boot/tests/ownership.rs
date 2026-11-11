@@ -1,6 +1,6 @@
 //! T6 (STATIC): the loader's ownership step on synthetic merged DTBs compiled by dtc.
 use rp1_dt::fdt::Fdt;
-use rp1_proto::note;
+use rp1_proto::note::{self, ownership_kind};
 use rp1boot::{DTB_OUT_MAX, Ownership, enforce_linux_ownership, final_dtb};
 use std::{
     io::Write,
@@ -28,7 +28,14 @@ fn descriptor() -> Vec<u8> {
     firmware.extend([0; 52]);
     record(&mut bytes, note::FIRMWARE, &firmware);
     record(&mut bytes, note::ENTRY, &[0; 20]);
-    let entries = [(1u8, 8u16), (1, 9), (1, 10), (1, 11), (1, 22), (2, 16)];
+    let entries = [
+        (ownership_kind::PIN, 8u16),
+        (ownership_kind::PIN, 9),
+        (ownership_kind::PIN, 10),
+        (ownership_kind::PIN, 11),
+        (ownership_kind::PIN, 22),
+        (ownership_kind::BLOCK, 16),
+    ];
     let mut own = (entries.len() as u32).to_le_bytes().to_vec();
     for (kind, id) in entries {
         own.extend([kind, 1]);

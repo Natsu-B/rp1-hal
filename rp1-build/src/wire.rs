@@ -52,7 +52,7 @@ pub fn descriptor(
     let mut claims = Vec::new();
     for (core, c) in [(1, &d.proc0), (2, &d.proc1)] {
         for pin in &c.pins() {
-            claims.extend([1, core]);
+            claims.extend([ownership_kind::PIN, core]);
             short(&mut claims, u16::from(*pin));
         }
         for p in &c.peripherals() {
@@ -61,18 +61,22 @@ pub fn descriptor(
             short(&mut claims, id);
         }
         if !c.gpio_irq.is_empty() {
-            claims.extend([6, core]);
+            claims.extend([ownership_kind::GPIO_IRQ_BANK, core]);
             short(&mut claims, 0);
         }
     }
     if d.log.is_some() {
-        for (kind, id) in [(1, 14), (1, 15), (2, 0)] {
+        for (kind, id) in [
+            (ownership_kind::PIN, 14),
+            (ownership_kind::PIN, 15),
+            (ownership_kind::BLOCK, 0),
+        ] {
             claims.extend([kind, 3]);
             short(&mut claims, id);
         }
     }
     if d.clock.authority == "rp1" {
-        claims.extend([5, 3]);
+        claims.extend([ownership_kind::CLOCK, 3]);
         short(&mut claims, 0);
     }
     v.clear();

@@ -3,7 +3,7 @@ use rp1_dt::{
     check::{self, Gpiomem, OnConflict, Plan, Policy, apply_plan, resolve},
     fdt::Fdt,
 };
-use rp1_proto::note;
+use rp1_proto::note::{self, ownership_kind};
 use std::{fs, process::Command};
 
 const RP1: &str = "/pcie@1000120000/rp1";
@@ -63,7 +63,14 @@ fn fixture(extra: &str) -> (Fdt, Vec<u8>) {
         String::from_utf8_lossy(&result.stderr)
     );
     let mut fdt = Fdt::parse(&fs::read(dtb).unwrap()).unwrap();
-    let note = descriptor(&[(1, 8), (1, 9), (1, 10), (1, 11), (1, 22), (2, 16)]);
+    let note = descriptor(&[
+        (ownership_kind::PIN, 8),
+        (ownership_kind::PIN, 9),
+        (ownership_kind::PIN, 10),
+        (ownership_kind::PIN, 11),
+        (ownership_kind::PIN, 22),
+        (ownership_kind::BLOCK, 16),
+    ]);
     set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
     (fdt, note)
 }
@@ -221,7 +228,11 @@ fn groups_muxing_an_rp1_instance_onto_linux_pins_conflict() {
         );
     }
     // The review's case: Linux GPIO10/11 as i2c1 while RP1 owns i2c1 on GPIO2/3.
-    let i2c1 = descriptor(&[(1, 2), (1, 3), (2, 33)]);
+    let i2c1 = descriptor(&[
+        (ownership_kind::PIN, 2),
+        (ownership_kind::PIN, 3),
+        (ownership_kind::BLOCK, 33),
+    ]);
     let (mut fdt, _) = fixture(
         "&rp1_gpio { gpio-reserved-ranges = <2 2>; grp: g { function = \"i2c1\"; pins = \"gpio10\", \"gpio11\"; }; }; \
          / { user { pinctrl-0 = <&grp>; }; pcie@1000120000 { rp1 { rp1_i2c1: i2c@74000 { status = \"disabled\"; }; }; }; };",
@@ -600,7 +611,15 @@ fn interrupt_parent_is_found_as_linux_of_irq_find_parent_does() {
 fn console_on_an_rp1_owned_uart_refuses() {
     // Review 11 L2: the overlay has already disabled the owned UART, so no node has a
     // conflict reason; the console would vanish without a marker.
-    let owned = descriptor(&[(1, 8), (1, 9), (1, 10), (1, 11), (1, 22), (2, 16), (2, 3)]);
+    let owned = descriptor(&[
+        (ownership_kind::PIN, 8),
+        (ownership_kind::PIN, 9),
+        (ownership_kind::PIN, 10),
+        (ownership_kind::PIN, 11),
+        (ownership_kind::PIN, 22),
+        (ownership_kind::BLOCK, 16),
+        (ownership_kind::BLOCK, 3),
+    ]);
     for console in ["serial3:115200n8", "/pcie@1000120000/rp1/serial@3c000"] {
         let (mut fdt, _) = fixture(&format!(
             "/ {{ chosen {{ stdout-path = \"{console}\"; }}; }};"
@@ -953,7 +972,7 @@ fn owned_pwm_consumers_are_disabled_even_without_owned_gpio_pins() {
 }};
 "#
         ));
-        let note = descriptor(&[(2, id)]);
+        let note = descriptor(&[(ownership_kind::BLOCK, id)]);
         set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
         // A numeric argument equal to the owned phandle is not a consumer of that block.
         let handle = fdt.phandle_of(fdt.label(block).unwrap()).unwrap();
@@ -999,7 +1018,7 @@ fn malformed_pwm_dependencies_fail_closed() {
     let (mut fdt, _) = fixture(
         r#"/ { rp1_pwm0: pwm { #pwm-cells=<3>; status="disabled"; }; fan { pwms=<&rp1_pwm0 0 1000>; }; };"#,
     );
-    let note = descriptor(&[(2, 48)]);
+    let note = descriptor(&[(ownership_kind::BLOCK, 48)]);
     set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
     assert!(resolve(&fdt, &note, Policy::default()).is_err());
     set(&mut fdt, "/fan", "pwms", vec![1]);
@@ -1023,7 +1042,7 @@ fn pwm_pinmux_on_an_unreserved_channel_still_conflicts_with_block_owner() {
 &rp1_gpio { gpio-reserved-ranges=<12 1>; pwm_group: pwm-group { function="pwm0"; pins="gpio13"; }; };
 "#,
     );
-    let note = descriptor(&[(1, 12), (2, 48)]);
+    let note = descriptor(&[(ownership_kind::PIN, 12), (ownership_kind::BLOCK, 48)]);
     set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
     let plan = resolve(&fdt, &note, Policy::default()).unwrap();
     assert!(
@@ -1041,7 +1060,7 @@ fn pinless_owned_pwm_still_conflicts_with_pinctrl_mux_to_its_signal() {
 &rp1_gpio { gpio-reserved-ranges = <>; pwm_group: pwm-group { function="pwm0"; pins="gpio12"; }; };
 "#,
     );
-    let note = descriptor(&[(2, 48)]);
+    let note = descriptor(&[(ownership_kind::BLOCK, 48)]);
     set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
     let policy = Policy {
         gpiomem: Gpiomem::Keep,
@@ -1082,7 +1101,7 @@ fn owned_adc_ignores_unrelated_legacy_numeric_function() {
 &rp1_gpio { gpio-reserved-ranges = <>; led_group: led-group { brcm,pins=<22>; brcm,function=<1>; }; };
 "#,
     );
-    let note = descriptor(&[(2, 64)]);
+    let note = descriptor(&[(ownership_kind::BLOCK, 64)]);
     set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
     let policy = Policy {
         on_conflict: OnConflict::Refuse,
@@ -1100,7 +1119,7 @@ fn missing_gpio_symbol_fails_closed_for_pinless_pwm_ownership() {
 &rp1_gpio { gpio-reserved-ranges = <>; pwm_group: pwm-group { function="pwm0"; pins="gpio12"; }; };
 "#,
     );
-    let note = descriptor(&[(2, 48)]);
+    let note = descriptor(&[(ownership_kind::BLOCK, 48)]);
     set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
     let symbols = fdt.find("/__symbols__").unwrap();
     fdt.remove_prop(symbols, "rp1_gpio");
@@ -1128,7 +1147,7 @@ fn owned_dma_consumers_are_disabled_and_rp1_dma_is_no_longer_protected() {
     off { dmas=<&rp1_dma 3>; status="disabled"; };
 };
 "#;
-    let note = descriptor(&[(2, 65)]);
+    let note = descriptor(&[(ownership_kind::BLOCK, 65)]);
     let (mut fdt, handle) = setup(consumers, false);
     set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
     // A DREQ argument equal to the owned phandle is not a consumer of that block.

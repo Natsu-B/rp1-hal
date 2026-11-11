@@ -2,6 +2,7 @@ use crate::{
     Result,
     board::{BoardInstance, Kind},
 };
+use rp1_proto::note::ownership_kind;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -295,19 +296,28 @@ pub fn peripheral_type(p: &str) -> Result<String> {
 pub fn peripheral_id(p: &str) -> Result<(u8, u16)> {
     peripheral_type(p)?;
     Ok(if let Some(n) = p.strip_prefix("UART") {
-        (2, n.parse()?)
+        (ownership_kind::BLOCK, n.parse()?)
     } else if let Some(n) = p.strip_prefix("I2C") {
-        (2, 32 + n.parse::<u16>()?)
+        (ownership_kind::BLOCK, 32 + n.parse::<u16>()?)
     } else if let Some(n) = p.strip_prefix("SPI") {
-        (2, rp1_proto::BlockId::Spi0 as u16 + n.parse::<u16>()?)
+        (
+            ownership_kind::BLOCK,
+            rp1_proto::BlockId::Spi0 as u16 + n.parse::<u16>()?,
+        )
     } else if let Some(n) = p.strip_prefix("PWM") {
-        (2, rp1_proto::BlockId::Pwm0 as u16 + n.parse::<u16>()?)
+        (
+            ownership_kind::BLOCK,
+            rp1_proto::BlockId::Pwm0 as u16 + n.parse::<u16>()?,
+        )
     } else if p == "ADC" {
-        (2, rp1_proto::BlockId::Adc as u16)
+        (ownership_kind::BLOCK, rp1_proto::BlockId::Adc as u16)
     } else if p == "DMA" {
-        (2, rp1_proto::BlockId::Dma as u16)
+        (ownership_kind::BLOCK, rp1_proto::BlockId::Dma as u16)
     } else {
-        (3, p.strip_prefix("TIMER.ALARM").unwrap().parse()?)
+        (
+            ownership_kind::TIMER_ALARM,
+            p.strip_prefix("TIMER.ALARM").unwrap().parse()?,
+        )
     })
 }
 /// rpi-cm5: RESETS bits (bank 0, 1, 2) of the RP1 blocks Linux owns unless the image declares

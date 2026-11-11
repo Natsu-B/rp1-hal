@@ -323,14 +323,14 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
     for entry in own[4..].as_chunks::<4>().0 {
         let id = u16::from_le_bytes([entry[2], entry[3]]);
         match entry[0] {
-            1 => {
+            note::ownership_kind::PIN => {
                 out.pins.insert(u32::from(id));
             }
-            2 | 5 => {
-                if entry[0] == 2 {
+            note::ownership_kind::BLOCK | note::ownership_kind::CLOCK => {
+                if entry[0] == note::ownership_kind::BLOCK {
                     out.blocks.insert(id);
                 }
-                let label = if entry[0] == 5 {
+                let label = if entry[0] == note::ownership_kind::CLOCK {
                     String::from("rp1_clocks")
                 } else {
                     block_label(id).ok_or_else(|| format!("unknown OWNERSHIP block id {id}"))?

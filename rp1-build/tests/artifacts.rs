@@ -2,6 +2,7 @@ use rp1_build::{
     generate,
     metadata::{Declaration, I2cPins, Instance, SpiPins, TypeInfo, UartPins},
 };
+use rp1_proto::note::ownership_kind;
 use rp1_proto::note::{ENTRY, Note};
 use std::{fs, path::Path, process::Command};
 
@@ -160,7 +161,10 @@ fn rejects_mistakes_before_building() {
 fn i2c_ownership_and_board_management_pins() {
     use rp1_build::metadata::{peripheral_id, peripheral_type};
     for n in 0..4 {
-        assert_eq!(peripheral_id(&format!("I2C{n}")).unwrap(), (2, 32 + n));
+        assert_eq!(
+            peripheral_id(&format!("I2C{n}")).unwrap(),
+            (ownership_kind::BLOCK, 32 + n)
+        );
     }
     for p in ["I2C4", "I2C5", "I2C6", "I2C7", "I2C01"] {
         assert!(peripheral_type(p).is_err());
@@ -197,7 +201,7 @@ fn i2c_ownership_and_board_management_pins() {
 #[test]
 fn adc_ownership_disables_linux_adc_and_keeps_its_reset() {
     use rp1_build::metadata::{BOARD_LINUX_RESETS, peripheral_id, peripheral_type};
-    assert_eq!(peripheral_id("ADC").unwrap(), (2, 64));
+    assert_eq!(peripheral_id("ADC").unwrap(), (ownership_kind::BLOCK, 64));
     assert_eq!(peripheral_type("ADC").unwrap(), "::rp1_hal::adc::Token");
     assert!(peripheral_type("ADC0").is_err());
     let mut d = declaration();
@@ -226,7 +230,10 @@ fn adc_ownership_disables_linux_adc_and_keeps_its_reset() {
 fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
     use rp1_build::metadata::{BOARD_LINUX_RESETS, peripheral_id, peripheral_type};
     for n in [0u16, 1, 3, 5] {
-        assert_eq!(peripheral_id(&format!("SPI{n}")).unwrap(), (2, 16 + n));
+        assert_eq!(
+            peripheral_id(&format!("SPI{n}")).unwrap(),
+            (ownership_kind::BLOCK, 16 + n)
+        );
         assert_eq!(
             peripheral_type(&format!("SPI{n}")).unwrap(),
             format!("::rp1_hal::spi::Token<{n}>")
@@ -865,8 +872,14 @@ fn pwm_resources_keep_pins_and_note_block_ids_without_channel_subownership() {
             .unwrap();
     let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
     assert!(a.dts.contains("gpio-reserved-ranges = <12 1 18 1>;"));
-    assert_eq!(rp1_build::metadata::peripheral_id("PWM0").unwrap(), (2, 48));
-    assert_eq!(rp1_build::metadata::peripheral_id("PWM1").unwrap(), (2, 49));
+    assert_eq!(
+        rp1_build::metadata::peripheral_id("PWM0").unwrap(),
+        (ownership_kind::BLOCK, 48)
+    );
+    assert_eq!(
+        rp1_build::metadata::peripheral_id("PWM1").unwrap(),
+        (ownership_kind::BLOCK, 49)
+    );
 }
 
 #[test]
@@ -874,7 +887,10 @@ fn dma_resource_is_a_controller_token_with_block_id_65() {
     let d: Declaration = toml::from_str("schema=2\n[proc1]\ndma={}").unwrap();
     let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
     assert!(a.dts.contains("target = <&rp1_dma>"));
-    assert_eq!(rp1_build::metadata::peripheral_id("DMA").unwrap(), (2, 65));
+    assert_eq!(
+        rp1_build::metadata::peripheral_id("DMA").unwrap(),
+        (ownership_kind::BLOCK, 65)
+    );
     assert_eq!(
         rp1_build::metadata::peripheral_type("DMA").unwrap(),
         "::rp1_hal::dma::Token"

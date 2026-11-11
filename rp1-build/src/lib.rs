@@ -238,9 +238,9 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         let lines: Vec<_> = board::IRQ_VERIFIED
             .iter()
             .filter(|(name, _, (kind, id))| {
-                if *kind == 6 {
+                if *kind == rp1_proto::note::ownership_kind::GPIO_IRQ_BANK {
                     !c.gpio_irq.is_empty()
-                } else if *kind == 3 {
+                } else if *kind == rp1_proto::note::ownership_kind::TIMER_ALARM {
                     c.timer.contains(&format!("ALARM{id}"))
                 } else {
                     c.instances.contains_key(&name.to_ascii_lowercase())

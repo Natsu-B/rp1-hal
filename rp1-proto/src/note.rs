@@ -7,6 +7,23 @@ pub const HEADER_LEN: usize = 32;
 pub const FIRMWARE: u16 = 1;
 pub const ENTRY: u16 = 2;
 pub const OWNERSHIP: u16 = 0x10;
+
+/// Stable kind bytes in OWNERSHIP claims; do not renumber.
+pub mod ownership_kind {
+    /// A GPIO pin; the id is its pin number.
+    pub const PIN: u8 = 1;
+    /// A peripheral block; the id is a `crate::BlockId`.
+    pub const BLOCK: u8 = 2;
+    /// A timer alarm; the id is its alarm number.
+    pub const TIMER_ALARM: u8 = 3;
+    /// A GPIO bank's voltage; the id is its bank number.
+    pub const BANK_VOLTAGE: u8 = 4;
+    /// System clock authority; id 0 denotes the RP1 clocks.
+    pub const CLOCK: u8 = 5;
+    /// GPIO interrupt capability; id 0 denotes bank 0, separately from pin ownership.
+    pub const GPIO_IRQ_BANK: u8 = 6;
+}
+
 pub const CLOCK: u16 = 0x11;
 pub const LOG: u16 = 0x12;
 pub const BOOT: u16 = 0x13;
@@ -189,11 +206,10 @@ fn validate_record(r: &Record<'_>) -> Result<(), Error> {
         OWNERSHIP => {
             let n = u32_at(v, 0)? as usize;
             n.checked_mul(4).and_then(|n| n.checked_add(4)) == Some(v.len())
-                && v[4..]
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .all(|c| (1..=6).contains(&c[0]) && (1..=3).contains(&c[1]))
+                && v[4..].as_chunks::<4>().0.iter().all(|c| {
+                    (ownership_kind::PIN..=ownership_kind::GPIO_IRQ_BANK).contains(&c[0])
+                        && (1..=3).contains(&c[1])
+                })
         }
         CLOCK => v.len() == 5 && (1..=2).contains(&v[0]),
         LOG => v.len() == 5 && v[0] == 1 && u32_at(v, 1)? != 0,
