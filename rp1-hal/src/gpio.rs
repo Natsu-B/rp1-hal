@@ -3,7 +3,38 @@ use crate::{read, write};
 use core::{convert::Infallible, marker::PhantomData};
 use embedded_hal::digital::{ErrorType, InputPin, OutputPin, StatefulOutputPin};
 
-/// Ownership of bank-0 pin N's interrupt events on core CORE.
+/// An interrupt event of a bank-0 pin, numbered by its IRQMASK bit in GPIOn_CTRL. Edges latch
+/// until [`PinIrq::clear`]; levels follow the pin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Event {
+    EdgeLow = 20,
+    EdgeHigh = 21,
+    LevelLow = 22,
+    LevelHigh = 23,
+}
+const IRQRESET: u32 = 1 << 28;
+const SET: usize = 0x2000;
+const CLR: usize = 0x3000;
+const fn ctrl(n: u8) -> usize {
+    0x400d_0004 + n as usize * 8
+}
+const fn inte(core: u8) -> usize {
+    0x400d_0104 + core as usize * 0xc
+}
+const fn intf(core: u8) -> usize {
+    inte(core) + 4
+}
+const fn ints(core: u8) -> usize {
+    inte(core) + 8
+}
+
+/// Ownership of bank-0 pin N's interrupt events on core CORE. The NVIC line is `irq.IO_BANK0`
+/// in the generated resources, shared by all of this core's pins.
+///
+/// Writes go through the SET/CLR aliases: the enable and force registers are shared with this
+/// core's other pins, and GPIOn_CTRL also holds the pin's function select. Configure the pin
+/// (for example [`Pin::into_input`]) before enabling events: that rewrites GPIOn_CTRL and clears
+/// the event masks.
 pub struct PinIrq<const N: u8, const CORE: u8> {
     _private: (),
 }
@@ -12,6 +43,33 @@ impl<const N: u8, const CORE: u8> PinIrq<N, CORE> {
     /// Call once on core CORE (0 or 1), which must own pin N (0..27) in `gpio_irq`.
     pub const unsafe fn new() -> Self {
         Self { _private: () }
+    }
+    /// Lets `event` interrupt this core.
+    pub fn enable(&mut self, event: Event) {
+        write(SET + ctrl(N), 1 << event as u32);
+        write(SET + inte(CORE), 1 << N);
+    }
+    /// Stops `event` from interrupting; other enabled events of the pin still do.
+    pub fn disable(&mut self, event: Event) {
+        write(CLR + ctrl(N), 1 << event as u32);
+    }
+    /// Whether this pin interrupts this core now (an enabled event, or [`PinIrq::force`]).
+    pub fn is_pending(&self) -> bool {
+        read(ints(CORE)) & (1 << N) != 0
+    }
+    /// Clears latched edges. A level event stays pending while the pin is at that level.
+    pub fn clear(&mut self) {
+        write(SET + ctrl(N), IRQRESET);
+    }
+    /// Raises this pin's interrupt on this core whatever its events, until [`PinIrq::unforce`].
+    pub fn force(&mut self) {
+        write(SET + intf(CORE), 1 << N);
+    }
+    pub fn unforce(&mut self) {
+        write(CLR + intf(CORE), 1 << N);
+    }
+    pub fn is_forced(&self) -> bool {
+        read(intf(CORE)) & (1 << N) != 0
     }
 }
 
@@ -165,5 +223,18 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn pin_interrupt_registers() {
+        assert_eq!(SET + ctrl(27), 0x400d_20dc);
+        assert_eq!(
+            (inte(0), intf(0), ints(0)),
+            (0x400d_0104, 0x400d_0108, 0x400d_010c)
+        );
+        assert_eq!(
+            (inte(1), intf(1), ints(1)),
+            (0x400d_0110, 0x400d_0114, 0x400d_0118)
+        );
     }
 }
