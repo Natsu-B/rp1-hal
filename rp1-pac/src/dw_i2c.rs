@@ -26,6 +26,27 @@ impl FifoPop for Data {}
 impl FifoPush for Data {}
 impl FifoPop for ReadClear {}
 
+/// INTR_STAT/INTR_MASK/RAW_INTR_STAT bits.
+pub mod intr {
+    pub const RX_UNDER: u32 = 1 << 0;
+    pub const RX_OVER: u32 = 1 << 1;
+    pub const RX_FULL: u32 = 1 << 2;
+    pub const TX_OVER: u32 = 1 << 3;
+    pub const TX_EMPTY: u32 = 1 << 4;
+    pub const RD_REQ: u32 = 1 << 5;
+    pub const TX_ABRT: u32 = 1 << 6;
+    pub const RX_DONE: u32 = 1 << 7;
+    pub const ACTIVITY: u32 = 1 << 8;
+    pub const STOP_DET: u32 = 1 << 9;
+    pub const START_DET: u32 = 1 << 10;
+    pub const GEN_CALL: u32 = 1 << 11;
+    pub const RESTART_DET: u32 = 1 << 12;
+}
+/// IRQ_WRAP (+0x108) bits.
+pub mod irq_wrap {
+    pub const IRQ_EN: u32 = 1 << 0;
+}
+
 #[repr(C)]
 pub struct RegisterBlock {
     pub con: Reg<ReadWrite>,
@@ -67,6 +88,11 @@ pub struct RegisterBlock {
     pub comp_param_1: Reg<ReadOnly>,
     pub comp_version: Reg<ReadOnly>,
     pub comp_type: Reg<ReadOnly>,
+    _reserved4: [u32; 2],
+    /// RP1 wrapper outside the DesignWare block: [`irq_wrap::IRQ_EN`] routes the controller
+    /// interrupt to the RP1 cores (HW on I2C1; STATIC from the standard firmware on the other
+    /// instances). Its reset value and any effect on Linux's MSI-X vector are not verified.
+    pub irq_wrap: Reg<ReadWrite>,
 }
 
 macro_rules! instances {
@@ -97,7 +123,7 @@ mod tests {
         assert_eq!(core::mem::offset_of!(RegisterBlock, tx_abrt_source), 0x80);
         assert_eq!(core::mem::offset_of!(RegisterBlock, enable_status), 0x9c);
         assert_eq!(core::mem::offset_of!(RegisterBlock, comp_type), 0xfc);
-        assert_eq!(core::mem::size_of::<RegisterBlock>(), 0x100);
+        assert_eq!(core::mem::offset_of!(RegisterBlock, irq_wrap), 0x108);
         assert_eq!(crate::I2C0::PTR as usize, 0x4007_0000);
         assert_eq!(crate::I2C6::PTR as usize, 0x4008_8000);
     }

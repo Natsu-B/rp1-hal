@@ -47,9 +47,16 @@ pub mod sr {
 }
 /// RISR/ISR/IMR bits.
 pub mod int {
+    pub const TXEI: u32 = 1 << 0;
     pub const TXOI: u32 = 1 << 1;
     pub const RXUI: u32 = 1 << 2;
     pub const RXOI: u32 = 1 << 3;
+    pub const RXFI: u32 = 1 << 4;
+    pub const MSTI: u32 = 1 << 5;
+}
+/// IRQ_WRAP (+0x108) bits.
+pub mod irq_wrap {
+    pub const IRQ_EN: u32 = 1 << 0;
 }
 
 #[repr(C)]
@@ -82,6 +89,11 @@ pub struct RegisterBlock {
     pub dr: Reg<Data>,
     _reserved0: [u32; 35],
     pub rx_sample_dly: Reg<ReadWrite>,
+    _reserved1: [u32; 5],
+    /// RP1 wrapper outside the DesignWare block: [`irq_wrap::IRQ_EN`] routes the controller
+    /// interrupt to the RP1 cores (HW on SPI0; STATIC from the standard firmware on the other
+    /// instances). Its reset value and any effect on Linux's MSI-X vector are not verified.
+    pub irq_wrap: Reg<ReadWrite>,
 }
 
 macro_rules! instances {
@@ -117,6 +129,7 @@ mod tests {
         assert_eq!(core::mem::offset_of!(RegisterBlock, ssi_version_id), 0x5c);
         assert_eq!(core::mem::offset_of!(RegisterBlock, dr), 0x60);
         assert_eq!(core::mem::offset_of!(RegisterBlock, rx_sample_dly), 0xf0);
+        assert_eq!(core::mem::offset_of!(RegisterBlock, irq_wrap), 0x108);
         assert_eq!(crate::SPI0::PTR as usize, 0x4005_0000);
         assert_eq!(crate::SPI5::PTR as usize, 0x4006_4000);
         assert_eq!(crate::SPI8::PTR as usize, 0x4004_c000);
