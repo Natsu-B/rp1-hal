@@ -129,7 +129,7 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
     );
     println!(
         "cargo:rerun-if-changed={}",
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../rp1-pac/irq.x")
+        manifest_dir.join("../../rp1-pac/irq.x").display()
     );
     println!("cargo:rerun-if-env-changed=RP1_DTC");
     // A new commit changes the provenance record even when Cargo.toml stays identical.

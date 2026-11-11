@@ -966,7 +966,7 @@ fn interrupts(db: &Database) -> String {
 
     writeln!(
         out,
-        "#[cfg(all(feature = \"rt\", target_arch = \"arm\", target_os = \"none\"))]\n#[allow(non_snake_case)]\nunsafe extern \"C\" {{"
+        "#[cfg(all(feature = \"rt\", target_arch = \"arm\", target_os = \"none\"))]\nmod rt {{\nuse super::NVIC_INTERRUPT_COUNT;\n\n#[allow(non_snake_case)]\nunsafe extern \"C\" {{"
     )
     .unwrap();
     writeln!(out, "    fn __rp1_default_irq();").unwrap();
@@ -976,9 +976,8 @@ fn interrupts(db: &Database) -> String {
         }
     }
     writeln!(out, "}}\n").unwrap();
-    writeln!(out, "#[cfg(all(feature = \"rt\", target_arch = \"arm\", target_os = \"none\"))]\n#[doc(hidden)]\n#[repr(C)]\npub union Vector {{\n    _handler: unsafe extern \"C\" fn(),\n    _reserved: u32,\n}}\n").unwrap();
     for core in 0..2 {
-        writeln!(out, "#[cfg(all(feature = \"rt\", target_arch = \"arm\", target_os = \"none\"))]\n#[doc(hidden)]\n#[used]\n#[unsafe(no_mangle)]\n#[unsafe(link_section = \".vectors.proc{core}.irq\")]\npub static __RP1_IRQS{core}: [Vector; NVIC_INTERRUPT_COUNT] = [").unwrap();
+        writeln!(out, "#[used]\n#[unsafe(no_mangle)]\n#[unsafe(link_section = \".vectors.proc{core}.irq\")]\npub static __RP1_IRQS{core}: [unsafe extern \"C\" fn(); NVIC_INTERRUPT_COUNT] = [").unwrap();
         for number in 0..db.core.nvic.external_slots {
             let (name, handler) = match interrupts_by_number.get(&number) {
                 Some(interrupt) => (
@@ -987,14 +986,11 @@ fn interrupts(db: &Database) -> String {
                 ),
                 None => ("reserved", "__rp1_default_irq".into()),
             };
-            writeln!(
-                out,
-                "    // IRQ {number}: {name}\n    Vector {{ _handler: {handler} }},"
-            )
-            .unwrap();
+            writeln!(out, "    {handler}, // IRQ {number}: {name}").unwrap();
         }
         writeln!(out, "];\n").unwrap();
     }
+    writeln!(out, "}}").unwrap();
     out
 }
 

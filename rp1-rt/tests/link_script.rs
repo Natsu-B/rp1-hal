@@ -31,6 +31,7 @@ fn per_core_irq_tables_are_retained_and_aligned() {
     for core in 0..2 {
         assert!(LINK_X.contains(&format!("KEEP(*(.vectors.proc{core}.irq))")));
     }
-    assert!(LINK_X.contains("ASSERT(__vectors1 - __vectors0 == 512,"));
+    assert!(LINK_X.contains("__vectors0_end = .;\n    . = ALIGN(512); __vectors1 = .;"));
+    assert!(LINK_X.contains("ASSERT(__vectors0_end - __vectors0 == 320,"));
     assert!(LINK_X.contains("ASSERT(SIZEOF(.vectors) == 832,"));
 }

@@ -300,7 +300,7 @@ fn all_rp1_interrupts_are_generated() {
     assert_eq!(
         interrupts
             .lines()
-            .filter(|line| line.starts_with("    ") && line.contains(" = "))
+            .filter(|line| line.starts_with("    ") && line.ends_with(',') && line.contains(" = "))
             .count(),
         61
     );
@@ -319,10 +319,9 @@ fn all_rp1_interrupts_are_generated() {
             .lines()
             .any(|line| line == "pub const DEFINED_INTERRUPT_COUNT: usize = 61;")
     );
-    assert!(!interrupts.contains("feature = \"vectors\""));
     for core in 0..2 {
         assert!(interrupts.contains(&format!(
-            "pub static __RP1_IRQS{core}: [Vector; NVIC_INTERRUPT_COUNT] = ["
+            "pub static __RP1_IRQS{core}: [unsafe extern \"C\" fn(); NVIC_INTERRUPT_COUNT] = ["
         )));
         assert!(interrupts.contains(&format!(".vectors.proc{core}.irq")));
         let vectors = interrupts
@@ -332,15 +331,16 @@ fn all_rp1_interrupts_are_generated() {
             .split("];\n")
             .next()
             .unwrap();
-        assert_eq!(vectors.matches("_handler:").count(), 64);
+        assert_eq!(vectors.matches("// IRQ ").count(), 64);
         for (name, number) in &expected {
             assert!(vectors.contains(&format!("// IRQ {number}: {name}")));
-            assert!(vectors.contains(&format!("_handler: __rp1_p{core}_{name}")));
+            assert!(vectors.contains(&format!("__rp1_p{core}_{name},")));
         }
         for irq in 61..64 {
-            assert!(vectors.contains(&format!(
-                "// IRQ {irq}: reserved\n    Vector {{\n        _handler: __rp1_default_irq,"
-            )));
+            assert!(vectors.lines().any(|line| {
+                line.trim_start().starts_with("__rp1_default_irq,")
+                    && line.ends_with(&format!("// IRQ {irq}: reserved"))
+            }));
         }
     }
     let irq_x = fs::read_to_string(source.parent().unwrap().join("irq.x")).unwrap();

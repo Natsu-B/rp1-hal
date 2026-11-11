@@ -10,7 +10,7 @@ MEMORY {
 PHDRS { text PT_LOAD; isram PT_LOAD; code PT_LOAD; data PT_LOAD; shared PT_LOAD; }
 SECTIONS {
   .vectors ORIGIN(SRAM) : ALIGN(512) {
-    __vectors0 = .; KEEP(*(.vectors.proc0)); KEEP(*(.vectors.proc0.irq));
+    __vectors0 = .; KEEP(*(.vectors.proc0)); KEEP(*(.vectors.proc0.irq)); __vectors0_end = .;
     . = ALIGN(512); __vectors1 = .; KEEP(*(.vectors.proc1)); KEEP(*(.vectors.proc1.irq));
   } > SRAM :text
   .boot 0x20000400 : { KEEP(*(.text.rp1_reset)); } > SRAM :text
@@ -42,8 +42,8 @@ SECTIONS {
   .rp1.dtbo 0 (INFO) : { KEEP(*(.rp1.dtbo)); } :NONE
   /DISCARD/ : { *(.ARM.extab*); *(.eh_frame*); }
 }
-ASSERT(__vectors1 - __vectors0 == 512, "vector table 0 is not 80 words")
-ASSERT(SIZEOF(.vectors) == 832, "vector table 1 is not 80 words")
+ASSERT(__vectors0_end - __vectors0 == 320, "vector table 0 is not 320 bytes")
+ASSERT(SIZEOF(.vectors) == 832, "vector section is not 832 bytes")
 ASSERT(SIZEOF(.isram) <= 8192, "ISRAM budget exceeded")
 ASSERT(__ebss + MAX(__stack_size0, __stack_size1) <= 0x10004000, "DSRAM + stack budget exceeded")
 ASSERT(__image_end <= 0x2000c000, "shared SRAM image exceeds 48 KiB")
