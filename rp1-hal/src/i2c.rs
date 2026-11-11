@@ -9,16 +9,16 @@ use crate::{
 };
 use embedded_hal::i2c::{ErrorKind, NoAcknowledgeSource, Operation};
 
-use crate::pac::dw_i2c::RegisterBlock;
+use crate::pac::dw_i2c::{RegisterBlock, irq_wrap};
 macro_rules! offsets {
     ($($name:ident = $field:ident),* $(,)?) => {$(const $name: usize = core::mem::offset_of!(RegisterBlock, $field);)*};
 }
 offsets! {
     CON = con, TAR = tar, DATA = data_cmd, SS_HCNT = ss_scl_hcnt, SS_LCNT = ss_scl_lcnt,
-    FS_HCNT = fs_scl_hcnt, FS_LCNT = fs_scl_lcnt, MASK = intr_mask, RAW = raw_intr_stat,
-    RX_TL = rx_tl, TX_TL = tx_tl, CLEAR = clr_intr, ENABLE = enable, STATUS = status,
+    FS_HCNT = fs_scl_hcnt, FS_LCNT = fs_scl_lcnt, INTR_STAT = intr_stat, MASK = intr_mask,
+    RAW = raw_intr_stat, RX_TL = rx_tl, TX_TL = tx_tl, CLEAR = clr_intr, ENABLE = enable, STATUS = status,
     HOLD = sda_hold, SPKLEN = fs_spklen, ABORT_SOURCE = tx_abrt_source, ENABLE_STATUS = enable_status,
-    PARAM = comp_param_1, TYPE = comp_type,
+    PARAM = comp_param_1, TYPE = comp_type, IRQ_WRAP = irq_wrap,
 }
 const STOP: u32 = 1 << 9;
 const RESTART: u32 = 1 << 10;
@@ -233,8 +233,8 @@ fn start(io: &mut impl Io, reset: u32, clocks: &Clocks, speed: Speed) -> Result<
     if io.read(TYPE) != 0x4457_0140 {
         return Err(Error::Precondition);
     }
+    mask_interrupts(io);
     disable(io)?;
-    io.write(MASK, 0);
     io.read(CLEAR);
     io.write(RX_TL, 0);
     io.write(TX_TL, 0);
@@ -286,6 +286,19 @@ fn timing(ic_clk_hz: u32, speed: Speed) -> Result<Counts, Error> {
         }
         _ => Err(Error::Invalid),
     }
+}
+/// Masks every controller interrupt and closes the RP1 wrapper.
+fn mask_interrupts(io: &mut impl Io) {
+    io.write(MASK, 0);
+    let wrap = io.read(IRQ_WRAP);
+    io.write(IRQ_WRAP, wrap & !irq_wrap::IRQ_EN);
+}
+/// [`I2c::enable_interrupt`]: the controller mask, then the RP1 wrapper.
+fn enable_interrupt(io: &mut impl Io, mask: u32) {
+    let unmasked = io.read(MASK) | mask;
+    io.write(MASK, unmasked);
+    let wrap = io.read(IRQ_WRAP);
+    io.write(IRQ_WRAP, wrap | irq_wrap::IRQ_EN);
 }
 fn configure(io: &mut impl Io, c: Counts) {
     let (h, l) = if c.mode == 1 {
@@ -443,6 +456,27 @@ impl<const N: u8, const SDA: u8, const SCL: u8> I2c<N, SDA, SCL> {
         let clocks = self.clocks;
         set_speed(&mut self.io(), &clocks, &mut self.usable, speed)
     }
+    /// Unmasks the [`intr`](crate::pac::dw_i2c::intr) bits in `mask` and opens the RP1 wrapper
+    /// that routes the controller interrupt to the cores; the NVIC line comes from the generated
+    /// `irq` resources. Blocking transactions mask every interrupt while they run and restore
+    /// the mask afterwards.
+    pub fn enable_interrupt(&mut self, mask: u32) {
+        enable_interrupt(&mut self.io(), mask);
+    }
+    pub fn disable_interrupt(&mut self, mask: u32) {
+        let mut io = self.io();
+        let masked = io.read(MASK) & !mask;
+        io.write(MASK, masked);
+    }
+    /// Pending unmasked interrupts (INTR_STAT).
+    pub fn interrupt_status(&self) -> u32 {
+        self.io().read(INTR_STAT)
+    }
+    /// Clears the interrupts that software can clear. RX_FULL and TX_EMPTY follow the FIFO
+    /// levels instead.
+    pub fn clear_interrupt(&mut self) {
+        self.io().read(CLEAR);
+    }
 }
 impl<const N: u8, const SDA: u8, const SCL: u8> embedded_hal::i2c::ErrorType for I2c<N, SDA, SCL> {
     type Error = Error;
@@ -503,6 +537,21 @@ fn run(
     if ops.iter().all(|op| operation_len(op) == 0) {
         return Ok(());
     }
+    // A handler would race the transfer loop for the FIFO and the status it polls.
+    let mask = io.read(MASK);
+    io.write(MASK, 0);
+    let result = transact(io, usable, address, ops, depth);
+    io.write(MASK, mask);
+    result
+}
+
+fn transact(
+    io: &mut impl Io,
+    usable: &mut bool,
+    address: u8,
+    ops: &mut [Operation<'_>],
+    depth: usize,
+) -> Result<(), Error> {
     *usable = false;
     disable(io)?;
     io.read(CLEAR);
@@ -543,6 +592,10 @@ mod tests {
         fast: u32,
         strict: u32,
         resets: Vec<u32>,
+        mask: u32,
+        wrap: u32,
+        /// Writes to MASK and IRQ_WRAP, in order.
+        interrupt_writes: Vec<(usize, u32)>,
     }
     impl Model {
         fn new(depth: usize) -> Self {
@@ -562,6 +615,9 @@ mod tests {
                 fast: 0,
                 strict: 0,
                 resets: Vec::new(),
+                mask: 0,
+                wrap: 0,
+                interrupt_writes: Vec::new(),
             }
         }
     }
@@ -579,6 +635,8 @@ mod tests {
                 }
                 DATA => u32::from(self.rx.pop_front().expect("RX underflow")),
                 TYPE => 0x4457_0140,
+                MASK => self.mask,
+                IRQ_WRAP => self.wrap,
                 // IC_RX_BUFFER_DEPTH - 1 in bits 15:8.
                 PARAM => (self.depth as u32 - 1) << 8,
                 _ => 0,
@@ -586,6 +644,14 @@ mod tests {
         }
         fn write(&mut self, offset: usize, value: u32) {
             self.writes += 1;
+            match offset {
+                MASK => self.mask = value,
+                IRQ_WRAP => self.wrap = value,
+                _ => {}
+            }
+            if matches!(offset, MASK | IRQ_WRAP) {
+                self.interrupt_writes.push((offset, value));
+            }
             if offset != DATA {
                 return;
             }
@@ -775,6 +841,35 @@ mod tests {
         );
         assert!(usable && m.writes > 0);
         assert_eq!((m.strict, m.fast), (2, 0));
+    }
+
+    #[test]
+    fn interrupts_are_off_after_init_and_during_transactions() {
+        use crate::pac::dw_i2c::intr::{STOP_DET, TX_ABRT};
+        // DW reset value of INTR_MASK; wrapper bit 3 stands for bits the driver must keep.
+        let mut m = Model::new(2);
+        (m.mask, m.wrap) = (0x8ff, 0x9);
+        let pins: Pins = unsafe { (Pin::new(), Pin::new()) };
+        let mut i2c = init_model(
+            unsafe { Token::new() },
+            &mut m,
+            pins,
+            &CLOCKS,
+            Speed::Fast,
+            &mut false,
+        )
+        .expect("init");
+        assert_eq!((m.mask, m.wrap), (0, 0x8));
+        m.interrupt_writes.clear();
+        enable_interrupt(&mut m, STOP_DET | TX_ABRT);
+        assert_eq!(
+            m.interrupt_writes,
+            [(MASK, STOP_DET | TX_ABRT), (IRQ_WRAP, 0x9)]
+        );
+        m.interrupt_writes.clear();
+        let ops = &mut [Operation::Write(&[1])];
+        run(&mut m, &CLOCKS, &mut i2c.usable, 0x2d, ops, 2).unwrap();
+        assert_eq!(m.interrupt_writes, [(MASK, 0), (MASK, STOP_DET | TX_ABRT)]);
     }
 
     /// `?` on an init error inside a function returning the bus error (compile check).
