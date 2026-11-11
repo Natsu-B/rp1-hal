@@ -235,8 +235,33 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         for pin in &pins {
             s.push_str(&format!("pub gpio{pin}: ::rp1_hal::gpio::Pin<{pin}>,\n"));
         }
+        let lines: Vec<_> = board::IRQ_VERIFIED
+            .iter()
+            .filter(|(name, _, (kind, id))| {
+                if *kind == 6 {
+                    !c.gpio_irq.is_empty()
+                } else if *kind == 3 {
+                    c.timer.contains(&format!("ALARM{id}"))
+                } else {
+                    c.instances.contains_key(&name.to_ascii_lowercase())
+                }
+            })
+            .collect();
+        s.push_str(&format!(
+            "}}\n#[allow(non_snake_case)]\npub struct Proc{index}Irq {{\n"
+        ));
+        for (name, irq, _) in &lines {
+            s.push_str(&format!("pub {name}: ::rp1_rt::interrupt::Line<{irq}>,\n"));
+        }
+        for pin in &c.gpio_irq {
+            s.push_str(&format!(
+                "pub gpio{pin}: ::rp1_hal::gpio::PinIrq<{pin}, {index}>,\n"
+            ));
+        }
         s.push_str("}\n#[allow(non_snake_case)]\n");
-        s.push_str(&format!("pub struct {ty} {{ pub pins: Proc{index}Pins,\n"));
+        s.push_str(&format!(
+            "pub struct {ty} {{ pub pins: Proc{index}Pins, pub irq: Proc{index}Irq,\n"
+        ));
         for alarm in &c.timer {
             let p = format!("TIMER.{alarm}");
             s.push_str(&format!(
@@ -260,6 +285,18 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         for pin in &pins {
             s.push_str(&format!(
                 "gpio{pin}: unsafe {{ ::rp1_hal::gpio::Pin::new() }},\n"
+            ));
+        }
+        s.push_str("},\n");
+        s.push_str(&format!("irq: Proc{index}Irq {{\n"));
+        for (name, _, _) in &lines {
+            s.push_str(&format!(
+                "{name}: unsafe {{ ::rp1_rt::interrupt::Line::new() }},\n"
+            ));
+        }
+        for pin in &c.gpio_irq {
+            s.push_str(&format!(
+                "gpio{pin}: unsafe {{ ::rp1_hal::gpio::PinIrq::new() }},\n"
             ));
         }
         s.push_str("},\n");
@@ -346,6 +383,110 @@ fn instance_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn irq_fields(source: &str, core: usize) -> &str {
+        source
+            .split(&format!("pub struct Proc{core}Irq {{\n"))
+            .nth(1)
+            .unwrap()
+            .split('}')
+            .next()
+            .unwrap()
+    }
+
+    #[test]
+    fn irq_resources_follow_verified_instance_and_alarm_ownership() {
+        let cases = [
+            ("uart0={tx=14,rx=15}", ""),
+            (
+                "uart1={tx=0,rx=1}",
+                "pub UART1: ::rp1_rt::interrupt::Line<42>,\n",
+            ),
+            (
+                "uart2={tx=4,rx=5}",
+                "pub UART2: ::rp1_rt::interrupt::Line<43>,\n",
+            ),
+            (
+                "uart3={tx=8,rx=9}",
+                "pub UART3: ::rp1_rt::interrupt::Line<44>,\n",
+            ),
+            (
+                "uart4={tx=12,rx=13}",
+                "pub UART4: ::rp1_rt::interrupt::Line<45>,\n",
+            ),
+            ("i2c0={sda=0,scl=1}", ""),
+            (
+                "i2c1={sda=2,scl=3}",
+                "pub I2C1: ::rp1_rt::interrupt::Line<8>,\n",
+            ),
+            ("i2c2={sda=4,scl=5}", ""),
+            ("i2c3={sda=6,scl=7}", ""),
+            (
+                "spi0={sck=11,mosi=10,miso=9}",
+                "pub SPI0: ::rp1_rt::interrupt::Line<19>,\n",
+            ),
+            ("spi1={sck=21,mosi=20,miso=19}", ""),
+            ("spi3={sck=7,mosi=6,miso=5}", ""),
+            ("spi5={sck=15,mosi=14,miso=13}", ""),
+            ("pwm0={}", "pub PWM0: ::rp1_rt::interrupt::Line<5>,\n"),
+            ("pwm1={}", ""),
+            ("adc={}", ""),
+            ("dma={}", ""),
+            ("host_irq=true", ""),
+        ];
+        for (declaration, expected) in cases {
+            for core in 0..2 {
+                let d: metadata::Declaration = toml::from_str(&format!(
+                    "schema=2\n[linux]\nkeep={{}}\n[proc{core}]\n{declaration}"
+                ))
+                .unwrap();
+                d.validate().unwrap();
+                let source = resources(&d, &[]).unwrap();
+                assert_eq!(irq_fields(&source, core), expected, "{declaration}");
+                assert_eq!(irq_fields(&source, 1 - core), "");
+            }
+        }
+        for core in 0..2 {
+            for alarm in 0..4 {
+                let d: metadata::Declaration =
+                    toml::from_str(&format!("schema=2\n[proc{core}]\ntimer=['ALARM{alarm}']"))
+                        .unwrap();
+                d.validate().unwrap();
+                let source = resources(&d, &[]).unwrap();
+                assert_eq!(
+                    irq_fields(&source, core),
+                    format!(
+                        "pub TIMER_{alarm}: ::rp1_rt::interrupt::Line<{}>,\n",
+                        26 + alarm
+                    )
+                );
+                assert_eq!(irq_fields(&source, 1 - core), "");
+            }
+        }
+    }
+
+    #[test]
+    fn gpio_irq_resources_are_separate_from_pin_state_and_core_local() {
+        let d: metadata::Declaration = toml::from_str(
+            "schema=2\n[proc0]\ngpio=[22]\ngpio_irq=[22]\n[proc1]\ngpio=[26,27]\ngpio_irq=[26,27]",
+        )
+        .unwrap();
+        d.validate().unwrap();
+        let source = resources(&d, &[]).unwrap();
+        for (core, pins) in [(0, &[22][..]), (1, &[26, 27][..])] {
+            let mut expected = String::from("pub IO_BANK0: ::rp1_rt::interrupt::Line<0>,\n");
+            for pin in pins {
+                expected.push_str(&format!(
+                    "pub gpio{pin}: ::rp1_hal::gpio::PinIrq<{pin}, {core}>,\n"
+                ));
+                assert!(source.contains(&format!("pub gpio{pin}: ::rp1_hal::gpio::Pin<{pin}>,")));
+                assert!(source.contains(&format!(
+                    "gpio{pin}: unsafe {{ ::rp1_hal::gpio::PinIrq::new() }},"
+                )));
+            }
+            assert_eq!(irq_fields(&source, core), expected);
+        }
+    }
 
     #[test]
     fn instances_are_handed_out_as_typed_parts_and_pins_keep_only_the_rest() {

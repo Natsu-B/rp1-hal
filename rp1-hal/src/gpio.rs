@@ -3,6 +3,18 @@ use crate::{read, write};
 use core::{convert::Infallible, marker::PhantomData};
 use embedded_hal::digital::{ErrorType, InputPin, OutputPin, StatefulOutputPin};
 
+/// Ownership of bank-0 pin N's interrupt events on core CORE.
+pub struct PinIrq<const N: u8, const CORE: u8> {
+    _private: (),
+}
+impl<const N: u8, const CORE: u8> PinIrq<N, CORE> {
+    /// # Safety
+    /// Call once on core CORE (0 or 1), which must own pin N (0..27) in `gpio_irq`.
+    pub const unsafe fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
 pub struct Unconfigured;
 pub struct Input;
 pub struct Output;

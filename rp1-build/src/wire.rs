@@ -60,6 +60,10 @@ pub fn descriptor(
             claims.extend([kind, core]);
             short(&mut claims, id);
         }
+        if !c.gpio_irq.is_empty() {
+            claims.extend([6, core]);
+            short(&mut claims, 0);
+        }
     }
     if d.log.is_some() {
         for (kind, id) in [(1, 14), (1, 15), (2, 0)] {

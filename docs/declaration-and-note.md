@@ -115,11 +115,11 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 - `schema = 1`（`pins = [..]`、`peripherals = ["I2C1", "TIMER.ALARM0", ..]`）は読み続け、ビルド時に schema 2 へ変換する
   （`cargo:warning=schema 1 is deprecated`）。UART/I2C/SPI の割り当ては、そのコアの `pins` から機能表で一意に決まるものを探し、
   残りのピンは `gpio` になる。決まらなければエラー（`schema 1: cannot infer I2C1 pins from [2, 3, 10, 11]; write i2c1 = { .. } (schema 2)`）。
-- 変換しても note は同一（旧来の宣言ハッシュを保つ）。schema 2 に書き換えると宣言の SHA-256（とそれを覆うヘッダーの CRC）は必ず
+- 現行生成器では、変換しても note は同一（旧来の宣言ハッシュを保つ）。schema 2 に書き換えると宣言の SHA-256（とそれを覆うヘッダーの CRC）は必ず
   変わる。ほかは、schema 1 の `pins`・`peripherals` の並びが schema 2 の並び（ピンは昇順、ブロックはタイマーを書いた順の後にインスタンスを名前順）と同じときだけ
   同一。違う並び（例 `pins = [7, 6, 5, 4, 22]`、`peripherals = ["UART2", "TIMER.ALARM1", "ADC"]`）では、所有の集合は同じでも
   OWNERSHIP の並びが正規化されてバイト列が変わる。lab の `shm-firmware` と `examples/dual-core` は schema 2 に移した（STATIC: この 2 つは
-  凍結した schema 1 の note と、ハッシュと CRC 以外が一致することを `rp1-build` の試験で確認）。
+  固定した schema 1 の入力から作る note と、ハッシュと CRC 以外が一致することを `rp1-build` の試験で確認）。
 - 変わる挙動（BREAKING）: `gpio-reserved-ranges` は以前の「GPIO 2..27 全部」から「RP1 所有ピンちょうど」に縮む。宣言外の
   2..27 は Linux が使える。
 
@@ -138,6 +138,34 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 PCIe、mailbox ch0（SCMI 用）、共有 SRAM の予約域は、ボード表が「RP1 システム」として固定で持ち、宣言はできない。
 rpi-cm5 のボード表は GPIO 28..53（ETH_RST_N、VBUS など）と Ethernet・USB・PCIe・PIO を Linux に残す（DMA は 2026-11-05 から宣言できる。宣言しなければ Linux のまま。`dmas` で `rp1_dma` を使う有効なノードは衝突として扱う。[dma.md](dma.md)）。この「Linux に要る
 ブロック」の表は、ビルドの宣言検査とローダーの保護ノード（§3.2）が共有する。
+
+### 1.3.1 コアごとの割り込み所有
+
+STATIC: `ProcNResources.irq` は、宣言でそのコアに割り当てた線だけを持つ。宣言キーは増えない。
+
+| 宣言 | `ProcNIrq` のフィールド |
+|---|---|
+| `timer = ["ALARMn"]` | `TIMER_n: rp1_rt::interrupt::Line<{26+n}>` |
+| `gpio_irq = [..]`（空でない） | `IO_BANK0: Line<0>` と、各ピンの `gpioN: rp1_hal::gpio::PinIrq<N, CORE>` |
+| `uart1`..`uart4` | `UARTn: Line<{41+n}>` |
+| `i2c1` / `spi0` / `pwm0` | `I2C1: Line<8>` / `SPI0: Line<19>` / `PWM0: Line<5>` |
+
+HW: 上の線の番号は実機で確認された対応に限る（GPIO は proc1 の証拠。proc0 のハンドラへの配送は未検証）。
+STATIC: `rp1-build::board::IRQ_VERIFIED` が生成と ELF 検査の対応表である。
+I2C0/2/3、SPI1/3/5、PWM1、DMA、ADC は IRQ 番号が実機未確認なので `Line` を生成しない。
+インスタンスの所有やポーリング用トークンには影響しない。
+
+`gpio_irq` のピンは通常の `pins.gpioN` と別に割り込み権限を持つ。両コアがそれぞれ `gpio_irq` を宣言すると、
+両方に `Line<0>` が入る。IO_BANK0 の割り込み状態・イネーブルはコアごとに分かれている（DOC）。
+`PinIrq` は権限の型と生成用の unsafe コンストラクターだけを公開する。
+
+`log` 用 UART0 の線は渡さない。`host_irq = true` でも `TIMER_3` は渡さず、ALARM3 は両コアの `timer` 宣言から予約する。
+IRQ53（PCIE_OUT）と IRQ57（PROC_MISC）は proc0 のシステムサービス用で、利用者の resources には入らない。
+IRQ59（CLOCKS_DEFAULT）など、それ以外のシステム線も渡さない。
+
+STATIC: `cargo rp1 check` と `cargo rp1 build` は、両コアの外部ベクタの Thumb ビット・アドレス範囲を検査し、
+既定ハンドラ以外の線を note の OWNERSHIP と照合する。宣言で所有しない線や未確認線にハンドラを置くとビルドエラーになる。
+IRQ53/57 の上書きは proc0 だけに許す。ハンドラを定義せず線を所有することは許される。
 
 ### 1.4 ビルド時のエラー（build.rs が止める）
 
@@ -164,30 +192,43 @@ Linux 側の衝突は `cargo rp1 check --dtb`（E6 と同じ予測、[build.md](
 
 ### 1.5 生成されるもの（`OUT_DIR/rp1.rs`）
 
+例えば、次の宣言から生成する（STATIC、コンストラクターと note は省略）。
+
+```toml
+[package.metadata.rp1]
+schema = 2
+[package.metadata.rp1.proc1]
+gpio = [27]
+gpio_irq = [27]
+timer = ["ALARM1"]
+spi0 = { sck = 11, mosi = 10, miso = 9 }
+```
+
 ```rust
 pub mod rp1 {
-    pub struct Proc0Resources {
-        pub pins: hal::gpio::Pins0,                 // 4, 5 だけを持つ型
-        pub UART2: hal::pac::UART2,
-        pub TIMER_ALARM0: hal::timer::AlarmToken<0>,
-        pub proc1: rp1_rt::Proc1Launcher,           // proc1 を起動する権利（proc0 だけが持つ）
-        pub clock_authority: hal::clocks::Authority,// clock.authority = "rp1" のときだけ
-        pub log: rp1_rt::log::Uninit,               // log があるときだけ（proc0 が初期化）
-        pub shm: Proc0Shm,                          // core = "proc0" の shm だけ
+    pub struct Proc1Pins {
+        pub gpio27: ::rp1_hal::gpio::Pin<27>,
     }
-    pub struct Proc1Resources { /* 同様 */ }
-    pub struct Proc0Shm { pub trace: rp1_link::BlockPending<protocol::Trace> }
-    pub struct Proc1Shm {
-        pub ctl: rp1_link::ChannelPending<protocol::Cmd, protocol::Reply>,
-        pub samples: rp1_link::RingTxPending<protocol::Sample>,
+    #[allow(non_snake_case)]
+    pub struct Proc1Irq {
+        pub IO_BANK0: ::rp1_rt::interrupt::Line<0>,
+        pub SPI0: ::rp1_rt::interrupt::Line<19>,
+        pub TIMER_1: ::rp1_rt::interrupt::Line<27>,
+        pub gpio27: ::rp1_hal::gpio::PinIrq<27, 1>,
     }
-    #[used] #[unsafe(link_section = ".note.rp1")]
-    static NOTE: [u8; 412] = [/* §2 の形式 */];
+    #[allow(non_snake_case)]
+    pub struct Proc1Resources {
+        pub pins: Proc1Pins,
+        pub irq: Proc1Irq,
+        pub TIMER_ALARM1: ::rp1_hal::timer::Alarm<1>,
+        pub spi0: ::rp1_hal::spi::Parts<0, 11, 10, 9>,
+    }
 }
 ```
 
-`#[entry(proc0)]` の関数は `rp1::Proc0Resources` を受け取る（api-sketch の `Resources<Proc0>` はこの名前に置き換える）。
-`Shm::enable` は `*Pending` を受け取り、PCIe のリンクと ATU が有効なら使えるハンドルに変える。
+`#[entry(proc0)]` / `#[entry(proc1)]` は、対応する `rp1::ProcNResources` を受け取る。
+`Proc0Resources` だけが `proc1: rp1_rt::Proc1Launcher` と、`clock.authority = "rp1"` のときの
+`clock_authority: rp1_hal::clocks::Authority` を持つ。宣言が空でも `ProcNIrq` と `irq` フィールドは生成する。
 
 ## 2. `.note.rp1` v2 の形式
 
@@ -218,7 +259,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 |---|---|---|---|
 | 0x0001 | 1 | FIRMWARE | 名前（文字列）、版（文字列）、ソースの git ハッシュ 20 B、宣言の SHA-256 32 B |
 | 0x0002 | 1 | ENTRY | proc0 の entry / 初期 MSP / ベクタ表、イメージの最小・最大アドレス |
-| 0x0010 | 1 | OWNERSHIP | 件数 u32 + `{ kind u8, owner u8, id u16 }` の列。kind: 1 ピン / 2 ブロック / 3 アラーム / 4 バンク電圧 / 5 システム。owner: 1 proc0 / 2 proc1 / 3 RP1 システム |
+| 0x0010 | 1 | OWNERSHIP | 件数 u32 + `{ kind u8, owner u8, id u16 }` の列。kind: 1 ピン / 2 ブロック / 3 アラーム / 4 バンク電圧 / 5 システム / 6 GPIO 割り込みバンク（id = 0、`gpio_irq` が空でないコアにだけ付く）。owner: 1 proc0 / 2 proc1 / 3 RP1 システム |
 | 0x0011 | 1 | CLOCK | authority u8（1 rp1 / 2 linux）、clk_sys_hz u32 |
 | 0x0012 | 0 | LOG | sink u8（1 uart0）、baudrate u32 |
 | 0x0013 | 1 | BOOT | config.txt の SHA-256、cmdline.txt の SHA-256、本来のカーネルのファイル名（文字列） |
@@ -230,7 +271,12 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 - 型 ID: `#[derive(Message)]` が「型名・サイズ・各フィールドのオフセットと型」から計算する 64 bit のハッシュ。
   Linux 側の `fw.channel::<Cmd, Reply>("ctl")` はこれを note と照合し、違えば開けない。
 - note に含めないもの: イメージのハッシュ（ローダーが自分で計算する）、Linux DT のノード名（ビルド時にボード表から overlay に焼き込む）。
-- 宣言の SHA-256 は宣言の書き方で決まる。`schema = 1` のまま読む（ビルド時に schema 2 へ自動変換）と旧来のハッシュを保つので note は変わらない。schema 2 に書き換えると、note のこのハッシュ（と、それを覆うヘッダーの CRC）は必ず変わる。ほかが同一なのは schema 1 の並びが schema 2 の正規の並びと同じときだけで、そうでなければ OWNERSHIP の並びも変わる（§1.2.1。lab の 2 宣言はハッシュと CRC 以外が同一: STATIC、`rp1-build` の試験）。
+- 宣言の SHA-256 は宣言の書き方で決まる。`schema = 1` のまま読む（ビルド時に schema 2 へ自動変換）と旧来のハッシュを保つ。
+  `gpio_irq` がある note には kind 6 の所有レコードが加わるので、旧生成器とはバイト列が変わる。
+  旧版の note パーサーは kind 6 を拒否するため、ツールとファームを同じ版でビルドする。
+  schema 2 に書き換えると、note のこのハッシュ（と、それを覆うヘッダーの CRC）は必ず変わる。
+  ほかが同一なのは schema 1 の並びが schema 2 の正規の並びと同じときだけで、そうでなければ OWNERSHIP の並びも変わる
+  （§1.2.1。lab の 2 宣言はハッシュと CRC 以外が同一: STATIC、`rp1-build` の試験）。
 
 ### 2.3 読み手の動き
 

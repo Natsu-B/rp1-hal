@@ -217,7 +217,7 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
             return Err("DSRAM + stack budget exceeded".into());
         }
     }
-    check_irq_tables(&file)?;
+    check_irq_tables(&file, &note)?;
     validate_regions(&note)?;
     let overlay = file
         .section_by_name(".rp1.dtbo")
@@ -265,12 +265,20 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
 const VECTOR_SECTION_BYTES: usize = 512 + 80 * 4;
 
 /// Validate all 64 external IRQ vectors on each core, including reserved slots.
-fn check_irq_tables(file: &object::File<'_>) -> Result<()> {
+fn check_irq_tables(file: &object::File<'_>, note: &Note<'_>) -> Result<()> {
     let vectors = file.section_by_name(".vectors").ok_or("missing vectors")?;
     let data = vectors.data()?;
     if vectors.address() != 0x2000_0000 || data.len() != VECTOR_SECTION_BYTES {
         return Err("expected two 80-word vector tables at 0x20000000 and 0x20000200".into());
     }
+    let default = file
+        .symbols()
+        .find(|s| s.name() == Ok("__rp1_default_irq"))
+        .ok_or("missing __rp1_default_irq")?
+        .address()
+        & !1;
+    let ownership = note.get(note::OWNERSHIP).unwrap().value;
+    let claims = ownership[4..].as_chunks::<4>().0;
     for core in 0..2 {
         for irq in 0..64 {
             let handler = word(data, core * 512 + (16 + irq) * 4)?;
@@ -281,6 +289,27 @@ fn check_irq_tables(file: &object::File<'_>) -> Result<()> {
             {
                 return Err(format!("proc{core} IRQ{irq} vector 0x{handler:08x} is not a Thumb handler in image SRAM or ISRAM").into());
             }
+            if address == default || (matches!(irq, 53 | 57) && core == 0) {
+                continue;
+            }
+            let verified = rp1_build::board::IRQ_VERIFIED
+                .iter()
+                .find(|(_, number, _)| usize::from(*number) == irq);
+            if let Some((_, _, (kind, id))) = verified
+                && claims.iter().any(|c| {
+                    c[0] == *kind
+                        && usize::from(c[1]) == core + 1
+                        && u16::from_le_bytes([c[2], c[3]]) == *id
+                })
+            {
+                continue;
+            }
+            let name =
+                verified.map_or_else(|| format!("IRQ{irq}"), |(name, _, _)| name.to_string());
+            return Err(format!(
+                "proc{core} defines a handler for {name}, but does not own that IRQ in OWNERSHIP"
+            )
+            .into());
         }
     }
     Ok(())
@@ -859,7 +888,13 @@ mod tests {
 
     // Section-only ARM ELF32 is sufficient for the object reader; no loader is involved.
     fn irq_elf(handler: u32, length: usize) -> Vec<u8> {
-        let names = b"\0.vectors\0.shstrtab\0";
+        let names = b"\0.vectors\0.shstrtab\0.symtab\0.strtab\0";
+        let strings = b"\0__rp1_default_irq\0";
+        let mut symbols = vec![0; 16];
+        symbols.extend_from_slice(&1u32.to_le_bytes());
+        symbols.extend_from_slice(&handler.to_le_bytes());
+        symbols.extend_from_slice(&2u32.to_le_bytes());
+        symbols.extend_from_slice(&[0x12, 0, 1, 0]);
         let mut out = vec![0; ELF_HEADER_BYTES];
         let mut vectors = vec![0; length];
         for core in 0..2 {
@@ -874,6 +909,8 @@ mod tests {
         for (name, kind, flags, address, data) in [
             (1u32, 1u32, 2, 0x2000_0000, vectors.as_slice()),
             (10, 3, 0, 0, names.as_slice()),
+            (20, 2, 0, 0, symbols.as_slice()),
+            (28, 3, 0, 0, strings.as_slice()),
         ] {
             sections.push((
                 name,
@@ -891,7 +928,10 @@ mod tests {
         let shoff = out.len() as u32;
         out.extend_from_slice(&[0; 40]);
         for (name, kind, flags, address, offset, size) in sections {
-            for v in [name, kind, flags, address, offset, size, 0, 0, 4, 0] {
+            let (link, info, entsize) = if kind == 2 { (4, 1, 16) } else { (0, 0, 0) };
+            for v in [
+                name, kind, flags, address, offset, size, link, info, 4, entsize,
+            ] {
                 out.extend_from_slice(&v.to_le_bytes());
             }
         }
@@ -901,7 +941,7 @@ mod tests {
             (E_MACHINE, object::elf::EM_ARM),
             (E_EHSIZE, ELF_HEADER_BYTES as u16),
             (E_SHENTSIZE, 40),
-            (E_SHNUM, 3),
+            (E_SHNUM, 5),
             (E_SHSTRNDX, 2),
         ] {
             out[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
@@ -912,24 +952,68 @@ mod tests {
     }
 
     #[test]
+    fn irq_handlers_require_core_ownership_or_proc0_platform_irqs() {
+        let mut d: rp1_build::metadata::Declaration = toml::from_str("schema=2\n[proc0]\ngpio=[22]\ngpio_irq=[22]\ntimer=['ALARM0']\nspi0={sck=11,mosi=10,miso=9}\ndma={}\n[proc1]\ngpio=[27]\ngpio_irq=[27]\ntimer=['ALARM1']\nuart2={tx=4,rx=5}\nadc={}\npwm1={}\nhost_irq=true").unwrap();
+        d.validate().unwrap();
+        for gpio_irq in [true, false] {
+            if !gpio_irq {
+                d.proc0.gpio_irq.clear();
+                d.proc1.gpio_irq.clear();
+            }
+            let desc = rp1_build::wire::descriptor("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+            let note = Note::parse(&desc).unwrap();
+            for core in 0..2 {
+                for irq in 0..64 {
+                    let mut bytes = irq_elf(0x2000_0401, VECTOR_SECTION_BYTES);
+                    let offset = ELF_HEADER_BYTES + core * 512 + (16 + irq) * 4;
+                    bytes[offset..offset + 4].copy_from_slice(&0x1000_0001u32.to_le_bytes());
+                    let result =
+                        check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap(), &note);
+                    let owned = (irq == 0 && gpio_irq)
+                        || match core {
+                            0 => [19, 26, 53, 57].contains(&irq),
+                            _ => [27, 43].contains(&irq),
+                        };
+                    assert_eq!(result.is_ok(), owned, "proc{core} IRQ{irq}: {result:?}");
+                    if let Err(error) = result {
+                        assert!(
+                            error
+                                .to_string()
+                                .contains(&format!("proc{core} defines a handler")),
+                            "{error}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn irq_tables_require_thumb_handlers_in_image_or_isram() {
+        let desc =
+            rp1_build::wire::descriptor("test", "0.1.0", &Default::default(), [0; 32], [0; 20])
+                .unwrap();
+        let note = Note::parse(&desc).unwrap();
         for address in [0x1000_0000, 0x2000_0400] {
             let bytes = irq_elf(address | 1, VECTOR_SECTION_BYTES);
-            check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap()).unwrap();
+            check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap(), &note).unwrap();
             for (core, irq) in [(0, 0), (1, 63), (0, 61)] {
                 for bad in [address, 0, 0x1000_2001, 0x2000_c001] {
                     let mut broken = bytes.clone();
                     let offset = ELF_HEADER_BYTES + core * 512 + (16 + irq) * 4;
                     broken[offset..offset + 4].copy_from_slice(&bad.to_le_bytes());
-                    let error = check_irq_tables(&object::File::parse(broken.as_slice()).unwrap())
-                        .unwrap_err();
+                    let error =
+                        check_irq_tables(&object::File::parse(broken.as_slice()).unwrap(), &note)
+                            .unwrap_err();
                     assert!(error.to_string().contains(&format!("proc{core} IRQ{irq}")));
                 }
             }
         }
         for length in [VECTOR_SECTION_BYTES - 1, VECTOR_SECTION_BYTES + 4] {
             let bytes = irq_elf(0x2000_0401, length);
-            assert!(check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap()).is_err());
+            assert!(
+                check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap(), &note).is_err()
+            );
         }
     }
 }

@@ -124,20 +124,18 @@ fn schema1_unknown_fields_and_duplicate_pins_are_rejected() {
 }
 #[test]
 fn existing_declarations_have_byte_identical_notes_after_conversion() {
-    // STATIC: SHA-256 of complete ELF notes captured before schema 2 was added, using the
-    // original declaration hash and a zero source commit. Includes ordering, CRC and provenance.
-    // The manifests are schema 2 now; their schema 1 cores are kept here so the frozen notes
-    // stay reproducible.
+    // Fixed schema-1 inputs keep the legacy declaration hash while including GPIO IRQ-bank
+    // ownership. The snapshots cover ordering, CRC and provenance with a zero source commit.
     let cases = [
         (
             "examples/dual-core/Cargo.toml",
-            "38307b294f0e9e14a06e7bd00818e22ccc4391cca9aa8d820d0195dcfc2043a5",
+            "e482486a731041c79ce549334bfe34367b972ce0a2b9ddaf4f4aa459969cf0a1",
             "[proc0]\npins=[8,9,10,11,22]\nperipherals=['TIMER.ALARM0','SPI0']\n\
              [proc1]\npins=[2,3,27]\ngpio_irq=[27]\nperipherals=['TIMER.ALARM1','ADC','I2C1']",
         ),
         (
             "lab/shm-firmware/Cargo.toml",
-            "262f81b0ad563985ec1dd6e2c1a79b2e6b56b2148247bb7c3d92fcc1456dd6ba",
+            "0078b969d9effde052279c0ed1a52e240a9c9f2fb6cede165eace7bf4d7d8905",
             "[proc0]\npins=[2,3,22]\nperipherals=['TIMER.ALARM0','I2C1']\n\
              [proc1]\npins=[8,9,10,11,27]\ngpio_irq=[27]\nperipherals=['TIMER.ALARM1','ADC','SPI0']",
         ),

@@ -193,7 +193,7 @@ fn validate_record(r: &Record<'_>) -> Result<(), Error> {
                     .as_chunks::<4>()
                     .0
                     .iter()
-                    .all(|c| (1..=5).contains(&c[0]) && (1..=3).contains(&c[1]))
+                    .all(|c| (1..=6).contains(&c[0]) && (1..=3).contains(&c[1]))
         }
         CLOCK => v.len() == 5 && (1..=2).contains(&v[0]),
         LOG => v.len() == 5 && v[0] == 1 && u32_at(v, 1)? != 0,

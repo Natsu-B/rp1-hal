@@ -72,6 +72,24 @@ pub(crate) const INSTANCES: &[BoardInstance] = &[
     instance("dma", Kind::Dma, 0, "rp1_dma", 0, 3),
 ];
 
+/// Hardware-verified IRQ name, NVIC number, and OWNERSHIP (kind, id).
+/// GPIO interrupt ownership uses kind 6 for bank 0, separately from ordinary pins.
+/// I2C0/2/3, SPI1/3/5, PWM1, DMA and ADC are omitted: their IRQ numbers lack HW proof.
+pub const IRQ_VERIFIED: &[(&str, u8, (u8, u16))] = &[
+    ("IO_BANK0", 0, (6, 0)),
+    ("PWM0", 5, (2, rp1_proto::BlockId::Pwm0 as u16)),
+    ("I2C1", 8, (2, rp1_proto::BlockId::I2c1 as u16)),
+    ("SPI0", 19, (2, rp1_proto::BlockId::Spi0 as u16)),
+    ("TIMER_0", 26, (3, 0)),
+    ("TIMER_1", 27, (3, 1)),
+    ("TIMER_2", 28, (3, 2)),
+    ("TIMER_3", 29, (3, 3)),
+    ("UART1", 42, (2, rp1_proto::BlockId::Uart1 as u16)),
+    ("UART2", 43, (2, rp1_proto::BlockId::Uart2 as u16)),
+    ("UART3", 44, (2, rp1_proto::BlockId::Uart3 as u16)),
+    ("UART4", 45, (2, rp1_proto::BlockId::Uart4 as u16)),
+];
+
 pub(crate) fn find_instance(name: &str) -> Option<&'static BoardInstance> {
     INSTANCES.iter().find(|i| i.name == name)
 }
