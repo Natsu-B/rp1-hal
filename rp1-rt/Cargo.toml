@@ -4,10 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["critical-section-single-core"]
+# PRIMASK protects only this core's DSRAM and ISR/main access, never the other core.
+critical-section-single-core = []
+
 [dependencies]
+critical-section = { version = "1", features = ["restore-state-bool"] }
 rp1-pac = { path = "../rp1-pac", features = ["rt"] }
 rp1-proto = { path = "../rp1-proto" }
 rp1-macros = { path = "../rp1-macros" }
 
 [dev-dependencies]
+critical-section = { version = "1", features = ["std"] }
 trybuild = "1"

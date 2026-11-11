@@ -1,0 +1,5 @@
+error[E0599]: no variant, associated function, or constant named `UNKNOWN_IRQ` found for enum `Interrupt` in the current scope
+ --> tests/ui/interrupt_unknown.rs:2:4
+  |
+2 | fn UNKNOWN_IRQ() {}
+  |    ^^^^^^^^^^^ variant, associated function, or constant not found in `Interrupt`

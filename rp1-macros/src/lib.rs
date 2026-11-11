@@ -83,6 +83,84 @@ pub fn entry(args: TokenStream, input: TokenStream) -> TokenStream {
     .into()
 }
 
+/// Bind a named RP1 IRQ to one core. Use `proc0` or `proc1`, optionally followed by
+/// `sram`; handlers otherwise start in ISRAM. System IRQ names are reserved.
+#[proc_macro_attribute]
+pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(args with syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated);
+    let mut args = args.iter();
+    let core = match args.next().map(ToString::to_string).as_deref() {
+        Some("proc0") => 0,
+        Some("proc1") => 1,
+        _ => return error("interrupt requires proc0 or proc1, optionally followed by sram"),
+    };
+    let (mut sram, mut platform) = (false, false);
+    for arg in args {
+        match arg.to_string().as_str() {
+            "sram" if !sram => sram = true,
+            "__platform" if !platform && core == 0 => platform = true,
+            _ => return error("invalid or repeated interrupt option"),
+        }
+    }
+    let mut f = parse_macro_input!(input as ItemFn);
+    let unit = match &f.sig.output {
+        syn::ReturnType::Default => true,
+        syn::ReturnType::Type(_, ty) => {
+            matches!(ty.as_ref(), syn::Type::Tuple(t) if t.elems.is_empty())
+        }
+    };
+    if !f.sig.inputs.is_empty()
+        || !unit
+        || f.sig.asyncness.is_some()
+        || f.sig.unsafety.is_some()
+        || f.sig.constness.is_some()
+        || f.sig.abi.is_some()
+        || f.sig.variadic.is_some()
+        || !f.sig.generics.params.is_empty()
+        || f.sig.generics.where_clause.is_some()
+    {
+        return error(
+            "interrupt handler must be a safe, non-async fn NAME() with no generics or return value",
+        );
+    }
+    let name = &f.sig.ident;
+    if matches!(
+        name.to_string().as_str(),
+        "PCIE_OUT" | "PROC_MISC" | "CLOCKS_DEFAULT"
+    ) && !platform
+    {
+        return error("this interrupt is reserved for rp1-platform");
+    }
+    let symbol = format!("__rp1_p{core}_{name}");
+    let wrapper = format_ident!("{symbol}_trampoline");
+    // SRAM handlers must also be boundaries for the automatic ISRAM planner.
+    let section = if sram {
+        format!(".text.rp1_cold.{symbol}")
+    } else {
+        format!(".isram.text.{symbol}")
+    };
+    let attrs = core::mem::take(&mut f.attrs);
+    let cfg: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
+        .collect();
+    quote! {
+        #(#cfg)*
+        const _: ::rp1_rt::pac::Interrupt = ::rp1_rt::pac::Interrupt::#name;
+        #(#attrs)*
+        #[allow(non_snake_case)]
+        #[unsafe(export_name = #symbol)]
+        #[cfg_attr(all(target_arch = "arm", target_os = "none"), unsafe(link_section = #section))]
+        unsafe extern "C" fn #wrapper() {
+            #[allow(non_snake_case)]
+            #[inline(always)]
+            #f
+            #name()
+        }
+    }
+    .into()
+}
+
 #[proc_macro_attribute]
 pub fn isram(args: TokenStream, input: TokenStream) -> TokenStream {
     if !args.is_empty() {

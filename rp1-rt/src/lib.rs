@@ -7,7 +7,7 @@
 //! update [`interrupt::unhandled`]; system exceptions still stop in the default handler.
 //! Hardware regression of this startup contract is pending.
 use core::{cell::UnsafeCell, marker::PhantomData};
-pub use rp1_macros::{cold, entry, isram, proc0, proc1, shared};
+pub use rp1_macros::{cold, entry, interrupt, isram, proc0, proc1, shared};
 pub use rp1_proto::SharedSafe;
 pub mod interrupt;
 #[cfg(target_arch = "arm")]

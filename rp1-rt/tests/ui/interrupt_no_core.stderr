@@ -1,0 +1,7 @@
+error: interrupt requires proc0 or proc1, optionally followed by sram
+ --> tests/ui/interrupt_no_core.rs:1:1
+  |
+1 | #[rp1_rt::interrupt]
+  | ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
