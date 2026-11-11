@@ -22,6 +22,17 @@ impl UnsafeWritable for ReadWrite {}
 impl FifoPop for Data {}
 impl FifoPush for Data {}
 impl WriteOneToClear for Clear {}
+/// IMSC/RIS/MIS/ICR bits.
+pub mod int {
+    pub const RX: u32 = 1 << 4;
+    pub const TX: u32 = 1 << 5;
+    /// Receive timeout: data sits in the RX FIFO below its trigger level.
+    pub const RT: u32 = 1 << 6;
+    pub const FE: u32 = 1 << 7;
+    pub const PE: u32 = 1 << 8;
+    pub const BE: u32 = 1 << 9;
+    pub const OE: u32 = 1 << 10;
+}
 #[repr(C)]
 pub struct RegisterBlock {
     pub dr: Reg<Data>,

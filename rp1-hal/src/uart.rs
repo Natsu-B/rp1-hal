@@ -5,6 +5,7 @@ use crate::{
     Error,
     clocks::Clocks,
     gpio::{Alternate, Pin},
+    pac::pl011::int,
     poll, read, write,
 };
 use core::fmt;
@@ -192,10 +193,36 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     pub fn flush(&mut self) -> Result<(), Error> {
         poll(base(N) + 0x18, 1 << 3, 0)
     }
-    /// Waits up to 10 ms for the transmitter to drain, disables the UART and gives back the token
-    /// and the (still muxed) pins.
+    /// Unmasks the receive interrupts: RX FIFO at its trigger level, and receive timeout so a
+    /// short message is not left below the level. The NVIC line is `irq.UARTn` in the generated
+    /// resources.
+    pub fn enable_rx_interrupt(&mut self) {
+        set_mask(N, int::RX | int::RT, true);
+    }
+    pub fn disable_rx_interrupt(&mut self) {
+        set_mask(N, int::RX | int::RT, false);
+    }
+    /// Unmasks the interrupt for the TX FIFO at or below its trigger level.
+    pub fn enable_tx_interrupt(&mut self) {
+        set_mask(N, int::TX, true);
+    }
+    pub fn disable_tx_interrupt(&mut self) {
+        set_mask(N, int::TX, false);
+    }
+    /// Pending unmasked interrupts (MIS), as [`int`](crate::pac::pl011::int) bits.
+    pub fn interrupt_status(&self) -> u32 {
+        read(base(N) + 0x40)
+    }
+    /// Clears the [`int`](crate::pac::pl011::int) bits in `mask`. RX and RT also clear by
+    /// draining the FIFO, TX by refilling it.
+    pub fn clear_interrupt(&mut self, mask: u32) {
+        write(base(N) + 0x44, mask);
+    }
+    /// Waits up to 10 ms for the transmitter to drain, masks the interrupts, disables the UART
+    /// and gives back the token and the (still muxed) pins.
     pub fn free(self) -> (Token<N>, Pin<TX>, Pin<RX>) {
         let _ = poll(base(N) + 0x18, 1 << 3, 0);
+        write(base(N) + 0x38, 0);
         write(base(N) + 0x30, 0);
         (
             Token { _private: () },
@@ -203,6 +230,11 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
             self._rx.release(),
         )
     }
+}
+/// Sets or clears `bits` in UART `n`'s interrupt mask (IMSC).
+fn set_mask(n: u8, bits: u32, on: bool) {
+    let imsc = read(base(n) + 0x38);
+    write(base(n) + 0x38, if on { imsc | bits } else { imsc & !bits });
 }
 impl<const N: u8, const TX: u8, const RX: u8> fmt::Write for Uart<N, TX, RX> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
