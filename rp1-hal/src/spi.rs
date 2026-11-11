@@ -20,14 +20,14 @@ use embedded_hal::{
     spi::{ErrorKind, ErrorType, Mode, Operation, Phase, Polarity, SpiBus, SpiDevice},
 };
 
-use crate::pac::dw_ssi::{RegisterBlock, ctrlr0, int, sr};
+use crate::pac::dw_ssi::{RegisterBlock, ctrlr0, int, irq_wrap, sr};
 macro_rules! offsets {
     ($($name:ident = $field:ident),* $(,)?) => {$(const $name: usize = core::mem::offset_of!(RegisterBlock, $field);)*};
 }
 offsets! {
     CTRLR0 = ctrlr0, SSIENR = ssienr, SER = ser, BAUDR = baudr, TXFTLR = txftlr, RXFTLR = rxftlr,
-    RXFLR = rxflr, SR = sr, IMR = imr, RISR = risr, ICR = icr, DMACR = dmacr, DR = dr,
-    RX_SAMPLE_DLY = rx_sample_dly,
+    RXFLR = rxflr, SR = sr, IMR = imr, ISR = isr, RISR = risr, ICR = icr, DMACR = dmacr, DR = dr,
+    RX_SAMPLE_DLY = rx_sample_dly, IRQ_WRAP = irq_wrap,
 }
 /// No progress for this long fails a transfer (one 32-bit frame at the slowest rate is 10 ms).
 const TIMEOUT_US: u32 = 100_000;
@@ -437,6 +437,7 @@ fn start(
     control(config.mode, config.frame_bits, true)?;
     io.release_reset(reset)?;
     let (depth, dfs32) = probe(io).ok_or(Error::Precondition)?;
+    mask_interrupts(io);
     let cr0 = control(config.mode, config.frame_bits, dfs32)?;
     setup(io, cr0, div, config.rx_sample_dly.into());
     Ok((depth, dfs32, cr0, div))
@@ -489,10 +490,10 @@ fn control(mode: Mode, bits: u8, dfs32: bool) -> Result<u32, Error> {
     Ok(cr0)
 }
 
-/// Disabled -> configured with interrupts and DMA off, CS0 selected -> enabled (FIFOs flushed).
+/// Disabled -> configured with DMA off, CS0 selected -> enabled (FIFOs flushed). The interrupt
+/// mask is the owner's and stays as it is.
 fn setup(io: &mut impl Io, cr0: u32, div: u32, rsd: u32) {
     io.write(SSIENR, 0);
-    io.write(IMR, 0);
     io.write(DMACR, 0);
     io.write(CTRLR0, cr0);
     io.write(BAUDR, div);
@@ -500,6 +501,20 @@ fn setup(io: &mut impl Io, cr0: u32, div: u32, rsd: u32) {
     io.write(SER, 1);
     io.read(ICR);
     io.write(SSIENR, 1);
+}
+
+/// Masks every controller interrupt and closes the RP1 wrapper.
+fn mask_interrupts(io: &mut impl Io) {
+    io.write(IMR, 0);
+    let wrap = io.read(IRQ_WRAP);
+    io.write(IRQ_WRAP, wrap & !irq_wrap::IRQ_EN);
+}
+/// [`Spi::enable_interrupt`]: the controller mask, then the RP1 wrapper.
+fn enable_interrupt(io: &mut impl Io, mask: u32) {
+    let unmasked = io.read(IMR) | mask;
+    io.write(IMR, unmasked);
+    let wrap = io.read(IRQ_WRAP);
+    io.write(IRQ_WRAP, wrap | irq_wrap::IRQ_EN);
 }
 
 trait Io {
@@ -611,11 +626,15 @@ fn run(
     read: Rx<'_>,
     write: Tx<'_>,
 ) -> Result<(), Error> {
+    // A handler would race the exchange loop for the FIFOs and the status it polls.
+    let interrupts = io.read(IMR);
+    io.write(IMR, 0);
     let mask = u32::MAX >> (32 - u32::from(bits));
     let result = exchange(io, read, write, mask, depth);
     if result.is_err() {
         setup(io, cr0, div, rsd);
     }
+    io.write(IMR, interrupts);
     result
 }
 
@@ -740,9 +759,33 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
         }
         Ok(())
     }
-    /// Disables the controller and gives back the token and the (still muxed) pins.
+    /// Unmasks the [`int`](crate::pac::dw_ssi::int) bits in `mask` and opens the RP1 wrapper
+    /// that routes the controller interrupt to the cores; the NVIC line comes from the generated
+    /// `irq` resources. Blocking transfers mask every interrupt while they run and restore the
+    /// mask afterwards.
+    pub fn enable_interrupt(&mut self, mask: u32) {
+        enable_interrupt(&mut self.io(), mask);
+    }
+    pub fn disable_interrupt(&mut self, mask: u32) {
+        let mut io = self.io();
+        let masked = io.read(IMR) & !mask;
+        io.write(IMR, masked);
+    }
+    /// Pending unmasked interrupts (ISR).
+    pub fn interrupt_status(&self) -> u32 {
+        self.io().read(ISR)
+    }
+    /// Clears the overflow, underflow and multi-master interrupts. TXEI and RXFI follow the
+    /// FIFO levels instead.
+    pub fn clear_interrupt(&mut self) {
+        self.io().read(ICR);
+    }
+    /// Masks the interrupts, disables the controller and gives back the token and the (still
+    /// muxed) pins.
     pub fn free(self) -> (Token<N>, Pin<SCK>, Pin<MOSI>, Pin<MISO>) {
-        self.io().write(SSIENR, 0);
+        let mut io = self.io();
+        mask_interrupts(&mut io);
+        io.write(SSIENR, 0);
         (
             Token { _private: () },
             self._sck.release(),
@@ -985,6 +1028,8 @@ mod tests {
         strict: u32,
         /// Reset bits released.
         resets: Vec<u32>,
+        imr: u32,
+        wrap: u32,
     }
     impl Model {
         fn new(depth: usize) -> Self {
@@ -1009,6 +1054,8 @@ mod tests {
                 fast: 0,
                 strict: 0,
                 resets: Vec::new(),
+                imr: 0,
+                wrap: 0,
             }
         }
     }
@@ -1038,6 +1085,8 @@ mod tests {
                 TXFTLR => self.txftlr,
                 RXFTLR => self.rxftlr,
                 CTRLR0 => self.cr0,
+                IMR => self.imr,
+                IRQ_WRAP => self.wrap,
                 _ => 0,
             }
         }
@@ -1050,6 +1099,8 @@ mod tests {
                     self.busy_left = self.hold_busy;
                     assert!(self.tx.len() <= self.depth, "TX overflow");
                 }
+                IMR => self.imr = value,
+                IRQ_WRAP => self.wrap = value,
                 TXFTLR => self.txftlr = value.min(self.depth as u32 - 1),
                 RXFTLR => self.rxftlr = value.min(self.rx_depth as u32 - 1),
                 CTRLR0 => {
@@ -1185,14 +1236,13 @@ mod tests {
     }
 
     #[test]
-    fn setup_selects_cs0_with_interrupts_off() {
+    fn setup_selects_cs0_with_dma_off() {
         let mut m = Model::new(4);
         setup(&mut m, 7, 20, 3);
         assert_eq!(
             m.writes,
             [
                 (SSIENR, 0),
-                (IMR, 0),
                 (DMACR, 0),
                 (CTRLR0, 7),
                 (BAUDR, 20),
@@ -1249,7 +1299,47 @@ mod tests {
         );
         assert!(
             m.writes
-                .ends_with(&[(RX_SAMPLE_DLY, 2), (SER, 1), (SSIENR, 1)])
+                .ends_with(&[(RX_SAMPLE_DLY, 2), (SER, 1), (SSIENR, 1), (IMR, 0)])
+        );
+    }
+
+    #[test]
+    fn interrupts_are_off_after_init_and_during_transfers() {
+        let interrupt_writes = |m: &Model| -> Vec<(usize, u32)> {
+            let writes = m.writes.iter().copied();
+            writes
+                .filter(|(o, _)| *o == IMR || *o == IRQ_WRAP)
+                .collect()
+        };
+        // Wrapper bit 3 stands for bits the driver must keep.
+        let mut m = Model::new(4);
+        (m.imr, m.wrap) = (0x3f, 0x9);
+        let config = Config::new(10_000_000, embedded_hal::spi::MODE_0);
+        let spi =
+            init_model(unsafe { Token::new() }, &mut m, pins(), config, &mut false).expect("init");
+        assert_eq!((m.imr, m.wrap), (0, 0x8));
+        m.writes.clear();
+        enable_interrupt(&mut m, int::RXFI | int::RXOI);
+        assert_eq!(
+            interrupt_writes(&m),
+            [(IMR, int::RXFI | int::RXOI), (IRQ_WRAP, 0x9)]
+        );
+        // Also after a failed exchange, whose recovery runs setup again.
+        m.risr = int::RXOI;
+        m.writes.clear();
+        let registers = (spi.cr0, spi.div, spi.rsd);
+        let result = run(
+            &mut m,
+            registers,
+            8,
+            4,
+            Rx::U8(&mut [0; 2]),
+            Tx::U8(&[1, 2]),
+        );
+        assert_eq!(result, Err(Error::Overrun));
+        assert_eq!(
+            interrupt_writes(&m),
+            [(IMR, 0), (IMR, int::RXFI | int::RXOI)]
         );
     }
 
