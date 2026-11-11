@@ -19,7 +19,7 @@
 
 ```
 crates/
-  rp1-pac      regdb → SVD → svd2rust。Interrupt / device.x を含む
+  rp1-pac      regdb → Rust / SVD。Interrupt / irq.x を含む
   rp1-rt       1 イメージ・2 コアの起動。メモリ展開、#[entry] #[proc0] #[proc1] #[isram] #[shared]
   rp1-hal      ドライバ、embedded-hal、Clocks、Resets、multicore、sync（Shared / Spsc / SeqLock / ExacMutex）
   rp1-proto    no_std。.note.rp1 v2、リング、ドアベル規約、wire 形式（M3 / ローダー / Linux 共通、ホストで試験）

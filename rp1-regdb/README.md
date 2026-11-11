@@ -36,7 +36,7 @@ cargo run -p rp1-regdb -- generate --check
 ```
 
 `generate --check` regenerates a temporary `rp1-pac` package layout and fails
-if any checked-in generated Rust file or `rp1-pac/device.x` differs.
+if any checked-in generated Rust file or `rp1-pac/irq.x` differs.
 
 The separate bank-0 pin table uses the same checked-in generation workflow:
 
@@ -115,7 +115,7 @@ count, unique and verified named interrupts, a complete contiguous named range,
 and all named IRQn values to fit both that range and the implemented NVIC slots.
 
 The generator owns both `rp1-pac/src/interrupts.rs` (including the optional
-runtime vector table) and `rp1-pac/device.x`.
+`rt` feature's per-core runtime vector tables) and `rp1-pac/irq.x`.
 
 ## Atomic aliases
 
