@@ -294,18 +294,18 @@ fn check_irq_tables(file: &object::File<'_>, note: &Note<'_>) -> Result<()> {
             }
             let verified = rp1_build::board::IRQ_VERIFIED
                 .iter()
-                .find(|(_, number, _)| usize::from(*number) == irq);
-            if let Some((_, _, (kind, id))) = verified
+                .find(|line| usize::from(line.irq) == irq);
+            if let Some(line) = verified
                 && claims.iter().any(|c| {
-                    c[0] == *kind
+                    let (kind, id) = line.owner.ownership();
+                    c[0] == kind
                         && usize::from(c[1]) == core + 1
-                        && u16::from_le_bytes([c[2], c[3]]) == *id
+                        && u16::from_le_bytes([c[2], c[3]]) == id
                 })
             {
                 continue;
             }
-            let name =
-                verified.map_or_else(|| format!("IRQ{irq}"), |(name, _, _)| name.to_string());
+            let name = verified.map_or_else(|| format!("IRQ{irq}"), |line| line.name.to_string());
             return Err(format!(
                 "proc{core} defines a handler for {name}, but does not own that IRQ in OWNERSHIP"
             )

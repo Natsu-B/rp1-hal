@@ -3,7 +3,7 @@ use crate::{
     Result,
     metadata::{Instance, UartPins},
 };
-use rp1_proto::note::ownership_kind;
+use rp1_proto::{BlockId, note::ownership_kind};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
@@ -73,50 +73,95 @@ pub(crate) const INSTANCES: &[BoardInstance] = &[
     instance("dma", Kind::Dma, 0, "rp1_dma", 0, 3),
 ];
 
-/// Hardware-verified IRQ name, NVIC number, and OWNERSHIP (kind, id).
-/// GPIO interrupt ownership uses kind 6 for bank 0, separately from ordinary pins.
+/// The declaration resource that grants an IRQ line.
+#[derive(Clone, Copy)]
+pub enum IrqOwner {
+    GpioBank0,
+    Alarm(u8),
+    Instance(BlockId),
+}
+
+impl IrqOwner {
+    /// OWNERSHIP kind and id used to check a handler's claim.
+    pub fn ownership(self) -> (u8, u16) {
+        match self {
+            Self::GpioBank0 => (ownership_kind::GPIO_IRQ_BANK, 0),
+            Self::Alarm(alarm) => (ownership_kind::TIMER_ALARM, u16::from(alarm)),
+            Self::Instance(block) => (ownership_kind::BLOCK, block as u16),
+        }
+    }
+}
+
+/// A hardware-verified IRQ and the resource required to own it.
+pub struct VerifiedIrq {
+    pub name: &'static str,
+    pub irq: u8,
+    pub owner: IrqOwner,
+}
+
+/// HW: verified IRQ lines; UART0 is reserved for logging.
 /// I2C0/2/3, SPI1/3/5, PWM1, DMA and ADC are omitted: their IRQ numbers lack HW proof.
-pub const IRQ_VERIFIED: &[(&str, u8, (u8, u16))] = &[
-    ("IO_BANK0", 0, (ownership_kind::GPIO_IRQ_BANK, 0)),
-    (
-        "PWM0",
-        5,
-        (ownership_kind::BLOCK, rp1_proto::BlockId::Pwm0 as u16),
-    ),
-    (
-        "I2C1",
-        8,
-        (ownership_kind::BLOCK, rp1_proto::BlockId::I2c1 as u16),
-    ),
-    (
-        "SPI0",
-        19,
-        (ownership_kind::BLOCK, rp1_proto::BlockId::Spi0 as u16),
-    ),
-    ("TIMER_0", 26, (ownership_kind::TIMER_ALARM, 0)),
-    ("TIMER_1", 27, (ownership_kind::TIMER_ALARM, 1)),
-    ("TIMER_2", 28, (ownership_kind::TIMER_ALARM, 2)),
-    ("TIMER_3", 29, (ownership_kind::TIMER_ALARM, 3)),
-    (
-        "UART1",
-        42,
-        (ownership_kind::BLOCK, rp1_proto::BlockId::Uart1 as u16),
-    ),
-    (
-        "UART2",
-        43,
-        (ownership_kind::BLOCK, rp1_proto::BlockId::Uart2 as u16),
-    ),
-    (
-        "UART3",
-        44,
-        (ownership_kind::BLOCK, rp1_proto::BlockId::Uart3 as u16),
-    ),
-    (
-        "UART4",
-        45,
-        (ownership_kind::BLOCK, rp1_proto::BlockId::Uart4 as u16),
-    ),
+pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
+    VerifiedIrq {
+        name: "IO_BANK0",
+        irq: 0,
+        owner: IrqOwner::GpioBank0,
+    },
+    VerifiedIrq {
+        name: "PWM0",
+        irq: 5,
+        owner: IrqOwner::Instance(BlockId::Pwm0),
+    },
+    VerifiedIrq {
+        name: "I2C1",
+        irq: 8,
+        owner: IrqOwner::Instance(BlockId::I2c1),
+    },
+    VerifiedIrq {
+        name: "SPI0",
+        irq: 19,
+        owner: IrqOwner::Instance(BlockId::Spi0),
+    },
+    VerifiedIrq {
+        name: "TIMER_0",
+        irq: 26,
+        owner: IrqOwner::Alarm(0),
+    },
+    VerifiedIrq {
+        name: "TIMER_1",
+        irq: 27,
+        owner: IrqOwner::Alarm(1),
+    },
+    VerifiedIrq {
+        name: "TIMER_2",
+        irq: 28,
+        owner: IrqOwner::Alarm(2),
+    },
+    VerifiedIrq {
+        name: "TIMER_3",
+        irq: 29,
+        owner: IrqOwner::Alarm(3),
+    },
+    VerifiedIrq {
+        name: "UART1",
+        irq: 42,
+        owner: IrqOwner::Instance(BlockId::Uart1),
+    },
+    VerifiedIrq {
+        name: "UART2",
+        irq: 43,
+        owner: IrqOwner::Instance(BlockId::Uart2),
+    },
+    VerifiedIrq {
+        name: "UART3",
+        irq: 44,
+        owner: IrqOwner::Instance(BlockId::Uart3),
+    },
+    VerifiedIrq {
+        name: "UART4",
+        irq: 45,
+        owner: IrqOwner::Instance(BlockId::Uart4),
+    },
 ];
 
 pub(crate) fn find_instance(name: &str) -> Option<&'static BoardInstance> {

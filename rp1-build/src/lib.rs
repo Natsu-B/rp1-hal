@@ -237,20 +237,19 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         }
         let lines: Vec<_> = board::IRQ_VERIFIED
             .iter()
-            .filter(|(name, _, (kind, id))| {
-                if *kind == rp1_proto::note::ownership_kind::GPIO_IRQ_BANK {
-                    !c.gpio_irq.is_empty()
-                } else if *kind == rp1_proto::note::ownership_kind::TIMER_ALARM {
-                    c.timer.contains(&format!("ALARM{id}"))
-                } else {
-                    c.instances.contains_key(&name.to_ascii_lowercase())
+            .filter(|line| match line.owner {
+                board::IrqOwner::GpioBank0 => !c.gpio_irq.is_empty(),
+                board::IrqOwner::Alarm(alarm) => c.timer.contains(&format!("ALARM{alarm}")),
+                board::IrqOwner::Instance(_) => {
+                    c.instances.contains_key(&line.name.to_ascii_lowercase())
                 }
             })
             .collect();
         s.push_str(&format!(
             "}}\n#[allow(non_snake_case)]\npub struct Proc{index}Irq {{\n"
         ));
-        for (name, irq, _) in &lines {
+        for line in &lines {
+            let board::VerifiedIrq { name, irq, .. } = line;
             s.push_str(&format!("pub {name}: ::rp1_rt::interrupt::Line<{irq}>,\n"));
         }
         for pin in &c.gpio_irq {
@@ -289,7 +288,8 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         }
         s.push_str("},\n");
         s.push_str(&format!("irq: Proc{index}Irq {{\n"));
-        for (name, _, _) in &lines {
+        for line in &lines {
+            let name = line.name;
             s.push_str(&format!(
                 "{name}: unsafe {{ ::rp1_rt::interrupt::Line::new() }},\n"
             ));
@@ -397,44 +397,29 @@ mod tests {
     #[test]
     fn irq_resources_follow_verified_instance_and_alarm_ownership() {
         let cases = [
-            ("uart0={tx=14,rx=15}", ""),
-            (
-                "uart1={tx=0,rx=1}",
-                "pub UART1: ::rp1_rt::interrupt::Line<42>,\n",
-            ),
-            (
-                "uart2={tx=4,rx=5}",
-                "pub UART2: ::rp1_rt::interrupt::Line<43>,\n",
-            ),
-            (
-                "uart3={tx=8,rx=9}",
-                "pub UART3: ::rp1_rt::interrupt::Line<44>,\n",
-            ),
-            (
-                "uart4={tx=12,rx=13}",
-                "pub UART4: ::rp1_rt::interrupt::Line<45>,\n",
-            ),
-            ("i2c0={sda=0,scl=1}", ""),
-            (
-                "i2c1={sda=2,scl=3}",
-                "pub I2C1: ::rp1_rt::interrupt::Line<8>,\n",
-            ),
-            ("i2c2={sda=4,scl=5}", ""),
-            ("i2c3={sda=6,scl=7}", ""),
-            (
-                "spi0={sck=11,mosi=10,miso=9}",
-                "pub SPI0: ::rp1_rt::interrupt::Line<19>,\n",
-            ),
-            ("spi1={sck=21,mosi=20,miso=19}", ""),
-            ("spi3={sck=7,mosi=6,miso=5}", ""),
-            ("spi5={sck=15,mosi=14,miso=13}", ""),
-            ("pwm0={}", "pub PWM0: ::rp1_rt::interrupt::Line<5>,\n"),
-            ("pwm1={}", ""),
-            ("adc={}", ""),
-            ("dma={}", ""),
-            ("host_irq=true", ""),
+            ("uart0={tx=14,rx=15}", None),
+            ("uart1={tx=0,rx=1}", Some(("UART1", 42))),
+            ("uart2={tx=4,rx=5}", Some(("UART2", 43))),
+            ("uart3={tx=8,rx=9}", Some(("UART3", 44))),
+            ("uart4={tx=12,rx=13}", Some(("UART4", 45))),
+            ("i2c0={sda=0,scl=1}", None),
+            ("i2c1={sda=2,scl=3}", Some(("I2C1", 8))),
+            ("i2c2={sda=4,scl=5}", None),
+            ("i2c3={sda=6,scl=7}", None),
+            ("spi0={sck=11,mosi=10,miso=9}", Some(("SPI0", 19))),
+            ("spi1={sck=21,mosi=20,miso=19}", None),
+            ("spi3={sck=7,mosi=6,miso=5}", None),
+            ("spi5={sck=15,mosi=14,miso=13}", None),
+            ("pwm0={}", Some(("PWM0", 5))),
+            ("pwm1={}", None),
+            ("adc={}", None),
+            ("dma={}", None),
+            ("host_irq=true", None),
         ];
         for (declaration, expected) in cases {
+            let expected = expected.map_or_else(String::new, |(name, irq)| {
+                format!("pub {name}: ::rp1_rt::interrupt::Line<{irq}>,\n")
+            });
             for core in 0..2 {
                 let d: metadata::Declaration = toml::from_str(&format!(
                     "schema=2\n[linux]\nkeep={{}}\n[proc{core}]\n{declaration}"
