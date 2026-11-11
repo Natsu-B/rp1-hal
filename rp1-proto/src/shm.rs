@@ -557,8 +557,10 @@ impl<T: Message> RingTx<T> {
         n as usize
     }
     /// Generate up to `count` payloads and publish them with the CPU. `fill` receives the
-    /// zero-based offset within this call and a zero-initialized payload. It runs exactly once
-    /// per accepted message, never for a full or fenced ring. No short write counts as dropped.
+    /// zero-based offset within this call and an initialized payload whose previous contents
+    /// are unspecified (here: zero, then the previous message of this call): it must write
+    /// every field. It runs exactly once per accepted message, never for a full or fenced
+    /// ring. No short write counts as dropped.
     /// Reject rings publish the batch together; a panic leaves their head unchanged.
     /// Overwrite rings publish one by one, as in [`RingTx::push_slice`].
     #[cfg_attr(feature = "isram", rp1_macros::isram)]
@@ -566,27 +568,33 @@ impl<T: Message> RingTx<T> {
         if self.fenced {
             return 0;
         }
-        let n = if self.overflow == Overflow::Overwrite {
-            count
-        } else {
+        let reject = self.overflow == Overflow::Reject;
+        let n = if reject {
             let want = count.min(u32::MAX as usize) as u32;
             self.reject_free(want).min(want) as usize
+        } else {
+            count
         };
-        if n != 0 && self.overflow == Overflow::Reject {
+        if n == 0 {
+            return 0;
+        }
+        if reject {
             self.store_dropped();
             barrier();
         }
+        // One temporary for the whole call: initializing it per message costs as much as
+        // generating the message (HW 2026-11-10).
+        // SAFETY: Message has no padding and every bit pattern is valid.
+        let mut value = unsafe { MaybeUninit::<T>::zeroed().assume_init() };
         for k in 0..n {
-            // SAFETY: Message has no padding and every bit pattern is valid.
-            let mut value = unsafe { MaybeUninit::<T>::zeroed().assume_init() };
             fill(k, &mut value);
-            if self.overflow == Overflow::Overwrite {
-                let _ = self.push(&value);
-            } else {
+            if reject {
                 self.write_slot(k as u32, &value);
+            } else {
+                let _ = self.push(&value);
             }
         }
-        if n != 0 && self.overflow == Overflow::Reject {
+        if reject {
             barrier();
             self.head = self.head.wrapping_add(n as u32);
             unsafe { st(self.data, HEAD, self.head) };
@@ -649,15 +657,15 @@ impl<T: Message> RingTx<T> {
         n
     }
     /// Generate payloads directly into staged slot images, then copy and publish them as
-    /// in [`RingTx::push_slice_staged`]. `fill` has the contract of [`RingTx::push_with`].
-    /// Only accepted messages (bounded by free slots and stage capacity) are generated.
-    /// The library writes sequence, length and zero padding; the callback borrows only the
-    /// payload, and all callbacks finish before any copy begins. A panic leaves head unchanged
-    /// and starts no copy. Overwrite uses the CPU and publishes one message at a time.
-    ///
-    /// A payload aligned for `T` has its slot region zeroed before being filled in place;
-    /// otherwise a zero-initialized aligned local temporary is filled and staged. Stage bytes
-    /// are ordinary initialized memory, not a Device mapping.
+    /// in [`RingTx::push_slice_staged`]. `fill` has the contract of [`RingTx::push_with`]:
+    /// it must write every field, because a payload that fits the stage alignment
+    /// (`align_of::<T>() <= 8`) is generated in place over whatever the stage held before
+    /// (typically an earlier batch). Other types are generated in one aligned temporary and
+    /// staged from it. Only accepted messages (bounded by free slots and stage capacity) are
+    /// generated. The library writes sequence, length and zero padding; the callback borrows
+    /// only the payload, and all callbacks finish before any copy begins. A panic leaves head
+    /// unchanged and starts no copy. Overwrite uses the CPU and publishes one message at a
+    /// time. Stage bytes are ordinary initialized memory, not a Device mapping.
     /// Copy errors permanently fence every publication path, just as for the slice API.
     #[inline]
     pub fn push_with_staged<C: SlotCopy>(
@@ -687,31 +695,35 @@ impl<T: Message> RingTx<T> {
         stage: &mut [u8],
         mut fill: impl FnMut(usize, &mut T),
     ) -> u32 {
-        let slot = slot_size(size_of::<T>());
+        let (size, slot) = (size_of::<T>(), slot_size(size_of::<T>()));
         let want = count
             .min(Self::staged_capacity(stage.len()))
             .min(u32::MAX as usize) as u32;
         let n = self.reject_free(want).min(want);
-        for k in 0..n as usize {
-            // SAFETY: k is bounded by stage capacity; stage is 8-byte aligned.
-            let dst = unsafe { stage.as_mut_ptr().add(k * slot) };
-            let index = self.head.wrapping_add(k as u32);
-            let payload = unsafe { dst.add(8) };
-            if (payload as usize).is_multiple_of(align_of::<T>()) {
-                // Match CPU/temporary initialization even when fill leaves fields untouched.
-                unsafe { ptr::write_bytes(dst, 0, slot) };
-                // SAFETY: the payload fits, is aligned and initialized; Message permits
-                // every bit pattern and has no padding. This exclusive borrow ends here.
-                fill(k, unsafe { &mut *payload.cast::<T>() });
+        let base = stage.as_mut_ptr();
+        if align_of::<T>() <= 8 {
+            for k in 0..n as usize {
+                // SAFETY: k < capacity, so the slot image lies inside `stage`. The stage and
+                // the slot size are multiples of 8, hence the payload at +8 is aligned for T;
+                // its bytes are initialized and Message permits every bit pattern. The
+                // exclusive borrow ends before the header stores.
                 unsafe {
-                    st(dst, 0, index);
-                    st(dst, 4, size_of::<T>() as u32);
+                    let dst = base.add(k * slot);
+                    fill(k, &mut *dst.add(8).cast::<T>());
+                    st(dst, 0, self.head.wrapping_add(k as u32));
+                    st(dst, 4, size as u32);
+                    for i in 8 + size..slot {
+                        dst.add(i).write_volatile(0);
+                    }
                 }
-            } else {
-                // SAFETY: Message permits zero bits, including for highly aligned types.
-                let mut value = unsafe { MaybeUninit::<T>::zeroed().assume_init() };
+            }
+        } else if n != 0 {
+            // SAFETY: Message permits zero bits, including for highly aligned types.
+            let mut value = unsafe { MaybeUninit::<T>::zeroed().assume_init() };
+            for k in 0..n as usize {
                 fill(k, &mut value);
-                unsafe { stage_slot(dst, index, &value) };
+                // SAFETY: as above; the slot image lies inside the 8-byte aligned `stage`.
+                unsafe { stage_slot(base.add(k * slot), self.head.wrapping_add(k as u32), &value) };
             }
         }
         n
@@ -1579,7 +1591,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_generator_starts_zeroed_on_cpu_aligned_and_unaligned_stage() {
+    fn over_aligned_generator_uses_one_temporary_on_every_path() {
         #[repr(C, align(32))]
         #[derive(Clone, Copy)]
         struct Aligned([u32; 8]);
@@ -1589,8 +1601,9 @@ mod tests {
         }
         #[repr(align(32))]
         struct AlignedStage([u8; 256]);
+        // Offset 24 would put the payload at a 32-byte boundary: alignment above the stage's
+        // 8 bytes still never borrows the stage.
         for offset in [0, 24] {
-            // Payload at +8 is unaligned/aligned for T, respectively.
             for staged in [false, true] {
                 let (mut data, mut ctrl) = (mem::<1024>(), mem::<CONTROL_SIZE>());
                 let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
@@ -1601,14 +1614,13 @@ mod tests {
                     unsafe { RingRx::<Aligned>::attach(d, 1024, c, 128, 8, Overflow::Reject) }
                         .unwrap();
                 let mut stage = AlignedStage([0xa5; 256]);
+                let range = stage.0.as_ptr_range();
                 let mut copy = mem_copy();
-                let payload = stage.0.as_ptr() as usize + offset + 8;
+                let mut seen = [0usize; 2];
                 let mut fill = |k: usize, v: &mut Aligned| {
-                    assert_eq!(v.0, [0; 8]);
-                    if staged && k == 0 {
-                        assert_eq!(v as *mut Aligned as usize == payload, offset == 24);
-                    }
-                    v.0[0] = k as u32 + 1;
+                    seen[k] = v as *mut Aligned as usize;
+                    assert!(!range.contains(&(seen[k] as *const u8)));
+                    v.0 = [k as u32 + 1; 8];
                 };
                 if staged {
                     assert_eq!(
@@ -1618,10 +1630,10 @@ mod tests {
                 } else {
                     assert_eq!(tx.push_with(2, &mut fill), 2);
                 }
+                assert_eq!(seen[0], seen[1]);
+                assert_eq!(seen[0] % 32, 0);
                 for k in 0..2 {
-                    let mut expected = [0; 8];
-                    expected[0] = k + 1;
-                    assert_eq!(rx.pop().unwrap().unwrap().0, expected);
+                    assert_eq!(rx.pop().unwrap().unwrap().0, [k + 1; 8]);
                 }
             }
         }
