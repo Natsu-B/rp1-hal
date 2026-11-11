@@ -55,7 +55,8 @@ unpainted active entry frame; the scan never counts that frame as free.
 Retain these lines for every slice-comparison condition, especially batches 128/56/15, and
 report the minimum free margin per boot. Require nonzero free_bytes before accepting a
 speed comparison. A watermark is diagnostic, not an overflow guard;
-no HW margin has been measured yet.
+HW (2026-11-11, two candidate cold boots): the minimum free margin was 448 B.
+Changes to stack use require a new measurement.
 
 STATIC: the focused ring image omits generic DDR microbench command 5 and up/down batch
 commands 10–13 to fit the 48 KiB image budget. Omitted commands return an error. Use the

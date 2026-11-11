@@ -205,7 +205,7 @@ let (n, pulsed) = host_irq.push_slice_dma_notify(&mut ring_dma, &mut tx, &mut dm
   Re-attaching requires an external drain/reset; merely dropping the handle is insufficient.
   Overwrite rings use the CPU path (no copy is attempted).
 
-### Direct generation (STATIC; the 2026-11-10 HW run measured the earlier zeroing form)
+### Direct generation (STATIC)
 
 ```rust
 let (n, pulsed) = host_irq.push_with_dma_notify(
@@ -218,43 +218,18 @@ let (n, pulsed) = host_irq.push_with_dma_notify(
 `RingDma::push_with` uses the same threshold decision as `push_slice`, based on the actual
 writable count and stage capacity. Small batches use `RingTx::push_with`; DMA batches use
 `RingTx::push_with_staged`. Overwrite always uses CPU and accepts the full requested count.
-Both notification helpers accept any `C: SlotCopy` and return `Staged<C::Error>`;
-explicit channel-number generic arguments must be replaced by the copier type (pre-1.0
-breaking change). They call `notify_ring` on full rings and errors as well.
+Both notification helpers accept any `C: SlotCopy` and return `Staged<C::Error>`.
+They call `notify_ring` on full rings and errors as well.
 
-The callback receives the offset **within this call** and an initialized `&mut T` whose
-previous contents are unspecified: **it must write every field**. What it leaves untouched
-is published as it was (stale bytes of an earlier batch in the stage, or the previous
-message of the call). Reject rings call it
-exactly once for each accepted message, in increasing offset order, never for unavailable
-slots. `seq`, length and zero padding belong to the library. The callback's reference ends
-before copying starts; no references into the remote Device mapping are created.
+The callback follows the contract in `rp1-proto`'s `RingTx::push_with`. Payloads aligned
+up to 8 bytes are generated directly in ordinary stage memory; higher alignments use one
+aligned temporary. All callbacks finish before the shared commit routine copies the one
+or two physical blocks, fences on error, then barriers and publishes head. The Channel
+implementation's **HYP** ordering qualification above still applies.
 
-Payloads with `align_of::<T>() <= 8` are generated directly in ordinary stage memory (the
-stage and the slot size are multiples of 8, so the payload at +8 is aligned). Higher
-alignment requirements use one aligned local temporary per call followed by the existing
-staging copy, and the CPU fallback fills one local temporary (zeroed once per call).
-Nothing is zeroed per message. With per-message zeroing (HW 2026-11-10, 256 B messages,
-batch 8) preparing a generated slot took 4.40 us against 4.68 us for the staging copy it
-replaces, and generate-cpu, whose temporary was cleared by `memclr` running from shared
-SRAM, reached 0.75-0.80x the slice path on 64/256 B messages. The speed of the current
-form is not measured yet. All bit patterns of a `Message` must be valid and its layout
-padding-free. A panic in reject mode leaves head unchanged, and staged generation starts
-no copy until all callbacks have returned. Overwrite can already have
-published its earlier messages, like `push_slice`.
-
-Both staged APIs use one private commit routine: copy the one or two physical blocks,
-permanently fence on either block's error, then barrier and publish head. The ordering
-contract and the Channel implementation's **HYP** qualification above are unchanged.
-Host tests cover wire equivalence/padding, CPU mixing, capacity/full/partial rings, physical
-and u32 wrap, publication after both copies, callback panic, high alignment, byte messages,
-overwrite, error fencing and the actual-writable threshold decision.
-
-The lab retains the 4 KiB stage (170/56/15 slots for 16/64/256 B messages). Its preferred
-large batches are **128/56/15**, alongside the former **32/32/8** and intermediate/odd-wrap
-candidates. 56 and 15 use almost the whole stage but can require two blocks; these are
-measurement candidates, not HW-proven optimal values. No double buffer or threshold retuning
-is included. See [the reproducible measurement plan](../lab/README.md#ring-dma-speed-measurement).
+Measured (HW, 2026-11-11): generate-DMA achieved 1.07–1.53× slice-DMA; generate-CPU was
+slower at 23/26 conditions, worst 0.82×. Slice paths were at least baseline at every batch.
+See the [measurement plan](../lab/README.md#ring-dma-speed-measurement).
 
 ### Historical HW throughput (before review fixes, 2026-11-05, lab `--no-default-features --features ring-dma`, 2 cold boots)
 
