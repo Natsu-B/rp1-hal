@@ -42,6 +42,9 @@ static SRC: Buf = Buf(UnsafeCell::new([0; WORDS]));
 #[unsafe(link_section = ".shared")]
 static DST: Buf = Buf(UnsafeCell::new([0; WORDS]));
 
+#[cfg(feature = "ring-dma")]
+const BIG_BYTES: usize = crate::ring_dma_protocol::STAGE_BYTES;
+#[cfg(not(feature = "ring-dma"))]
 const BIG_BYTES: usize = 4096;
 #[repr(C, align(16))]
 struct Big(UnsafeCell<[u8; BIG_BYTES]>);

@@ -1,5 +1,8 @@
 //! Command 17: CPU/DMA slice (0/1/2), ordering controls (3/4), and generated
 //! DMA/CPU/auto (5/6/7). Optional timing stays in the lab, not in the HAL.
+use crate::ring_dma_protocol::{
+    AUTO, BIT30_ZERO, CPU, DMA, EARLY_HEAD, GENERATE_AUTO, GENERATE_CPU, GENERATE_DMA, Perf,
+};
 use crate::{
     copy_stats::{CopyStats, TimedCopy},
     dma_proof,
@@ -50,64 +53,60 @@ pub struct Out {
     pub wraps: u32,
     pub dma_batches: u32,
     pub cpu_batches: u32,
-    /// copy/prepare/publish/blocked µs, blocks/two-block batches/8 B/16 B blocks.
-    pub perf: [u32; 8],
+    pub perf: Perf,
 }
 impl Out {
     /// `--timed` only: split one publishing push into copy, publication and the rest.
     #[rp1_rt::cold]
     fn account_timed(&mut self, elapsed: u32, copy_us: u32, publish: u32, blocks: u32) {
-        self.perf[1] =
-            self.perf[1].wrapping_add(elapsed.saturating_sub(copy_us).saturating_sub(publish));
-        self.perf[2] = self.perf[2].wrapping_add(publish);
-        self.perf[5] += u32::from(blocks == 2);
+        self.perf.prepare_us = self
+            .perf
+            .prepare_us
+            .wrapping_add(elapsed.saturating_sub(copy_us).saturating_sub(publish));
+        self.perf.publish_us = self.perf.publish_us.wrapping_add(publish);
+        self.perf.two_block_batches += u32::from(blocks == 2);
     }
 }
 
-/// Keep the slice comparison's large stack buffer out of the generated path.
-#[allow(clippy::too_many_arguments)]
+pub struct Run<'a> {
+    pub irq: Option<&'a mut HostIrq>,
+    pub count: u32,
+    pub p: &'a Params,
+    pub start: u32,
+}
+
+// Keep the slice comparison's large stack buffer out of the generated path.
 pub fn stream<const W: usize, const B: usize>(
     tx: &mut RingTx<[u32; W]>,
     dma: &mut Dma,
-    irq: Option<&mut HostIrq>,
     message: fn(&mut [u32; W], u32),
-    count: u32,
-    p: &Params,
-    start: u32,
+    run: Run<'_>,
 ) -> Out {
-    if p.mode >= 5 {
-        run(tx, dma, irq, message, count, p, start, &mut [])
-    } else {
-        slice_stream::<W, B>(tx, dma, irq, message, count, p, start)
+    match run.p.mode {
+        CPU | DMA | AUTO | EARLY_HEAD | BIT30_ZERO => slice_stream::<W, B>(tx, dma, message, run),
+        _ => run_stream(tx, dma, message, run, &mut []),
     }
 }
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
 fn slice_stream<const W: usize, const B: usize>(
     tx: &mut RingTx<[u32; W]>,
     dma: &mut Dma,
-    irq: Option<&mut HostIrq>,
     message: fn(&mut [u32; W], u32),
-    count: u32,
-    p: &Params,
-    start: u32,
+    run: Run<'_>,
 ) -> Out {
     let mut buf = [[0u32; W]; B];
-    run(tx, dma, irq, message, count, p, start, &mut buf)
+    run_stream(tx, dma, message, run, &mut buf)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run<const W: usize>(
+fn run_stream<const W: usize>(
     tx: &mut RingTx<[u32; W]>,
     dma: &mut Dma,
-    irq: Option<&mut HostIrq>,
     message: fn(&mut [u32; W], u32),
-    count: u32,
-    p: &Params,
-    start: u32,
+    run: Run<'_>,
     buf: &mut [[u32; W]],
 ) -> Out {
-    if p.mode > 7 {
+    let p = run.p;
+    if p.mode > GENERATE_AUTO {
         return Out {
             errors: 1,
             ..Out::default()
@@ -116,19 +115,19 @@ fn run<const W: usize>(
     // SAFETY: command 16 is not running; this command owns the sole borrow.
     let stage_buf = unsafe { dma_proof::ring_stage() };
     let cap = RingTx::<[u32; W]>::staged_capacity(stage_buf.len());
-    let generated = p.mode >= 5;
+    let generated = p.mode >= GENERATE_DMA;
     let batch = (p.batch as usize).clamp(1, if generated { cap } else { cap.min(buf.len()) });
     let mut stage = RingDma::new(stage_buf).unwrap();
     stage.set_threshold(match p.mode {
-        0 | 6 => usize::MAX,
-        2 | 7 => RingDma::DEFAULT_THRESHOLD,
+        CPU | GENERATE_CPU => usize::MAX,
+        AUTO | GENERATE_AUTO => RingDma::DEFAULT_THRESHOLD,
         _ => 0,
     });
     let depth = if W == 64 { 128 } else { 256 };
-    let engine = if matches!(p.mode, 3 | 4) {
+    let engine = if matches!(p.mode, EARLY_HEAD | BIT30_ZERO) {
         LabCopy::Experiment(ExperimentCopy {
             early: false,
-            nonposted: p.mode == 3,
+            nonposted: p.mode == EARLY_HEAD,
             head: 0,
             n: 0,
             depth,
@@ -144,7 +143,7 @@ fn run<const W: usize>(
         stage,
         engine,
     };
-    run_batches(&mut producer, irq, count, p, start, batch, depth)
+    run_batches(&mut producer, run, batch, depth)
 }
 
 /// The per-ring operations, type-erased so that the batch loop exists once and fits in
@@ -198,7 +197,7 @@ impl<const W: usize> Producer for TypedProducer<'_, W> {
             engine,
         } = self;
         if let LabCopy::Experiment(copy) = engine {
-            copy.early = p.mode == 3;
+            copy.early = p.mode == EARLY_HEAD;
             copy.head = tx.head();
             copy.n = messages.len().min(tx.writable() as usize) as u32;
         }
@@ -207,7 +206,7 @@ impl<const W: usize> Producer for TypedProducer<'_, W> {
             stats,
             timed: p.timed,
         };
-        if p.mode < 5 {
+        if p.mode < GENERATE_DMA {
             return stage.push_slice(tx, &mut copy, &buf[messages]);
         }
         let (message, first) = (*message, first + messages.start as u32);
@@ -218,16 +217,13 @@ impl<const W: usize> Producer for TypedProducer<'_, W> {
 }
 
 #[rp1_rt::isram]
-#[allow(clippy::too_many_arguments)]
-fn run_batches(
-    producer: &mut dyn Producer,
-    mut irq: Option<&mut HostIrq>,
-    count: u32,
-    p: &Params,
-    start: u32,
-    batch: usize,
-    depth: u32,
-) -> Out {
+fn run_batches(producer: &mut dyn Producer, run: Run<'_>, batch: usize, depth: u32) -> Out {
+    let Run {
+        mut irq,
+        count,
+        p,
+        start,
+    } = run;
     let mut out = Out::default();
     // Cumulative over the run; a batch is judged by what its push added.
     let mut stats = CopyStats::default();
@@ -235,7 +231,7 @@ fn run_batches(
     let mut i = 0;
     'run: while i < count {
         let k = (count - i).min(batch as u32) as usize;
-        if p.mode < 5 {
+        if p.mode < GENERATE_DMA {
             let t = now();
             producer.generate(k, i);
             out.gen_us = out.gen_us.wrapping_add(now().wrapping_sub(t));
@@ -252,7 +248,7 @@ fn run_batches(
                 break 'run;
             };
             if n == 0 {
-                out.perf[3] = out.perf[3].wrapping_add(elapsed);
+                out.perf.blocked_us = out.perf.blocked_us.wrapping_add(elapsed);
             } else {
                 out.push_us = out.push_us.wrapping_add(elapsed);
                 if (head & (depth - 1)) + n as u32 >= depth {
@@ -299,10 +295,10 @@ fn run_batches(
         }
     }
     if p.timed {
-        out.perf[0] = stats.us;
-        out.perf[4] = stats.blocks;
-        out.perf[6] = stats.width8;
-        out.perf[7] = stats.width16;
+        out.perf.copy_us = stats.us;
+        out.perf.blocks = stats.blocks;
+        out.perf.width8 = stats.width8;
+        out.perf.width16 = stats.width16;
     }
     out
 }

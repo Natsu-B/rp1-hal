@@ -12,7 +12,4 @@ sram-profile = []
 rp1-linux = { path = "../../rp1-linux" }
 rp1-proto = { path = "../../rp1-proto" }
 libc = "0.2"
-
-[dev-dependencies]
 rp1-hal = { path = "../../rp1-hal" }
-rp1-rt = { path = "../../rp1-rt" }

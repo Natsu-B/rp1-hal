@@ -16,6 +16,9 @@ mod i2c_proof;
 mod prof;
 #[cfg(feature = "ring-dma")]
 mod ring_dma;
+#[cfg(feature = "ring-dma")]
+#[path = "../../ring_dma_protocol.rs"]
+mod ring_dma_protocol;
 #[cfg(feature = "spi")]
 mod spi_proof;
 #[cfg(feature = "ring-dma")]
@@ -289,7 +292,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     #[cfg(feature = "ring-dma")]
     let mut wide256 = area.ring_tx::<ring_dma::Wide256>("wide256").unwrap();
     #[cfg(feature = "ring-dma")]
-    let mut last_ring_perf = [0u32; 8];
+    let mut last_ring_perf = ring_dma_protocol::Perf::default();
     let mut control = area.block::<Control>("control").unwrap();
     let mut bulk = area.block::<Bulk>("bulk").unwrap();
     let mut last = 0;
@@ -451,7 +454,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 writer.commit();
             }
             // RP1 -> Linux ring stream written by the CPU or by DMA (ring_dma); request words
-            // 8..13 = ring, mode, notify, batch, gap_us; results replace words 8..15.
+            // 8..14 = ring, mode, notify, batch, gap_us, timed; results replace words 8..15.
             #[cfg(feature = "ring-dma")]
             17 => {
                 let p = ring_dma::Params {
@@ -462,16 +465,23 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     timed: request[13] != 0,
                 };
                 let irq = if p.notify { Some(&mut host_irq) } else { None };
-                use ring_dma::{sample_into, stream, wide};
+                use ring_dma::{Run, sample_into, stream, wide};
+                use ring_dma_protocol::BATCH_CAPACITY;
+                let run = Run {
+                    irq,
+                    count,
+                    p: &p,
+                    start,
+                };
                 let o = match (dma.as_mut(), request[8]) {
                     (Some(d), 0) => {
-                        stream::<4, 170>(&mut events, d, irq, sample_into, count, &p, start)
+                        stream::<4, { BATCH_CAPACITY[0] }>(&mut events, d, sample_into, run)
                     }
                     (Some(d), 1) => {
-                        stream::<16, 56>(&mut wide64, d, irq, wide::<16>, count, &p, start)
+                        stream::<16, { BATCH_CAPACITY[1] }>(&mut wide64, d, wide::<16>, run)
                     }
                     (Some(d), 2) => {
-                        stream::<64, 15>(&mut wide256, d, irq, wide::<64>, count, &p, start)
+                        stream::<64, { BATCH_CAPACITY[2] }>(&mut wide256, d, wide::<64>, run)
                     }
                     _ => ring_dma::Out {
                         errors: 1,
@@ -493,7 +503,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             }
             // Fetch command 17's optional detailed timing, after its response was consumed.
             #[cfg(feature = "ring-dma")]
-            18 => request[8..16].copy_from_slice(&last_ring_perf),
+            18 => request[8..16].copy_from_slice(&<[u32; 8]>::from(last_ring_perf)),
             #[cfg(feature = "sram-profile")]
             9 => {
                 // Lab micro-profile (ends with PROF_DONE); RP1 holds the bulk writer role and uses

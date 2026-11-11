@@ -2,6 +2,13 @@
 //! consumes with an explicit error report. Counts each offending logical slot once.
 //! Stale/corrupt records only its first observed violation kind, not a reliable breakdown;
 //! only violation presence is meaningful for the ordering check.
+#[path = "../../ring_dma_protocol.rs"]
+mod protocol;
+use protocol::{
+    AUTO, BATCH_CAPACITY, BIT30_ZERO, CPU, DMA, EARLY_HEAD, GENERATE_AUTO, GENERATE_CPU,
+    GENERATE_DMA, Perf,
+};
+const BASELINE_BATCH_CAPACITY: [u32; 3] = [32, 32, 8];
 use crate::{Control, response, sample};
 use rp1_linux::{BlockMap, Firmware, Irq, Result, RingRx};
 use rp1_proto::Error;
@@ -77,7 +84,7 @@ struct Res {
     corrupt: u32,
     seconds: f64,
     report: Control,
-    perf: [u32; 8],
+    perf: Perf,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -159,7 +166,7 @@ fn one<const W: usize>(
     }
     let seconds = start.elapsed().as_secs_f64();
     let report = response(ctrl, id, start)?;
-    let mut perf = [0; 8];
+    let mut perf = Perf::default();
     if run.timed {
         let perf_id = id.wrapping_add(1).max(1);
         let mut words = [0; 16];
@@ -167,7 +174,9 @@ fn one<const W: usize>(
         let mut writer = unsafe { ctrl.begin_write() }?;
         writer.write_words(0, &words)?;
         writer.commit();
-        perf.copy_from_slice(&response(ctrl, perf_id, Instant::now())?[8..16]);
+        perf = Perf::from(
+            <[u32; 8]>::try_from(&response(ctrl, perf_id, Instant::now())?[8..16]).unwrap(),
+        );
     }
     Ok(Res {
         perf,
@@ -196,14 +205,14 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
     // (ring, max batch, runs)
     let mut plan: Vec<(u32, Run)> = Vec::new();
     for (ring, b) in [(0u32, 32u32), (1, 32), (2, 8)] {
-        plan.push((ring, r("cpu-poll", 0, false, b, Judged)));
-        plan.push((ring, r("dma-poll", 1, false, b, Judged)));
-        plan.push((ring, r("cpu-irq", 0, true, b, Judged)));
-        plan.push((ring, r("dma-irq", 1, true, b, Judged)));
+        plan.push((ring, r("cpu-poll", CPU, false, b, Judged)));
+        plan.push((ring, r("dma-poll", DMA, false, b, Judged)));
+        plan.push((ring, r("cpu-irq", CPU, true, b, Judged)));
+        plan.push((ring, r("dma-irq", DMA, true, b, Judged)));
     }
     for (ring, old, large) in [(0, 32, 128), (1, 32, 56), (2, 8, 15)] {
         for b in [old, large] {
-            for mode in [0, 1, 5, 6] {
+            for mode in [CPU, DMA, GENERATE_DMA, GENERATE_CPU] {
                 plan.push((ring, r("speed-poll", mode, false, b, Judged)));
             }
         }
@@ -212,7 +221,7 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
             Run {
                 gap_us: 100,
                 must_sleep: true,
-                ..r("generated-paced-irq", 5, true, large, Judged)
+                ..r("generated-paced-irq", GENERATE_DMA, true, large, Judged)
             },
         ));
     }
@@ -221,19 +230,19 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
         Run {
             gap_us: 100,
             must_sleep: true,
-            ..r("dma-paced-irq", 1, true, 32, Judged)
+            ..r("dma-paced-irq", DMA, true, 32, Judged)
         },
     ));
     // Default threshold: a single 16 B message stays on the CPU, a 32-message batch uses DMA.
-    plan.push((0, r("auto-single", 2, true, 1, Judged)));
-    plan.push((0, r("auto-burst", 2, true, 32, Judged)));
+    plan.push((0, r("auto-single", AUTO, true, 1, Judged)));
+    plan.push((0, r("auto-burst", AUTO, true, 32, Judged)));
     for (ring, batches) in [
         (0u32, &[1u32, 2, 3, 4, 6, 8, 12, 16, 32][..]),
         (1, &[1, 2, 4][..]),
         (2, &[1, 2][..]),
     ] {
         for &b in batches {
-            for mode in [0, 1] {
+            for mode in [CPU, DMA] {
                 plan.push((
                     ring,
                     Run {
@@ -245,13 +254,13 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
         }
     }
     for (ring, b) in [(0u32, 32u32), (1, 32), (2, 8)] {
-        for mode in [3, 4] {
+        for mode in [EARLY_HEAD, BIT30_ZERO] {
             plan.push((
                 ring,
                 Run {
                     count: Some(32_000.min(count)),
                     ..r(
-                        if mode == 3 {
+                        if mode == EARLY_HEAD {
                             "positive-control"
                         } else {
                             "bit30-comparison"
@@ -268,7 +277,7 @@ pub fn main(count: u32, ordering_only: bool, isolate_mode: Option<u32>) -> Resul
     if ordering_only {
         plan.retain(|(_, run)| run.kind == Order);
         for (ring, b) in [(0, 31), (1, 31), (2, 7), (0, 127), (1, 55), (2, 15)] {
-            plan.push((ring, r("production-order", 5, false, b, Judged)));
+            plan.push((ring, r("production-order", GENERATE_DMA, false, b, Judged)));
         }
     }
     if let Some(mode) = isolate_mode {
@@ -337,8 +346,10 @@ impl PerfOptions {
         if o.count == 0
             || o.repeat == 0
             || o.ring.is_some_and(|r| r > 2)
-            || o.mode.is_some_and(|m| ![0, 1, 2, 5, 6, 7].contains(&m))
-            || o.baseline && (o.timed || o.mode.is_some_and(|m| m > 2))
+            || o.mode.is_some_and(|m| {
+                ![CPU, DMA, AUTO, GENERATE_DMA, GENERATE_CPU, GENERATE_AUTO].contains(&m)
+            })
+            || o.baseline && (o.timed || o.mode.is_some_and(|m| m > AUTO))
         {
             return Err(
                 "invalid ring-dma-perf options (baseline supports modes 0/1/2 without timing)"
@@ -350,10 +361,10 @@ impl PerfOptions {
                 continue;
             }
             let cap = if o.baseline {
-                [32, 32, 8]
+                BASELINE_BATCH_CAPACITY[ring as usize]
             } else {
-                [170, 56, 15]
-            }[ring as usize];
+                BATCH_CAPACITY[ring as usize] as u32
+            };
             if o.batch.is_some_and(|b| b == 0 || b > cap) {
                 return Err(
                     format!("batch exceeds firmware capacity {cap} for ring {ring}").into(),
@@ -378,15 +389,15 @@ impl PerfOptions {
                 batches
             };
             for &batch in candidates {
-                if self.baseline && batch > [32, 32, 8][ring as usize] {
+                if self.baseline && batch > BASELINE_BATCH_CAPACITY[ring as usize] {
                     continue;
                 }
                 let modes = self.mode.as_slice();
                 let modes = if modes.is_empty() {
                     if self.baseline {
-                        &[0, 1][..]
+                        &[CPU, DMA][..]
                     } else {
-                        &[0, 1, 5, 6][..]
+                        &[CPU, DMA, GENERATE_DMA, GENERATE_CPU][..]
                     }
                 } else {
                     modes
@@ -426,14 +437,16 @@ impl PerfOptions {
 
 fn path_matches(mode: u32, batch: u32, phase_count: u32, size: usize, dma: u32, cpu: u32) -> bool {
     match mode {
-        0 | 6 => dma == 0 && cpu > 0,
-        1 | 3 | 4 | 5 => cpu == 0 && dma > 0,
-        // Mirrors RingDma::DEFAULT_THRESHOLD, using the largest batch this phase can send.
+        CPU | GENERATE_CPU => dma == 0 && cpu > 0,
+        DMA | EARLY_HEAD | BIT30_ZERO | GENERATE_DMA => cpu == 0 && dma > 0,
         // Backpressure may send partial batches through the CPU.
-        2 | 7 if batch.min(phase_count) as usize * rp1_proto::shm::slot_size(size) >= 256 => {
+        AUTO | GENERATE_AUTO
+            if batch.min(phase_count) as usize * rp1_proto::shm::slot_size(size)
+                >= rp1_hal::shm::RingDma::DEFAULT_THRESHOLD =>
+        {
             dma > 0
         }
-        2 | 7 => dma == 0 && cpu > 0,
+        AUTO | GENERATE_AUTO => dma == 0 && cpu > 0,
         _ => false,
     }
 }
@@ -460,7 +473,7 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
         if run.odd_head && tail.is_multiple_of(2) {
             let id = ctrl.read()?[0].wrapping_add(1).max(1);
             let prime = Run {
-                mode: 0,
+                mode: CPU,
                 irq: false,
                 batch: 1,
                 gap_us: 0,
@@ -551,7 +564,7 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
         } else {
             "ok"
         };
-        let [
+        let Perf {
             copy_us,
             prepare_us,
             publish_us,
@@ -560,7 +573,7 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
             two_block_batches,
             width8,
             width16,
-        ] = res.perf;
+        } = res.perf;
         let total_us = rep[6];
         let rp1_us_per_message = total_us as f64 / n.max(1) as f64;
         let line = format!(
@@ -599,7 +612,8 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
                 }
             ),
         }
-        let passed = check == "ok" && (run.mode != 3 || res.corrupt != 0 || res.stale != 0);
+        let passed =
+            check == "ok" && (run.mode != EARLY_HEAD || res.corrupt != 0 || res.stale != 0);
         println!(
             "RINGDMA_PERF_END run_id={id} status={}",
             if passed { "PASS" } else { "FAIL" }
@@ -662,7 +676,7 @@ impl Seen {
 }
 #[cfg(test)]
 mod tests {
-    use super::Seen;
+    use super::{BASELINE_BATCH_CAPACITY, DMA, Seen};
     #[test]
     fn auto_path_matches_wire_size_and_allows_partial_cpu_batches() {
         use super::path_matches;
@@ -746,11 +760,9 @@ mod tests {
             assert!(run.odd_head);
         }
         let base = parse(&["--baseline"]).unwrap().plan();
-        assert!(
-            base.iter().all(|(r, run)| run.mode <= 1
-                && run.batch <= [32, 32, 8][*r as usize]
-                && !run.timed)
-        );
+        assert!(base.iter().all(|(r, run)| run.mode <= DMA
+            && run.batch <= BASELINE_BATCH_CAPACITY[*r as usize]
+            && !run.timed));
         for args in [
             &["--count", "0"][..],
             &["--repeat", "0"],

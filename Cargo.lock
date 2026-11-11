@@ -596,7 +596,6 @@ dependencies = [
  "rp1-hal",
  "rp1-linux",
  "rp1-proto",
- "rp1-rt",
 ]
 
 [[package]]
