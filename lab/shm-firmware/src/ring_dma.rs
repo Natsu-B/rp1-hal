@@ -53,6 +53,16 @@ pub struct Out {
     /// copy/prepare/publish/blocked µs, blocks/two-block batches/8 B/16 B blocks.
     pub perf: [u32; 8],
 }
+impl Out {
+    /// `--timed` only: split one publishing push into copy, publication and the rest.
+    #[rp1_rt::cold]
+    fn account_timed(&mut self, elapsed: u32, copy_us: u32, publish: u32, blocks: u32) {
+        self.perf[1] =
+            self.perf[1].wrapping_add(elapsed.saturating_sub(copy_us).saturating_sub(publish));
+        self.perf[2] = self.perf[2].wrapping_add(publish);
+        self.perf[5] += u32::from(blocks == 2);
+    }
+}
 
 /// Keep the slice comparison's large stack buffer out of the generated path.
 #[allow(clippy::too_many_arguments)]
@@ -97,10 +107,11 @@ fn run<const W: usize>(
     start: u32,
     buf: &mut [[u32; W]],
 ) -> Out {
-    let mut out = Out::default();
     if p.mode > 7 {
-        out.errors = 1;
-        return out;
+        return Out {
+            errors: 1,
+            ..Out::default()
+        };
     }
     // SAFETY: command 16 is not running; this command owns the sole borrow.
     let stage_buf = unsafe { dma_proof::ring_stage() };
@@ -108,121 +119,105 @@ fn run<const W: usize>(
     let generated = p.mode >= 5;
     let batch = (p.batch as usize).clamp(1, if generated { cap } else { cap.min(buf.len()) });
     let mut stage = RingDma::new(stage_buf).unwrap();
-    let threshold = match p.mode {
+    stage.set_threshold(match p.mode {
         0 | 6 => usize::MAX,
         2 | 7 => RingDma::DEFAULT_THRESHOLD,
         _ => 0,
-    };
-    stage.set_threshold(threshold);
-    let slot = rp1_proto::shm::slot_size(4 * W);
+    });
     let depth = if W == 64 { 128 } else { 256 };
+    let engine = if matches!(p.mode, 3 | 4) {
+        LabCopy::Experiment(ExperimentCopy {
+            early: false,
+            nonposted: p.mode == 3,
+            head: 0,
+            n: 0,
+            depth,
+            slot: rp1_proto::shm::slot_size(4 * W),
+        })
+    } else {
+        LabCopy::Production(&mut dma.ch1)
+    };
     let mut producer = TypedProducer {
         tx,
-        dma,
         message,
         buf,
         stage,
-        slot,
-        depth,
+        engine,
     };
     run_batches(&mut producer, irq, count, p, start, batch, depth)
 }
 
+/// The per-ring operations, type-erased so that the batch loop exists once and fits in
+/// ISRAM (code in shared SRAM runs several times slower, which a small batch pays in full).
 trait Producer {
+    fn head(&self) -> u32;
     fn notify(&mut self, irq: &mut HostIrq) -> bool;
-    fn generate(&mut self, count: usize, first: u32) -> u32;
-    fn attempt(&mut self, k: usize, done: usize, i: u32, p: &Params) -> Attempt;
-}
-struct Attempt {
-    head: u32,
-    by_dma: bool,
-    elapsed: u32,
-    gen_us: u32,
-    stats: CopyStats,
-    result: Result<usize, rp1_proto::shm::Staged<Error>>,
+    /// Slice modes: write messages `first..first + count` to the batch buffer.
+    fn generate(&mut self, count: usize, first: u32);
+    /// Publish `messages` (indices within the batch that starts at sequence `first`).
+    fn push(
+        &mut self,
+        messages: core::ops::Range<usize>,
+        first: u32,
+        p: &Params,
+        stats: &mut CopyStats,
+    ) -> Result<usize, rp1_proto::shm::Staged<Error>>;
 }
 struct TypedProducer<'a, const W: usize> {
     tx: &'a mut RingTx<[u32; W]>,
-    dma: &'a mut Dma,
     message: fn(&mut [u32; W], u32),
     buf: &'a mut [[u32; W]],
     stage: RingDma<'a>,
-    slot: usize,
-    depth: u32,
+    engine: LabCopy<'a>,
 }
 impl<const W: usize> Producer for TypedProducer<'_, W> {
+    fn head(&self) -> u32 {
+        self.tx.head()
+    }
     fn notify(&mut self, irq: &mut HostIrq) -> bool {
         irq.notify_ring(self.tx)
     }
-    fn generate(&mut self, count: usize, first: u32) -> u32 {
-        let t = now();
+    #[rp1_rt::isram]
+    fn generate(&mut self, count: usize, first: u32) {
         for (j, b) in self.buf[..count].iter_mut().enumerate() {
             (self.message)(b, first + j as u32);
         }
-        now().wrapping_sub(t)
     }
-    fn attempt(&mut self, k: usize, done: usize, i: u32, p: &Params) -> Attempt {
+    fn push(
+        &mut self,
+        messages: core::ops::Range<usize>,
+        first: u32,
+        p: &Params,
+        stats: &mut CopyStats,
+    ) -> Result<usize, rp1_proto::shm::Staged<Error>> {
         let Self {
             tx,
-            dma,
             message,
             buf,
             stage,
-            slot,
-            depth,
+            engine,
         } = self;
-        let (slot, depth) = (*slot, *depth);
-        let generated = p.mode >= 5;
-        let experiment_mode = matches!(p.mode, 3 | 4);
-        let head = tx.head();
-        let t = now();
-        let mut gen_us = 0u32;
-        let mut fill = |j: usize, value: &mut [u32; W]| {
-            if p.timed {
-                let t = now();
-                message(value, i + done as u32 + j as u32);
-                gen_us = gen_us.wrapping_add(now().wrapping_sub(t));
-            } else {
-                message(value, i + done as u32 + j as u32);
-            }
-        };
-        let mut stats = CopyStats::default();
-        let mut engine = if experiment_mode {
-            LabCopy::Experiment(ExperimentCopy {
-                early: p.mode == 3,
-                nonposted: p.mode == 3,
-                head,
-                n: (k - done).min(tx.writable() as usize) as u32,
-                depth,
-                slot,
-            })
-        } else {
-            LabCopy::Production(&mut dma.ch1)
-        };
+        if let LabCopy::Experiment(copy) = engine {
+            copy.early = p.mode == 3;
+            copy.head = tx.head();
+            copy.n = messages.len().min(tx.writable() as usize) as u32;
+        }
         let mut copy = TimedCopy {
-            inner: &mut engine,
-            stats: &mut stats,
+            inner: engine,
+            stats,
             timed: p.timed,
         };
-        let r = if generated {
-            stage.push_with(tx, &mut copy, k - done, &mut fill)
-        } else {
-            stage.push_slice(tx, &mut copy, &buf[done..k])
-        };
-
-        let end = now();
-        stats.return_time = end;
-        Attempt {
-            head,
-            by_dma: stats.blocks > 0,
-            elapsed: end.wrapping_sub(t),
-            gen_us,
-            stats,
-            result: r,
+        if p.mode < 5 {
+            return stage.push_slice(tx, &mut copy, &buf[messages]);
         }
+        let (message, first) = (*message, first + messages.start as u32);
+        stage.push_with(tx, &mut copy, messages.len(), move |j, value| {
+            message(value, first + j as u32)
+        })
     }
 }
 
+#[rp1_rt::isram]
 #[allow(clippy::too_many_arguments)]
 fn run_batches(
     producer: &mut dyn Producer,
@@ -234,65 +229,53 @@ fn run_batches(
     depth: u32,
 ) -> Out {
     let mut out = Out::default();
-    let generated = p.mode >= 5;
+    // Cumulative over the run; a batch is judged by what its push added.
+    let mut stats = CopyStats::default();
+    let mut head = producer.head();
     let mut i = 0;
-    while i < count {
+    'run: while i < count {
         let k = (count - i).min(batch as u32) as usize;
-        if !generated {
-            out.gen_us = out.gen_us.wrapping_add(producer.generate(k, i));
+        if p.mode < 5 {
+            let t = now();
+            producer.generate(k, i);
+            out.gen_us = out.gen_us.wrapping_add(now().wrapping_sub(t));
         }
         let mut done = 0;
         while done < k {
-            let Attempt {
-                head,
-                by_dma,
-                elapsed,
-                gen_us,
-                stats,
-                result,
-            } = producer.attempt(k, done, i, p);
-            out.gen_us = out.gen_us.wrapping_add(gen_us);
-            let end = stats.return_time;
-            match result {
-                Ok(n) => {
-                    if n > 0 {
-                        out.push_us = out.push_us.wrapping_add(elapsed);
-                        if (head & (depth - 1)) + n as u32 >= depth {
-                            out.wraps += 1;
-                        }
-                        if by_dma {
-                            out.ctl_l = unsafe { (CTL as *const u32).read_volatile() };
-                            out.dma_batches += 1;
-                        } else {
-                            out.cpu_batches += 1;
-                        }
-                        if p.timed {
-                            let publish = if stats.blocks > 0 {
-                                end.wrapping_sub(stats.last_end)
-                            } else {
-                                0
-                            };
-                            out.perf[0] = out.perf[0].wrapping_add(stats.us);
-                            out.perf[1] = out.perf[1].wrapping_add(
-                                elapsed
-                                    .saturating_sub(stats.us)
-                                    .saturating_sub(publish)
-                                    .saturating_sub(gen_us),
-                            );
-                            out.perf[2] = out.perf[2].wrapping_add(publish);
-                            out.perf[4] += stats.blocks;
-                            out.perf[5] += u32::from(stats.blocks == 2);
-                            out.perf[6] += stats.width8;
-                            out.perf[7] += stats.width16;
-                        }
-                    } else {
-                        out.perf[3] = out.perf[3].wrapping_add(elapsed);
-                    }
-                    done += n;
+            let (blocks, copy_us) = (stats.blocks, stats.us);
+            let t = now();
+            let result = producer.push(done..k, i, p, &mut stats);
+            let end = now();
+            let elapsed = end.wrapping_sub(t);
+            let Ok(n) = result else {
+                out.errors += 1;
+                break 'run;
+            };
+            if n == 0 {
+                out.perf[3] = out.perf[3].wrapping_add(elapsed);
+            } else {
+                out.push_us = out.push_us.wrapping_add(elapsed);
+                if (head & (depth - 1)) + n as u32 >= depth {
+                    out.wraps += 1;
                 }
-                Err(_) => {
-                    out.errors += 1;
-                    return out;
+                head = head.wrapping_add(n as u32);
+                done += n;
+                // The copier ran: the batch went by DMA whatever was predicted.
+                let blocks = stats.blocks - blocks;
+                if blocks > 0 {
+                    out.ctl_l = unsafe { (CTL as *const u32).read_volatile() };
+                    out.dma_batches += 1;
+                } else {
+                    out.cpu_batches += 1;
+                }
+                if p.timed {
+                    let copy_us = stats.us.wrapping_sub(copy_us);
+                    let publish = if blocks > 0 {
+                        end.wrapping_sub(stats.last_end)
+                    } else {
+                        0
+                    };
+                    out.account_timed(elapsed, copy_us, publish, blocks);
                 }
             }
             if let Some(irq) = irq.as_deref_mut() {
@@ -302,16 +285,24 @@ fn run_batches(
                 }
                 out.notify_us = out.notify_us.wrapping_add(now().wrapping_sub(t));
             }
-            if now().wrapping_sub(start) > 180_000_000 {
+            if end.wrapping_sub(start) > 180_000_000 {
                 out.errors += 1;
-                return out;
+                break 'run;
             }
         }
         i += k as u32;
-        let t = now();
-        while now().wrapping_sub(t) < p.gap_us {
-            core::hint::spin_loop();
+        if p.gap_us != 0 {
+            let t = now();
+            while now().wrapping_sub(t) < p.gap_us {
+                core::hint::spin_loop();
+            }
         }
+    }
+    if p.timed {
+        out.perf[0] = stats.us;
+        out.perf[4] = stats.blocks;
+        out.perf[6] = stats.width8;
+        out.perf[7] = stats.width16;
     }
     out
 }

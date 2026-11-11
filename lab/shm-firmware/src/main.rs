@@ -600,7 +600,8 @@ fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u3
 /// `events` stream (commands 14/15): batches of `seed >> 16` (1..=32, 0 = 32) messages,
 /// `seed & 0xffff` µs apart, each batch published with one `push_slice` (and notified,
 /// with `notify`, through `HostIrq::push_slice_notify`). Returns (errors, pulses).
-#[rp1_rt::isram]
+// The ring-dma image needs this ISRAM for the command 17 loop; there it runs from shared SRAM.
+#[cfg_attr(not(feature = "ring-dma"), rp1_rt::isram)]
 fn events_stream(
     tx: &mut rp1_hal::shm::RingTx<Sample>,
     mut notify: Option<&mut rp1_hal::host_irq::HostIrq>,

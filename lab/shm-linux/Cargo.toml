@@ -15,3 +15,4 @@ libc = "0.2"
 
 [dev-dependencies]
 rp1-hal = { path = "../../rp1-hal" }
+rp1-rt = { path = "../../rp1-rt" }

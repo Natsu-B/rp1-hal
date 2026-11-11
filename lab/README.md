@@ -59,7 +59,8 @@ no HW margin has been measured yet.
 
 STATIC: the focused ring image omits generic DDR microbench command 5 and up/down batch
 commands 10–13 to fit the 48 KiB image budget. Omitted commands return an error. Use the
-ordinary image for `shm-linux`'s full suite; ring-irq commands 14/15 remain available.
+ordinary image for `shm-linux`'s full suite; ring-irq commands 14/15 remain available,
+but their stream loop runs from shared SRAM here (the ISRAM is needed by command 17).
 Command 18 fetches detailed timing from the last command 17 without changing its response.
 The separate `dma` image's command 16 also emits pre-generated `RINGDMA_RAW` controls
 (channel 1, 768/2304/2112/3072/4032/3960/4080 B, aligned and +8 offsets, 1000 copies each,
@@ -96,7 +97,7 @@ host interrupt):
 | spi | 37352 | 11800 | 2532 | 16 |
 | sram-profile | 35440 | 13712 | 2708 | 656 |
 | dma (2026-11-05, rustc of that date) | 39728 | 9424 | 3092 | 16 |
-| ring-dma (2026-11-07, focused image) | 49024 | 128 | 7848 | 16 |
+| ring-dma (2026-11-11, focused image) | 47840 | 1312 | 7912 | 16 |
 | i2c, adc, spi, sram-profile | does not link (16 B over) | - | - | - |
 | i2c, adc, spi, dma | does not link (about 3.3 KiB over) | - | - | - |
 
@@ -261,16 +262,18 @@ Paced runs require sleeps > 0, woken > 0 and late=0; never sleeping is inconclus
 Add `--timed` on the candidate to repeat selected conditions with lab-only `TimedCopy`.
 It records block copy time, last-copy-return to API-return time (`publish_us`), residual
 prepare time, no-progress push time (`blocked_us`), total blocks, two-block batches and
-8/16-byte width counts per block. Direct generation is timed inside each callback; slice
-generation is timed per batch. Preparation is elapsed push time minus measured generation,
-copy and publication; CPU publication is included in that residual. Timer reads and wrapper
+8/16-byte width counts per block. Slice generation is timed per batch; direct generation
+is not timed separately (`gen_us=0`, also with `--timed`: it is part of push and prepare
+time). Preparation is elapsed push time minus copy and publication; CPU publication is
+included in that residual. Timer reads and wrapper
 bookkeeping cost time (1 µs resolution); compare timer-on/off e2e and total time, and treat
 components as diagnostics. Generated payloads are written in place over the previous stage
 contents (nothing is zeroed per message). DMA/CPU batch counts use actual copier invocation,
 also without timing. Auto modes 2/7 require at least one DMA batch when the requested wire
 batch reaches 256 B; an entirely CPU run fails the path check even under backpressure.
-Without `--timed`, direct `gen_us=0` means generation is included in push time, and detailed fields are unavailable (zero). The shared lab loop uses the same
-per-batch dispatch for each payload type and mode.
+Without `--timed` the detailed fields are unavailable (zero). One batch loop serves every
+payload type and mode. It runs from ISRAM, like the slice generator and the ring API; only
+the per-ring dispatch of each push (about 35 instructions) runs from shared SRAM.
 
 At each candidate cold boot, run `shm-linux ring-dma-order 32000` first. Each size's early-head
 control must detect a violation; bit30-zero controls are reported, not judged by violation

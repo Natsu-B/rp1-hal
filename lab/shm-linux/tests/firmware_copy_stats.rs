@@ -29,13 +29,7 @@ fn copier_invocation_is_recorded_with_timing_disabled() {
     assert_eq!(dst, [42; 16]);
     assert_eq!(stats.blocks, 1);
     assert_eq!(
-        (
-            stats.us,
-            stats.last_end,
-            stats.width8,
-            stats.width16,
-            stats.return_time
-        ),
-        (0, 0, 0, 0, 0)
+        (stats.us, stats.last_end, stats.width8, stats.width16),
+        (0, 0, 0, 0)
     );
 }

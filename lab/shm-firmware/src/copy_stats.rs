@@ -3,7 +3,6 @@ use rp1_hal::shm::SlotCopy;
 
 #[derive(Default)]
 pub struct CopyStats {
-    pub return_time: u32,
     pub us: u32,
     pub last_end: u32,
     pub blocks: u32,
@@ -15,15 +14,10 @@ pub struct TimedCopy<'a, C> {
     pub stats: &'a mut CopyStats,
     pub timed: bool,
 }
-// SAFETY: delegates unchanged to the same blocking copier, preserving its contract.
-unsafe impl<C: SlotCopy> SlotCopy for TimedCopy<'_, C> {
-    type Error = C::Error;
-    #[inline(always)]
-    unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Self::Error> {
-        self.stats.blocks += 1;
-        if !self.timed {
-            return unsafe { self.inner.copy_to_remote(src, dst) };
-        }
+impl<C: SlotCopy> TimedCopy<'_, C> {
+    /// `--timed` only: the copy with its duration and transfer width recorded.
+    #[rp1_rt::cold]
+    unsafe fn timed_copy(&mut self, src: &[u8], dst: *mut u8) -> Result<(), C::Error> {
         let t = crate::now();
         let r = unsafe { self.inner.copy_to_remote(src, dst) };
         let end = crate::now();
@@ -33,5 +27,18 @@ unsafe impl<C: SlotCopy> SlotCopy for TimedCopy<'_, C> {
         self.stats.width8 += u32::from(w == 3);
         self.stats.width16 += u32::from(w == 4);
         r
+    }
+}
+// SAFETY: delegates unchanged to the same blocking copier, preserving its contract.
+unsafe impl<C: SlotCopy> SlotCopy for TimedCopy<'_, C> {
+    type Error = C::Error;
+    #[inline(always)]
+    unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Self::Error> {
+        self.stats.blocks += 1;
+        if self.timed {
+            unsafe { self.timed_copy(src, dst) }
+        } else {
+            unsafe { self.inner.copy_to_remote(src, dst) }
+        }
     }
 }
