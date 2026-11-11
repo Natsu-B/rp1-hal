@@ -1,7 +1,0 @@
-error: invalid or repeated interrupt option
- --> tests/ui/interrupt_platform_proc1.rs:1:1
-  |
-1 | #[rp1_rt::interrupt(proc1, __platform)]
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)

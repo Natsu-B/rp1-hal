@@ -1,0 +1,55 @@
+error: interrupt handler must be a safe, non-async fn NAME() with no generics or return value
+ --> tests/ui/interrupt_signature.rs:2:5
+  |
+2 |     #[rp1_rt::interrupt(proc0)]
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: interrupt handler must be a safe, non-async fn NAME() with no generics or return value
+ --> tests/ui/interrupt_signature.rs:7:5
+  |
+7 |     #[rp1_rt::interrupt(proc1)]
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: interrupt handler must be a safe, non-async fn NAME() with no generics or return value
+  --> tests/ui/interrupt_signature.rs:14:5
+   |
+14 |     #[rp1_rt::interrupt(proc0)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: interrupt handler must be a safe, non-async fn NAME() with no generics or return value
+  --> tests/ui/interrupt_signature.rs:19:5
+   |
+19 |     #[rp1_rt::interrupt(proc0)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: interrupt handler must be a safe, non-async fn NAME() with no generics or return value
+  --> tests/ui/interrupt_signature.rs:24:5
+   |
+24 |     #[rp1_rt::interrupt(proc0)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: interrupt handler must be a safe, non-async fn NAME() with no generics or return value
+  --> tests/ui/interrupt_signature.rs:29:5
+   |
+29 |     #[rp1_rt::interrupt(proc0)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: interrupt handler must be a safe, non-async fn NAME() with no generics or return value
+  --> tests/ui/interrupt_signature.rs:36:5
+   |
+36 |     #[rp1_rt::interrupt(proc0)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)

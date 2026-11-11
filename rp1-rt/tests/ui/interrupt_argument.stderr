@@ -1,7 +1,0 @@
-error: interrupt handler must be a safe, non-async fn NAME() with no generics or return value
- --> tests/ui/interrupt_argument.rs:1:1
-  |
-1 | #[rp1_rt::interrupt(proc1)]
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)

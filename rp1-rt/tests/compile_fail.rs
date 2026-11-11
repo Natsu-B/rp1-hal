@@ -1,4 +1,4 @@
-//! Review #1: a `#[shared]` static must not hand safe code an RMW atomic on shared SRAM.
+//! trybuild: #[interrupt] contract and #[shared] safety.
 #[test]
 fn interrupt_contracts_and_shared_safety() {
     let tests = trybuild::TestCases::new();

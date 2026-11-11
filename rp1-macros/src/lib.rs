@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Data, DeriveInput, Fields, ItemFn, ItemStatic, parse_macro_input};
+use syn::{Data, DeriveInput, Fields, ItemFn, ItemStatic, ext::IdentExt, parse_macro_input};
 
 fn error(message: &str) -> TokenStream {
     syn::Error::new(proc_macro2::Span::call_site(), message)
@@ -98,6 +98,7 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
     for arg in args {
         match arg.to_string().as_str() {
             "sram" if !sram => sram = true,
+            // Private opt-in for rp1-platform PCIE_OUT/PROC_MISC/CLOCKS_DEFAULT handlers.
             "__platform" if !platform && core == 0 => platform = true,
             _ => return error("invalid or repeated interrupt option"),
         }
@@ -115,7 +116,6 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
         || f.sig.unsafety.is_some()
         || f.sig.constness.is_some()
         || f.sig.abi.is_some()
-        || f.sig.variadic.is_some()
         || !f.sig.generics.params.is_empty()
         || f.sig.generics.where_clause.is_some()
     {
@@ -124,14 +124,15 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
         );
     }
     let name = &f.sig.ident;
+    let unraw = name.unraw();
     if matches!(
-        name.to_string().as_str(),
+        unraw.to_string().as_str(),
         "PCIE_OUT" | "PROC_MISC" | "CLOCKS_DEFAULT"
     ) && !platform
     {
         return error("this interrupt is reserved for rp1-platform");
     }
-    let symbol = format!("__rp1_p{core}_{name}");
+    let symbol = format!("__rp1_p{core}_{unraw}");
     let wrapper = format_ident!("{symbol}_trampoline");
     // SRAM handlers must also be boundaries for the automatic ISRAM planner.
     let section = if sram {

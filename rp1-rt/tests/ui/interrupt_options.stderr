@@ -13,3 +13,11 @@ error: invalid or repeated interrupt option
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: invalid or repeated interrupt option
+ --> tests/ui/interrupt_options.rs:5:1
+  |
+5 | #[rp1_rt::interrupt(proc1, __platform)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
