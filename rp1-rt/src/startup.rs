@@ -72,12 +72,7 @@ unsafe extern "C" fn __rp1_initialize(core: u32) -> ! {
         };
         (0xe000_ed08 as *mut u32).write_volatile(vectors as u32);
         core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags));
-        // STATIC: NVIC is core-local. Enter main unmasked, with every line disabled.
-        (0xe000_e180 as *mut u32).write_volatile(u32::MAX);
-        (0xe000_e184 as *mut u32).write_volatile(u32::MAX);
-        for irq in 0..64 {
-            (0xe000_e400 as *mut u8).add(irq).write_volatile(4 << 5);
-        }
+        crate::interrupt::reset_all_lines();
         core::arch::asm!(
             "dsb sy",
             "isb sy",

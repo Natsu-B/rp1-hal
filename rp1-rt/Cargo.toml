@@ -6,7 +6,6 @@ license.workspace = true
 
 [features]
 default = ["critical-section-single-core"]
-# PRIMASK protects only this core's DSRAM and ISR/main access, never the other core.
 critical-section-single-core = []
 
 [dependencies]

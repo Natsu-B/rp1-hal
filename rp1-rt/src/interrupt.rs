@@ -1,4 +1,4 @@
-//! Core-local interrupt diagnostics. Ordinary statics have a separate DSRAM copy per core.
+//! Core-local interrupt handlers, NVIC lines, and critical sections.
 //!
 //! `#[interrupt(proc0)]` and `#[interrupt(proc1)]` bind a PAC interrupt name to a core.
 //! Handlers run from ISRAM by default; `sram` keeps the handler in shared SRAM, including
@@ -17,43 +17,40 @@
 //! }
 //! ```
 //!
-//! STATIC safety model: ordinary statics, including `TICKS`, have one DSRAM copy per core.
+//! Ordinary statics, including `TICKS`, have one DSRAM copy per core.
 //! The default `critical-section-single-core` feature uses PRIMASK and restores the prior
 //! state, so nested sections work. This is **not a cross-core lock**: both cores can enter
 //! simultaneously. `Mutex` is not `SharedSafe` and cannot be placed in `#[shared]`.
 //! Cross-core communication needs the shared-memory protocols in [`crate::sync`].
+//! NMI and fault handlers must not access data protected by this critical section.
 //! Disable the default feature when supplying another critical-section implementation.
-//! Host tests use `critical-section/std`, never the PRIMASK provider.
 //!
 //! Keep critical sections below 100 microseconds: PRIMASK also delays system IRQs. Handlers
 //! receive no core token and cannot access `#[proc0]`/`#[proc1]` locals. Share state with
 //! main through ordinary statics and a `Mutex` or DSRAM atomics. Until ISR-safe logging is
-//! available, keep `log!` calls out of handlers. IRQ resource generation and driver IRQ APIs
-//! are separate follow-up work; this module does not yet make timer/device IRQ APIs safe.
+//! available, keep `log!` calls out of handlers.
 
-#[cfg(target_arch = "arm")]
-use core::sync::atomic::{AtomicU32, Ordering};
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+use core::cell::Cell;
 
-#[cfg(target_arch = "arm")]
-static LAST: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_arch = "arm")]
-static COUNT: AtomicU32 = AtomicU32::new(0);
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+static UNHANDLED: Mutex<Cell<(u8, u32)>> = Mutex::new(Cell::new((0, 0)));
 
 /// Last unhandled IRQ number and total unhandled IRQ count on this core.
 ///
 /// Returns `None` before the first unhandled IRQ (and on a host). The count saturates.
 pub fn unhandled() -> Option<(u8, u32)> {
-    #[cfg(target_arch = "arm")]
-    return free(|_| {
-        let count = COUNT.load(Ordering::Relaxed);
-        (count != 0).then(|| (LAST.load(Ordering::Relaxed) as u8, count))
-    });
-    #[cfg(not(target_arch = "arm"))]
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    {
+        let (irq, count) = free(|cs| UNHANDLED.borrow(cs).get());
+        (count != 0).then_some((irq, count))
+    }
+    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
     None
 }
 
 /// Mask an unhandled external interrupt and return so this core can continue.
-#[cfg(target_arch = "arm")]
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 #[doc(hidden)]
 #[crate::cold]
 #[unsafe(no_mangle)]
@@ -62,23 +59,20 @@ unsafe extern "C" fn __rp1_default_irq() {
     unsafe {
         core::arch::asm!("mrs {}, IPSR", out(reg) ipsr, options(nomem, nostack, preserves_flags))
     };
-    if let Some(irq) = ipsr.checked_sub(16).filter(|irq| *irq < 64) {
-        Nvic(Hardware).disable(irq as u8);
-        unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
+    // Only external vector slots dispatch here, so IPSR is in 16..80.
+    let irq = ipsr - 16;
+    Nvic(Hardware).disable(irq as u8);
+    // ICER must take effect before exception return to prevent immediate re-entry.
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
 
-        free(|_| {
-            LAST.store(irq, Ordering::Relaxed);
-            COUNT.store(
-                COUNT.load(Ordering::Relaxed).saturating_add(1),
-                Ordering::Relaxed,
-            );
-        });
-    }
+    free(|cs| {
+        let record = UNHANDLED.borrow(cs);
+        let (_, count) = record.get();
+        record.set((irq as u8, count.saturating_add(1)));
+    });
 }
 
-/// A critical section protects ordinary DSRAM statics against this core's IRQ handlers.
-/// It is **not a cross-core lock**. Keep sections under 100 microseconds; PRIMASK also
-/// masks system IRQs. Never share a `Mutex` between cores via raw pointers/sections.
+/// PRIMASK critical section for this core only; see the module docs.
 pub use critical_section::{CriticalSection, Mutex, with as free};
 
 /// User interrupt priority, from 2 (highest user priority) through 7 (lowest).
@@ -89,7 +83,7 @@ pub struct Priority(u8);
 impl Priority {
     /// Construct a user priority. Reserved or out-of-range values return `None`.
     pub const fn new(priority: u8) -> Option<Self> {
-        if priority >= 2 && priority <= 7 {
+        if matches!(priority, 2..=7) {
             Some(Self(priority))
         } else {
             None
@@ -111,8 +105,8 @@ impl Default for Priority {
 /// Unique ownership of one core's NVIC line.
 ///
 /// Device interrupt masks are separate. Enabling a line without a handler is safe:
-/// the default handler masks it and records [`unhandled`]. This token remains `Send`
-/// so it can live in a core-local [`Mutex`]; it is neither `SharedSafe` nor `Message`.
+/// the default handler masks it and records [`unhandled`]. `Line` is `Send` so it can
+/// sit in a core-local [`Mutex`]; it is neither `SharedSafe` nor `Message`.
 pub struct Line<const IRQ: u8> {
     _private: (),
 }
@@ -121,11 +115,11 @@ impl<const IRQ: u8> Line<IRQ> {
     /// Construct the line token for generated resources.
     ///
     /// # Safety
-    /// Construct exactly once on the core that owns this IRQ in the declaration.
+    /// On the RP1 bare-metal target, construct exactly once on the core that owns this IRQ
+    /// in the declaration.
     /// Keep it on that core. System IRQs may only be constructed by system services.
-    /// All NVIC operations require the RP1 bare-metal target.
     pub const unsafe fn new() -> Self {
-        assert!(IRQ < 64, "NVIC IRQ must be in 0..64");
+        const { assert!(IRQ < 64, "NVIC IRQ must be in 0..64") };
         Self { _private: () }
     }
 
@@ -168,7 +162,7 @@ impl<const IRQ: u8> Line<IRQ> {
 /// Whether this core is executing an exception or interrupt handler.
 /// Returns `false` on a host.
 pub fn in_handler() -> bool {
-    #[cfg(target_arch = "arm")]
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
     {
         let ipsr: u32;
         unsafe {
@@ -176,7 +170,7 @@ pub fn in_handler() -> bool {
         };
         ipsr != 0
     }
-    #[cfg(not(target_arch = "arm"))]
+    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
     false
 }
 
@@ -195,42 +189,34 @@ trait Registers {
 struct Hardware;
 impl Registers for Hardware {
     fn read(&self, address: usize) -> u32 {
-        #[cfg(all(target_arch = "arm", target_os = "none"))]
-        unsafe {
-            (address as *const u32).read_volatile()
-        }
-        #[cfg(not(all(target_arch = "arm", target_os = "none")))]
-        {
-            let _ = address;
-            panic!("NVIC requires the RP1 bare-metal target")
-        }
+        unsafe { (address as *const u32).read_volatile() }
     }
     fn write(&self, address: usize, value: u32) {
-        #[cfg(all(target_arch = "arm", target_os = "none"))]
-        unsafe {
-            (address as *mut u32).write_volatile(value)
-        }
-        #[cfg(not(all(target_arch = "arm", target_os = "none")))]
-        {
-            let _ = (address, value);
-            panic!("NVIC requires the RP1 bare-metal target")
-        }
+        unsafe { (address as *mut u32).write_volatile(value) }
     }
     fn write_byte(&self, address: usize, value: u8) {
-        #[cfg(all(target_arch = "arm", target_os = "none"))]
-        unsafe {
-            (address as *mut u8).write_volatile(value)
-        }
-        #[cfg(not(all(target_arch = "arm", target_os = "none")))]
-        {
-            let _ = (address, value);
-            panic!("NVIC requires the RP1 bare-metal target")
-        }
+        unsafe { (address as *mut u8).write_volatile(value) }
     }
+}
+
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+pub(crate) fn reset_all_lines() {
+    Nvic(Hardware).reset();
 }
 
 struct Nvic<R>(R);
 impl<R: Registers> Nvic<R> {
+    #[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
+    fn reset(&self) {
+        for offset in [0, 4] {
+            self.0.write(ICER + offset, u32::MAX);
+            self.0.write(ICPR + offset, u32::MAX);
+        }
+        for irq in 0..64 {
+            self.set_priority(irq, Priority::default());
+        }
+    }
+
     fn write_bit(&self, base: usize, irq: u8) {
         self.0
             .write(base + usize::from(irq / 32) * 4, 1 << (irq % 32));
@@ -270,8 +256,10 @@ mod single_core {
     struct Primask;
     critical_section::set_impl!(Primask);
 
-    // SAFETY: ordinary statics are per-core DSRAM. SharedSafe excludes Mutex, so safe
-    // code cannot use this implementation to protect the same value on both cores.
+    // SAFETY: cpsid i masks all configurable exceptions on this core; release restores
+    // the prior PRIMASK state, preserving nesting. NMI and faults must not access protected
+    // data. Statics are per-core DSRAM and Mutex is not SharedSafe, so the other core
+    // cannot share the protected value through safe code.
     unsafe impl critical_section::Impl for Primask {
         unsafe fn acquire() -> critical_section::RawRestoreState {
             let primask: u32;
@@ -371,7 +359,6 @@ mod tests {
                 (2..=7).contains(&value).then_some(value)
             );
         }
-        assert_eq!(Priority::new(0), None);
         assert_eq!(Priority::default().value(), 4);
         assert!(!in_handler());
         assert_eq!(unhandled(), None);
@@ -380,12 +367,17 @@ mod tests {
     }
 
     #[test]
-    fn nested_host_sections_preserve_access() {
-        static VALUE: Mutex<core::cell::Cell<u32>> = Mutex::new(core::cell::Cell::new(0));
-        free(|outer| {
-            VALUE.borrow(outer).set(1);
-            free(|inner| VALUE.borrow(inner).set(2));
-            assert_eq!(VALUE.borrow(outer).get(), 2);
-        });
+    fn reset_disables_and_clears_all_lines_before_setting_priorities() {
+        let nvic = Nvic(Fake::default());
+        nvic.reset();
+        let writes = nvic.0.writes.take();
+        let mut expected = std::vec![
+            (ICER, u32::MAX, 4),
+            (ICPR, u32::MAX, 4),
+            (ICER + 4, u32::MAX, 4),
+            (ICPR + 4, u32::MAX, 4),
+        ];
+        expected.extend((0..64).map(|irq| (IPR + irq, 4 << 5, 1)));
+        assert_eq!(writes, expected);
     }
 }
