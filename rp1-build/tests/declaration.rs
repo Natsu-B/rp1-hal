@@ -185,6 +185,16 @@ fn gpio_irq_not_gpio() {
     );
 }
 #[test]
+fn gpio_irq_pin_twice() {
+    error(
+        "[proc1]\ngpio=[27]\ngpio_irq=[27,27]",
+        &[
+            "E1",
+            "GPIO 27 is claimed by both proc1.gpio_irq and proc1.gpio_irq",
+        ],
+    );
+}
+#[test]
 fn unknown_keys_and_hardware_cs_are_rejected() {
     error(
         "[proc1]\nuart9={tx=4,rx=5}",

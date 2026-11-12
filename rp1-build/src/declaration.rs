@@ -545,10 +545,14 @@ impl Declaration {
                 validate_pin(*pin)?;
                 claim_pin(&mut pins, *pin, format!("{owner}.gpio"))?;
             }
+            // Each listed pin becomes one generated field, so a repeat must fail here like a
+            // repeated `gpio` pin rather than as uncompilable generated code.
+            let mut irq_pins = BTreeMap::new();
             for pin in &core.gpio_irq {
                 if !core.gpio.contains(pin) {
                     return Err(format!("E5: gpio_irq {pin} is not in {owner}.gpio").into());
                 }
+                claim_pin(&mut irq_pins, *pin, format!("{owner}.gpio_irq"))?;
             }
             for (name, instance) in &core.instances {
                 instance.validate(name, owner)?;
