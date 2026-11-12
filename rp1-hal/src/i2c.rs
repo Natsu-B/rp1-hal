@@ -473,7 +473,7 @@ impl<const N: u8, const SDA: u8, const SCL: u8> I2c<N, SDA, SCL> {
         self.io().read(INTR_STAT)
     }
     /// Clears the interrupts that software can clear. RX_FULL and TX_EMPTY follow the FIFO
-    /// levels instead.
+    /// levels instead. Reading CLR_INTR also clears TX_ABRT_SOURCE: read the abort source first.
     pub fn clear_interrupt(&mut self) {
         self.io().read(CLEAR);
     }
@@ -645,12 +645,15 @@ mod tests {
         fn write(&mut self, offset: usize, value: u32) {
             self.writes += 1;
             match offset {
-                MASK => self.mask = value,
-                IRQ_WRAP => self.wrap = value,
+                MASK => {
+                    self.mask = value;
+                    self.interrupt_writes.push((offset, value));
+                }
+                IRQ_WRAP => {
+                    self.wrap = value;
+                    self.interrupt_writes.push((offset, value));
+                }
                 _ => {}
-            }
-            if matches!(offset, MASK | IRQ_WRAP) {
-                self.interrupt_writes.push((offset, value));
             }
             if offset != DATA {
                 return;

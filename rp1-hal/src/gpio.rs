@@ -44,7 +44,8 @@ impl<const N: u8, const CORE: u8> PinIrq<N, CORE> {
     pub const unsafe fn new() -> Self {
         Self { _private: () }
     }
-    /// Lets `event` interrupt this core.
+    /// Lets `event` interrupt this core. Call [`PinIrq::clear`] first to discard an edge latched
+    /// before enabling.
     pub fn enable(&mut self, event: Event) {
         write(SET + ctrl(N), 1 << event as u32);
         write(SET + inte(CORE), 1 << N);

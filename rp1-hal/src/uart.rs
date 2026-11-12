@@ -202,7 +202,7 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     pub fn disable_rx_interrupt(&mut self) {
         set_mask(N, int::RX | int::RT, false);
     }
-    /// Unmasks the interrupt for the TX FIFO at or below its trigger level.
+    /// Unmasks the interrupt raised when the TX FIFO drops to its trigger level.
     pub fn enable_tx_interrupt(&mut self) {
         set_mask(N, int::TX, true);
     }

@@ -1,7 +1,7 @@
 use crate::{Error, poll, write};
 use core::{
     fmt::{self, Write},
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering, compiler_fence},
 };
 
 // Ordinary statics are per core (DSRAM, where RMW atomics work), so both are this core's own.
@@ -56,6 +56,8 @@ impl Logger {
     /// Writes one message to UART0 without masking interrupts. Main code waits for the other
     /// core's message to finish. A handler never waits: if this core or the other one is
     /// already writing, the message is dropped, counted in [`dropped`], and `Ok` is returned.
+    /// Interrupts stay enabled, so the other core may wait while a holder is preempted, and a
+    /// handler that gets the lock transmits inside the handler.
     pub fn write(&self, args: fmt::Arguments<'_>) -> fmt::Result {
         if self.ready.load(Ordering::Acquire) == 0 {
             return Err(fmt::Error);
@@ -88,6 +90,9 @@ impl Logger {
             return false;
         }
         IN_LOG.store(true, Ordering::Release);
+        // A handler between this store and the `want` store must already see IN_LOG, or its
+        // unlock would clear our `want`.
+        compiler_fence(Ordering::SeqCst);
         let other = 1 - core;
         self.want[core].store(1, Ordering::Release);
         self.turn.store(other as u32, Ordering::Release);
@@ -103,8 +108,6 @@ impl Logger {
         }
         true
     }
-    // Release on IN_LOG keeps the `want` store before it: a handler that sees IN_LOG clear may
-    // take the lock, and a late `want = 0` would then hand it to the other core as well.
     fn unlock(&self, core: usize) {
         self.want[core].store(0, Ordering::Release);
         IN_LOG.store(false, Ordering::Release);

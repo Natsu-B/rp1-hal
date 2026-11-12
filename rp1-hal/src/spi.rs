@@ -436,8 +436,8 @@ fn start(
     // The widest frame any instance takes; the instance's own limit is checked after probe.
     control(config.mode, config.frame_bits, true)?;
     io.release_reset(reset)?;
-    let (depth, dfs32) = probe(io).ok_or(Error::Precondition)?;
     mask_interrupts(io);
+    let (depth, dfs32) = probe(io).ok_or(Error::Precondition)?;
     let cr0 = control(config.mode, config.frame_bits, dfs32)?;
     setup(io, cr0, div, config.rx_sample_dly.into());
     Ok((depth, dfs32, cr0, div))
@@ -763,6 +763,10 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
     /// that routes the controller interrupt to the cores; the NVIC line comes from the generated
     /// `irq` resources. Blocking transfers mask every interrupt while they run and restore the
     /// mask afterwards.
+    ///
+    /// The masking is per exchange: between the operations of a `Device` transaction a handler
+    /// can run with CS asserted. Mixing interrupt-driven and blocking use of one controller is
+    /// unsupported.
     pub fn enable_interrupt(&mut self, mask: u32) {
         enable_interrupt(&mut self.io(), mask);
     }
