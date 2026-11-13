@@ -157,7 +157,10 @@ I2C0/2/3、SPI1/3/5、PWM1、DMA、ADC は IRQ 番号が実機未確認なので
 
 `gpio_irq` のピンは通常の `pins.gpioN` と別に割り込み権限を持つ。両コアがそれぞれ `gpio_irq` を宣言すると、
 両方に `Line<0>` が入る。IO_BANK0 の割り込み状態・イネーブルはコアごとに分かれている（DOC）。
-`PinIrq` は権限の型と生成用の unsafe コンストラクターだけを公開する。
+STATIC: `PinIrq` はそのコアから見たピンの割り込みを操作する。`enable(Event)` / `disable(Event)`（`Event` はレベル 2 種とエッジ 2 種）、
+`is_pending()`、`clear()`（ラッチしたエッジを消す）、`force()` / `unforce()` / `is_forced()` を持つ。
+コンストラクターは unsafe で、生成コードだけが呼ぶ。ピンの設定（`into_input` など）は GPIOn_CTRL を書き直してイベントのマスクを消すので、
+`enable` より前に済ませる。
 
 `log` 用 UART0 の線は渡さない。`host_irq = true` でも `TIMER_3` は渡さず、ALARM3 は両コアの `timer` 宣言から予約する。
 IRQ53（PCIE_OUT）と IRQ57（PROC_MISC）は proc0 のシステムサービス用で、利用者の resources には入らない。
