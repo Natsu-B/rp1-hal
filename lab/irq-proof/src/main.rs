@@ -1,0 +1,505 @@
+//! Hardware proof image for interrupts: handlers on both cores (alarms, IO_BANK0, the wrapped
+//! I2C1 and SPI0 lines), the PRIMASK critical section, the default handler, `log!` from a
+//! handler, stack and masking figures. Markers go to UART0; lab/verify-irq.py reads them.
+//!
+//! The system part (proc0's clocks, PCIe endpoint, SCMI and shm bring-up; proc1's shm command
+//! loop) is that of lab/shm-firmware without its peripheral proofs, so the Linux-side SHM,
+//! doorbell and UART1 regressions run in the same boot. The doorbell is answered by proc1's
+//! IO_BANK0 handler here, not by polling.
+#![no_std]
+#![no_main]
+use rp1_hal::log;
+use rp1_proto::{Error, link};
+use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
+rp1_rt::bind!();
+mod cs_stats;
+mod proc0;
+mod proc1;
+mod proof;
+mod stack;
+#[cfg(feature = "sweep")]
+mod sweep;
+use proof::{mark, now};
+
+/// proc1's figures for the final lines ([`proc1::Report`]).
+#[shared]
+static REPORT: Spsc<u32, 8> = Spsc::new();
+/// The boot's nonce, from proc0 (which makes it) to proc1.
+#[shared]
+static NONCE: Spsc<u32, 2, Proc0, Proc1> = Spsc::new();
+
+type Sample = [u32; 4];
+type Control = [u32; 16];
+type Bulk = [u32; 262144];
+fn link_read(offset: usize) -> u32 {
+    proof::rd(rp1_proto::LINK_START as usize + offset)
+}
+fn sample(i: u32) -> Sample {
+    [i, !i, i ^ 0x5a96_c33c, 0x5250_3148]
+}
+
+/// A value that differs from boot to boot: the two waits for the host during the cold bring-up
+/// (PERSTn, link) and the time after them, which vary by microseconds. Not guaranteed unique;
+/// the checker also separates boots by the position of the BEGIN line.
+fn make_nonce(seeds: [u32; 3]) -> u32 {
+    // FNV-1a over the words.
+    seeds.iter().fold(0x811c_9dc5u32, |hash, seed| {
+        (hash ^ seed).wrapping_mul(0x0100_0193)
+    })
+}
+
+#[entry(proc0)]
+fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
+    // SAFETY: proc0, and no NVIC line is enabled yet.
+    let stack = unsafe { stack::paint(0) };
+    let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
+    let (clocks, scmi) = p.clock_authority.init(200_000_000).unwrap();
+    rp1::log::init(&mut core).unwrap();
+    log!(
+        "proc0 clocks programmed={} sys_hz={} uart_hz={}\n",
+        programmed,
+        clocks.sys_hz(),
+        clocks.uart_hz()
+    )
+    .unwrap();
+    let mut waits = [0; 2];
+    match unsafe { rp1_hal::cold::endpoint_and_syscfg(programmed) } {
+        Ok(r) => {
+            waits = [r.perstn_wait_us, r.link_wait_us];
+            log!(
+                "p0 pcie Ok clocks_programmed={} endpoint_programmed={} perstn_wait_us={} link_wait_us={} monitor2=0x{:x}\n",
+                r.clocks_programmed,
+                r.endpoint_programmed,
+                r.perstn_wait_us,
+                r.link_wait_us,
+                r.monitor2
+            )
+        }
+        Err(e) => log!("p0 pcie Err({:?})\n", e),
+    }
+    .unwrap();
+    let nonce = make_nonce([waits[0], waits[1], now()]);
+    proof::set_nonce(nonce);
+    proof::publish_nonce();
+    mark!("IRQ_PROOF_BEGIN sweep={}", cfg!(feature = "sweep") as u32);
+    NONCE.producer(&mut core).push(nonce).unwrap();
+    p.proc1.launch(&mut core).unwrap();
+    let i2c = p
+        .i2c1
+        .init(&clocks, rp1_hal::i2c::Speed::Standard)
+        .map_err(|e| e.error);
+    log!("p0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
+
+    let mut system = System {
+        endpoint: unsafe { rp1_hal::cold::EndpointService::new() },
+        scmi,
+        probed: false,
+        attempted: false,
+    };
+    // The system services keep running while proc0's items wait for their interrupts.
+    proc0::run(p.TIMER_ALARM0, i2c.ok(), p.irq, &mut || {
+        let (perst, event) = (system.endpoint.poll(), system.scmi.poll());
+        system.handle(perst, event);
+    });
+
+    let mut rx = REPORT.consumer(&mut core);
+    let mut report = [0; proc1::Report::WORDS];
+    let mut words = 0;
+    loop {
+        let (word, perst, event) = idle0(&mut rx, &mut system);
+        system.handle(perst, event);
+        if let Some(word) = word
+            && words < report.len()
+        {
+            report[words] = word;
+            words += 1;
+            if words == report.len() {
+                proc0::finish(stack.free_bytes(), &proc1::Report::from_words(report));
+            }
+        }
+    }
+}
+
+type Perst = Option<Result<rp1_hal::cold::Reconfigured, rp1_hal::cold::ReconfigError>>;
+
+/// proc0's system services, as in lab/shm-firmware: the PCIe endpoint across PERSTn, the SCMI
+/// clock server, and the two shm requests Linux makes through the link page.
+struct System {
+    endpoint: rp1_hal::cold::EndpointService,
+    scmi: rp1_hal::scmi::Service,
+    probed: bool,
+    attempted: bool,
+}
+impl System {
+    /// The slow part of one round: log what the polls returned and serve a shm request.
+    fn handle(&mut self, perst: Perst, event: Option<rp1_hal::scmi::Event>) {
+        if let Some(r) = perst {
+            log!("p0 pcie perst {:?}\n", r).unwrap();
+        }
+        if let Some(e) = event {
+            log!(
+                "proc0 scmi p{:x} m{} {:x?} -> {} votes={:x}\n",
+                e.protocol,
+                e.message,
+                e.args,
+                e.status,
+                e.votes
+            )
+            .unwrap();
+        }
+        let request = link_read(link::SHM_REQUEST);
+        if !self.probed && request == 2 {
+            self.probed = true;
+            probe_window();
+        }
+        if !self.attempted && request == 1 {
+            self.attempted = true;
+            let enabled = unsafe { rp1_hal::shm::enable(rp1::SHM_NOTE, &rp1::SHM_NOTE_SHA256) };
+            log!("p0 shm enable {:?}\n", enabled).unwrap();
+        }
+    }
+}
+
+/// shm-linux's whole-window check before it enables the area: pattern every word, read back.
+fn probe_window() {
+    let area = unsafe { rp1_hal::shm::configure_window(rp1::SHM_NOTE) }.unwrap();
+    let words = area.size as usize / 4;
+    let pointer = rp1_proto::SHM_WINDOW as *mut u32;
+    for i in 0..words {
+        unsafe { pointer.add(i).write_volatile(i as u32 ^ 0xa596_c33c) };
+    }
+    rp1_hal::shm::complete_posted_writes();
+    let mut errors = 0;
+    for i in 0..words {
+        if unsafe { pointer.add(i).read_volatile() } != (i as u32 ^ 0xa596_c33c) {
+            errors += 1;
+        }
+    }
+    log!("WINDOW bytes={} errors={}\n", area.size, errors).unwrap();
+    proof::wr(
+        rp1_proto::LINK_START as usize + 36,
+        if errors == 0 { 1 } else { 2 },
+    );
+    rp1_proto::barrier();
+}
+
+/// proc0's idle loop once its items are done, from ISRAM: returns as soon as anything needs
+/// the slow path.
+#[rp1_rt::isram]
+fn idle0(
+    rx: &mut rp1_rt::sync::Consumer<'_, u32, 8, Proc1, Proc0>,
+    system: &mut System,
+) -> (Option<u32>, Perst, Option<rp1_hal::scmi::Event>) {
+    loop {
+        let word = rx.pop();
+        let perst = system.endpoint.poll();
+        let event = system.scmi.poll();
+        let request = link_read(link::SHM_REQUEST);
+        if word.is_some()
+            || perst.is_some()
+            || event.is_some()
+            || (!system.probed && request == 2)
+            || (!system.attempted && request == 1)
+        {
+            return (word, perst, event);
+        }
+    }
+}
+
+#[entry(proc1)]
+fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
+    // SAFETY: proc1, and no NVIC line is enabled yet.
+    let stack = unsafe { stack::paint(1) };
+    // proc0 pushed the nonce before it launched this core.
+    proof::set_nonce(NONCE.consumer(&mut core).pop().unwrap_or(0));
+    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000);
+    let spi = match clocks {
+        Ok(c) => p
+            .spi0
+            .init(
+                &c,
+                rp1_hal::spi::Config::new(1_000_000, embedded_hal::spi::MODE_0),
+            )
+            .map_err(|e| e.error),
+        Err(_) => Err(rp1_hal::spi::Error::Precondition),
+    };
+    log!("p1 spi0 init {}\n", spi.is_ok()).unwrap();
+    proc1::run(proc1::Parts {
+        alarm1: p.TIMER_ALARM1,
+        alarm2: p.TIMER_ALARM2,
+        spi: spi.ok(),
+        irq: p.irq,
+    });
+
+    let mut report = REPORT.producer(&mut core);
+    let mut host_irq = p.host_irq;
+    // The doorbell works before Linux enables the shm area; so does the report it triggers.
+    while link_read(link::SHM_STATUS) != 1 {
+        after_doorbell(&mut host_irq, &mut report, &stack);
+    }
+    let mut area = unsafe { rp1_hal::shm::Area::attach(rp1::SHM_NOTE, 2) }.unwrap();
+    let mut up = area.ring_tx::<Sample>("up").unwrap();
+    let mut down = area.ring_rx::<Sample>("down").unwrap();
+    let mut latest = area.ring_tx::<Sample>("latest").unwrap();
+    let mut control = area.block::<Control>("control").unwrap();
+    let mut bulk = area.block::<Bulk>("bulk").unwrap();
+    let mut last = 0;
+    let mut seen = 0;
+    // The command loop of lab/shm-firmware for shm-linux's default suite (commands 1..8, 10..13).
+    loop {
+        let sequence = wait_command(&mut host_irq, &control, seen);
+        after_doorbell(&mut host_irq, &mut report, &stack);
+        if sequence == seen {
+            continue;
+        }
+        let Ok(mut request) = control.read() else {
+            continue;
+        };
+        seen = sequence;
+        if request[0] == last || request[0] == 0 {
+            continue;
+        }
+        last = request[0];
+        let (command, count, seed) = (request[1], request[2], request[3]);
+        let start = now();
+        let mut errors = 0u32;
+        match command {
+            1 | 6 => {
+                let tx = if command == 1 { &mut up } else { &mut latest };
+                for i in 0..count {
+                    loop {
+                        match tx.push(&sample(i)) {
+                            Ok(()) => break,
+                            Err(Error::Full) => {}
+                            Err(_) => {
+                                errors += 1;
+                                break;
+                            }
+                        }
+                        if now().wrapping_sub(start) > 180_000_000 {
+                            errors += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            2 => {
+                let mut i = 0;
+                while i < count {
+                    match down.pop() {
+                        Ok(Some(s)) => {
+                            if s != sample(i) {
+                                errors += 1;
+                            }
+                            i += 1;
+                        }
+                        Ok(None) => {}
+                        Err(_) => {
+                            errors += 1;
+                            break;
+                        }
+                    }
+                    if now().wrapping_sub(start) > 180_000_000 {
+                        errors += 1;
+                        break;
+                    }
+                }
+            }
+            3 => {
+                // Handshake transfers the sole-writer role to RP1 until the response is published.
+                let mut writer = unsafe { bulk.begin_write() };
+                writer.fill(0, 262144, |i| i as u32 ^ seed).unwrap();
+                writer.commit();
+                rp1_hal::shm::complete_posted_writes();
+            }
+            4 => {
+                let checked = bulk.read_with(|reader| {
+                    let mut errors = 0;
+                    for i in 0..262144 {
+                        if reader.read_word(i).unwrap() != (i as u32 ^ seed) {
+                            errors += 1;
+                        }
+                    }
+                    errors
+                });
+                errors = checked.unwrap_or(1);
+            }
+            5 => {
+                let pointer = unsafe { bulk.raw().as_ptr() };
+                let mut sum = 0u32;
+                let t = now();
+                sum = sum.wrapping_add(unsafe { repeat_read(pointer, 4096) });
+                request[8] = now().wrapping_sub(t);
+                let t = now();
+                sum = sum.wrapping_add(unsafe { scan_read(pointer, 262144) });
+                request[9] = now().wrapping_sub(t);
+                core::hint::black_box(sum);
+                let mut writer = unsafe { bulk.begin_write() };
+                let pointer = unsafe { writer.as_ptr() };
+                let t = now();
+                unsafe { scan_write(pointer, 262144, seed) };
+                writer.commit();
+                rp1_hal::shm::complete_posted_writes();
+                request[10] = now().wrapping_sub(t);
+                let local = [seed; 4];
+                let t = now();
+                core::hint::black_box(unsafe { repeat_read(local.as_ptr(), 4096) });
+                request[11] = now().wrapping_sub(t);
+            }
+            7 => {
+                // Isolated pop cost: Linux filled `down` beforehand and stays off the link page.
+                let mut n = 0;
+                while n < count {
+                    match down.pop() {
+                        Ok(Some(s)) if s == sample(n) => n += 1,
+                        _ => break,
+                    }
+                }
+                errors = count - n;
+            }
+            8 => {
+                // Isolated push cost: the ring is empty and Linux stays off the link page.
+                for i in 0..count {
+                    if up.push(&sample(i)).is_err() {
+                        errors += 1;
+                    }
+                }
+            }
+            10 | 12 => errors = up_batch(&mut up, count, start),
+            11 | 13 => errors = down_batch(&mut down, count, start),
+            _ => errors = 1,
+        }
+        rp1_hal::shm::complete_posted_writes();
+        request[4] = 2;
+        request[5] = errors;
+        request[6] = now().wrapping_sub(start);
+        request[7] = if command == 1 { up.dropped() } else { 0 };
+        unsafe { control.write(&request) };
+        rp1_hal::shm::complete_posted_writes();
+        // The stack figure in the final lines is taken before these commands; this one tells
+        // whether the default stack also holds them.
+        log!(
+            "p1 shm cmd={} count={} errors={} us={} stack_free={}\n",
+            command,
+            count,
+            errors,
+            request[6],
+            stack.free_bytes()
+        )
+        .unwrap();
+    }
+}
+
+/// What main does for the doorbell handler: wake Linux's `rp1:irq` waiter after a reply, and
+/// send the report once the 1000 doorbells are in.
+fn after_doorbell(
+    host_irq: &mut rp1_hal::host_irq::HostIrq,
+    report: &mut rp1_rt::sync::Producer<'_, u32, 8, Proc1, Proc0>,
+    stack: &stack::Watermark,
+) {
+    if proc1::doorbell_served() {
+        host_irq.notify_sram();
+    }
+    if proc1::report_due() {
+        proc1::report(report, stack.free_bytes());
+    }
+}
+
+/// proc1 idle loop, from ISRAM: until the control block's sequence changes or the report is
+/// due (returns `seen` then). Idle cost is one DDR load, so the `rp1:irq` wake stays prompt.
+#[rp1_rt::isram]
+fn wait_command(
+    host_irq: &mut rp1_hal::host_irq::HostIrq,
+    control: &rp1_hal::shm::Block<Control>,
+    seen: u32,
+) -> u32 {
+    loop {
+        if proc1::doorbell_served() {
+            host_irq.notify_sram();
+        }
+        let sequence = control.sequence();
+        if sequence != seen || proc1::report_due() {
+            return sequence;
+        }
+    }
+}
+
+const BATCH: usize = 32;
+/// Batched RP1→Linux stream: one `head` store per `push_slice`; the loop itself runs from ISRAM.
+#[rp1_rt::isram]
+fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u32 {
+    let mut buf = [[0u32; 4]; BATCH];
+    let mut i = 0;
+    while i < count {
+        let k = (count - i).min(BATCH as u32) as usize;
+        for (j, b) in buf[..k].iter_mut().enumerate() {
+            *b = sample(i + j as u32);
+        }
+        let mut done = 0;
+        while done < k {
+            done += tx.push_slice(&buf[done..k]);
+            if now().wrapping_sub(start) > 180_000_000 {
+                return 1;
+            }
+        }
+        i += k as u32;
+    }
+    0
+}
+/// Batched Linux→RP1 stream: one `tail` store per `pop_into`, every message checked.
+#[rp1_rt::isram]
+fn down_batch(rx: &mut rp1_hal::shm::RingRx<Sample>, count: u32, start: u32) -> u32 {
+    let mut buf = [[0u32; 4]; BATCH];
+    let mut i = 0;
+    let mut errors = 0;
+    while i < count {
+        let want = (count - i).min(BATCH as u32) as usize;
+        match rx.pop_into(&mut buf[..want]) {
+            Ok(n) => {
+                for b in &buf[..n] {
+                    let s = sample(i);
+                    // Word compares: an array `!=` would call memcmp in shared SRAM.
+                    if (b[0] ^ s[0]) | (b[1] ^ s[1]) | (b[2] ^ s[2]) | (b[3] ^ s[3]) != 0 {
+                        errors += 1;
+                    }
+                    i += 1;
+                }
+            }
+            Err(_) => return errors + 1,
+        }
+        if now().wrapping_sub(start) > 180_000_000 {
+            return errors + 1;
+        }
+    }
+    errors
+}
+// ISRAM removes shared-SRAM instruction fetches from the DDR measurement.
+#[rp1_rt::isram]
+unsafe fn repeat_read(pointer: *const u32, count: usize) -> u32 {
+    let mut sum = 0u32;
+    for _ in 0..count {
+        sum = sum.wrapping_add(unsafe { pointer.read_volatile() });
+    }
+    sum
+}
+#[rp1_rt::isram]
+unsafe fn scan_read(pointer: *const u32, count: usize) -> u32 {
+    let mut sum = 0u32;
+    for i in 0..count {
+        sum = sum.wrapping_add(unsafe { pointer.add(i).read_volatile() });
+    }
+    sum
+}
+#[rp1_rt::isram]
+unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
+    for i in 0..count {
+        unsafe { pointer.add(i).write_volatile(i as u32 ^ seed) };
+    }
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    loop {
+        rp1_rt::wait_for_event();
+    }
+}

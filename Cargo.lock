@@ -246,6 +246,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "irq-proof"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "embedded-hal 1.0.0",
+ "rp1-build",
+ "rp1-hal",
+ "rp1-proto",
+ "rp1-rt",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
