@@ -198,6 +198,57 @@ prints `UART1_DIAG` lines: GPIO 0/1 CTRL/STATUS/PADS, the PL011 baud and control
 driver's tx/rx counters, to tell a wiring or pinmux fault from a script fault. It keeps the port
 open while it reads, because closing it shuts the PL011 down and drops received bytes.
 
+## Interrupt proof image (STATIC / HW 未検証)
+
+`irq-proof` is a focused firmware that proves the interrupt path on hardware: handlers entered
+and left on both cores, the `+0x108` wrapper of the DesignWare blocks, the PRIMASK critical
+section, the default handler and `log!` from a handler. It has been built and checked
+(`cargo rp1 check`); it has not run on hardware. Its system part is `shm-firmware`'s without the
+I2C/ADC/SPI proofs (same owners and the rings `shm-linux` uses), so the SHM, doorbell and UART1
+regressions run in the same boot. The doorbell is answered by proc1's `IO_BANK0` handler; main
+code never answers it. Both stacks are the default 2 KiB, which the proof measures.
+
+Every marker line on UART0 ends with `nonce=<8 hex digits>`, a value made at boot; the firmware
+also stores it in the link page (+0x28) for Linux to print. Items that need no Linux run right
+after boot. The proof ends when Linux has rung the doorbell 1000 times.
+
+| Marker (UART0) | Shows | Decides |
+|---|---|---|
+| `IRQ_PROOF_BEGIN sweep=` | start of a boot's proof | cuts the capture |
+| `IRQ_P0_TIMER0`, `IRQ_P1_TIMER1` | 1000 alarm interrupts at 1 kHz enter the handler and return | `n=1000`, `ipsr=42` / `43`, `us` within 999000..1010000, `pre_pending=0`, `post_pending=0` |
+| `IRQ_INTF_ONLY core= pin=` | whether `PROCn_INTF` alone (INTE = 0) raises INTS and the NVIC line | only `pre_pending=0`, `post_pending=0`; `ints`, `nvic`, `need_inte` are findings (`IRQ_INTF_INTE` follows if INTE had to be set) |
+| `IRQ_P0_GPIO22` | proc0's `IO_BANK0` handler, entered by `PinIrq::force` | `n=100`, `ipsr=16`, pending 0 before and after |
+| `IRQ_WRAP i2c1`, `IRQ_WRAP spi0` | wrapper closed: the unmasked source is active in the controller but not pending; opened by `enable_interrupt`: one handler entry | `pre_pending=0 off_stat=1 off_pending=0 on_n=1`, `ipsr=24` / `35`, `post_pending=0` |
+| `IRQ_CS` | main updates a two-word pair in critical sections against a 10 kHz handler | `iters>=100000`, `isr_n>=1000`, `torn=0`, `control_torn>=1` (the same update unmasked must be caught), `max_masked_us<=100` |
+| `IRQ_LOG`, `IRQ_LOG_MAIN i=`, `IRQ_LOG_ISR k=` | a handler's `log!` is dropped without waiting while main writes | 20 main lines in order, `isr_dropped>=1`, `drop_max_us<=100`, as many `IRQ_LOG_ISR` lines as `isr_logged` |
+| `IRQ_DEFAULT` | a line enabled without a handler is masked by the default handler; the core goes on | `irq=28 count=1 masked=1 pre_count=0 pre_pending=0` |
+| `IRQ_P1_GPIO27` | Linux's 1000 doorbells were answered by proc1's handler | `n=1000`, `ipsr=16`; the round-trip time is `linux-doorbell`'s line on UART10 |
+| `IRQ_XCORE` | no handler ran on the core it was not written for | both 0 |
+| `IRQ_UNHANDLED` | unhandled interrupts per core | `p0=0 p1=1` (the `IRQ_DEFAULT` one) |
+| `IRQ_STACK` | untouched bytes at the bottom of each stack (painted at entry) | both at least 512 |
+| `IRQ_MASKED` | longest PRIMASK interval per core, over every `critical_section` user in the image | both at most 100 µs |
+| `IRQ_PROOF_PASS` / `IRQ_PROOF_FAIL <item>` | verdict; a failed item also prints `IRQ_PROOF_FAIL <item>` at once | PASS is the last marker, no FAIL line |
+
+After the proof each `p1 shm cmd=` line carries `stack_free=`, which must stay at 512 or more.
+`--features sweep` adds the frame of the estimated-line sweep (`IRQ_SWEEP`, `IRQ_SWEEP_DONE`);
+its table is empty until the register procedures are reviewed, and a swept block must be
+declared for RP1 first. Sweep results are findings, never pass conditions.
+
+Build a boot set with `FIRMWARE_PKG=irq-proof bash lab/build-rp1boot.sh` (the initramfs needs
+`shm-linux`, `linux-doorbell` and the UIO modules, as for `check-shm.sh`). On the Linux console
+run `lab/check-irq.sh`; it prints `IRQ_NONCE=`, rings the doorbell, runs `shm-linux` and the
+doorbell again, and ends with `IRQ_CHECK_RESULT=` and `IRQ_CHECK_END`. Capture UART0 and UART10
+from power-on (the bootloader banner is part of the check). The host decides with
+
+```sh
+python3 lab/verify-irq.py --uart0 UART0_CAPTURE --uart10 UART10_CAPTURE
+```
+
+which checks one boot (the last, or `--nonce HEX`): the values above, the nonce on every
+marker line, the same nonce on the Linux console, `usb_pd_init status 3` and `max-current 3000`
+in that boot's banner, and the Linux-side results (`--proof-only` leaves the SHM regression
+out). It prints `IRQ_PROOF_VERDICT=PASS|FAIL`. Host tests: `python3 lab/test_verify_irq.py`.
+
 ## PWM loopback diagnostic (STATIC / HW 未検証)
 
 `pwm-loopback` is a separate, focused firmware example. See [the PWM API, register evidence
