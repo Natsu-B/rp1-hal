@@ -172,6 +172,11 @@ pub struct InitError {
     pub error: Error,
     pub token: Token,
 }
+impl From<InitError> for Error {
+    fn from(e: InitError) -> Self {
+        e.error
+    }
+}
 impl Token {
     /// # Safety
     /// Generated resources only: one core owns the DMAC, its reset and clock. Linux's
