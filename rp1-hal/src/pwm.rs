@@ -8,7 +8,7 @@ use crate::{
     clocks::{Clocks, XOSC_HZ},
     gpio::{Alternate, Pin},
     linux_blocks::{Hardware, Mmio},
-    scmi::{Generator, Kind, PhysicalState, RP1_CLOCKS, Registers, Round, id},
+    scmi::{Generator, Kind, PhysicalState, RP1_CLOCKS, Round, id},
 };
 use embedded_hal::pwm::{ErrorKind, ErrorType, SetDutyCycle};
 
@@ -80,6 +80,11 @@ pub struct InitError<const N: u8> {
     pub error: Error,
     pub token: Token<N>,
 }
+impl<const N: u8> From<InitError<N>> for Error {
+    fn from(e: InitError<N>) -> Self {
+        e.error
+    }
+}
 impl<const N: u8> Token<N> {
     /// # Safety
     /// Generated resources only: one core owns all four channels, reset and clock of PWM N.
@@ -109,7 +114,8 @@ impl<const N: u8> Token<N> {
         }
     }
 }
-/// Four channels from one declared block. Restore any moved channels before [`Self::free`].
+/// Four channels from one declared block. Restore any moved channels before [`Self::free`]
+/// or [`Self::abort`].
 /// Channels are deliberately neither Send nor Sync: a block cannot be split between cores.
 #[derive(Debug)]
 pub struct Channels<const N: u8> {
@@ -122,14 +128,31 @@ impl<const N: u8> Channels<N> {
     pub const fn clock_hz(&self) -> u32 {
         XOSC_HZ
     }
-    /// Disables all channels and returns the token. Clock/reset remain running. On failure
-    /// ownership is consumed; no second token is issued for an unknown hardware state.
-    pub fn free(self) -> Result<Token<N>, Error> {
-        let io = &mut Mmio;
-        clock_current(io, N)?;
-        io.write(base(N) + GLOBAL_CTRL + CLR, 0xf);
-        update(io, N);
-        Ok(Token { _private: () })
+    /// Disables all channels and returns the token. Clock/reset remain running.
+    ///
+    /// [`Error::Precondition`]: clk_pwm is no longer enabled at 50 MHz, so the disable could
+    /// not latch; nothing was written and the channels come back with the error, to retry
+    /// once the clock runs again or to [`Self::abort`].
+    ///
+    /// ```no_run
+    /// # use rp1_hal::pwm::{Channels, Token};
+    /// fn release(channels: Channels<0>) -> Token<0> {
+    ///     channels.free().unwrap_or_else(|(channels, _)| channels.abort())
+    /// }
+    /// ```
+    pub fn free(self) -> Result<Token<N>, (Self, Error)> {
+        match release_block(&mut Mmio, N) {
+            Ok(()) => Ok(Token { _private: () }),
+            Err(error) => Err((self, error)),
+        }
+    }
+    /// [`Self::free`] without the clock check: the disable is written, but with clk_pwm
+    /// stopped or at another rate it may not latch, and the outputs may keep their last
+    /// level or waveform (HW 未検証). [`Token::init`] starts the clock and disables all four
+    /// channels again.
+    pub fn abort(self) -> Token<N> {
+        stop_block(&mut Mmio, N);
+        Token { _private: () }
     }
 }
 /// One channel, initially disabled, with a 32-bit period and compare. Dropping this value
@@ -194,11 +217,20 @@ impl<const N: u8, const C: u8, const P: u8> Output<N, C, P> {
     /// Disables the channel and clears its MODE (generate 0), as Linux's `pwm-rp1` free does,
     /// then returns channel and unconfigured pin. The pad stays muxed to the channel, which
     /// then outputs a constant low (DOC/STATIC; HW 未検証). [`Channel::enable`] restores the
-    /// trailing-edge mode. On failure (clock no longer 50 MHz) nothing is written and ownership
-    /// is consumed, as in [`Channels::free`].
-    pub fn free(self) -> Result<(Channel<N, C>, Pin<P>), Error> {
-        release_channel(&mut Mmio, N, C)?;
-        Ok((self.channel, self.pin.release()))
+    /// trailing-edge mode. On failure (clock no longer 50 MHz) nothing is written and the
+    /// output comes back with the error, as in [`Channels::free`].
+    pub fn free(self) -> Result<(Channel<N, C>, Pin<P>), (Self, Error)> {
+        match release_channel(&mut Mmio, N, C) {
+            Ok(()) => Ok((self.channel, self.pin.release())),
+            Err(error) => Err((self, error)),
+        }
+    }
+    /// [`Self::free`] without the clock check, with the limits of [`Channels::abort`]: the
+    /// pad stays muxed to a channel that may not have stopped. Reconfiguring the returned
+    /// pin (for example [`Pin::into_input`]) takes the pad away from it.
+    pub fn abort(self) -> (Channel<N, C>, Pin<P>) {
+        stop_channel(&mut Mmio, N, C);
+        (self.channel, self.pin.release())
     }
 }
 impl<const N: u8, const C: u8, const P: u8> core::ops::Deref for Output<N, C, P> {
@@ -282,10 +314,23 @@ fn set_enabled(io: &mut impl Hardware, n: u8, c: u8, enabled: bool) -> Result<()
 /// channel's enable bit.
 fn release_channel(io: &mut impl Hardware, n: u8, c: u8) -> Result<(), Error> {
     clock_current(io, n)?;
+    stop_channel(io, n, c);
+    Ok(())
+}
+fn stop_channel(io: &mut impl Hardware, n: u8, c: u8) {
     io.write(base(n) + GLOBAL_CTRL + CLR, 1 << c);
     io.write(base(n) + CHAN_CTRL + c as usize * STRIDE + CLR, MODE_MASK);
     update(io, n);
+}
+/// [`Channels::free`]: nothing is written unless the disable can latch.
+fn release_block(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
+    clock_current(io, n)?;
+    stop_block(io, n);
     Ok(())
+}
+fn stop_block(io: &mut impl Hardware, n: u8) {
+    io.write(base(n) + GLOBAL_CTRL + CLR, 0xf);
+    update(io, n);
 }
 fn set_period(io: &mut impl Hardware, n: u8, c: u8, period: u32) -> Result<(), Error> {
     if period == 0 {
@@ -559,6 +604,33 @@ mod tests {
             assert_eq!(release_channel(&mut f, n, 2), Err(Error::Precondition));
             assert!(f.writes.is_empty());
         }
+    }
+    /// With the clock stopped `free` writes nothing and reports it (the caller keeps the
+    /// channels); `abort` writes the disable anyway.
+    #[test]
+    fn block_release_needs_the_clock_and_abort_does_not() {
+        let stopped = [(base(1) + GLOBAL_CTRL + CLR, 0xf), (base(1) + SET, UPDATE)];
+        let mut f = Fake::running(1);
+        for c in 0..4 {
+            set_enabled(&mut f, 1, c, true).unwrap();
+        }
+        f.writes.clear();
+        f.regs.insert(generator(1).ctrl, 2 << 5);
+        assert_eq!(release_block(&mut f, 1), Err(Error::Precondition));
+        assert!(f.writes.is_empty());
+        stop_block(&mut f, 1);
+        assert_eq!(f.writes, stopped);
+        stop_channel(&mut f, 1, 2);
+        assert_eq!(f.regs[&(base(1) + CHAN_CTRL + 2 * STRIDE)], 1 << 8);
+
+        let mut f = Fake::running(1);
+        set_enabled(&mut f, 1, 0, true).unwrap();
+        f.writes.clear();
+        assert_eq!(release_block(&mut f, 1), Ok(()));
+        assert_eq!(
+            (f.regs[&base(1)] & 0xf, f.writes.as_slice()),
+            (0, &stopped[..])
+        );
     }
     #[test]
     fn normalized_duty_includes_both_endpoints_without_overflow() {

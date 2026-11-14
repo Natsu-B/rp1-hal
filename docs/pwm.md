@@ -43,15 +43,16 @@ bundles, callers attach each PWM pin explicitly:
 # use rp1_hal::{clocks::Clocks, gpio::Pin, pwm::{Error, Token}};
 # use embedded_hal::pwm::SetDutyCycle;
 fn output(token: Token<0>, pin: Pin<12>, clocks: &Clocks) -> Result<(), Error> {
-    let mut channels = token.init(clocks).map_err(|e| e.error)?;
+    let mut channels = token.init(clocks)?;
     let mut output = channels.channel0.output(pin);
     output.set_period_ticks(50_000)?; // 50 MHz / 50000 = 1 kHz
     output.set_duty_cycle_percent(25)?;
     output.enable()?;
     // Later, stop and return the output and pin before returning the whole block.
-    let (channel, pin) = output.free()?;
+    // A failed `free` hands the output (or the channels) back with the error.
+    let (channel, pin) = output.free().map_err(|(_, e)| e)?;
     channels.channel0 = channel;
-    let _token = channels.free()?;
+    let _token = channels.free().map_err(|(_, e)| e)?;
     let _pin = pin;
     Ok(())
 }
@@ -76,7 +77,11 @@ waveform-observation guarantee is implied by returning from a setter. Clock chec
 channel writes; every setter error (`Invalid`, `Enabled`, `Precondition`) is returned before
 any register write, so the cached period always matches RANGE. `Timeout` comes only from the
 reset DONE wait in `init`. `InitError` returns the token; a reset failure may leave partial
-hardware state. `free` consumes ownership on error, without issuing a new token.
+hardware state. `Channels::free` and `Output::free` check the clock first: on
+`Precondition` nothing is written and the value comes back as `(Self, Error)`, so the caller
+can retry once clk_pwm runs again. `abort` on either writes the same disable without the
+check and always returns the token (or channel and pin); with the clock stopped the disable
+may not latch (HW 未検証), and `Token::init` restarts the clock and disables all channels.
 `Output::free` disables the channel and clears its MODE (0 = generate 0), as Linux's
 `rp1_pwm_free` clears MODE; the pad stays muxed to the channel, so the pin should then read
 low (DOC/STATIC, HW 未検証). `enable` writes the trailing-edge CTRL value again, as Linux's
