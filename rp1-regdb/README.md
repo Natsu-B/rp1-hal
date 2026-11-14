@@ -79,7 +79,9 @@ operation.
 Field write behavior is also explicit: `plain`, `write-one-to-clear`,
 `write-one-to-set`, `write-one-to-toggle`, `self-clearing`, `command`, or
 `read-only`. Mixed-semantics registers cannot expose general `modify()`.
-Inferred or write-unverified fields cannot expose safe writers.
+Inferred or write-unverified fields cannot expose safe writers. The field
+and bit writer types can be constructed only inside `rp1-pac`, by the generated
+field methods, so a write closure reaches no bits beyond those methods.
 
 `[core]` describes implementation capabilities of the two RP1-internal
 Cortex-M3 processors. It is device metadata, not an RP1 memory-mapped

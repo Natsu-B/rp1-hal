@@ -1,0 +1,65 @@
+error[E0624]: associated function `new` is private
+ --> tests/ui/writer_constructors.rs:5:58
+  |
+5 |         .modify(|_, w| rp1_pac::FieldWriter::<_, 0, 32>::new(w).bits(u32::MAX));
+  |                                                          ^^^ private associated function
+  |
+ ::: src/generic.rs
+  |
+  |     pub(crate) fn new(writer: &'a mut W) -> Self {
+  |     -------------------------------------------- private associated function defined here
+
+error[E0624]: associated function `new` is private
+ --> tests/ui/writer_constructors.rs:8:52
+  |
+8 |         .modify(|_, w| rp1_pac::BitWriter::<_, 6>::new(w).set_bit());
+  |                                                    ^^^ private associated function
+  |
+ ::: src/generic.rs
+  |
+  |     pub(crate) fn new(writer: &'a mut W) -> Self {
+  |     -------------------------------------------- private associated function defined here
+
+error[E0624]: associated function `new` is private
+  --> tests/ui/writer_constructors.rs:11:68
+   |
+11 |         .atomic_set(|w| rp1_pac::AtomicSetFieldWriter::<_, 0, 32>::new(w).set_bits(u32::MAX));
+   |                                                                    ^^^ private associated function
+   |
+  ::: src/generic.rs
+   |
+   |             pub(crate) fn new(writer: &'a mut W) -> Self {
+   |             -------------------------------------------- private associated function defined here
+
+error[E0624]: associated function `new` is private
+  --> tests/ui/writer_constructors.rs:14:66
+   |
+14 |         .atomic_clear(|w| rp1_pac::AtomicClearBitWriter::<_, 6>::new(w).clear());
+   |                                                                  ^^^ private associated function
+   |
+  ::: src/generic.rs
+   |
+   |             pub(crate) fn new(writer: &'a mut W) -> Self {
+   |             -------------------------------------------- private associated function defined here
+
+error[E0624]: associated function `new` is private
+  --> tests/ui/writer_constructors.rs:17:59
+   |
+17 |         .clear(|w| rp1_pac::ClearFieldWriter::<_, 0, 32>::new(w).clear_bits(u32::MAX));
+   |                                                           ^^^ private associated function
+   |
+  ::: src/generic.rs
+   |
+   |             pub(crate) fn new(writer: &'a mut W) -> Self {
+   |             -------------------------------------------- private associated function defined here
+
+error[E0624]: associated function `new` is private
+  --> tests/ui/writer_constructors.rs:20:58
+   |
+20 |         .command(|w| rp1_pac::CommandBitWriter::<_, 31>::new(w).trigger());
+   |                                                          ^^^ private associated function
+   |
+  ::: src/generic.rs
+   |
+   |             pub(crate) fn new(writer: &'a mut W) -> Self {
+   |             -------------------------------------------- private associated function defined here

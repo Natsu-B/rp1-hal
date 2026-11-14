@@ -290,12 +290,16 @@ fn write_field<W: WriterBits, const O: u8, const WIDTH: u8>(writer: &mut W, valu
     *bits = (*bits & !(mask << O)) | ((value & mask) << O);
 }
 
+// The field and bit writers below are built only by the generated field methods. Their offset
+// and width are const parameters, so a public constructor would let safe code write any bits
+// of a register from inside a write closure, whatever fields that register exposes.
+
 pub struct FieldWriter<'a, W: WriterBits, const O: u8, const WIDTH: u8> {
     writer: &'a mut W,
 }
 
 impl<'a, W: WriterBits, const O: u8, const WIDTH: u8> FieldWriter<'a, W, O, WIDTH> {
-    pub fn new(writer: &'a mut W) -> Self {
+    pub(crate) fn new(writer: &'a mut W) -> Self {
         Self { writer }
     }
 
@@ -310,7 +314,7 @@ pub struct BitWriter<'a, W: WriterBits, const O: u8> {
 }
 
 impl<'a, W: WriterBits, const O: u8> BitWriter<'a, W, O> {
-    pub fn new(writer: &'a mut W) -> Self {
+    pub(crate) fn new(writer: &'a mut W) -> Self {
         Self { writer }
     }
 
@@ -328,6 +332,7 @@ impl<'a, W: WriterBits, const O: u8> BitWriter<'a, W, O> {
     }
 }
 
+// `allow(dead_code)`: the register database decides which of these kinds have a field.
 macro_rules! one_write_field {
     ($field:ident, $bit:ident, $bits_method:ident, $bit_method:ident) => {
         pub struct $field<'a, W: WriterBits, const O: u8, const WIDTH: u8> {
@@ -335,7 +340,8 @@ macro_rules! one_write_field {
         }
 
         impl<'a, W: WriterBits, const O: u8, const WIDTH: u8> $field<'a, W, O, WIDTH> {
-            pub fn new(writer: &'a mut W) -> Self {
+            #[allow(dead_code)]
+            pub(crate) fn new(writer: &'a mut W) -> Self {
                 Self { writer }
             }
 
@@ -350,7 +356,8 @@ macro_rules! one_write_field {
         }
 
         impl<'a, W: WriterBits, const O: u8> $bit<'a, W, O> {
-            pub fn new(writer: &'a mut W) -> Self {
+            #[allow(dead_code)]
+            pub(crate) fn new(writer: &'a mut W) -> Self {
                 Self { writer }
             }
 
