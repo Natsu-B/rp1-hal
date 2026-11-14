@@ -250,7 +250,7 @@ pub struct Token<const N: u8> {
 /// A configured controller. Each [`SpiBus`] call checks once, before any FIFO access, that
 /// clk_sys still matches the [`Clocks`] it was set up with ([`Error::Precondition`] if not);
 /// `transfer_in_place` checks once for the whole buffer, and [`Device`] once per transaction.
-/// Dropping it without [`Spi::free`] leaves the controller enabled
+/// Dropping it without [`Spi::free`] or [`Spi::abort`] leaves the controller enabled
 /// and the pins on the SPI function; the token is gone, so it cannot be initialised again.
 pub struct Spi<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> {
     _sck: Pin<SCK, Alternate>,
@@ -651,6 +651,18 @@ fn wait_idle(io: &mut impl Io) -> Result<(), Error> {
     }
 }
 
+/// [`Spi::free`]: nothing is written unless the bus is idle in time.
+fn release(io: &mut impl Io) -> Result<(), Error> {
+    wait_idle(io)?;
+    stop(io);
+    Ok(())
+}
+/// Masks the interrupts and disables the controller.
+fn stop(io: &mut impl Io) {
+    mask_interrupts(io);
+    io.write(SSIENR, 0);
+}
+
 /// A new CTRLR0 / BAUDR: the strict clk_sys check first (`Precondition`, nothing written),
 /// then wait for idle and set the controller up again.
 fn reconfigure(
@@ -784,18 +796,39 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
     pub fn clear_interrupt(&mut self) {
         self.io().read(ICR);
     }
-    /// Masks the interrupts, disables the controller and gives back the token and the (still
-    /// muxed) pins.
-    pub fn free(self) -> (Token<N>, Pin<SCK>, Pin<MOSI>, Pin<MISO>) {
-        let mut io = self.io();
-        mask_interrupts(&mut io);
-        io.write(SSIENR, 0);
-        (
-            Token { _private: () },
-            self._sck.release(),
-            self._mosi.release(),
-            self._miso.release(),
-        )
+}
+impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOSI, MISO>
+where
+    Pin<SCK>: Sck<N>,
+    Pin<MOSI>: Mosi<N>,
+    Pin<MISO>: Miso<N>,
+{
+    /// Waits for the last frame to leave the wire ([`SpiBus::flush`]), then masks the
+    /// interrupts, disables the controller and gives back the token and the (still muxed)
+    /// pins, ready for [`Parts::init`]. The reset stays released.
+    ///
+    /// [`Error::Timeout`]: the controller stayed busy for 100 ms and nothing was changed;
+    /// the driver comes back with the error, to retry or to [`Spi::abort`].
+    pub fn free(self) -> Result<Parts<N, SCK, MOSI, MISO>, (Self, Error)> {
+        match release(&mut self.io()) {
+            Ok(()) => Ok(self.into_parts()),
+            Err(error) => Err((self, error)),
+        }
+    }
+    /// [`Spi::free`] without the wait. Disabling the controller empties both FIFOs and
+    /// stops the shifter, so a frame on the wire is cut short and frames not yet sent or
+    /// read are dropped. The interrupts are masked and SCK no longer toggles.
+    pub fn abort(self) -> Parts<N, SCK, MOSI, MISO> {
+        stop(&mut self.io());
+        self.into_parts()
+    }
+    fn into_parts(self) -> Parts<N, SCK, MOSI, MISO> {
+        Parts {
+            token: Token { _private: () },
+            sck: self._sck.release(),
+            mosi: self._mosi.release(),
+            miso: self._miso.release(),
+        }
     }
 }
 impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> ErrorType
@@ -1133,6 +1166,26 @@ mod tests {
             self.resets.push(bit);
             Ok(())
         }
+    }
+
+    /// `free` used to disable at once, cutting a frame still on the wire.
+    #[test]
+    fn free_waits_for_the_wire_and_refuses_a_busy_controller() {
+        let stopped = [(IMR, 0), (IRQ_WRAP, 0x8), (SSIENR, 0)];
+        let mut m = Model::new(8);
+        (m.imr, m.wrap, m.busy_left) = (int::RXFI, 0x9, 3);
+        assert_eq!(release(&mut m), Ok(()));
+        assert_eq!((m.busy_left, m.writes.as_slice()), (0, &stopped[..]));
+
+        let mut m = Model::new(8);
+        (m.imr, m.wrap, m.stalled) = (int::RXFI, 0x9, true);
+        assert_eq!(release(&mut m), Err(Error::Timeout));
+        assert!(m.writes.is_empty());
+        assert_eq!(m.tick.wrapping_sub(u32::MAX - 50), 101_000);
+        // `abort` is the old `free`: no look at the bus.
+        let before = m.tick;
+        stop(&mut m);
+        assert_eq!((m.tick, m.writes.as_slice()), (before, &stopped[..]));
     }
 
     #[test]
