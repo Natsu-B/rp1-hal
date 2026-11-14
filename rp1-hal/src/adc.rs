@@ -65,6 +65,22 @@ pub enum Error {
 pub struct Token {
     _private: (),
 }
+/// [`Token::init`] failed: the error, and the token back for a retry. The clock generator and
+/// the reset may already have been started.
+pub struct InitError {
+    pub error: Error,
+    pub token: Token,
+}
+impl core::fmt::Debug for InitError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+impl From<InitError> for Error {
+    fn from(e: InitError) -> Self {
+        e.error
+    }
+}
 
 impl Token {
     /// # Safety
@@ -77,39 +93,59 @@ impl Token {
     /// Starts clk_adc (XOSC / 1), releases the ADC reset, powers the ADC up with the interrupt
     /// off and the sticky error cleared, and waits for READY. `clocks` proves the cold bring-up
     /// and the clock authority ran first (the Linux-block bring-up then leaves clk_adc alone).
-    pub fn init(self, clocks: &crate::clocks::Clocks) -> Result<Adc, Error> {
-        if !clocks.still_current() {
-            return Err(Error::Precondition);
+    /// On error the token comes back in [`InitError`]:
+    ///
+    /// ```no_run
+    /// # use rp1_hal::{adc::{Adc, Error, Token}, clocks::Clocks};
+    /// fn bring_up(token: Token, clocks: &Clocks) -> Result<Adc, Error> {
+    ///     // Once more, then the error through `?`.
+    ///     match token.init(clocks) {
+    ///         Ok(adc) => Ok(adc),
+    ///         Err(e) => Ok(e.token.init(clocks)?),
+    ///     }
+    /// }
+    /// ```
+    pub fn init(self, clocks: &crate::clocks::Clocks) -> Result<Adc, InitError> {
+        match start(clocks) {
+            Ok(clk_hz) => Ok(Adc {
+                clk_hz,
+                temperature_sensor: false,
+            }),
+            Err(error) => Err(InitError { error, token: self }),
         }
-        let Kind::Linux(clk) = RP1_CLOCKS[id::ADC as usize].kind else {
-            return Err(Error::Precondition);
-        };
-        let (aux, div, hz) = clk
-            .choose(crate::clocks::XOSC_HZ, Round::Down)
-            .ok_or(Error::Precondition)?;
-        let mut r = Mmio;
-        let running = clk.state(&mut r);
-        if running.is_none_or(|s| s.rate_hz != hz) {
-            clk.program(&mut r, aux, div);
-        }
-        clk.set_enabled(&mut r, true);
-        if clk.state(&mut r)
-            != Some(crate::scmi::PhysicalState {
-                rate_hz: hz,
-                enabled: true,
-            })
-        {
-            return Err(Error::Precondition);
-        }
-        write(RESETS_CLR0, RESET_BIT);
-        write(INTE, 0);
-        write(CS, CS_EN | CS_ERR_STICKY);
-        crate::poll(CS, CS_READY, CS_READY).map_err(|_| Error::Timeout)?;
-        Ok(Adc {
-            clk_hz: hz,
-            temperature_sensor: false,
-        })
     }
+}
+
+/// The register part of [`Token::init`]; returns clk_adc.
+fn start(clocks: &crate::clocks::Clocks) -> Result<u32, Error> {
+    if !clocks.still_current() {
+        return Err(Error::Precondition);
+    }
+    let Kind::Linux(clk) = RP1_CLOCKS[id::ADC as usize].kind else {
+        return Err(Error::Precondition);
+    };
+    let (aux, div, hz) = clk
+        .choose(crate::clocks::XOSC_HZ, Round::Down)
+        .ok_or(Error::Precondition)?;
+    let mut r = Mmio;
+    let running = clk.state(&mut r);
+    if running.is_none_or(|s| s.rate_hz != hz) {
+        clk.program(&mut r, aux, div);
+    }
+    clk.set_enabled(&mut r, true);
+    if clk.state(&mut r)
+        != Some(crate::scmi::PhysicalState {
+            rate_hz: hz,
+            enabled: true,
+        })
+    {
+        return Err(Error::Precondition);
+    }
+    write(RESETS_CLR0, RESET_BIT);
+    write(INTE, 0);
+    write(CS, CS_EN | CS_ERR_STICKY);
+    crate::poll(CS, CS_READY, CS_READY).map_err(|_| Error::Timeout)?;
+    Ok(hz)
 }
 
 /// A powered ADC doing one conversion at a time.
@@ -158,6 +194,7 @@ impl Adc {
     }
 
     /// Powers the ADC down and gives the block back (the clock and reset stay as they are).
+    /// There is no conversion to wait for between calls, so this cannot fail.
     pub fn free(self) -> Token {
         write(CS, 0);
         Token { _private: () }

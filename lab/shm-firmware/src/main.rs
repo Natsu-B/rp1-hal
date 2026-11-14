@@ -221,7 +221,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     #[cfg(feature = "adc")]
     let mut adc = {
         let adc = match clocks {
-            Ok(c) => p.adc.init(&c),
+            Ok(c) => p.adc.init(&c).map_err(|e| e.error),
             Err(_) => Err(rp1_hal::adc::Error::Precondition),
         };
         log!("p1 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
