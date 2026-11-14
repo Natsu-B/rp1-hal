@@ -76,7 +76,8 @@ def failures(u0, u10=None, nonce=None, regression=True):
     f0, _, found = v.verify_uart0(u0, nonce)
     if found is None:
         return f0
-    return f0 + v.verify_uart10(uart10() if u10 is None else u10, found, regression)[0]
+    steps = v.UART10_PROOF + (v.UART10_REGRESSION if regression else [])
+    return f0 + v.verify_uart10(uart10() if u10 is None else u10, found, steps)[0]
 
 
 def changed(old, new, text=None):
@@ -213,6 +214,136 @@ class VerifyIrq(unittest.TestCase):
             self.assertEqual(v.main(["--uart0", str(u0), "--uart10", str(u10)]), 0)
             u0.write_bytes(changed("torn=0", "torn=1").encode())
             self.assertEqual(v.main(["--uart0", str(u0), "--uart10", str(u10)]), 1)
+
+
+BOOT = "5eed0001"
+ZERO = "00000000,00000000"
+
+
+def sweep_result(irq, result="ROUTED", reason="wrap1", before=ZERO, after=None, new=ZERO,
+                 hits="wrap0:0/3,wrap1:3/3"):
+    if after is None:
+        bit = (1 << irq) if result in ("ROUTED", "NEW_PENDING") else 0
+        after = f"{bit & 0xffffffff:08x},{bit >> 32:08x}"
+    return (f"IRQ_SWEEP irq={irq} block={v.SWEEP_TABLE[irq]} result={result} reason={reason} "
+            f"detail=0 hits={hits} ispr_before={before} ispr_after={after} new={new} status=10010")
+
+
+def sweep_uart0(nonce=NONCE, results=None):
+    """The UART0 lines of one boot of lab/irq-sweep (values invented)."""
+    results = {7: sweep_result(7), 41: sweep_result(41, "NOT_ROUTED", "-", hits="force:0/3"),
+               1: sweep_result(1, "SKIP", "proc0_in_use", hits="force:0/3"), **(results or {})}
+    lines = ["proc0 clocks programmed=true sys_hz=200000000 uart_hz=50000000",
+             "p0 pwm1 init Some(true) adc init true",
+             f"IRQ_SWEEP_BEGIN lines={len(v.SWEEP_TABLE)} iser={ZERO} ispr={ZERO}"]
+    for irq in v.SWEEP_TABLE:
+        lines.append(f"IRQ_SWEEP_PRE irq={irq} fs=8:1f,9:1f found=0,44570140")
+        lines.append(f"IRQ_SWEEP_TRIAL irq={irq} stage=wrap1 trial=0 pre=0,0 base=0,0 post=80,0 "
+                     "status=10010 intstat=0,0 us=1 clr=0,0")
+        lines.append(results.get(irq, sweep_result(irq)))
+    lines += [f"IRQ_SWEEP_END lines={len(v.SWEEP_TABLE)} iser={ZERO} us=412345",
+              "p0 pcie Ok clocks_programmed=true endpoint_programmed=true perstn_wait_us=1906849 "
+              "link_wait_us=8204 monitor2=0x1b0000",
+              f"IRQ_SWEEP_BOOT boot={BOOT}",
+              "proc0 scmi p14 m7 [3, 0] -> 0 votes=8"]
+    return "".join((f"{l} nonce={nonce}" if l.startswith("IRQ_") else l) + "\r\n" for l in lines)
+
+
+def sweep_uart10(boot=BOOT):
+    return f"""
+  1.00 RPi: BOOTSYS release VERSION:9cd61c53 DATE: 2026/04/14 TIME: 22:20:24
+  4.15 usb_pd_init status 3
+ 16.42 usb_max_current_enable default 0 max-current 3000
+SWEEP_CHECK_BEGIN
+IRQ_NONCE=0x{boot.upper()}
+SWEEP_CHECK_RESULT=PASS
+SWEEP_CHECK_END
+"""
+
+
+def sweep_changed(old, new):
+    text = sweep_uart0()
+    assert old in text, old
+    return text.replace(old, new, 1)
+
+
+class VerifySweep(unittest.TestCase):
+    assertFails = VerifyIrq.assertFails
+
+    def test_results_are_not_failures(self):
+        found, summary = v.verify_sweep(sweep_uart0())
+        self.assertEqual(found, [])
+        self.assertEqual((summary["nonce"], summary["boot"]), (NONCE, BOOT))
+        by_irq = {r["irq"]: r for r in summary["lines"]}
+        self.assertEqual(sorted(by_irq), sorted(v.SWEEP_TABLE))
+        self.assertEqual([by_irq[i]["result"] for i in (7, 41, 1)], ["ROUTED", "NOT_ROUTED", "SKIP"])
+        self.assertEqual(by_irq[7]["funcsel"], "8:1f,9:1f")
+        self.assertEqual(len(by_irq[7]["trials"]), 1)
+        other = sweep_result(9, "OTHER_LINE", "-", after="00000100,00000000", new="00000100,00000000")
+        self.assertEqual(v.verify_sweep(sweep_uart0(results={9: other}))[0], [])
+
+    def test_frame(self):
+        self.assertFails(v.verify_sweep("p0 pcie Ok\n")[0], "no IRQ_SWEEP_BEGIN")
+        end = f"IRQ_SWEEP_END lines=9 iser={ZERO} us=412345 nonce={NONCE}\r\n"
+        self.assertFails(v.verify_sweep(sweep_changed(end, ""))[0], "no IRQ_SWEEP_END", "before IRQ_SWEEP_END")
+        self.assertFails(v.verify_sweep(sweep_changed(end, end + end))[0], "more than once")
+        line = sweep_result(20) + f" nonce={NONCE}\r\n"
+        self.assertFails(v.verify_sweep(sweep_changed(line, ""))[0], "irq=20: missing", "lines=9")
+        self.assertFails(v.verify_sweep(sweep_changed(line, line + line))[0], "irq=20: more than once")
+        self.assertFails(v.verify_sweep(sweep_changed(f"iser={ZERO} ispr", "iser=00000080,00000000 ispr"))[0],
+                         "a line was enabled")
+
+    def test_lines_of_another_boot(self):
+        stale = sweep_result(22) + f" nonce={OTHER}\r\n"
+        mine = sweep_result(22) + f" nonce={NONCE}\r\n"
+        self.assertFails(v.verify_sweep(sweep_changed(mine, stale + mine))[0], "another boot")
+        # Two boots in one capture: the last by default, either by nonce.
+        both = sweep_uart0(OTHER) + sweep_uart0()
+        self.assertEqual(v.verify_sweep(both)[0], [])
+        self.assertEqual(v.verify_sweep(both, OTHER)[0], [])
+        self.assertFails(v.verify_sweep(both, "ffffffff")[0], "0 boots")
+
+    def test_table_and_consistency(self):
+        dma = sweep_result(7).replace("irq=7 block=i2c0", "irq=40 block=dma")
+        self.assertFails(v.verify_sweep(sweep_uart0(results={7: dma}))[0], "must not be swept")
+        wrong = sweep_result(7).replace("block=i2c0", "block=i2c1")
+        self.assertFails(v.verify_sweep(sweep_uart0(results={7: wrong}))[0], "not in the sweep table")
+        unset = sweep_result(7, after=ZERO)
+        self.assertFails(v.verify_sweep(sweep_uart0(results={7: unset}))[0], "does not match ispr_after")
+        abort = sweep_result(7, "ABORT", "output_stuck", after=ZERO)
+        self.assertFails(v.verify_sweep(sweep_uart0(results={7: abort}))[0], "ABORT reason=output_stuck")
+
+    def test_sweep_ends_before_the_link(self):
+        pcie = "p0 pcie Ok clocks_programmed=true endpoint_programmed=true perstn_wait_us=1906849"
+        self.assertFails(v.verify_sweep(sweep_changed(pcie, pcie.replace("1906849", "4294967295")))[0],
+                         "no fresh PCIe bring-up")
+        self.assertFails(v.verify_sweep(sweep_changed("endpoint_programmed=true", "endpoint_programmed=false"))[0],
+                         "no fresh PCIe bring-up")
+        early = sweep_changed("IRQ_SWEEP_PRE irq=7", pcie + " link_wait_us=1 monitor2=0x0\r\nIRQ_SWEEP_PRE irq=7")
+        self.assertFails(v.verify_sweep(early)[0], "before IRQ_SWEEP_END")
+
+    def test_command_line_and_json(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            u0, u10, out = (pathlib.Path(d, n) for n in ("uart0.raw", "uart10.raw", "sweep.json"))
+            u0.write_bytes(sweep_uart0().encode())
+            u10.write_bytes(sweep_uart10().encode())
+            args = ["--sweep", "--uart0", str(u0), "--json", str(out)]
+            self.assertEqual(v.main(args), 0)
+            self.assertEqual(v.main(args + ["--uart10", str(u10)]), 0)
+            summary = json.loads(out.read_text())
+            self.assertEqual(summary["verdict"], "PASS")
+            self.assertEqual(len(summary["lines"]), len(v.SWEEP_TABLE))
+            u10.write_bytes(sweep_uart10("0badf00d").encode())
+            self.assertEqual(v.main(args + ["--uart10", str(u10)]), 1)
+            self.assertEqual(json.loads(out.read_text())["verdict"], "FAIL")
+
+    def test_table_matches_the_firmware_source(self):
+        import re
+        source = pathlib.Path(__file__).with_name("irq-sweep").joinpath("src/sweep.rs").read_text()
+        table = {int(irq): name for irq, name in re.findall(r'irq: (\d+),\s+name: "(\w+)"', source)}
+        self.assertEqual(table, v.SWEEP_TABLE)
 
 
 if __name__ == "__main__":
