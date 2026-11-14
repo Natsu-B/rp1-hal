@@ -85,8 +85,17 @@ error kinds. Other aborts retain `IC_TX_ABRT_SOURCE`. FIFO errors are reported a
 overrun. A 100 ms interval without transfer progress returns `Timeout`; cleanup
 has its own bounded disable wait. Error cleanup requests abort/STOP, then disables
 the controller and acknowledges interrupt state. A failed disable poisons the
-handle; further calls return `Precondition`, requiring a fresh boot/unsafe owner
-reinitialization. There is no GPIO bus-clear sequence or interrupt/DMA implementation.
+handle; further transactions return `Precondition`. There is no GPIO bus-clear sequence
+or interrupt-driven/DMA transfer.
+
+Release (STATIC, host model): `free()` masks the interrupts, closes the RP1 wrapper and
+returns `Parts` (token and pins, still muxed) for a new `init`; the reset stays released.
+The controller is disabled between transactions, so only a poisoned handle has something
+to wait for: `free()` requests the disable again, waits up to 100 ms, and on `Timeout`
+returns `(I2c, Error)` with the interrupt mask unchanged, so the call can be repeated once
+the slave lets go of SCL. `abort()` does not wait: it requests an abort and the disable of
+a controller that is still active, masks the interrupts and returns `Parts`; while the
+controller is still active, `init` fails with `Timeout` and returns the parts again.
 
 STATIC: the polling loop is an `#[isram]` root; `cargo rp1 build` places its callees
 within the 8 KiB budget. Host tests cover FIFO boundaries, operation directions,

@@ -364,6 +364,20 @@ fn disable(io: &mut impl Io) -> Result<(), Error> {
     }
     Ok(())
 }
+/// [`I2c::free`]: the interrupts stay as they are unless the controller is disabled in time.
+fn release(io: &mut impl Io) -> Result<(), Error> {
+    disable(io)?;
+    mask_interrupts(io);
+    Ok(())
+}
+/// [`I2c::abort`]. ABORT only acts on, and is only written to, an enabled controller.
+fn abort(io: &mut impl Io) {
+    if io.read(ENABLE_STATUS) & 1 != 0 {
+        io.write(ENABLE, 3);
+    }
+    io.write(ENABLE, 0);
+    mask_interrupts(io);
+}
 fn check(io: &mut impl Io, start: u32) -> Result<u32, Error> {
     let raw = io.read(RAW);
     if raw & (1 << 6) != 0 {
@@ -478,13 +492,48 @@ impl<const N: u8, const SDA: u8, const SCL: u8> I2c<N, SDA, SCL> {
         self.io().read(CLEAR);
     }
 }
+impl<const N: u8, const SDA: u8, const SCL: u8> I2c<N, SDA, SCL>
+where
+    Pin<SDA>: Sda<N>,
+    Pin<SCL>: Scl<N>,
+{
+    /// Masks the interrupts, closes the RP1 wrapper and gives back the token and the (still
+    /// muxed) pins, ready for [`Parts::init`]. The reset stays released. The controller is
+    /// disabled between transactions, so there is normally nothing to wait for.
+    ///
+    /// The exception is a handle poisoned by a disable that timed out (a slave holding SCL):
+    /// the disable is requested again and waited for up to 100 ms. [`Error::Timeout`] returns
+    /// the driver with its interrupt mask unchanged, to retry or to [`I2c::abort`].
+    pub fn free(self) -> Result<Parts<N, SDA, SCL>, (Self, Error)> {
+        match release(&mut self.io()) {
+            Ok(()) => Ok(self.into_parts()),
+            Err(error) => Err((self, error)),
+        }
+    }
+    /// [`I2c::free`] without the wait: requests an abort (STOP, TX FIFO flushed) and the
+    /// disable of a controller that is still active, and masks the interrupts. The
+    /// controller may stay active on the bus for as long as a slave holds SCL; until it lets
+    /// go, [`Parts::init`] fails with [`Error::Timeout`] and returns the parts again.
+    pub fn abort(self) -> Parts<N, SDA, SCL> {
+        abort(&mut self.io());
+        self.into_parts()
+    }
+    fn into_parts(self) -> Parts<N, SDA, SCL> {
+        Parts {
+            token: Token { _private: () },
+            sda: self._sda.release(),
+            scl: self._scl.release(),
+        }
+    }
+}
 impl<const N: u8, const SDA: u8, const SCL: u8> embedded_hal::i2c::ErrorType for I2c<N, SDA, SCL> {
     type Error = Error;
 }
 impl<const N: u8, const SDA: u8, const SCL: u8> embedded_hal::i2c::I2c for I2c<N, SDA, SCL> {
     /// Empty operations are skipped. Adjacent operations with the same direction continue
     /// without a restart; direction changes restart, and only the final byte gets STOP.
-    /// A 100ms interval without progress times out. Failed disable poisons this handle.
+    /// A 100ms interval without progress times out. A failed disable poisons this handle
+    /// (`Precondition` from then on); [`I2c::free`] and a new `init` recover it.
     fn transaction(&mut self, address: u8, ops: &mut [Operation<'_>]) -> Result<(), Error> {
         let (clocks, depth) = (self.clocks, self.rx_depth);
         run(
@@ -596,6 +645,9 @@ mod tests {
         wrap: u32,
         /// Writes to MASK and IRQ_WRAP, in order.
         interrupt_writes: Vec<(usize, u32)>,
+        /// The controller ignores the disable request (a slave holds SCL).
+        stuck_enabled: bool,
+        enable_writes: Vec<u32>,
     }
     impl Model {
         fn new(depth: usize) -> Self {
@@ -618,6 +670,8 @@ mod tests {
                 mask: 0,
                 wrap: 0,
                 interrupt_writes: Vec::new(),
+                stuck_enabled: false,
+                enable_writes: Vec::new(),
             }
         }
     }
@@ -637,6 +691,7 @@ mod tests {
                 TYPE => 0x4457_0140,
                 MASK => self.mask,
                 IRQ_WRAP => self.wrap,
+                ENABLE_STATUS => u32::from(self.stuck_enabled),
                 // IC_RX_BUFFER_DEPTH - 1 in bits 15:8.
                 PARAM => (self.depth as u32 - 1) << 8,
                 _ => 0,
@@ -653,6 +708,7 @@ mod tests {
                     self.wrap = value;
                     self.interrupt_writes.push((offset, value));
                 }
+                ENABLE => self.enable_writes.push(value),
                 _ => {}
             }
             if offset != DATA {
@@ -873,6 +929,41 @@ mod tests {
         let ops = &mut [Operation::Write(&[1])];
         run(&mut m, &CLOCKS, &mut i2c.usable, 0x2d, ops, 2).unwrap();
         assert_eq!(m.interrupt_writes, [(MASK, 0), (MASK, STOP_DET | TX_ABRT)]);
+    }
+
+    #[test]
+    fn free_masks_interrupts_and_keeps_them_while_the_controller_stays_enabled() {
+        let mut m = Model::new(2);
+        (m.mask, m.wrap) = (0x250, 0x9);
+        assert_eq!(release(&mut m), Ok(()));
+        assert_eq!(
+            (m.mask, m.wrap, m.enable_writes.as_slice()),
+            (0, 0x8, &[0][..])
+        );
+
+        let mut m = Model::new(2);
+        (m.mask, m.wrap, m.stuck_enabled) = (0x250, 0x9, true);
+        let before = m.tick;
+        assert_eq!(release(&mut m), Err(Error::Timeout));
+        assert_eq!((m.mask, m.wrap), (0x250, 0x9));
+        assert_eq!(m.tick.wrapping_sub(before), 101_000);
+        // The slave lets go: the same call now succeeds.
+        m.stuck_enabled = false;
+        assert_eq!(release(&mut m), Ok(()));
+        assert_eq!((m.mask, m.wrap), (0, 0x8));
+    }
+    #[test]
+    fn abort_requests_stop_and_disable_without_waiting() {
+        let mut m = Model::new(2);
+        (m.mask, m.wrap, m.stuck_enabled) = (0x250, 0x9, true);
+        let before = m.tick;
+        abort(&mut m);
+        assert_eq!(m.enable_writes, [3, 0]);
+        assert_eq!((m.mask, m.wrap, m.tick), (0, 0x8, before));
+        // An idle controller is not enabled just to be aborted.
+        let mut m = Model::new(2);
+        abort(&mut m);
+        assert_eq!(m.enable_writes, [0]);
     }
 
     /// `?` on an init error inside a function returning the bus error (compile check).
