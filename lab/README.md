@@ -215,7 +215,7 @@ after boot. The proof ends when Linux has rung the doorbell 1000 times.
 
 | Marker (UART0) | Shows | Decides |
 |---|---|---|
-| `IRQ_PROOF_BEGIN sweep=` | start of a boot's proof | cuts the capture |
+| `IRQ_PROOF_BEGIN sweep=0` | start of a boot's proof | cuts the capture; `sweep=0` (no estimated line is raised in this image) |
 | `IRQ_P0_TIMER0`, `IRQ_P1_TIMER1` | 1000 alarm interrupts at 1 kHz enter the handler and return | `n=1000`, `ipsr=42` / `43`, `us` within 999000..1010000, `pre_pending=0`, `post_pending=0` |
 | `IRQ_INTF_ONLY core= pin=` | whether `PROCn_INTF` alone (INTE = 0) raises INTS and the NVIC line | only `pre_pending=0`, `post_pending=0`; `ints`, `nvic`, `need_inte` are findings (`IRQ_INTF_INTE` follows if INTE had to be set) |
 | `IRQ_P0_GPIO22` | proc0's `IO_BANK0` handler, entered by `PinIrq::force` | `n=100`, `ipsr=16`, pending 0 before and after |

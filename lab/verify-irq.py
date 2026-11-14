@@ -65,7 +65,7 @@ TIMER = {"n": 1000, "us": between(999_000, 1_010_000), "pre_pending": 0, "post_p
 WRAP = {"pre_pending": 0, "off_stat": 1, "off_pending": 0, "on_n": 1, "post_pending": 0}
 INTF = {"pre_pending": 0, "post_pending": 0}
 CONTRACT = {
-    "IRQ_PROOF_BEGIN": {},
+    "IRQ_PROOF_BEGIN": {"sweep": 0},
     "IRQ_P0_TIMER0": {**TIMER, "ipsr": 42},
     "IRQ_P1_TIMER1": {**TIMER, "ipsr": 43},
     "IRQ_INTF_ONLY core=0": {**INTF, "pin": 22},

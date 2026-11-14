@@ -191,6 +191,7 @@ class VerifyIrq(unittest.TestCase):
         self.assertFails(failures(uart0(), proof_only), "SHM_PASS")
         self.assertEqual(failures(uart0(), proof_only, regression=False), [])
         self.assertFails(failures(uart0(), uart10() + "Kernel panic - not syncing\n"), "Kernel panic")
+        self.assertFails(failures(changed("IRQ_PROOF_BEGIN sweep=0", "IRQ_PROOF_BEGIN sweep=1")), "sweep=1")
         # The stack figure after each shm command is part of the regression.
         short = uart0().replace("p1 shm cmd=13 ", "p1 shm command 13 ")
         self.assertFails(failures(short), "11 lines, not 12")
@@ -207,7 +208,7 @@ class VerifyIrq(unittest.TestCase):
             printed = [f for f in formats
                        if re.fullmatch(f.split()[0].replace("{}", r"\d"), name)]
             self.assertTrue(printed, f"{name} is not in the firmware")
-            fields = {field for f in printed for field in re.findall(r"([a-z][a-z0-9_]*)=\{", f)}
+            fields = {field for f in printed for field in re.findall(r"([a-z][a-z0-9_]*)=[{\d]", f)}
             self.assertLessEqual(set(wanted), fields, key)
 
     def test_command_line(self):
