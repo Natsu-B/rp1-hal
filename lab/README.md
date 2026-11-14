@@ -230,9 +230,7 @@ after boot. The proof ends when Linux has rung the doorbell 1000 times.
 | `IRQ_PROOF_PASS` / `IRQ_PROOF_FAIL <item>` | verdict; a failed item also prints `IRQ_PROOF_FAIL <item>` at once | PASS is the last marker, no FAIL line |
 
 After the proof each `p1 shm cmd=` line carries `stack_free=`, which must stay at 512 or more.
-`--features sweep` adds the frame of the estimated-line sweep (`IRQ_SWEEP`, `IRQ_SWEEP_DONE`);
-its table is empty until the register procedures are reviewed, and a swept block must be
-declared for RP1 first. Sweep results are findings, never pass conditions.
+The lines whose number is only an estimate are not raised here; `irq-sweep` (below) does that.
 
 Build a boot set with `FIRMWARE_PKG=irq-proof bash lab/build-rp1boot.sh` (the initramfs needs
 `shm-linux`, `linux-doorbell` and the UIO modules, as for `check-shm.sh`). On the Linux console

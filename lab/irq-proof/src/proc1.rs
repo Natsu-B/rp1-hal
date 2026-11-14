@@ -113,8 +113,6 @@ pub fn run(parts: Parts) {
         }
         None => expect(false, "p1_spi0_init"),
     }
-    #[cfg(feature = "sweep")]
-    crate::sweep::run(idle);
 
     DOORBELL.reset();
     irq.IO_BANK0.enable();

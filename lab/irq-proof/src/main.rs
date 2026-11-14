@@ -17,8 +17,6 @@ mod proc0;
 mod proc1;
 mod proof;
 mod stack;
-#[cfg(feature = "sweep")]
-mod sweep;
 use proof::{mark, now};
 
 /// proc1's figures for the final lines ([`proc1::Report`]).
@@ -81,7 +79,8 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let nonce = make_nonce([waits[0], waits[1], now()]);
     proof::set_nonce(nonce);
     proof::publish_nonce();
-    mark!("IRQ_PROOF_BEGIN sweep={}", cfg!(feature = "sweep") as u32);
+    // `sweep=0`: this image raises no line whose number is an estimate (lab/irq-sweep does).
+    mark!("IRQ_PROOF_BEGIN sweep=0");
     NONCE.producer(&mut core).push(nonce).unwrap();
     p.proc1.launch(&mut core).unwrap();
     let i2c = p
