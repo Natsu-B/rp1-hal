@@ -5,12 +5,14 @@ use core::{
 };
 
 // Ordinary statics are per core (DSRAM, where RMW atomics work), so both are this core's own.
-/// Set while this core's code holds or is taking the lock. A handler that interrupted it must
-/// not wait: the holder cannot continue until the handler returns.
+/// Set while this core's code holds or is taking the lock. A call that finds it set is running
+/// inside that holder (a handler that interrupted it, or a `Display` impl it is formatting) and
+/// must neither wait nor take the lock: the holder cannot continue until this call returns.
 static IN_LOG: AtomicBool = AtomicBool::new(false);
 static DROPPED: AtomicU32 = AtomicU32::new(0);
 
-/// Messages this core's interrupt handlers dropped because the log was busy.
+/// Messages this core dropped because the log was busy: all those logged while this core was
+/// already writing one, and those a handler logged while the other core was writing.
 pub fn dropped() -> u32 {
     DROPPED.load(Ordering::Relaxed)
 }
@@ -54,8 +56,10 @@ impl Logger {
         Ok(())
     }
     /// Writes one message to UART0 without masking interrupts. Main code waits for the other
-    /// core's message to finish. A handler never waits: if this core or the other one is
-    /// already writing, the message is dropped, counted in [`dropped`], and `Ok` is returned.
+    /// core's message to finish. A handler never waits for the other core. A message logged
+    /// while this core is already writing one (from a handler, or from a `Display` impl the
+    /// outer message is formatting) is never written. A message that is not written is dropped,
+    /// counted in [`dropped`], and `Ok` is returned.
     /// Interrupts stay enabled, so the other core may wait while a holder is preempted, and a
     /// handler that gets the lock transmits inside the handler.
     pub fn write(&self, args: fmt::Arguments<'_>) -> fmt::Result {
@@ -92,12 +96,15 @@ impl Logger {
     }
     /// Takes the lock for `core`; a handler tries once. `false`: not taken.
     fn lock(&self, core: usize, in_handler: bool) -> bool {
-        if in_handler && IN_LOG.load(Ordering::Acquire) {
+        // Main code is refused too: a nested call would share the holder's `want` and clear it
+        // in its own unlock, letting the other core in mid-message.
+        if IN_LOG.load(Ordering::Acquire) {
             return false;
         }
         IN_LOG.store(true, Ordering::Release);
         // A handler between this store and the `want` store must already see IN_LOG, or its
-        // unlock would clear our `want`.
+        // unlock would clear our `want`. A handler before this store has cleared IN_LOG again
+        // by the time it returns, so what the load above saw still holds.
         compiler_fence(Ordering::SeqCst);
         let other = 1 - core;
         self.want[core].store(1, Ordering::Release);
@@ -136,10 +143,13 @@ mod tests {
         assert!(log.lock(0, true));
         log.unlock(0);
 
-        // A handler that interrupted this core's message leaves the lock alone.
+        // A handler that interrupted this core's message leaves the lock alone, and so does a
+        // message logged by the one being formatted.
         assert!(log.lock(0, false));
-        assert!(!log.lock(0, true));
-        assert!(wants(0) && IN_LOG.load(Ordering::Acquire));
+        for in_handler in [true, false] {
+            assert!(!log.lock(0, in_handler));
+            assert!(wants(0) && IN_LOG.load(Ordering::Acquire));
+        }
         log.unlock(0);
 
         // The other core is writing: a handler backs out, main code waits until it is done.
@@ -154,17 +164,19 @@ mod tests {
             log.want[1].store(0, Ordering::Release);
             assert!(main.join().unwrap());
         });
+        // IN_LOG is a static: the next test must find it clear.
+        log.unlock(0);
     }
 
     #[test]
-    fn only_a_refused_handler_message_is_counted_as_dropped() {
+    fn only_a_refused_message_is_counted_as_dropped() {
         let _turn = IN_LOG_USERS.lock().unwrap();
         let log = unsafe { Logger::new() };
         let before = dropped();
         assert!(log.lock_or_count_drop(0, false));
         assert_eq!(dropped(), before);
         assert!(!log.lock_or_count_drop(0, true));
-        assert!(!log.lock_or_count_drop(0, true));
+        assert!(!log.lock_or_count_drop(0, false));
         assert_eq!(dropped(), before + 2);
         log.unlock(0);
         assert!(log.lock_or_count_drop(0, true));
@@ -214,14 +226,30 @@ mod tests {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
     struct Caller {
         core: usize,
-        /// 0: main code. Otherwise a handler, which preempts the lower levels of its core.
+        /// A caller preempts the lower levels of its core. Main code has level 0.
         level: u8,
+        in_handler: bool,
+        /// Set for a message logged by a `Display` impl: the level of the caller that formats
+        /// it. Such a call can only begin while that caller holds the lock.
+        nested_in: Option<u8>,
         next: Next,
     }
     impl Caller {
-        fn new(core: usize, level: u8) -> Self {
-            let next = Next::CheckInLog;
-            Self { core, level, next }
+        fn new(core: usize, level: u8, in_handler: bool) -> Self {
+            Self {
+                core,
+                level,
+                in_handler,
+                nested_in: None,
+                next: Next::CheckInLog,
+            }
+        }
+        /// A message logged from main code while main code (level 0) formats its own message.
+        fn nested_in_main(core: usize, level: u8) -> Self {
+            Self {
+                nested_in: Some(0),
+                ..Self::new(core, level, false)
+            }
         }
         fn holds_lock(&self) -> bool {
             self.next == Next::ClearWant { taken: true }
@@ -234,9 +262,9 @@ mod tests {
         }
         /// Performs the next load or store. `false`: main code that keeps spinning, or done.
         fn step(&mut self, words: &mut Words) -> bool {
-            let (core, other, in_handler) = (self.core, 1 - self.core, self.level > 0);
+            let (core, other, in_handler) = (self.core, 1 - self.core, self.in_handler);
             self.next = match self.next {
-                Next::CheckInLog if in_handler && words.in_log[core] => Next::Done { taken: false },
+                Next::CheckInLog if words.in_log[core] => Next::Done { taken: false },
                 Next::CheckInLog => Next::SetInLog,
                 Next::SetInLog => {
                     words.in_log[core] = true;
@@ -298,7 +326,7 @@ mod tests {
             log.want[1 - core].store(u32::from(other_wants), Ordering::Relaxed);
             log.turn.store(words.turn as u32, Ordering::Relaxed);
 
-            let mut model = Caller::new(core, u8::from(in_handler));
+            let mut model = Caller::new(core, 0, in_handler);
             while !model.holds_lock() && model.step(&mut words) {}
             if !model.holds_lock() && !model.is_done() {
                 // The real `lock` would spin forever here; the model must have a reason to.
@@ -320,19 +348,22 @@ mod tests {
         IN_LOG.store(false, Ordering::Relaxed);
     }
 
-    /// Every schedule of four callers that each log once: on core 0 main code, a handler and a
-    /// handler that preempts it, and main code on core 1.
+    /// Every schedule of five callers that each log at most once: on core 0 main code, a
+    /// message logged while that one is formatted, a handler and a handler that preempts it, and
+    /// main code on core 1.
     #[test]
     fn every_interleaving_keeps_exclusion_and_handlers_never_wait() {
         let callers = [
-            Caller::new(0, 0),
-            Caller::new(0, 1),
-            Caller::new(0, 2),
-            Caller::new(1, 0),
+            Caller::new(0, 0, false),
+            Caller::nested_in_main(0, 1),
+            Caller::new(0, 2, true),
+            Caller::new(0, 3, true),
+            Caller::new(1, 0, false),
         ];
         let mut todo = std::vec![(IDLE, callers)];
         let mut seen = std::collections::HashSet::new();
         let mut handler_results = std::collections::HashSet::new();
+        let mut nested_results = std::collections::HashSet::new();
         while let Some(state @ (words, callers)) = todo.pop() {
             if !seen.insert(state) {
                 continue;
@@ -348,7 +379,12 @@ mod tests {
                         && c.has_started()
                         && !c.is_done()
                 });
-                if preempted {
+                let formatter_holds_lock = caller.nested_in.is_none_or(|level| {
+                    callers
+                        .iter()
+                        .any(|c| c.core == caller.core && c.level == level && c.holds_lock())
+                });
+                if preempted || !(caller.has_started() || formatter_holds_lock) {
                     continue;
                 }
                 let (mut words, mut callers) = state;
@@ -357,7 +393,7 @@ mod tests {
                     stuck = false;
                 } else {
                     let spins = !caller.is_done();
-                    assert!(!spins || caller.level == 0, "a handler waits: {state:?}");
+                    assert!(!spins || !caller.in_handler, "a handler waits: {state:?}");
                 }
             }
             // No schedule loops (a caller only goes back to ReadWant after another one advanced),
@@ -370,8 +406,12 @@ mod tests {
                 assert_eq!(released, IDLE, "{state:?}");
                 for caller in callers {
                     match caller.next {
-                        Next::Done { taken } if caller.level > 0 => {
+                        Next::Done { taken } if caller.in_handler => {
                             handler_results.insert((caller.level, taken));
+                        }
+                        // The formatter may also finish before the nested message is logged.
+                        next if caller.nested_in.is_some() => {
+                            nested_results.insert(next);
                         }
                         next => assert_eq!(next, Next::Done { taken: true }, "{state:?}"),
                     }
@@ -380,5 +420,9 @@ mod tests {
         }
         // Both handlers were seen to log and to drop: the schedules are not all of one kind.
         assert_eq!(handler_results.len(), 4);
+        // A nested message is always dropped.
+        let nested_results = std::vec::Vec::from_iter(nested_results);
+        assert!(nested_results.contains(&Next::Done { taken: false }));
+        assert!(nested_results.len() <= 2 && !nested_results.contains(&Next::Done { taken: true }));
     }
 }
