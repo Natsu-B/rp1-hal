@@ -21,6 +21,18 @@ limit() {
     wait "$watchdog" 2>/dev/null
     return $rc
 }
+# dt_disabled NAME NODE: RP1 owns the block, so Linux's node must exist and be disabled
+# (a missing status property means okay).
+dt_disabled() {
+    found=
+    for path in $(find /sys/firmware/devicetree/base -name "$2"); do
+        st=$(cat "$path/status" 2>/dev/null)
+        echo "$1_DT=$path status=${st:-none}"
+        found=1
+        [ "$st" = disabled ] || fail "$1_dt"
+    done
+    [ -n "$found" ] || { echo "$1_DT=missing"; fail "$1_dt"; }
+}
 echo IRQ_CHECK_BEGIN
 uname -a
 insmod /bin/uio.ko
@@ -36,13 +48,8 @@ done
 # UART0 lines of the same boot.
 echo IRQ_NONCE=$(busybox devmem 0x1f0040c028 32)
 # The blocks whose interrupts the proof raises must be RP1's: Linux's nodes disabled.
-for node in i2c@74000 spi@50000; do
-    for path in $(find /sys/firmware/devicetree/base -name "$node"); do
-        st=$(cat "$path/status" 2>/dev/null)
-        echo "IRQ_DT=$path status=${st:-none}"
-        [ "$st" = disabled ] || fail "dt_$node"
-    done
-done
+dt_disabled I2C1 i2c@74000
+dt_disabled SPI0 spi@50000
 limit 30 /bin/linux-doorbell "$L" "$D" 1000
 rc=$?; echo DOORBELL_BEFORE_RC=$rc; [ $rc -eq 0 ] || fail doorbell_before
 # shm-linux has a 180 s limit per request; the whole run normally takes well under a minute.
