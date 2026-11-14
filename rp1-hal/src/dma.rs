@@ -399,6 +399,8 @@ impl<const N: u8> Transfer<'_, N> {
         self.result
     }
     /// Polls until done or `timeout_us` passed (then stops it and returns [`Error::Timeout`]).
+    /// Every value expires, `u32::MAX` after about 71.6 minutes; only stopping a block that
+    /// has timed out may then wait without a deadline (module docs, Cancellation).
     pub fn wait(mut self, timeout_us: u32) -> Result<(), Error> {
         let r = match self.result {
             Some(r) => r,
@@ -535,12 +537,19 @@ fn poll_block(io: &mut impl Hardware, n: u8) -> Option<Result<(), Error>> {
 
 #[rp1_rt::isram]
 fn wait_block(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<(), Error> {
-    let start = io.now_us();
+    // The timer wraps every 2^32 us. Summing the steps between polls in 64 bits lets every
+    // `timeout_us` expire; a wrapped 32-bit difference never exceeds `u32::MAX` and can jump
+    // back below a timeout close to it.
+    let mut last = io.now_us();
+    let mut elapsed_us = 0u64;
     loop {
         if let Some(r) = poll_block(io, n) {
             return r;
         }
-        if io.now_us().wrapping_sub(start) > timeout_us {
+        let now = io.now_us();
+        elapsed_us += u64::from(now.wrapping_sub(last));
+        last = now;
+        if elapsed_us > u64::from(timeout_us) {
             if let Some(r) = poll_block(io, n) {
                 return r;
             }
@@ -625,6 +634,9 @@ mod tests {
         regs: BTreeMap<usize, u32>,
         writes: Vec<(usize, u32)>,
         now: u32,
+        /// Extra microseconds per `now_us` call.
+        skip: u32,
+        wraps: u32,
         fault: u32,
         stuck: bool,
         resist: u8,
@@ -725,8 +737,11 @@ mod tests {
     }
     impl Hardware for Fake {
         fn now_us(&mut self) -> u32 {
-            self.now += 1;
-            self.now
+            let (now, wrapped) = self.now.overflowing_add(1 + self.skip);
+            self.wraps += u32::from(wrapped);
+            assert!(self.wraps < 2, "waited for two timer periods");
+            self.now = now;
+            now
         }
     }
     fn running() -> Fake {
@@ -774,6 +789,19 @@ mod tests {
             unsafe { ring_copy(&mut f, 1, 0x2000_1000, 0x8100_0000, 64) },
             Err(Error::Timeout)
         );
+        assert_eq!(f.regs[&(BASE + common::CHEN)] & 2, 0);
+    }
+
+    #[test]
+    fn the_longest_timeout_expires_after_the_timer_wraps() {
+        let mut f = running();
+        f.stuck = true;
+        f.skip = 1 << 28;
+        let s = BusAddr(0xc0_2000_0000);
+        unsafe { start_block(&mut f, 1, s, s, 64) }.unwrap();
+        assert_eq!(wait_block(&mut f, 1, u32::MAX), Err(Error::Timeout));
+        // Not before the whole timeout had passed.
+        assert_eq!(f.wraps, 1);
         assert_eq!(f.regs[&(BASE + common::CHEN)] & 2, 0);
     }
 
