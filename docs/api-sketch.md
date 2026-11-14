@@ -275,6 +275,53 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
   通常の再起動では EEPROM のブートローダーが RP1 をリセットするので、書き込みは止まる。
 - Linux 側 uncached の速度は上記（HW）。M3 から DDR を読む遅延・帯域と、Linux 側 cached の速度は未測定。
 
+### 4.4 ドライバの解放・中止・エラー
+
+この節は実装済みの契約（STATIC: 偽レジスタを使うホスト試験。HW 未検証）。名前は rp-hal に合わせ、丁寧な解放は `free`、
+強制的な停止は `abort` とする。
+
+| 操作 | 形 | 意味 |
+|---|---|---|
+| 丁寧な解放 | `fn free(self) -> Result<資源, (Self, Error)>` | ハードが静止するまで（上限つき、経過時間で）待ち、割り込みをマスクし、ブロックを止めて資源を返す。失敗時は何も止めずにドライバ自身をエラーと一緒に返すので、呼び出し側はやり直せる |
+| 中止 | `fn abort(self) -> 資源` | 待たない・失敗しない。何が捨てられ、何が保証されるかを各ドライバの doc に書く |
+| 失敗しない解放 | `fn free(self) -> 資源` | 待つものが無いドライバ（`Adc`、`Dma`、`spi::Device`）。`abort` は無い |
+| 初期化の失敗 | `Err(InitError { error, 資源.. })` | `init` が消費した token とピンを返す。`?` は `InitError` をそのドライバの `Error` に変換する |
+
+返る資源は `init` が消費したもの: `uart::Parts` / `i2c::Parts` / `spi::Parts`（そのまま `init` し直せる）、`pwm::Token`、
+PWM 出力は `(Channel, Pin)`、ADC と DMA は `Token`。
+
+| ドライバ | `free` が待つもの（失敗） | `abort` で捨てられるもの | `abort` 後の状態 |
+|---|---|---|---|
+| `Uart` | 送信完了 BUSY=0（`Timeout`） | TX FIFO の未送信分、未読の受信分 | 割り込みマスク、UART 無効、FIFO 空。送出中の 1 文字は PL011 が最後まで出す（DOC） |
+| `I2c` | 通常は無し。disable が timeout した（毒された）ハンドルだけ再度 100 ms 待つ（`Timeout`） | 進行中の転送（STOP を要求） | 割り込みマスク、disable 要求済み。スレーブが SCL を離すまでコントローラは動作中のままで、その間の `init` は `Timeout` |
+| `Spi` | バスの静止 TFE かつ BUSY=0、100 ms（`Timeout`） | 送出中のフレーム（途中で切れる）と両 FIFO | 割り込みマスク、コントローラ無効、SCK 停止 |
+| `pwm::Channels` / `Output` | clk_pwm が 50 MHz で動作中であること（`Precondition`） | — | 停止を書くが、クロックが止まっていると反映されないことがある（HW 未検証）。`Token::init` がクロックを起動し直して全チャネルを止める |
+| DMA の `Transfer` | — | `cancel()` がブロックの残りを捨てる | 他と違い上限が無い: DMAC がバッファに触れなくなるまで戻らない（[dma.md](dma.md)）。動作中のブロックのバッファを返す `free` は無い |
+
+GPIO の `Pin` と `timer::Alarm` はそれ自体が資源で、解放するドライバを持たない。
+
+```rust
+// 送信が終わらなければ uart が戻るので、待ち直すか、あきらめて abort する。
+let parts = match uart.free() {
+    Ok(parts) => parts,
+    Err((uart, _timeout)) => uart.abort(),
+};
+let mut uart = parts.init(&clocks, 9_600).unwrap();    // 返った Parts でそのまま初期化し直せる
+```
+
+#### UART のエラーと timeout
+
+- `uart::Error` は受信エラーを `Overrun` / `Break` / `Parity` / `Framing` に分け、ほかに `Timeout` / `Invalid`（baud）/
+  `Precondition`（クロック）を持つ。`embedded_io::ErrorKind` は `Break`・`Parity`・`Framing` → `InvalidData`、`Timeout` → `TimedOut`、
+  `Invalid` → `InvalidInput`、`Overrun`・`Precondition` → `Other`（overrun は読めた文字は正しく、後続が欠けたという意味で、対応する kind が無い）。
+  エラー付きで受信した文字は捨て、その位置でエラーを返す。
+- 待ちはすべて 1 MHz タイマーの経過時間で測る（ポーリング回数ではない）。上限は `Uart::set_timeout_us`（既定 100 ms）で、
+  TX FIFO の空き待ち・受信待ち・`flush` の送信完了待ちのそれぞれに掛かる。FIFO が満杯のとき送信完了まで 330 ビット時間かかるので、
+  3300 baud 未満では既定値より長くする。
+- `Uart::write(&[u8]) -> Result<usize, Error>` は embedded-io の `write` と同じ: 最初の 1 byte 分だけ FIFO の空きを待ち、待たずに入る分を
+  入れて、入れた数を返す。`Timeout` は 1 byte も入らなかったときだけなので、同じデータを書き直しても重複しない。
+  「FIFO に入った」と「線に出終わった」は別で、後者は `flush`（BUSY=0 を待つ）。`embedded_io::Read::read` は 1 回に 1 byte。
+
 ## 5. 何がエラーになるか
 
 方針: 誤用はリンク後に見つけるのではなく、型と配置で書けなくする（design.md §5）。
