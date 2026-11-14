@@ -44,8 +44,9 @@ def uart0(nonce=NONCE):
         "IRQ_MASKED p0_max_us=3 p1_max_us=2",
         "IRQ_PROOF_PASS",
         "p0 shm enable Ok(())",
-        "p1 shm cmd=1 count=1000000 errors=0 us=2000000 stack_free=880",
     ]
+    lines += [f"p1 shm cmd={c} count=1000000 errors=0 us=2000000 stack_free=880"
+              for c in (1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13)]
     # The firmware ends every marker line with the nonce, except a handler's log line.
     return "".join(
         (f"{l} nonce={nonce}" if l.startswith("IRQ_") and "LOG_ISR" not in l else l) + "\r\n"
@@ -73,7 +74,7 @@ IRQ_CHECK_END
 
 
 def failures(u0, u10=None, nonce=None, regression=True):
-    f0, _, found = v.verify_uart0(u0, nonce)
+    f0, _, found = v.verify_uart0(u0, nonce, regression)
     if found is None:
         return f0
     steps = v.UART10_PROOF + (v.UART10_REGRESSION if regression else [])
@@ -190,6 +191,10 @@ class VerifyIrq(unittest.TestCase):
         self.assertFails(failures(uart0(), proof_only), "SHM_PASS")
         self.assertEqual(failures(uart0(), proof_only, regression=False), [])
         self.assertFails(failures(uart0(), uart10() + "Kernel panic - not syncing\n"), "Kernel panic")
+        # The stack figure after each shm command is part of the regression.
+        short = uart0().replace("p1 shm cmd=13 ", "p1 shm command 13 ")
+        self.assertFails(failures(short), "11 lines, not 12")
+        self.assertEqual(failures(short, proof_only, regression=False), [])
 
     def test_contract_matches_the_firmware_source(self):
         # Every field the checker decides on is one the firmware prints in that marker.

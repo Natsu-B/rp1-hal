@@ -39,6 +39,8 @@ import sys
 MIN_STACK_FREE = 512
 MAX_MASKED_US = 100
 LOG_MAIN_LINES = 20
+# shm-linux's default suite: commands 1..8 and 10..13, each answered with a `p1 shm cmd=` line.
+SHM_COMMANDS = 12
 
 MARKER = re.compile(r"\bIRQ_[A-Z0-9_]+\b")
 FIELD = re.compile(r"\b([a-z][a-z0-9_]*)=(\S+)")
@@ -119,8 +121,9 @@ def boots(lines, start):
     return [lines[a:b] for a, b in zip(at, at[1:] + [len(lines)])]
 
 
-def verify_uart0(text, nonce=None):
-    """Returns (failures, info, nonce) for the selected boot of a UART0 capture."""
+def verify_uart0(text, nonce=None, regression=True):
+    """Returns (failures, info, nonce) for the selected boot of a UART0 capture. With
+    `regression`, proc1's stack must also have been reported after each shm command."""
     found = boots(text.splitlines(), r"\bIRQ_PROOF_BEGIN\b")
     if not found:
         return ["UART0: no IRQ_PROOF_BEGIN"], [], None
@@ -135,13 +138,15 @@ def verify_uart0(text, nonce=None):
             return [f"UART0: {len(matching)} boots with nonce {nonce}"], [], nonce
         boot = matching[0]
 
-    failures, info, seen, order = [], [], {}, []
+    failures, info, seen, order, commands = [], [], {}, [], 0
     for line in boot:
         parsed = parse(line)
         if parsed is None:
             m = re.search(r"\bp1 shm cmd=\d+ .*\bstack_free=(\d+)", line)
-            if m and int(m.group(1)) < MIN_STACK_FREE:
-                failures.append(f"UART0 stack after a shm command: {line.strip()}")
+            if m:
+                commands += 1
+                if int(m.group(1)) < MIN_STACK_FREE:
+                    failures.append(f"UART0 stack after a shm command: {line.strip()}")
             continue
         key, fields = parsed
         name = key.split()[0]
@@ -179,6 +184,8 @@ def verify_uart0(text, nonce=None):
             ok = value is not None and (want(value) if callable(want) else value == want)
             if not ok:
                 failures.append(f"UART0 {key}: {field}={fields.get(field)}")
+    if regression and commands < SHM_COMMANDS:
+        failures.append(f"UART0 stack after shm commands: {commands} lines, not {SHM_COMMANDS}")
     if order and order[-1] != "IRQ_PROOF_PASS" and "IRQ_PROOF_PASS" in order:
         failures.append(f"UART0 {order[-1]}: after IRQ_PROOF_PASS")
 
@@ -432,7 +439,7 @@ def main(argv):
         return main_sweep(a)
     if not a.uart0 or not a.uart10:
         p.error("give --uart0 and --uart10 (or set IRQ_UART0 and IRQ_UART10)")
-    failures, info, nonce = verify_uart0(read_text(a.uart0), a.nonce)
+    failures, info, nonce = verify_uart0(read_text(a.uart0), a.nonce, regression=not a.proof_only)
     if nonce is not None and number("0x" + nonce) is not None:
         steps = UART10_PROOF + ([] if a.proof_only else UART10_REGRESSION)
         more, more_info = verify_uart10(read_text(a.uart10), nonce, steps)
