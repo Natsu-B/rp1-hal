@@ -76,7 +76,7 @@ CONTRACT = {
     "IRQ_LOG": {"main_lines": LOG_MAIN_LINES, "isr_dropped": at_least(1),
                 "drop_max_us": at_most(MAX_MASKED_US)},
     "IRQ_DEFAULT": {"irq": 28, "count": 1, "masked": 1, "pre_count": 0, "pre_pending": 0},
-    "IRQ_P1_GPIO27": {"n": 1000, "ipsr": 16, "seen": at_least(1000)},
+    "IRQ_P1_GPIO27": {"ipsr": 16, "seen": at_least(1000)},
     "IRQ_XCORE": {"p0_seen_27": 0, "p1_seen_26": 0},
     "IRQ_UNHANDLED": {"p0": 0, "p1": 1},
     "IRQ_STACK": {"p0_free": at_least(MIN_STACK_FREE), "p1_free": at_least(MIN_STACK_FREE)},

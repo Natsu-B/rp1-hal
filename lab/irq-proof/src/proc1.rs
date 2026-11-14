@@ -316,8 +316,7 @@ pub fn report(tx: &mut Producer<'_, u32, 8, Proc1, Proc0>, stack_free: u32) {
     REPORTED.store(true, Relaxed);
     let ipsr = DOORBELL.ipsr();
     mark!(
-        "IRQ_P1_GPIO27 n={} ipsr={} seen={}",
-        DOORBELLS,
+        "IRQ_P1_GPIO27 ipsr={} seen={}",
         ipsr,
         DOORBELL.count()
     );

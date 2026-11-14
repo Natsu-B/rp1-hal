@@ -37,7 +37,7 @@ def uart0(nonce=NONCE):
         "IRQ_INTF_ONLY core=1 pin=27 pre_pending=0 ints=1 nvic=1 post_pending=0 need_inte=0",
         "IRQ_WRAP spi0 pre_pending=0 off_stat=1 off_pending=0 on_n=1 ipsr=35 post_pending=0",
         "proc0 scmi p14 m7 [3, 0] -> 0 votes=8",
-        "IRQ_P1_GPIO27 n=1000 ipsr=16 seen=1000",
+        "IRQ_P1_GPIO27 ipsr=16 seen=1000",
         "IRQ_XCORE p0_seen_27=0 p1_seen_26=0",
         "IRQ_UNHANDLED p0=0 p1=1",
         "IRQ_STACK p0_free=1320 p1_free=1104 p0_size=2048 p1_size=2048",

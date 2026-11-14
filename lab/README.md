@@ -223,7 +223,7 @@ after boot. The proof ends when Linux has rung the doorbell 1000 times.
 | `IRQ_CS` | main updates a two-word pair in critical sections against a 10 kHz handler | `iters>=100000`, `isr_n>=1000`, `torn=0`, `control_torn>=1` (the same update unmasked must be caught), `max_masked_us<=100` |
 | `IRQ_LOG`, `IRQ_LOG_MAIN i=`, `IRQ_LOG_ISR k=` | a handler's `log!` is dropped without waiting while main writes | 20 main lines in order, `isr_dropped>=1`, `drop_max_us<=100`, as many `IRQ_LOG_ISR` lines as `isr_logged` |
 | `IRQ_DEFAULT` | a line enabled without a handler is masked by the default handler; the core goes on | `irq=28 count=1 masked=1 pre_count=0 pre_pending=0` |
-| `IRQ_P1_GPIO27` | Linux's 1000 doorbells were answered by proc1's handler | `n=1000`, `ipsr=16`; the round-trip time is `linux-doorbell`'s line on UART10 |
+| `IRQ_P1_GPIO27` | Linux's 1000 doorbells were answered by proc1's handler | `seen>=1000`, `ipsr=16`; the round-trip time is `linux-doorbell`'s line on UART10 |
 | `IRQ_XCORE` | no handler ran on the core it was not written for | both 0 |
 | `IRQ_UNHANDLED` | unhandled interrupts per core | `p0=0 p1=1` (the `IRQ_DEFAULT` one) |
 | `IRQ_STACK` | untouched bytes at the bottom of each stack (painted at entry) | both at least 512 |
