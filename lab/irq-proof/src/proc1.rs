@@ -130,7 +130,9 @@ fn pair_consistent(cs: CriticalSection<'_>) -> bool {
 fn pair_update(cs: CriticalSection<'_>) {
     let a = PAIR_A.borrow(cs).get().wrapping_add(1);
     PAIR_A.borrow(cs).set(a);
-    unsafe { core::arch::asm!(".rept 16", "nop", ".endr", options(nomem, nostack)) };
+    // Not `nomem`: the compiler must then assume the block reads memory, so the store to A
+    // stays in front of the gap whatever the optimiser does.
+    unsafe { core::arch::asm!(".rept 16", "nop", ".endr", options(nostack)) };
     PAIR_B.borrow(cs).set(!a);
 }
 
