@@ -54,6 +54,7 @@ dependencies = [
  "rp1-dt",
  "rp1-proto",
  "rp1boot",
+ "serde_json",
  "sha2",
  "tempfile",
  "toml 0.8.23",

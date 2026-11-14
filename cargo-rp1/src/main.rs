@@ -127,6 +127,23 @@ fn isram_plan(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Err
     }
     Ok(())
 }
+/// The RP1 executables in cargo's JSON messages, one message per line.
+fn rp1_executables(messages: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let mut elves = Vec::new();
+    for line in messages.lines() {
+        // Cargo's messages are JSON objects; anything else on stdout is not from cargo.
+        if !line.starts_with('{') {
+            continue;
+        }
+        let message: serde_json::Value = serde_json::from_str(line)?;
+        if let Some(path) = message["executable"].as_str()
+            && path.contains("thumbv7m-none-eabi")
+        {
+            elves.push(PathBuf::from(path));
+        }
+    }
+    Ok(elves)
+}
 /// Run `cargo build` and return the RP1 executable it produced (exactly one).
 fn cargo_build(
     args: &[std::ffi::OsString],
@@ -145,16 +162,7 @@ fn cargo_build(
     if !out.status.success() {
         return Err("cargo build failed".into());
     }
-    let mut elves = Vec::new();
-    for line in String::from_utf8(out.stdout)?.lines() {
-        if let Some(i) = line.find("\"executable\":\"") {
-            let rest = &line[i + 14..];
-            let path = &rest[..rest.find('"').ok_or("bad cargo message")?];
-            if path.contains("thumbv7m-none-eabi") {
-                elves.push(PathBuf::from(path));
-            }
-        }
-    }
+    let elves = rp1_executables(&String::from_utf8(out.stdout)?)?;
     match elves.as_slice() {
         [one] => Ok(one.clone()),
         [] => Err("no thumbv7m-none-eabi executable built (pass --target thumbv7m-none-eabi -p <firmware>)".into()),
@@ -190,4 +198,29 @@ fn build(args: &[std::ffi::OsString]) -> Result<(), Box<dyn std::error::Error>> 
         report.dsram_bytes
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn executables_come_from_decoded_cargo_messages() {
+        // What cargo prints for a target directory named `a "b" \c`, between a host artifact, a
+        // library, a message whose text only mentions the key, and a line that is not JSON.
+        let messages = r#"{"reason":"compiler-artifact","target":{"name":"build-script-build"},"executable":"/w/target/release/build/fw-1/build-script-build","fresh":false}
+{"reason":"compiler-artifact","target":{"name":"rp1_hal"},"filenames":["/w/a \"b\" \\c/thumbv7m-none-eabi/release/librp1_hal.rlib"],"executable":null,"fresh":true}
+{"reason":"compiler-message","message":{"rendered":"note: \"executable\":\"/w/thumbv7m-none-eabi/fake\""}}
+warning: not a message
+{"reason":"compiler-artifact","target":{"name":"fw"},"executable":"/w/a \"b\" \\c/thumbv7m-none-eabi/release/f\u00e9","fresh":false}
+{"reason":"build-finished","success":true}
+"#;
+        assert_eq!(
+            rp1_executables(messages).unwrap(),
+            [PathBuf::from(
+                r#"/w/a "b" \c/thumbv7m-none-eabi/release/fé"#
+            )]
+        );
+        assert!(rp1_executables("{\"executable\":").is_err());
+    }
 }
