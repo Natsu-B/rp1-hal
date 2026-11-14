@@ -464,9 +464,9 @@ mod tests {
     use super::*;
     use std::{collections::BTreeMap, collections::VecDeque, vec::Vec};
 
+    const N: u8 = 2;
     /// UART `N`'s registers. FR is derived: BUSY and TXFF from the test's switches, RXFE from
     /// the queue of received DR values.
-    const N: u8 = 2;
     struct Fake {
         regs: BTreeMap<usize, u32>,
         writes: Vec<(usize, u32)>,
