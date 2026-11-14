@@ -51,7 +51,13 @@ impl Logger {
             write(0x400d_0004 + pin * 8, 4);
             write(0x400f_0004 + pin * 4, 0x46);
         }
-        crate::uart::start(&mut crate::linux_blocks::Mmio, 0, uart_hz, baud)?;
+        // The bring-up fails on the baud rate or on one of its bounded waits.
+        crate::uart::start(&mut crate::linux_blocks::Mmio, 0, uart_hz, baud).map_err(|error| {
+            match error {
+                crate::uart::Error::Invalid => Error::Invalid,
+                _ => Error::Timeout,
+            }
+        })?;
         self.ready.store(1, Ordering::Release);
         Ok(())
     }

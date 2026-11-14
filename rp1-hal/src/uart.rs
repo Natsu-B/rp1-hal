@@ -2,7 +2,6 @@
 //! from clk_uart as reported by [`Clocks`]. UART5 has no bank-0 pins. The `log!` sink (UART0 on
 //! GPIO14/15) is configured by [`crate::logging::Logger`], not through a [`Token`].
 use crate::{
-    Error,
     clocks::Clocks,
     gpio::{Alternate, Pin},
     linux_blocks::{Hardware, Mmio},
@@ -18,8 +17,11 @@ offsets! {
     DR = dr, ECR = rsr_ecr, FR = fr, IBRD = ibrd, FBRD = fbrd, LCR_H = lcr_h, CR = cr,
     IMSC = imsc, MIS = mis, ICR = icr,
 }
-/// DR bits 8..=11: framing, parity, break and overrun of the character just read.
-const DR_ERRORS: u32 = 0xf00;
+/// DR bits 8..=11: the receive status of the character read with them.
+const DR_FE: u32 = 1 << 8;
+const DR_PE: u32 = 1 << 9;
+const DR_BE: u32 = 1 << 10;
+const DR_OE: u32 = 1 << 11;
 const FR_BUSY: u32 = 1 << 3;
 const FR_RXFE: u32 = 1 << 4;
 const FR_TXFF: u32 = 1 << 5;
@@ -53,6 +55,49 @@ const TX_PAD: u32 = 0x62;
 
 const fn base(n: u8) -> usize {
     0x4003_0000 + n as usize * 0x4000
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// The RX FIFO was full and at least one later character was lost.
+    Overrun,
+    /// The line was held low for longer than a character.
+    Break,
+    /// The parity bit did not match (never with the 8N1 this driver configures).
+    Parity,
+    /// No valid stop bit.
+    Framing,
+    /// The reset, the transmitter or the peer kept the driver waiting too long.
+    Timeout,
+    /// The baud rate has no divisor at clk_uart.
+    Invalid,
+    /// The clock tree is not the one the [`Clocks`] value describes.
+    Precondition,
+}
+/// `Overrun` has no kind of its own in embedded-io and is `Other`: the data that was read is
+/// good, later data is missing.
+impl embedded_io::Error for Error {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        use embedded_io::ErrorKind;
+        match self {
+            Self::Break | Self::Parity | Self::Framing => ErrorKind::InvalidData,
+            Self::Timeout => ErrorKind::TimedOut,
+            Self::Invalid => ErrorKind::InvalidInput,
+            Self::Overrun | Self::Precondition => ErrorKind::Other,
+        }
+    }
+}
+/// The receive status in a DR value. A break also fails the stop-bit check, so it is looked
+/// at before framing; overrun first, as the one that means lost data.
+fn receive_error(data: u32) -> Option<Error> {
+    [
+        (DR_OE, Error::Overrun),
+        (DR_BE, Error::Break),
+        (DR_PE, Error::Parity),
+        (DR_FE, Error::Framing),
+    ]
+    .into_iter()
+    .find_map(|(bit, error)| (data & bit != 0).then_some(error))
 }
 
 pub struct Token<const N: u8> {
@@ -98,7 +143,7 @@ impl<const N: u8> Token<N> {
     /// [`InitError`]; the pins are not touched before success.
     ///
     /// ```no_run
-    /// # use rp1_hal::{Error, clocks::Clocks, gpio::Pin, uart::{Token, Uart}};
+    /// # use rp1_hal::{clocks::Clocks, gpio::Pin, uart::{Error, Token, Uart}};
     /// fn bring_up(token: Token<2>, tx: Pin<4>, rx: Pin<5>, clocks: &Clocks) -> Result<Uart<2, 4, 5>, Error> {
     ///     Ok(token.init(tx, rx, clocks, 115_200)?)
     /// }
@@ -137,7 +182,7 @@ impl<const N: u8> Token<N> {
 /// (`rp1-build`); only routes from the bank-0 pin table can be named.
 ///
 /// ```no_run
-/// # use rp1_hal::{Error, clocks::Clocks, gpio::Pin, uart::{Parts, Token, Uart}};
+/// # use rp1_hal::{clocks::Clocks, gpio::Pin, uart::{Error, Parts, Token, Uart}};
 /// // The resource generated for `uart2 = { tx = 4, rx = 5 }`:
 /// let uart2: Parts<2, 4, 5> = Parts {
 ///     token: unsafe { Token::new() },
@@ -213,11 +258,13 @@ fn read_byte(io: &mut impl Hardware, n: u8) -> Result<Option<u8>, Error> {
         return Ok(None);
     }
     let data = io.read(base + DR);
-    if data & DR_ERRORS != 0 {
-        io.write(base + ECR, 0);
-        return Err(Error::Hardware);
+    match receive_error(data) {
+        Some(error) => {
+            io.write(base + ECR, 0);
+            Err(error)
+        }
+        None => Ok(Some(data as u8)),
     }
-    Ok(Some(data as u8))
 }
 /// Sets or clears `bits` in UART `n`'s interrupt mask (IMSC).
 fn set_mask(io: &mut impl Hardware, n: u8, bits: u32, on: bool) {
@@ -238,6 +285,8 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     pub fn write_byte(&mut self, byte: u8) -> Result<(), Error> {
         write_byte(&mut Mmio, N, byte)
     }
+    /// The next received character, `None` if the RX FIFO is empty. A character received with
+    /// an error is dropped and the error returned in its place.
     pub fn read_byte(&mut self) -> Result<Option<u8>, Error> {
         read_byte(&mut Mmio, N)
     }
@@ -288,11 +337,6 @@ impl<const N: u8, const TX: u8, const RX: u8> fmt::Write for Uart<N, TX, RX> {
             self.write_byte(b).map_err(|_| fmt::Error)?;
         }
         Ok(())
-    }
-}
-impl embedded_io::Error for Error {
-    fn kind(&self) -> embedded_io::ErrorKind {
-        embedded_io::ErrorKind::Other
     }
 }
 impl<const N: u8, const TX: u8, const RX: u8> embedded_io::ErrorType for Uart<N, TX, RX> {
@@ -417,6 +461,46 @@ mod tests {
         f.busy = true;
         assert_eq!(start(&mut f, N, 50_000_000, 115_200), Err(Error::Timeout));
         assert_eq!(f.writes, [(RESETS_CLR1, 1 << 28)]);
+    }
+    #[test]
+    fn receive_errors_are_told_apart_and_replace_their_character() {
+        let mut f = Fake::new();
+        assert_eq!(read_byte(&mut f, N), Ok(None));
+        f.rx.extend([
+            0x41,
+            DR_FE | 0x42,
+            DR_PE | 0x43,
+            DR_BE | DR_FE,
+            DR_OE | 0x44,
+            0x45,
+        ]);
+        let mut got = Vec::new();
+        while !f.rx.is_empty() {
+            got.push(read_byte(&mut f, N));
+        }
+        assert_eq!(
+            got,
+            [
+                Ok(Some(0x41)),
+                Err(Error::Framing),
+                Err(Error::Parity),
+                Err(Error::Break),
+                Err(Error::Overrun),
+                Ok(Some(0x45)),
+            ]
+        );
+        // Each error also clears the sticky copy in RSR.
+        assert_eq!(f.writes, [(base(N) + ECR, 0); 4]);
+    }
+    #[test]
+    fn error_kinds_for_embedded_io() {
+        use embedded_io::{Error as _, ErrorKind};
+        for error in [Error::Break, Error::Parity, Error::Framing] {
+            assert_eq!(error.kind(), ErrorKind::InvalidData);
+        }
+        assert_eq!(Error::Timeout.kind(), ErrorKind::TimedOut);
+        assert_eq!(Error::Invalid.kind(), ErrorKind::InvalidInput);
+        assert_eq!(Error::Overrun.kind(), ErrorKind::Other);
     }
     #[test]
     fn interrupt_mask_updates_keep_the_other_bits() {
