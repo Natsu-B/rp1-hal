@@ -406,55 +406,27 @@ mod tests {
     #[test]
     fn register_offsets_match_both_pac_blocks() {
         macro_rules! check {
-            ($n:expr, $module:ident) => {{
-                let b =
-                    unsafe { &*(base($n) as *const crate::pac::generated::$module::RegisterBlock) };
-                let offsets = [
-                    b.global_ctrl() as *const _ as usize,
-                    b.fifo_ctrl() as *const _ as usize,
-                    b.inte() as *const _ as usize,
-                    b.intf() as *const _ as usize,
-                ];
+            ($module:ident) => {{
                 assert_eq!(
-                    offsets.map(|a| a - base($n)),
+                    pac_offsets!($module: global_ctrl, fifo_ctrl, inte, intf),
                     [GLOBAL_CTRL, FIFO_CTRL, INTE, INTF]
                 );
                 let channels = [
-                    [
-                        b.chan0_ctrl() as *const _ as usize,
-                        b.chan0_range() as *const _ as usize,
-                        b.chan0_phase() as *const _ as usize,
-                        b.chan0_duty() as *const _ as usize,
-                    ],
-                    [
-                        b.chan1_ctrl() as *const _ as usize,
-                        b.chan1_range() as *const _ as usize,
-                        b.chan1_phase() as *const _ as usize,
-                        b.chan1_duty() as *const _ as usize,
-                    ],
-                    [
-                        b.chan2_ctrl() as *const _ as usize,
-                        b.chan2_range() as *const _ as usize,
-                        b.chan2_phase() as *const _ as usize,
-                        b.chan2_duty() as *const _ as usize,
-                    ],
-                    [
-                        b.chan3_ctrl() as *const _ as usize,
-                        b.chan3_range() as *const _ as usize,
-                        b.chan3_phase() as *const _ as usize,
-                        b.chan3_duty() as *const _ as usize,
-                    ],
+                    pac_offsets!($module: chan0_ctrl, chan0_range, chan0_phase, chan0_duty),
+                    pac_offsets!($module: chan1_ctrl, chan1_range, chan1_phase, chan1_duty),
+                    pac_offsets!($module: chan2_ctrl, chan2_range, chan2_phase, chan2_duty),
+                    pac_offsets!($module: chan3_ctrl, chan3_range, chan3_phase, chan3_duty),
                 ];
                 for (c, registers) in channels.into_iter().enumerate() {
                     assert_eq!(
-                        registers.map(|a| a - base($n) - c * STRIDE),
+                        registers.map(|offset| offset - c * STRIDE),
                         [CHAN_CTRL, CHAN_RANGE, CHAN_PHASE, CHAN_DUTY]
                     );
                 }
             }};
         }
-        check!(0, pwm0);
-        check!(1, pwm1);
+        check!(pwm0);
+        check!(pwm1);
         assert_eq!(crate::pac::PWM0::PTR as usize, base(0));
         assert_eq!(crate::pac::PWM1::PTR as usize, base(1));
     }

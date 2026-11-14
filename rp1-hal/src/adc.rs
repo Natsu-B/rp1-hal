@@ -222,10 +222,10 @@ mod tests {
 
     #[test]
     fn offsets_match_the_pac() {
-        let block = unsafe { &*(BASE as *const crate::pac::generated::adc::RegisterBlock) };
-        assert_eq!(block.cs() as *const _ as usize, CS);
-        assert_eq!(block.result() as *const _ as usize, RESULT);
-        assert_eq!(block.inte() as *const _ as usize, INTE);
+        assert_eq!(
+            pac_offsets!(adc: cs, result, inte).map(|offset| BASE + offset),
+            [CS, RESULT, INTE]
+        );
         assert_eq!(crate::pac::ADC::PTR as usize, BASE);
     }
 

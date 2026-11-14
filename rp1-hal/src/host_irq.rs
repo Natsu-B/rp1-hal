@@ -165,11 +165,11 @@ mod tests {
 
     #[test]
     fn timer_registers_match_the_pac() {
-        let block = unsafe { &*(TIMER_BASE as *const crate::pac::generated::timer::RegisterBlock) };
         assert_eq!(crate::pac::TIMER::PTR as usize, TIMER_BASE);
-        assert_eq!(block.intr() as *const _ as usize, TIMER_INTR);
-        assert_eq!(block.inte() as *const _ as usize, TIMER_INTE);
-        assert_eq!(block.intf() as *const _ as usize, TIMER_INTF);
+        assert_eq!(
+            pac_offsets!(timer: intr, inte, intf).map(|offset| TIMER_BASE + offset),
+            [TIMER_INTR, TIMER_INTE, TIMER_INTF]
+        );
     }
 
     /// The alarm taken over is the one whose interrupt is the host vector (rp1-regdb

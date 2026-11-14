@@ -1,5 +1,20 @@
 #![no_std]
 pub use rp1_pac as pac;
+
+/// Offsets of registers in a generated PAC block, for tests that tie a driver's own address
+/// constants to the PAC. The block is a zeroed one on the host: a reference to the device
+/// address would point at unmapped memory, which is undefined even if it is never read.
+#[cfg(test)]
+macro_rules! pac_offsets {
+    ($module:ident: $($register:ident),+ $(,)?) => {{
+        // A register block is integers only, so all zeroes is a valid value.
+        let block =
+            unsafe { core::mem::zeroed::<crate::pac::generated::$module::RegisterBlock>() };
+        let base = &raw const block as usize;
+        [$(block.$register() as *const _ as usize - base),+]
+    }};
+}
+
 pub mod adc;
 pub mod clocks;
 pub mod cold;
