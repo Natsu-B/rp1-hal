@@ -40,6 +40,12 @@
 //! is *still* enabled, the driver spins until it clears, without a deadline: no exit releases a
 //! buffer borrow while the DMAC may still access the buffer. A wedged DMAC (e.g. a PCIe target
 //! that never answers) therefore hangs the calling core instead of returning.
+//!
+//! In the terms of the other drivers' release contract, [`Transfer::cancel`] is the `abort`
+//! of a transfer: forced, and the rest of the block is discarded. Unlike their `abort` it
+//! is not bounded, for the reason above, and there is no fallible `free` that would return
+//! the buffers of a block that is still running. [`Dma::free`] is the infallible kind: it
+//! takes all eight channels, and a channel is idle whenever no transfer borrows it.
 use crate::{
     clocks::Clocks,
     linux_blocks::{Hardware, Mmio},
@@ -246,6 +252,7 @@ impl Dma {
         }
     }
     /// Returns the controller token once every channel is back. Clock and reset stay on.
+    /// Nothing can be running (a transfer borrows its channel), so this cannot fail.
     pub fn free(self) -> Token {
         Token { _private: () }
     }
@@ -399,8 +406,9 @@ impl<const N: u8> Transfer<'_, N> {
         self.result
     }
     /// Polls until done or `timeout_us` passed (then stops it and returns [`Error::Timeout`]).
-    /// Every value expires, `u32::MAX` after about 71.6 minutes; only stopping a block that
-    /// has timed out may then wait without a deadline (module docs, Cancellation).
+    /// Every value expires, `u32::MAX` after about 71.6 minutes; only stopping the block,
+    /// after the timeout or after a bus error, may wait without a deadline (module docs,
+    /// Cancellation).
     pub fn wait(mut self, timeout_us: u32) -> Result<(), Error> {
         let r = match self.result {
             Some(r) => r,

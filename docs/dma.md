@@ -37,7 +37,9 @@ dma = {}          # the whole controller: reset, clk_dma, the DMA interrupt line
 
 - `dma::Token::init(&Clocks)` (once): clk_dma 100 MHz (DOC: datasheet ch. 9), release the reset,
   `DMAC_RESET` soft reset, every channel disabled with interrupts masked, `DMAC_CFG.DMAC_EN`.
-  Returns `Dma { ch0..ch7 }`.
+  Returns `Dma { ch0..ch7 }`, or `InitError` with the token for a retry. `Dma::free()` takes
+  all eight channels back and returns the token; it cannot fail, since a transfer borrows
+  its channel.
 - `Channel<N>::copy(&[u8], &mut [u8], timeout_us)`: safe, blocking. Both slices must be
   contiguous DMAC-visible memory (shared SRAM or the outbound window; peripheral registers are
   refused, use `start`); splits into blocks. A timed-out or failed block is stopped before
@@ -86,6 +88,11 @@ suspend request is cleared afterwards so the next enable runs. This applies to `
 timeouts, bus errors, `Transfer::cancel` and `Drop for Transfer`. STATIC: unit tests with a
 fake DMAC whose disable, abort, or both take effect late (the call returns only after the
 enable bit cleared). HW: lab abort proof below.
+
+Compared with the release contract of the other drivers (`free` waits and can hand the
+driver back with an error, `abort` stops at once): `Transfer::cancel` is the forced stop, but
+it is deliberately not bounded, and no call returns the buffers of a block the DMAC may
+still be accessing.
 
 ## Address map
 
