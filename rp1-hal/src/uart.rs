@@ -309,6 +309,19 @@ fn read_wait(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<u8, Error
     wait(io, base(n) + FR, FR_RXFE, 0, timeout_us)?;
     take(io, n)
 }
+/// [`Uart::free`]: nothing is written unless the transmitter is idle in time.
+fn release(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<(), Error> {
+    wait(io, base(n) + FR, FR_BUSY, 0, timeout_us)?;
+    disable(io, n);
+    Ok(())
+}
+/// Masks the interrupts and disables the UART. Clearing FEN empties both FIFOs (DOC: ARM
+/// DDI0183, UARTCR programming sequence), so a later bring-up does not send or receive what was left in them.
+fn disable(io: &mut impl Hardware, n: u8) {
+    io.write(base(n) + IMSC, 0);
+    io.write(base(n) + CR, 0);
+    io.write(base(n) + LCR_H, 0);
+}
 /// Sets or clears `bits` in UART `n`'s interrupt mask (IMSC).
 fn set_mask(io: &mut impl Hardware, n: u8, bits: u32, on: bool) {
     let imsc = io.read(base(n) + IMSC);
@@ -376,17 +389,45 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     pub fn clear_interrupt(&mut self, mask: u32) {
         Mmio.write(base(N) + ICR, mask);
     }
-    /// Waits up to 10 ms for the transmitter to drain, masks the interrupts, disables the UART
-    /// and gives back the token and the (still muxed) pins.
-    pub fn free(mut self) -> (Token<N>, Pin<TX>, Pin<RX>) {
-        let _ = self.flush();
-        Mmio.write(base(N) + IMSC, 0);
-        Mmio.write(base(N) + CR, 0);
-        (
-            Token { _private: () },
-            self._tx.release(),
-            self._rx.release(),
-        )
+}
+impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX>
+where
+    Pin<TX>: Tx<N>,
+    Pin<RX>: Rx<N>,
+{
+    /// Waits for the transmitter to drain ([`Uart::flush`]), then masks the interrupts,
+    /// disables the UART and gives back the token and the (still muxed) pins, ready for
+    /// [`Parts::init`]. Unread received characters are dropped.
+    ///
+    /// [`Error::Timeout`]: the line is still busy and nothing was changed; the UART comes
+    /// back with the error, to retry (transmission went on meanwhile) or to [`Uart::abort`].
+    ///
+    /// ```no_run
+    /// # use rp1_hal::uart::{Parts, Uart};
+    /// fn release(uart: Uart<2, 4, 5>) -> Parts<2, 4, 5> {
+    ///     uart.free().unwrap_or_else(|(uart, _)| uart.abort())
+    /// }
+    /// ```
+    pub fn free(self) -> Result<Parts<N, TX, RX>, (Self, Error)> {
+        match release(&mut Mmio, N, self.timeout_us) {
+            Ok(()) => Ok(self.into_parts()),
+            Err(error) => Err((self, error)),
+        }
+    }
+    /// [`Uart::free`] without the wait. Characters still in the TX FIFO are never sent and
+    /// unread received characters are dropped; the character being shifted is completed by
+    /// the PL011 (DOC: ARM DDI0183, UARTCR), so the line may stay busy for up to one
+    /// character after this returns. The interrupts are masked and the UART is disabled.
+    pub fn abort(self) -> Parts<N, TX, RX> {
+        disable(&mut Mmio, N);
+        self.into_parts()
+    }
+    fn into_parts(self) -> Parts<N, TX, RX> {
+        Parts {
+            token: Token { _private: () },
+            tx: self._tx.release(),
+            rx: self._rx.release(),
+        }
     }
 }
 /// Formatting stops at the first [`Error::Timeout`]; what was queued before it stays queued.
@@ -619,6 +660,24 @@ mod tests {
         assert_eq!(read_wait(&mut f, N, 30_000), Ok(0x55));
         f.rx_later = Some((0, DR_FE));
         assert_eq!(read_wait(&mut f, N, 30_000), Err(Error::Framing));
+    }
+    /// A transmitter that does not drain in time is not cut off by `free`: nothing is written
+    /// and the error is reported, so the caller still has the UART. `abort` does not look.
+    #[test]
+    fn free_refuses_a_busy_transmitter_and_abort_does_not_wait() {
+        let stopped = [(base(N) + IMSC, 0), (base(N) + CR, 0), (base(N) + LCR_H, 0)];
+        let mut f = Fake::new();
+        f.busy = true;
+        assert_eq!(release(&mut f, N, 5_000), Err(Error::Timeout));
+        assert!(f.writes.is_empty());
+        f.busy = false;
+        assert_eq!(release(&mut f, N, 5_000), Ok(()));
+        assert_eq!(f.writes, stopped);
+
+        let mut f = Fake::new();
+        f.busy = true;
+        disable(&mut f, N);
+        assert_eq!((f.writes.as_slice(), f.elapsed_us), (&stopped[..], 0));
     }
     #[test]
     fn interrupt_mask_updates_keep_the_other_bits() {
