@@ -34,7 +34,10 @@ const RESETS_DONE1: usize = 0x4001_401c;
 const fn reset_bit(n: u8) -> u32 {
     1 << (26 + n)
 }
-const TIMEOUT_US: u32 = 10_000;
+/// Bound of the two waits of the bring-up (reset done, transmitter idle).
+const START_TIMEOUT_US: u32 = 10_000;
+/// [`Uart::set_timeout_us`] until changed. A full TX FIFO drains in 2.9 ms at 115200 baud.
+pub const DEFAULT_TIMEOUT_US: u32 = 100_000;
 
 mod sealed {
     pub trait Pin {}
@@ -107,6 +110,7 @@ pub struct Token<const N: u8> {
 pub struct Uart<const N: u8, const TX: u8, const RX: u8> {
     _tx: Pin<TX, Alternate>,
     _rx: Pin<RX, Alternate>,
+    timeout_us: u32,
 }
 /// [`Token::init`] failed: the error, and the token and pins back (unchanged) for a retry.
 pub struct InitError<const N: u8, const TX: u8, const RX: u8> {
@@ -168,6 +172,7 @@ impl<const N: u8> Token<N> {
             Ok(()) => Ok(Uart {
                 _tx: tx.into_alternate(<Pin<TX> as Tx<N>>::FUNC, IDLE_PAD, TX_PAD),
                 _rx: rx.into_alternate(<Pin<RX> as Rx<N>>::FUNC, IDLE_PAD, IDLE_PAD),
+                timeout_us: DEFAULT_TIMEOUT_US,
             }),
             Err(error) => Err(InitError {
                 error,
@@ -217,9 +222,15 @@ where
 pub(crate) fn start(io: &mut impl Hardware, n: u8, clock_hz: u32, baud: u32) -> Result<(), Error> {
     let (integer, fraction) = divisors(clock_hz, baud)?;
     io.write(RESETS_CLR1, reset_bit(n));
-    wait(io, RESETS_DONE1, reset_bit(n), reset_bit(n))?;
+    wait(
+        io,
+        RESETS_DONE1,
+        reset_bit(n),
+        reset_bit(n),
+        START_TIMEOUT_US,
+    )?;
     let base = base(n);
-    wait(io, base + FR, FR_BUSY, 0)?;
+    wait(io, base + FR, FR_BUSY, 0, START_TIMEOUT_US)?;
     io.write(base + CR, 0);
     io.write(base + IMSC, 0);
     io.write(base + ICR, 0x7ff);
@@ -230,14 +241,27 @@ pub(crate) fn start(io: &mut impl Hardware, n: u8, clock_hz: u32, baud: u32) -> 
     io.write(base + CR, CR_ENABLE);
     Ok(())
 }
-/// Waits up to 10 ms for `address & mask == value`.
-fn wait(io: &mut impl Hardware, address: usize, mask: u32, value: u32) -> Result<(), Error> {
-    let start = io.now_us();
+/// Waits for `address & mask == value` until more than `timeout_us` of the 1 MHz timer have
+/// passed, however many polls that takes.
+fn wait(
+    io: &mut impl Hardware,
+    address: usize,
+    mask: u32,
+    value: u32,
+    timeout_us: u32,
+) -> Result<(), Error> {
+    // The timer wraps every 2^32 us: summing the steps between polls in 64 bits lets every
+    // `timeout_us` expire.
+    let mut last = io.now_us();
+    let mut elapsed_us = 0u64;
     loop {
         if io.read(address) & mask == value {
             return Ok(());
         }
-        if io.now_us().wrapping_sub(start) > TIMEOUT_US {
+        let now = io.now_us();
+        elapsed_us += u64::from(now.wrapping_sub(last));
+        last = now;
+        if elapsed_us > u64::from(timeout_us) {
             // One more look: the deadline may have passed while this core was stalled.
             return if io.read(address) & mask == value {
                 Ok(())
@@ -247,24 +271,43 @@ fn wait(io: &mut impl Hardware, address: usize, mask: u32, value: u32) -> Result
         }
     }
 }
-fn write_byte(io: &mut impl Hardware, n: u8, byte: u8) -> Result<(), Error> {
-    wait(io, base(n) + FR, FR_TXFF, 0)?;
-    io.write(base(n) + DR, u32::from(byte));
-    Ok(())
-}
-fn read_byte(io: &mut impl Hardware, n: u8) -> Result<Option<u8>, Error> {
-    let base = base(n);
-    if io.read(base + FR) & FR_RXFE != 0 {
-        return Ok(None);
+/// [`Uart::write`]: waits for room for the first byte only.
+fn write(io: &mut impl Hardware, n: u8, bytes: &[u8], timeout_us: u32) -> Result<usize, Error> {
+    if bytes.is_empty() {
+        return Ok(0);
     }
-    let data = io.read(base + DR);
+    let base = base(n);
+    wait(io, base + FR, FR_TXFF, 0, timeout_us)?;
+    let mut accepted = 0;
+    loop {
+        io.write(base + DR, u32::from(bytes[accepted]));
+        accepted += 1;
+        if accepted == bytes.len() || io.read(base + FR) & FR_TXFF != 0 {
+            return Ok(accepted);
+        }
+    }
+}
+/// Pops the RX FIFO, which must not be empty.
+fn take(io: &mut impl Hardware, n: u8) -> Result<u8, Error> {
+    let data = io.read(base(n) + DR);
     match receive_error(data) {
         Some(error) => {
-            io.write(base + ECR, 0);
+            io.write(base(n) + ECR, 0);
             Err(error)
         }
-        None => Ok(Some(data as u8)),
+        None => Ok(data as u8),
     }
+}
+fn read_byte(io: &mut impl Hardware, n: u8) -> Result<Option<u8>, Error> {
+    if io.read(base(n) + FR) & FR_RXFE != 0 {
+        return Ok(None);
+    }
+    take(io, n).map(Some)
+}
+/// [`embedded_io::Read::read`] of one byte.
+fn read_wait(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<u8, Error> {
+    wait(io, base(n) + FR, FR_RXFE, 0, timeout_us)?;
+    take(io, n)
 }
 /// Sets or clears `bits` in UART `n`'s interrupt mask (IMSC).
 fn set_mask(io: &mut impl Hardware, n: u8, bits: u32, on: bool) {
@@ -282,16 +325,31 @@ pub fn divisors(clock_hz: u32, baud: u32) -> Result<(u32, u32), Error> {
     Ok(((scaled / 64) as u32, (scaled % 64) as u32))
 }
 impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
-    pub fn write_byte(&mut self, byte: u8) -> Result<(), Error> {
-        write_byte(&mut Mmio, N, byte)
+    /// Bound, in microseconds of the 1 MHz timer, of each wait of this driver: for room in
+    /// the TX FIFO ([`Uart::write`]), for a received byte ([`embedded_io::Read`]) and for the
+    /// transmitter to drain ([`Uart::flush`]). [`DEFAULT_TIMEOUT_US`] after `init`. A full TX
+    /// FIFO needs 330 bit times to drain (32 characters and the one being shifted), which is
+    /// longer than the default below 3300 baud.
+    pub fn set_timeout_us(&mut self, timeout_us: u32) {
+        self.timeout_us = timeout_us;
+    }
+    /// Queues a prefix of `bytes` for transmission and returns its length, as
+    /// [`embedded_io::Write::write`]: waits for room in the TX FIFO for the first byte, then
+    /// takes what fits without waiting again. [`Error::Timeout`] means that nothing was
+    /// queued, so the same `bytes` can be written again without duplicating data. Queued is
+    /// not transmitted: [`Uart::flush`] waits for the line.
+    pub fn write(&mut self, bytes: &[u8]) -> Result<usize, Error> {
+        write(&mut Mmio, N, bytes, self.timeout_us)
     }
     /// The next received character, `None` if the RX FIFO is empty. A character received with
     /// an error is dropped and the error returned in its place.
     pub fn read_byte(&mut self) -> Result<Option<u8>, Error> {
         read_byte(&mut Mmio, N)
     }
+    /// Waits until everything queued has left the shift register (BUSY clear).
+    /// [`Error::Timeout`] leaves the rest in transmission; flushing again continues the wait.
     pub fn flush(&mut self) -> Result<(), Error> {
-        wait(&mut Mmio, base(N) + FR, FR_BUSY, 0)
+        wait(&mut Mmio, base(N) + FR, FR_BUSY, 0, self.timeout_us)
     }
     /// Unmasks the receive interrupts: RX FIFO at its trigger level, and receive timeout so a
     /// short message is not left below the level. The NVIC line is `irq.UARTn` in the generated
@@ -320,8 +378,8 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     }
     /// Waits up to 10 ms for the transmitter to drain, masks the interrupts, disables the UART
     /// and gives back the token and the (still muxed) pins.
-    pub fn free(self) -> (Token<N>, Pin<TX>, Pin<RX>) {
-        let _ = wait(&mut Mmio, base(N) + FR, FR_BUSY, 0);
+    pub fn free(mut self) -> (Token<N>, Pin<TX>, Pin<RX>) {
+        let _ = self.flush();
         Mmio.write(base(N) + IMSC, 0);
         Mmio.write(base(N) + CR, 0);
         (
@@ -331,12 +389,10 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
         )
     }
 }
+/// Formatting stops at the first [`Error::Timeout`]; what was queued before it stays queued.
 impl<const N: u8, const TX: u8, const RX: u8> fmt::Write for Uart<N, TX, RX> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        for b in s.bytes() {
-            self.write_byte(b).map_err(|_| fmt::Error)?;
-        }
-        Ok(())
+        embedded_io::Write::write_all(self, s.as_bytes()).map_err(|_| fmt::Error)
     }
 }
 impl<const N: u8, const TX: u8, const RX: u8> embedded_io::ErrorType for Uart<N, TX, RX> {
@@ -344,27 +400,21 @@ impl<const N: u8, const TX: u8, const RX: u8> embedded_io::ErrorType for Uart<N,
 }
 impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Write for Uart<N, TX, RX> {
     fn write(&mut self, b: &[u8]) -> Result<usize, Error> {
-        for byte in b {
-            self.write_byte(*byte)?;
-        }
-        Ok(b.len())
+        Uart::write(self, b)
     }
     fn flush(&mut self) -> Result<(), Error> {
         Uart::flush(self)
     }
 }
+/// One byte per call. [`Error::Timeout`] if none arrives within [`Uart::set_timeout_us`];
+/// receive errors as in [`Uart::read_byte`].
 impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Read for Uart<N, TX, RX> {
     fn read(&mut self, b: &mut [u8]) -> Result<usize, Error> {
-        if b.is_empty() {
+        let Some(first) = b.first_mut() else {
             return Ok(0);
-        }
-        for _ in 0..100_000 {
-            if let Some(byte) = self.read_byte()? {
-                b[0] = byte;
-                return Ok(1);
-            }
-        }
-        Err(Error::Timeout)
+        };
+        *first = read_wait(&mut Mmio, N, self.timeout_us)?;
+        Ok(1)
     }
 }
 #[cfg(test)]
@@ -381,8 +431,15 @@ mod tests {
         writes: Vec<(usize, u32)>,
         rx: VecDeque<u32>,
         busy: bool,
-        tx_full: bool,
+        /// Free TX FIFO slots, and what was pushed.
+        tx_room: usize,
+        tx: Vec<u8>,
+        /// A DR value that enters the RX FIFO once `elapsed_us` reaches the time.
+        rx_later: Option<(u64, u32)>,
         now: u32,
+        /// Timer step per read, and the time read so far.
+        step_us: u32,
+        elapsed_us: u64,
     }
     impl Fake {
         fn new() -> Self {
@@ -391,17 +448,24 @@ mod tests {
                 writes: Vec::new(),
                 rx: VecDeque::new(),
                 busy: false,
-                tx_full: false,
+                tx_room: 32,
+                tx: Vec::new(),
+                rx_later: None,
                 // The 32-bit timer wraps during every bounded wait.
                 now: u32::MAX - 500,
+                step_us: 100,
+                elapsed_us: 0,
             }
         }
     }
     impl Registers for Fake {
         fn read(&mut self, address: usize) -> u32 {
             if address == base(N) + FR {
+                if let Some((_, data)) = self.rx_later.take_if(|(at, _)| *at <= self.elapsed_us) {
+                    self.rx.push_back(data);
+                }
                 return if self.busy { FR_BUSY } else { 0 }
-                    | if self.tx_full { FR_TXFF } else { 0 }
+                    | if self.tx_room == 0 { FR_TXFF } else { 0 }
                     | if self.rx.is_empty() { FR_RXFE } else { 0 };
             }
             if address == base(N) + DR {
@@ -410,13 +474,19 @@ mod tests {
             self.regs.get(&address).copied().unwrap_or(0)
         }
         fn write(&mut self, address: usize, value: u32) {
+            if address == base(N) + DR {
+                self.tx_room = self.tx_room.checked_sub(1).expect("TX overflow");
+                self.tx.push(value as u8);
+                return;
+            }
             self.writes.push((address, value));
             self.regs.insert(address, value);
         }
     }
     impl Hardware for Fake {
         fn now_us(&mut self) -> u32 {
-            self.now = self.now.wrapping_add(100);
+            self.now = self.now.wrapping_add(self.step_us);
+            self.elapsed_us += u64::from(self.step_us);
             self.now
         }
     }
@@ -460,6 +530,7 @@ mod tests {
         let mut f = Fake::new();
         f.busy = true;
         assert_eq!(start(&mut f, N, 50_000_000, 115_200), Err(Error::Timeout));
+        assert!((10_000..10_500).contains(&f.elapsed_us));
         assert_eq!(f.writes, [(RESETS_CLR1, 1 << 28)]);
     }
     #[test]
@@ -501,6 +572,53 @@ mod tests {
         assert_eq!(Error::Timeout.kind(), ErrorKind::TimedOut);
         assert_eq!(Error::Invalid.kind(), ErrorKind::InvalidInput);
         assert_eq!(Error::Overrun.kind(), ErrorKind::Other);
+    }
+    /// embedded-io `write`: a full FIFO ends the call with the count of the bytes queued, and
+    /// only a call that queued nothing times out.
+    #[test]
+    fn a_write_reports_the_prefix_it_queued() {
+        let mut f = Fake::new();
+        f.tx_room = 3;
+        assert_eq!(write(&mut f, N, b"hello", 1_000), Ok(3));
+        assert_eq!(f.tx, b"hel");
+        assert_eq!(write(&mut f, N, b"lo", 1_000), Err(Error::Timeout));
+        assert_eq!(f.tx, b"hel");
+        f.tx_room = 32;
+        assert_eq!(write(&mut f, N, b"lo", 1_000), Ok(2));
+        assert_eq!(write(&mut f, N, b"", 1_000), Ok(0));
+        assert_eq!(f.tx, b"hello");
+    }
+    /// The bound is time on the timer, not polls: the same wait ends after the same time
+    /// whether a poll takes 1 us or 300 us, and across the timer's wrap.
+    #[test]
+    fn waits_end_after_the_timeout_in_timer_time() {
+        for (step_us, timeout_us) in [(1, 2_000), (300, 2_000), (7, 0), (1 << 30, u32::MAX)] {
+            let mut f = Fake::new();
+            (f.step_us, f.tx_room, f.busy) = (step_us, 0, true);
+            for stalled in [
+                write(&mut f, N, b"x", timeout_us).map(drop),
+                read_wait(&mut f, N, timeout_us).map(drop),
+                wait(&mut f, base(N) + FR, FR_BUSY, 0, timeout_us),
+            ] {
+                assert_eq!(stalled, Err(Error::Timeout));
+            }
+            // Each wait reads the timer once to start, then runs just past the timeout.
+            let each = f.elapsed_us / 3 - u64::from(step_us);
+            assert!(
+                each > u64::from(timeout_us),
+                "{step_us} {timeout_us} {each}"
+            );
+            assert!(each <= u64::from(timeout_us) + u64::from(step_us));
+        }
+    }
+    #[test]
+    fn a_read_waits_for_a_byte_that_arrives_in_time() {
+        let mut f = Fake::new();
+        f.rx_later = Some((40_000, 0x55));
+        assert_eq!(read_wait(&mut f, N, 30_000), Err(Error::Timeout));
+        assert_eq!(read_wait(&mut f, N, 30_000), Ok(0x55));
+        f.rx_later = Some((0, DR_FE));
+        assert_eq!(read_wait(&mut f, N, 30_000), Err(Error::Framing));
     }
     #[test]
     fn interrupt_mask_updates_keep_the_other_bits() {
