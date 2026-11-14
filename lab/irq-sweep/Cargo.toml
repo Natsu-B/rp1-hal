@@ -1,0 +1,36 @@
+[package]
+name = "irq-sweep"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "irq-sweep"
+test = false
+bench = false
+
+[dependencies]
+rp1-hal = { path = "../../rp1-hal" }
+rp1-rt = { path = "../../rp1-rt" }
+rp1-proto = { path = "../../rp1-proto" }
+
+[build-dependencies]
+rp1-build = { path = "../../rp1-build" }
+
+# Every swept block belongs to proc0, so that Linux's nodes for them are disabled. The I2C and
+# SPI pins are named only because a declaration needs them: the image never routes a pin, and
+# never initialises those drivers. No `dma`, and Linux keeps UART1 (GPIO 0/1, the board default).
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+log = { sink = "uart0", baudrate = 115200 }
+
+[package.metadata.rp1.proc0]
+i2c0 = { sda = 8, scl = 9 }
+i2c2 = { sda = 12, scl = 13 }
+i2c3 = { sda = 22, scl = 23 }
+spi1 = { sck = 21, mosi = 20, miso = 19 }
+spi3 = { sck = 7, mosi = 6, miso = 5 }
+pwm1 = {}
+adc = {}
