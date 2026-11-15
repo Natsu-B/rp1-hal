@@ -44,6 +44,9 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 - 渡さない線: `log` の UART0、`host_irq = true` のときの `TIMER_3`、システム用の PCIE_OUT（53）・
   PROC_MISC（57）・CLOCKS_DEFAULT（59）。53 / 57 のハンドラは proc0 のシステムサービスだけが置ける。
 
+例: `examples/dual-core` は proc0 で `TIMER_0`（1 秒ごとの心拍）、proc1 で `IO_BANK0`（Linux からの GPIO27
+ドアベル）をハンドラで受ける。
+
 ## 3. 周辺側で開けるもの
 
 | 線 | 周辺側の操作 | 備考 |

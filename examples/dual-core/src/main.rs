@@ -1,7 +1,19 @@
 #![no_std]
 #![no_main]
-use rp1_hal::{gpio::Doorbell, log};
-use rp1_rt::{Proc0, Proc1, entry, isram, shared, sync::Spsc};
+use core::cell::RefCell;
+use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use rp1_hal::{
+    gpio::PinIrq,
+    log,
+    timer::{Alarm, Timer},
+};
+use rp1_proto::link;
+use rp1_rt::{
+    Proc0, Proc1, entry, interrupt,
+    interrupt::{Mutex, free},
+    isram, shared,
+    sync::Spsc,
+};
 rp1_rt::bind!();
 
 #[shared]
@@ -20,6 +32,45 @@ fn bss_check(marker: u32) -> u32 {
         word.store(marker, core::sync::atomic::Ordering::Relaxed);
     }
     seen
+}
+
+// Ordinary statics have one DSRAM copy per core: each is shared only between one core's main
+// and that core's handlers, so a core-local `Mutex` or a plain atomic is enough.
+static ALARM0: Mutex<RefCell<Option<Alarm<0>>>> = Mutex::new(RefCell::new(None));
+static TICKS: AtomicU32 = AtomicU32::new(0);
+static DOORBELL: Mutex<RefCell<Option<PinIrq<27, 1>>>> = Mutex::new(RefCell::new(None));
+const TICK_US: u32 = 1_000_000;
+
+/// proc0's heartbeat: count the tick and arm the next one.
+#[interrupt(proc0)]
+fn TIMER_0() {
+    free(|cs| {
+        if let Some(alarm) = ALARM0.borrow_ref_mut(cs).as_mut() {
+            alarm.clear_interrupt();
+            alarm.schedule(next_tick()).unwrap();
+        }
+    });
+    // The handler is the only writer: a load and a store, no read-modify-write.
+    TICKS.store(TICKS.load(Relaxed) + 1, Relaxed);
+}
+/// Linux's doorbell (examples/linux-doorbell): it wrote a request word and forced GPIO27 in
+/// PROC1_INTF. Drop the force, then echo the request as the reply, which Linux polls for.
+#[interrupt(proc1)]
+fn IO_BANK0() {
+    free(|cs| {
+        if let Some(pin) = DOORBELL.borrow_ref_mut(cs).as_mut() {
+            pin.unforce();
+        }
+    });
+    let page = rp1_proto::LINK_START as usize;
+    unsafe {
+        let request = ((page + link::DOORBELL_REQUEST) as *const u32).read_volatile();
+        ((page + link::DOORBELL_REPLY) as *mut u32).write_volatile(request);
+    }
+    rp1_proto::barrier();
+}
+fn next_tick() -> u32 {
+    (Timer::new().now() as u32).wrapping_add(TICK_US)
 }
 
 #[entry(proc0)]
@@ -61,12 +112,25 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         id
     )
     .unwrap();
+    let mut alarm = p.TIMER_ALARM0;
+    alarm.clear_interrupt();
+    alarm.enable_interrupt();
+    alarm.schedule(next_tick()).unwrap();
+    free(|cs| ALARM0.borrow(cs).replace(Some(alarm)));
+    let mut irq = p.irq;
+    irq.TIMER_0.enable();
     p.proc1.launch(&mut core).unwrap();
     let mut rx = VALUES.consumer(&mut core);
     // Linux resets the endpoint (PERSTn) when it probes PCIe; re-apply the endpoint config in
     // time. This must be polled without sleeping.
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
+    let mut logged = 0;
     loop {
+        let ticks = TICKS.load(Relaxed);
+        if ticks != logged {
+            logged = ticks;
+            log!("proc0 tick {}\n", ticks).unwrap();
+        }
         if let Some(value) = rx.pop() {
             log!("proc0 received {}\n", value).unwrap();
         }
@@ -101,19 +165,13 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let _i2c = p.i2c1.init(&clocks, rp1_hal::i2c::Speed::Standard).unwrap();
     let mut tx = VALUES.producer(&mut core);
     tx.push(increment(core::hint::black_box(41))).unwrap();
-    let mut doorbell = Doorbell::new(p.pins.gpio27);
+    let mut irq = p.irq;
+    free(|cs| DOORBELL.borrow(cs).replace(Some(irq.gpio27)));
+    irq.IO_BANK0.enable();
+    log!("proc1 doorbell armed\n").unwrap();
+    // Everything else happens in IO_BANK0.
     loop {
-        if doorbell.pending() {
-            doorbell.acknowledge();
-            // Request/reply words occupy the first link cache line, outside SCMI/ABI reservations.
-            let value = unsafe { (0x2000_c010 as *const u32).read_volatile() };
-            unsafe {
-                (0x2000_c014 as *mut u32).write_volatile(value);
-            }
-            // Linux polls the reply word; v0.1 has no RP1 -> Linux interrupt (design §9).
-            rp1_proto::barrier();
-        }
-        core::hint::spin_loop();
+        rp1_rt::wait_for_event();
     }
 }
 #[isram]
