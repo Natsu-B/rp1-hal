@@ -231,7 +231,7 @@ after boot. The proof ends when Linux has rung the doorbell 1000 times.
 | `IRQ_PROOF_PASS` / `IRQ_PROOF_FAIL <item>` | verdict; a failed item also prints `IRQ_PROOF_FAIL <item>` at once | PASS is the last marker, no FAIL line |
 
 After the proof each `p1 shm cmd=` line carries `stack_free=`, which must stay at 512 or more.
-The lines whose number is only an estimate are not raised here; `irq-sweep` (below) does that.
+The lines whose number was only an estimate before the sweep are not raised here; `irq-sweep` (below) does that.
 
 Build a boot set with `FIRMWARE_PKG=irq-proof bash lab/build-rp1boot.sh` (the initramfs needs
 `shm-linux`, `linux-doorbell` and the UIO modules, as for `check-shm.sh`). On the Linux console
@@ -250,7 +250,7 @@ out). It prints `IRQ_PROOF_VERDICT=PASS|FAIL`. Host tests: `python3 lab/test_ver
 
 ## Interrupt sweep image (HW 2026-11-15)
 
-`irq-sweep` answers one question for each line whose IRQ number is only an estimate: which NVIC
+`irq-sweep` answers one question for each line whose IRQ number was only an estimate before it: which NVIC
 pending bit of proc0 does the block's interrupt output raise? No line is enabled, so no handler
 runs; the image has no handlers at all.
 

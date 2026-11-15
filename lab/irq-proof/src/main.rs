@@ -79,7 +79,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let nonce = make_nonce([waits[0], waits[1], now()]);
     proof::set_nonce(nonce);
     proof::publish_nonce();
-    // `sweep=0`: this image raises no line whose number is an estimate (lab/irq-sweep does).
+    // `sweep=0`: this image raises none of the lines that only lab/irq-sweep proved.
     mark!("IRQ_PROOF_BEGIN sweep=0");
     NONCE.producer(&mut core).push(nonce).unwrap();
     p.proc1.launch(&mut core).unwrap();

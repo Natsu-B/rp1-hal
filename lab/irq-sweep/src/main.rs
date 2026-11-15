@@ -1,6 +1,7 @@
-//! Sweep image for interrupt lines whose number is only an estimate (I2C0/2/3, SPI1/3, ADC,
-//! PWM1, and proc0's IO_BANK1/2 lines): which NVIC pending bit does each block's interrupt
-//! output raise? Markers go to UART0; lab/verify-irq.py --sweep reads them. See sweep.rs.
+//! Sweep image for interrupt lines whose number was only an estimate before the sweep
+//! (I2C0/2/3, SPI1/3, ADC, PWM1, and proc0's IO_BANK1/2 lines): which NVIC pending bit does
+//! each block's interrupt output raise? Markers go to UART0; lab/verify-irq.py --sweep reads
+//! them. See sweep.rs.
 //!
 //! The sweep runs before the PCIe endpoint is brought up. Until then the host has no link to
 //! RP1, so Linux, which the loader starts right after this image, cannot touch a register
