@@ -494,7 +494,8 @@ verified = "static"
 name = "PWM0"
 number = 5
 origin = "linux"
-verified = "hardware"
+verified = "static"
+note = "NVIC delivery seen on the earlier proof-of-concept firmware only; not re-checked on rp1-hal."
 [[interrupt]]
 name = "ETH"
 number = 6
@@ -616,7 +617,8 @@ verified = "hardware"
 name = "TIMER_3"
 number = 29
 origin = "linux"
-verified = "hardware"
+verified = "static"
+note = "rp1-hal evidence is MSI-X delivery to Linux; NVIC delivery seen on the earlier proof-of-concept firmware only."
 [[interrupt]]
 name = "USBHOST0"
 number = 30

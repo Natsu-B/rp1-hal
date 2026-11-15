@@ -100,8 +100,9 @@ pub struct VerifiedIrq {
 }
 
 /// HW: IRQ lines seen pending in the NVIC from their block; only these get a `Line` resource
-/// and may carry a handler. UART0 is reserved for logging. SPI5 (24) and DMA (40) have no
-/// proof yet. IO_BANK1/2 (1/2) are routed but their pins are Linux's, so nothing owns them.
+/// and may carry a handler. PWM0 and TIMER_3 were seen only on the earlier proof-of-concept
+/// firmware and are kept from that. UART0 is reserved for logging. SPI5 (24) and DMA (40) have
+/// no proof yet. IO_BANK1/2 (1/2) are routed but their pins are Linux's, so nothing owns them.
 pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
     VerifiedIrq {
         name: "IO_BANK0",

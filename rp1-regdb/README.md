@@ -111,12 +111,16 @@ RP1 implements 64 NVIC external interrupt slots: the valid local IRQn range is
 NVIC IRQn.
 
 The evidence classification is independent from that numbering assumption.
-UART0 through UART5 are `hardware`/`hardware`. IO_BANK0..2, PWM0/1, I2C0..3,
-SPI0/1/3, TIMER_0..3 and ADC_FIFO keep their Linux-derived number (`linux`) and
-are `hardware` verified: each was seen pending in the NVIC from its own block.
-The other named IRQs remain `linux`/`static`. Validation requires a positive 32-aligned NVIC slot
-count, unique and verified named interrupts, a complete contiguous named range,
-and all named IRQn values to fit both that range and the implemented NVIC slots.
+UART0 through UART5 are `hardware`/`hardware`. IO_BANK0..2, PWM1, I2C0..3,
+SPI0/1/3, TIMER_0..2 and ADC_FIFO keep their Linux-derived number (`linux`) and
+are `hardware` verified: each was seen pending in proc0's NVIC from its own
+block (TIMER_1, IO_BANK0 and SPI0 also on proc1). PWM0 and TIMER_3 stay
+`linux`/`static`: their NVIC delivery was only seen on earlier firmware, and
+their entries say so in `note`. The other named IRQs remain `linux`/`static`.
+
+Validation requires a positive 32-aligned NVIC slot count, unique and verified
+named interrupts, a complete contiguous named range, and all named IRQn values
+to fit both that range and the implemented NVIC slots.
 
 The generator owns both `rp1-pac/src/interrupts.rs` (including the optional
 `rt` feature's per-core runtime vector tables) and `rp1-pac/irq.x`.
