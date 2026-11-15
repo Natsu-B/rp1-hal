@@ -510,7 +510,10 @@ mod tests {
     /// UART `N`'s registers. FR is derived: BUSY and TXFF from the test's switches, RXFE from
     /// the queue of received DR values. A character in progress (`busy` for TX, `receiving`
     /// for RX) outlives clearing UARTEN, as on the PL011, and makes an LCR_H write panic; only
-    /// asserting UART `N`'s reset ends it and empties the FIFOs.
+    /// asserting UART `N`'s reset ends it and empties the FIFOs. While the reset is held the
+    /// block ignores writes and reads as its reset values, and every such access is counted,
+    /// so a test sees a driver that keeps using a UART it released. DONE1 drops on the
+    /// assert and returns on the release unless `reset_stuck`.
     struct Fake {
         regs: BTreeMap<usize, u32>,
         writes: Vec<(usize, u32)>,
@@ -519,6 +522,9 @@ mod tests {
         /// `busy` clears once `elapsed_us` reaches this time.
         drain_at: Option<u64>,
         receiving: bool,
+        in_reset: bool,
+        reset_stuck: bool,
+        accesses_in_reset: usize,
         /// Free TX FIFO slots, and what was pushed.
         tx_room: usize,
         tx: Vec<u8>,
@@ -538,6 +544,9 @@ mod tests {
                 busy: false,
                 drain_at: None,
                 receiving: false,
+                in_reset: false,
+                reset_stuck: false,
+                accesses_in_reset: 0,
                 tx_room: 32,
                 tx: Vec::new(),
                 rx_later: None,
@@ -550,6 +559,12 @@ mod tests {
     }
     impl Registers for Fake {
         fn read(&mut self, address: usize) -> u32 {
+            let uart = base(N)..base(N) + 0x1000;
+            if self.in_reset && uart.contains(&address) {
+                self.accesses_in_reset += 1;
+                // FR resets to TXFE | RXFE, every other register to 0 (DOC: ARM DDI0183).
+                return if address == base(N) + FR { 0x90 } else { 0 };
+            }
             if address == base(N) + FR {
                 if self.drain_at.is_some_and(|at| at <= self.elapsed_us) {
                     self.busy = false;
@@ -567,6 +582,10 @@ mod tests {
             self.regs.get(&address).copied().unwrap_or(0)
         }
         fn write(&mut self, address: usize, value: u32) {
+            if self.in_reset && (base(N)..base(N) + 0x1000).contains(&address) {
+                self.accesses_in_reset += 1;
+                return;
+            }
             if address == base(N) + DR {
                 self.tx_room = self.tx_room.checked_sub(1).expect("TX overflow");
                 self.tx.push(value as u8);
@@ -575,12 +594,22 @@ mod tests {
             if address == base(N) + LCR_H {
                 assert!(!self.busy && !self.receiving, "LCR_H changed mid-character");
             }
+            self.writes.push((address, value));
             if address == RESETS_SET1 && value & reset_bit(N) != 0 {
                 (self.busy, self.receiving, self.tx_room) = (false, false, 32);
                 self.rx.clear();
                 self.rx_later = None;
+                self.in_reset = true;
+                self.regs.clear();
+                self.regs.insert(RESETS_DONE1, 0);
+                return;
             }
-            self.writes.push((address, value));
+            if address == RESETS_CLR1 && value & reset_bit(N) != 0 {
+                self.in_reset = false;
+                let done = if self.reset_stuck { 0 } else { reset_bit(N) };
+                self.regs.insert(RESETS_DONE1, done);
+                return;
+            }
             self.regs.insert(address, value);
         }
     }
@@ -628,7 +657,9 @@ mod tests {
     #[test]
     fn a_reset_or_transmitter_that_stays_busy_times_out_before_configuration() {
         let mut f = Fake::new();
-        f.regs.insert(RESETS_DONE1, 0);
+        hold_in_reset(&mut f, N);
+        f.writes.clear();
+        f.reset_stuck = true;
         assert_eq!(start(&mut f, N, 50_000_000, 115_200), Err(Error::Timeout));
         assert_eq!(f.writes, [(RESETS_CLR1, 1 << 28)]);
         let mut f = Fake::new();
@@ -676,6 +707,7 @@ mod tests {
         assert_eq!(Error::Timeout.kind(), ErrorKind::TimedOut);
         assert_eq!(Error::Invalid.kind(), ErrorKind::InvalidInput);
         assert_eq!(Error::Overrun.kind(), ErrorKind::Other);
+        assert_eq!(Error::Precondition.kind(), ErrorKind::Other);
     }
     /// embedded-io `write`: a full FIFO ends the call with the count of the bytes queued, and
     /// only a call that queued nothing times out.
@@ -758,7 +790,17 @@ mod tests {
             }
             start(&mut f, N, 50_000_000, 115_200).unwrap();
             assert_eq!((read_byte(&mut f, N), f.tx_room), (Ok(None), 32));
+            assert_eq!(f.accesses_in_reset, 0);
         }
+    }
+    /// The fake catches a driver that keeps using a released UART: the write is lost.
+    #[test]
+    fn a_uart_held_in_reset_ignores_writes_and_reads_as_reset() {
+        let mut f = Fake::new();
+        hold_in_reset(&mut f, N);
+        assert_eq!(write(&mut f, N, b"x", 1_000), Ok(1));
+        assert_eq!(read_byte(&mut f, N), Ok(None));
+        assert_eq!((f.tx.len(), f.accesses_in_reset), (0, 3));
     }
     #[test]
     fn interrupt_mask_updates_keep_the_other_bits() {
