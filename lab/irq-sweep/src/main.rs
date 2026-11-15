@@ -5,7 +5,7 @@
 //! The sweep runs before the PCIe endpoint is brought up. Until then the host has no link to
 //! RP1, so Linux, which the loader starts right after this image, cannot touch a register
 //! while a block is being raised. The cost is a later link: the sweep must end well before
-//! Linux releases PERSTn (about 2.5 s after this image starts), and takes about half a second.
+//! Linux releases PERSTn (about 2.5 s after this image starts), and takes about 0.7 s.
 #![no_std]
 #![no_main]
 use rp1_hal::log;
@@ -64,7 +64,8 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     )
     .unwrap();
     // Not guaranteed to differ between boots this early; `IRQ_SWEEP_BOOT` below adds a value
-    // that does.
+    // that usually does (it includes the PERSTn and link waits), though a 32-bit hash is not
+    // guaranteed unique either.
     NONCE.store(hash(&[started, reg::now()]), Relaxed);
     sweep::run();
 

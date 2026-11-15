@@ -197,8 +197,10 @@ impl Source for Spi {
     }
 }
 
-/// PWM1, by its force register only. No channel is ever enabled: the block's only output is
-/// the fan pin (GPIO45), which must not select any function for this line to run.
+/// PWM1, by its force register only. No channel is ever enabled, and `GLOBAL_CTRL` is checked
+/// for that before every trial; that is what keeps the block's outputs quiet. The fan pin
+/// (GPIO45) must also select no function for this line to run. That it is PWM1's only pin is
+/// an assumption (HYP): the repository has no pin table for banks 1 and 2.
 pub struct Pwm1;
 mod pwm {
     pub const BASE: usize = 0x4009_c000;

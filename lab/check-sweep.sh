@@ -23,7 +23,9 @@ dt_disabled() {
 }
 echo SWEEP_CHECK_BEGIN
 uname -a
-# The firmware keeps its boot value in the link page (+0x28).
+# The firmware keeps its boot value in the link page (+0x28): UART0's `IRQ_SWEEP_BOOT boot=`,
+# not the `nonce=` of its marker lines. It is printed under check-irq.sh's label so that
+# verify-irq.py ties the console to the boot the same way for both images.
 echo IRQ_NONCE=$(busybox devmem 0x1f0040c028 32)
 dt_disabled I2C0 i2c@70000
 dt_disabled I2C2 i2c@78000
