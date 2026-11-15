@@ -69,9 +69,12 @@ write APIs are raw/unsafe only until the write semantics are verified.
 1. `init` starts clk_adc at XOSC / 1 = 50 MHz. This is the rate Linux requests, and the SCMI
    table's `adc` entry has the same parent and maximum. Then it releases the reset (DONE is
    not waited for: it stays 0 even under the stock firmware, HW), writes INTE = 0 and
-   CS = EN | ERR_STICKY, and waits for READY. A failed `init` returns `rp1_hal::InitError` with the
-   token as `resources`, so the caller can retry (`?` converts it to `Error`); `free()` powers the ADC down
-   and returns the token, and cannot fail (no conversion runs between calls).
+   CS = EN | ERR_STICKY, and waits for READY. A failed `init` returns `rp1_hal::InitError`
+   with the token as `resources`, so the caller can retry (`?` converts it to `Error`).
+   `free()` writes CS = 0 (power down) without waiting and returns the token, so it cannot
+   fail. It does not establish an
+   idle ADC: after a `read()` that returned `Timeout` a conversion may still be running, and
+   nothing cancels it (STATIC; the effect of the CS write on it is not measured).
 2. `read(ain)` selects AINSEL through the CLR/SET aliases (also clearing START_MANY and
    RROBIN), waits for READY, sets START_ONCE, and waits for READY again. It returns
    `Error::Conversion` if CS.ERR is set, and otherwise RESULT[11:0]. Reading input 4 powers

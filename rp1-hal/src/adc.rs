@@ -190,8 +190,10 @@ impl Adc {
         Ok(millivolts_to_millicelsius(raw_to_millivolts(raw, VREF_MV)))
     }
 
-    /// Powers the ADC down and gives the block back (the clock and reset stay as they are).
-    /// There is no conversion to wait for between calls, so this cannot fail.
+    /// Writes CS = 0 (powers the ADC down) without waiting and gives the block back; the clock
+    /// and reset stay as they are. After a [`Adc::read`] that returned [`Error::Timeout`] a
+    /// conversion may still be running: nothing cancels it, and whether the write ends it
+    /// is not measured (HW: not verified). It cannot fail.
     pub fn free(self) -> Token {
         write(CS, 0);
         Token { _private: () }
