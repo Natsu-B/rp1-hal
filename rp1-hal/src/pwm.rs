@@ -152,7 +152,7 @@ impl<const N: u8> Channels<N> {
     }
     /// [`Self::free`] without the clock check: the disable is written, but with clk_pwm
     /// stopped or at another rate it may not latch, and the outputs may keep their last
-    /// level or waveform (HW 未検証). [`Token::init`] starts the clock and disables all four
+    /// level or waveform (HW: not verified). [`Token::init`] starts the clock and disables all four
     /// channels again.
     pub fn abort(self) -> Token<N> {
         stop_block(&mut Mmio, N);
