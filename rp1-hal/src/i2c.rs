@@ -627,6 +627,17 @@ fn transact(
 mod tests {
     extern crate std;
     use super::*;
+    /// Model timer step per `now()`.
+    const STEP_US: u32 = 1000;
+    /// A bounded wait that started reading the timer at `start` gave up at the first look
+    /// past [`TIMEOUT_US`], whatever the model's step.
+    fn assert_timed_out(tick: u32, start: u32) {
+        let waited = tick.wrapping_sub(start) - STEP_US;
+        assert!(
+            (TIMEOUT_US..TIMEOUT_US + STEP_US).contains(&waited),
+            "{waited}"
+        );
+    }
     use std::{collections::VecDeque, vec::Vec};
     struct Model {
         commands: Vec<u32>,
@@ -732,7 +743,7 @@ mod tests {
             }
         }
         fn now(&mut self) -> u32 {
-            self.tick = self.tick.wrapping_add(1000);
+            self.tick = self.tick.wrapping_add(STEP_US);
             self.tick
         }
         fn sys_current(&mut self, clocks: &Clocks) -> bool {
@@ -950,7 +961,7 @@ mod tests {
         let before = m.tick;
         assert_eq!(release(&mut m), Err(Error::Timeout));
         assert_eq!((m.mask, m.wrap), (0x250, 0x9));
-        assert_eq!(m.tick.wrapping_sub(before), 101_000);
+        assert_timed_out(m.tick, before);
         // The slave lets go: the same call now succeeds.
         m.stuck_enabled = false;
         assert_eq!(release(&mut m), Ok(()));
@@ -1042,7 +1053,7 @@ mod tests {
             transfer(&mut m, &mut [Operation::Write(&[1])], 2),
             Err(Error::Timeout)
         );
-        assert_eq!(m.tick.wrapping_sub(u32::MAX - 50), 101_000);
+        assert_timed_out(m.tick, u32::MAX - 50);
         let mut m = Model::new(2);
         m.raw = 2;
         assert_eq!(

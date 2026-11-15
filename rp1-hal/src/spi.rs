@@ -1036,6 +1036,17 @@ fn transaction<W: Word, B: Bus<W>>(
 mod tests {
     extern crate std;
     use super::*;
+    /// Model timer step per `now()`.
+    const STEP_US: u32 = 1000;
+    /// A bounded wait that started reading the timer at `start` gave up at the first look
+    /// past [`TIMEOUT_US`], whatever the model's step.
+    fn assert_timed_out(tick: u32, start: u32) {
+        let waited = tick.wrapping_sub(start) - STEP_US;
+        assert!(
+            (TIMEOUT_US..TIMEOUT_US + STEP_US).contains(&waited),
+            "{waited}"
+        );
+    }
     use std::{collections::VecDeque, vec::Vec};
     /// Loopback DW SSI: every RXFLR read shifts the whole TX FIFO into the RX FIFO. After the
     /// last push SR keeps BUSY for `hold_busy` more polls (the last frame still on the wire
@@ -1152,7 +1163,7 @@ mod tests {
             }
         }
         fn now(&mut self) -> u32 {
-            self.tick = self.tick.wrapping_add(1000);
+            self.tick = self.tick.wrapping_add(STEP_US);
             self.tick
         }
         fn sys_current(&mut self, clocks: &Clocks) -> bool {
@@ -1182,7 +1193,7 @@ mod tests {
         (m.imr, m.wrap, m.stalled) = (int::RXFI, 0x9, true);
         assert_eq!(release(&mut m), Err(Error::Timeout));
         assert!(m.writes.is_empty());
-        assert_eq!(m.tick.wrapping_sub(u32::MAX - 50), 101_000);
+        assert_timed_out(m.tick, u32::MAX - 50);
         // `abort` is the old `free`: no look at the bus.
         let before = m.tick;
         stop(&mut m);
