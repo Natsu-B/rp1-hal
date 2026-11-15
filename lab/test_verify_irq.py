@@ -230,9 +230,10 @@ def pair(bits, width=0):
     return f"{bits & 0xffffffff:0{width}x},{bits >> 32:0{width}x}"
 
 
-def sweep_records(irq, result="ROUTED", reason=None, exit_=None):
+def sweep_records(irq, result="ROUTED", reason=None, exit_=None, detail=None):
     """The PRE, TRIAL and result lines the image prints for one line (values invented; the
-    trials are the ones the image runs for that result, in its order)."""
+    trials are the ones the image runs for that result, in its order). `detail` overrides the
+    printed detail (after_abort carries the aborting line's IRQ)."""
     stages, source = v.SWEEP_KINDS[v.SWEEP_TABLE[irq].rstrip("0123456789")]
     target, foreign = 1 << irq, 1 << 8 if irq != 8 else 1 << 3
     trials = []
@@ -241,8 +242,7 @@ def sweep_records(irq, result="ROUTED", reason=None, exit_=None):
         stage = stages[i % len(stages)]
         status = (source | (1 << 16 if stage == "wrap1" else 0)) if raised else 0
         post = (target if hit else 0) | other
-        trials.append(dict(stage=stage, trial=i // len(stages), raised=int(raised), post=post, status=status,
-                           clean=raised and not other))
+        trials.append(dict(stage=stage, trial=i // len(stages), raised=int(raised), post=post, status=status))
 
     if result in ("ROUTED", "NOT_ROUTED"):
         for i in range(v.SWEEP_TRIALS * len(stages)):
@@ -253,16 +253,17 @@ def sweep_records(irq, result="ROUTED", reason=None, exit_=None):
     elif reason == "source_fail":
         trial(0)
         trial(1, raised=False)
-    # As in sweep_line: only a trial that ended cleanly counts, not the one that stopped the line.
-    hits = ",".join(f"{stage}:{sum(t['post'] & target != 0 for t in trials if t['stage'] == stage and t['clean'])}/3"
-                    for stage in stages)
+    # The hits the image prints for these scenarios, stated rather than counted from the trials:
+    # ROUTED hits on every trial of its last stage; every other scenario has no clean hit (the
+    # trial that stops OTHER_LINE / NEW_PENDING / source_fail is not counted).
+    hits = ",".join(f"{stage}:{3 if result == 'ROUTED' and stage == stages[-1] else 0}/3" for stage in stages)
     if result == "ROUTED":
         shown, reason = trials[-1], stages[-1]
     else:
         shown = trials[-1] if trials else dict(post=0, status=0)
     if exit_ is None:
         exit_ = "untouched" if reason in v.SKIP_UNTOUCHED + v.SKIP_NOT_RUN else "left"
-    detail = f"{shown['status']:x}" if reason == "source_fail" else "0"
+    detail = detail or (f"{shown['status']:x}" if reason == "source_fail" else "0")
     new = shown["post"] & ~target
     lines = [] if reason in v.SKIP_NOT_RUN else [f"IRQ_SWEEP_PRE irq={irq} fs=8:1f,9:1f found=0,44570140"]
     lines += [f"IRQ_SWEEP_TRIAL irq={irq} stage={t['stage']} trial={t['trial']} pre=0,0 base=0,0 "
@@ -374,9 +375,52 @@ class VerifySweep(unittest.TestCase):
         cases = {9: ("OTHER_LINE",), 10: ("NEW_PENDING",), 20: ("SKIP", "source_fail"),
                  22: ("SKIP", "pin_routed"), 52: ("SKIP", "not_alive"), 2: ("SKIP", "baseline")}
         self.assertEqual(v.verify_sweep(sweep_uart0(results=cases))[0], [])
-        blocked = {irq: ("SKIP", "after_abort") for irq in (52, 41, 1, 2)}
+        blocked = {irq: ("SKIP", "after_abort", None, "16") for irq in (52, 41, 1, 2)}
         found = v.verify_sweep(sweep_uart0(results={22: ("ABORT", "rearm"), **blocked}))[0]
         self.assertEqual([f for f in found if "ABORT" not in f], [])
+
+    def test_blocked_lines_need_their_cause(self):
+        # The reviewer's counter-examples (round 3): each passed before.
+        everything = {irq: ("SKIP", "after_abort", None, "7") for irq in v.SWEEP_TABLE}
+        self.assertFails(v.verify_sweep(sweep_uart0(results=everything))[0],
+                         "irq=7: SKIP after_abort without an earlier ABORT")
+        enabled = {irq: ("SKIP", "irq_enabled") for irq in v.SWEEP_TABLE}
+        self.assertFails(v.verify_sweep(sweep_uart0(results=enabled))[0], "irq=7: SKIP irq_enabled without")
+        # After an ABORT every later line is after_abort, naming the aborting IRQ.
+        wrong = {22: ("ABORT", "rearm"), 52: ("SKIP", "after_abort", None, "7"),
+                 **{irq: ("SKIP", "after_abort", None, "16") for irq in (41, 1, 2)}}
+        self.assertFails(v.verify_sweep(sweep_uart0(results=wrong))[0], "irq=52: result=SKIP reason=after_abort detail=7")
+        ran = {22: ("ABORT", "rearm"), 52: ("NOT_ROUTED",),
+               **{irq: ("SKIP", "after_abort", None, "16") for irq in (41, 1, 2)}}
+        self.assertFails(v.verify_sweep(sweep_uart0(results=ran))[0], "irq=52: result=NOT_ROUTED")
+        # An enabled line at BEGIN blocks every line as irq_enabled.
+        text = sweep_uart0(results=enabled).replace(f"iser={ZERO} ispr", "iser=00000080,00000000 ispr", 1)
+        self.assertEqual([f for f in v.verify_sweep(text)[0] if "a line was enabled" not in f], [])
+
+    def test_impossible_trials_and_fields(self):
+        # A seventh trial (trial=3) after six clean misses: the image runs trials 0..2 only.
+        extra = sweep_records(10, "NOT_ROUTED")
+        last = extra[-2].replace("stage=wrap1 trial=2", "stage=wrap0 trial=3").replace("post=0,0", "post=500,0")
+        extra[-1] = (extra[-1].replace("result=NOT_ROUTED", "result=NEW_PENDING")
+                     .replace(f"ispr_after={pair(0, 8)}", f"ispr_after={pair(0x500, 8)}")
+                     .replace(f"new={pair(0, 8)}", f"new={pair(0x100, 8)}"))
+        extra.insert(-1, last)
+        self.assertFails(v.verify_sweep(sweep_uart0(results={10: extra}))[0], "7 trials, the image runs at most 6")
+        # ROUTED without a reason, on trials with one hit: the image says ABORT unstable.
+        unstable = sweep_records(10, "NOT_ROUTED")
+        unstable[2] = unstable[2].replace("post=0,0", "post=400,0")
+        unstable[-1] = (unstable[-1].replace("result=NOT_ROUTED reason=- ", "result=ROUTED ")
+                        .replace("wrap1:0/3", "wrap1:1/3"))
+        self.assertFails(v.verify_sweep(sweep_uart0(results={10: unstable}))[0], "irq=10: reason missing")
+        unstable[-1] = unstable[-1].replace("result=ROUTED ", "result=ROUTED reason=None ")
+        self.assertFails(v.verify_sweep(sweep_uart0(results={10: unstable}))[0], "ROUTED reason=None, the trials say None")
+        # Words wider than 32 bits or signed, and a time that does not fit the image's u32.
+        for old, new in (("found=0,44570140", "found=-1,100000000"), ("pre=0,0", "pre=-1,0"),
+                         ("intstat=0,0", "intstat=0,100000000"), ("us=1 ", "us=4294967296 ")):
+            bad = sweep_records(7)
+            index = 0 if old.startswith("found") else 1
+            bad[index] = bad[index].replace(old, new)
+            self.assertFails(v.verify_sweep(sweep_uart0(results={7: bad}))[0], "irq=7")
 
     # The reviewer's counter-examples: each passed before the evidence was checked.
     def test_results_without_trials_fail(self):

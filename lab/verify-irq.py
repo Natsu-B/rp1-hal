@@ -285,14 +285,11 @@ UART10_SWEEP = [
 
 
 def word_pair(text):
-    """`a,b` in hexadecimal -> the 64 pending bits as one number, or None."""
+    """`a,b`, two 32-bit words in hexadecimal -> the 64 pending bits as one number, or None."""
     parts = (text or "").split(",")
-    if len(parts) != 2:
+    if len(parts) != 2 or None in (low := hexadecimal(parts[0]), high := hexadecimal(parts[1])):
         return None
-    try:
-        return int(parts[0], 16) | int(parts[1], 16) << 32
-    except ValueError:
-        return None
+    return low | high << 32
 
 
 def sweep_line(fields):
@@ -308,6 +305,9 @@ def sweep_line(fields):
         return [f"irq={irq} block={block}: not in the sweep table"], record
     if result not in SWEEP_RESULTS:
         return [f"irq={irq}: result={result}"], record
+    absent = [k for k in ("reason", "detail", "exit", "hits", "status") if fields.get(k) is None]
+    if absent:
+        return [f"irq={irq}: {','.join(absent)} missing"], record
     before, after, new = (word_pair(fields.get(k)) for k in ("ispr_before", "ispr_after", "new"))
     if None in (before, after, new):
         return [f"irq={irq}: pending words missing or not hexadecimal"], record
@@ -328,10 +328,8 @@ def sweep_line(fields):
 
 
 def hexadecimal(text):
-    try:
-        return int(text or "", 16)
-    except ValueError:
-        return None
+    """One 32-bit word as the image prints it (lowercase hexadecimal, no sign), or None."""
+    return int(text, 16) if re.fullmatch(r"[0-9a-f]{1,8}", text or "") else None
 
 
 def trial_words(trial):
@@ -342,7 +340,7 @@ def trial_words(trial):
     status, raised = hexadecimal(trial.get("status")), trial.get("raised")
     if None in words.values() or status is None or raised not in ("0", "1"):
         return None
-    if not re.fullmatch(r"\d+", trial.get("us") or ""):
+    if not re.fullmatch(r"\d{1,10}", trial.get("us") or "") or int(trial["us"]) > 0xFFFF_FFFF:
         return None
     return dict(words, status=status, raised=raised == "1")
 
@@ -403,7 +401,9 @@ def sweep_evidence(record, pres, trials):
 
     # How many trials each result needs, and what the last one must show.
     full = SWEEP_TRIALS * len(stages)
-    early = [t for t in parsed[:-1] if not t["raised"] or t["foreign"]]
+    if len(parsed) > full:
+        fail(f"{len(parsed)} trials, the image runs at most {full}")
+    early =[t for t in parsed[:-1] if not t["raised"] or t["foreign"]]
     last = parsed[-1] if parsed else None
     if result in ("ROUTED", "NOT_ROUTED"):
         if len(parsed) != full or any(not t["raised"] or t["foreign"] for t in parsed):
@@ -432,7 +432,7 @@ def sweep_evidence(record, pres, trials):
     if record["hits"] != claimed:
         fail(f"hits={record['hits']}, the trials say {claimed}")
     routed = next((stages[s] for s, n in enumerate(hits) if n == SWEEP_TRIALS), None)
-    if result == "ROUTED" and reason != routed:
+    if result == "ROUTED" and (routed is None or reason != routed):
         fail(f"ROUTED reason={reason}, the trials say {routed}")
     if result == "NOT_ROUTED" and any(hits):
         fail(f"NOT_ROUTED with hits {claimed}")
@@ -448,6 +448,28 @@ def sweep_evidence(record, pres, trials):
             fail("no trial, but ispr_before differs from ispr_after")
     elif (before, after, hexadecimal(record["status"])) != (shown["base"], shown["post"], shown["status"]):
         fail("ispr_before, ispr_after or status is not the trial the result rests on")
+    return failures
+
+
+def sweep_blocking(records, iser):
+    """Failures where a line's not-run SKIP disagrees with the sweep as a whole. As in
+    sweep.rs run(): every line is `irq_enabled` when BEGIN shows an enabled line; otherwise the
+    lines run in table order until one ABORTs, and every later line is `after_abort` with that
+    line's IRQ as detail. No other line may carry these reasons."""
+    order = [r["irq"] for r in records]
+    if sorted(order) == sorted(SWEEP_TABLE) and order != list(SWEEP_TABLE):
+        return [f"lines out of table order: {order}"]
+    failures = []
+    blocked = ("irq_enabled", "0") if iser != "00000000,00000000" else None
+    for r in records:
+        if blocked is not None:
+            if (r["result"], r["reason"], r["detail"]) != ("SKIP", *blocked):
+                failures.append(f"irq={r['irq']}: result={r['result']} reason={r['reason']} detail={r['detail']},"
+                                f" the sweep was blocked by {blocked[0]} detail={blocked[1]}")
+        elif r["result"] == "SKIP" and r["reason"] in SKIP_NOT_RUN:
+            failures.append(f"irq={r['irq']}: SKIP {r['reason']} without an earlier ABORT or an enabled line")
+        elif r["result"] == "ABORT":
+            blocked = ("after_abort", f"{r['irq']:x}" if r["irq"] is not None else "?")
     return failures
 
 
@@ -528,6 +550,7 @@ def verify_sweep(text, nonce=None):
     begin = summary.get("begin", {})
     if begin.get("iser") != "00000000,00000000":
         failures.append(f"UART0 IRQ_SWEEP_BEGIN: iser={begin.get('iser')} (a line was enabled)")
+    failures += [f"UART0 IRQ_SWEEP {f}" for f in sweep_blocking(summary["lines"], begin.get("iser"))]
     if ended is None:
         failures.append("UART0: no IRQ_SWEEP_END")
     else:
