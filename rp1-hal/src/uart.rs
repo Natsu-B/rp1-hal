@@ -65,7 +65,8 @@ const fn base(n: u8) -> usize {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// The RX FIFO was full and at least one later character was lost.
+    /// The RX FIFO was full and one or more received characters before this one were lost.
+    /// The character the overrun was reported with is discarded too.
     Overrun,
     /// The line was held low for longer than a character.
     Break,
@@ -80,8 +81,8 @@ pub enum Error {
     /// The clock tree is not the one the [`Clocks`] value describes.
     Precondition,
 }
-/// `Overrun` has no kind of its own in embedded-io and is `Other`: the data that was read is
-/// good, later data is missing.
+/// `Overrun` has no kind of its own in embedded-io and is `Other`: the data read before it is
+/// good, but one or more characters between that data and the next one read are missing.
 impl embedded_io::Error for Error {
     fn kind(&self) -> embedded_io::ErrorKind {
         use embedded_io::ErrorKind;

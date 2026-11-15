@@ -313,7 +313,7 @@ let mut uart = parts.init(&clocks, 9_600).unwrap();    // 返った Parts でそ
 
 - `uart::Error` は受信エラーを `Overrun` / `Break` / `Parity` / `Framing` に分け、ほかに `Timeout` / `Invalid`（baud）/
   `Precondition`（クロック）を持つ。`embedded_io::ErrorKind` は `Break`・`Parity`・`Framing` → `InvalidData`、`Timeout` → `TimedOut`、
-  `Invalid` → `InvalidInput`、`Overrun`・`Precondition` → `Other`（overrun は読めた文字は正しく、後続が欠けたという意味で、対応する kind が無い）。
+  `Invalid` → `InvalidInput`、`Overrun`・`Precondition` → `Other`（overrun は、それまでに読めた文字は正しいが、エラーを付けて届いた文字より前の 1 文字以上が FIFO 満杯で失われたという意味で、対応する kind が無い。エラーを付けて届いた文字自体も捨てる）。
   エラー付きで受信した文字は捨て、その位置でエラーを返す。
 - 待ちはすべて 1 MHz タイマーの経過時間で測る（ポーリング回数ではない）。上限は `Uart::set_timeout_us`（既定 100 ms）で、
   TX FIFO の空き待ち・受信待ち・`flush` の送信完了待ちのそれぞれに掛かる。FIFO が満杯のとき送信完了まで 330 ビット時間かかるので、
