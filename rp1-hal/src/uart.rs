@@ -31,9 +31,10 @@ const LCR_H_8N1_FIFO: u32 = 0x70;
 const CR_ENABLE: u32 = 0x301;
 /// RESETS CTRL1 through its set and clear aliases: one bit per UART, so asserting or releasing
 /// this UART's reset leaves the sibling UARTs (possibly Linux's) and every other block alone.
-const RESETS_SET1: usize = 0x4001_6004;
-const RESETS_CLR1: usize = 0x4001_7004;
-const RESETS_DONE1: usize = 0x4001_401c;
+const RESETS: usize = 0x4001_4000;
+const RESETS_SET1: usize = RESETS + 0x2000 + 4;
+const RESETS_CLR1: usize = RESETS + 0x3000 + 4;
+const RESETS_DONE1: usize = RESETS + 0x1c;
 const fn reset_bit(n: u8) -> u32 {
     1 << (26 + n)
 }
