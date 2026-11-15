@@ -461,6 +461,8 @@ where
     }
 }
 /// Formatting stops at the first [`Error::Timeout`]; what was queued before it stays queued.
+/// `Uart` also implements [`embedded_io::Write`], which has its own `write_fmt`: with both
+/// traits in scope, `write!(uart, ..)` is ambiguous, so import only the one meant.
 impl<const N: u8, const TX: u8, const RX: u8> fmt::Write for Uart<N, TX, RX> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         embedded_io::Write::write_all(self, s.as_bytes()).map_err(|_| fmt::Error)
