@@ -265,16 +265,23 @@ pub struct Spi<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> {
     div: u32,
     rsd: u32,
 }
-/// [`Token::init`] failed: the error, and the token and pins back (unchanged) for a retry.
-pub struct InitError<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> {
+/// [`Token::init`] failed: the error, and the token and pins back (unchanged) as the same
+/// [`Parts`] that [`Spi::free`] returns, ready for a retry.
+pub struct InitError<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8>
+where
+    Pin<SCK>: Sck<N>,
+    Pin<MOSI>: Mosi<N>,
+    Pin<MISO>: Miso<N>,
+{
     pub error: Error,
-    pub token: Token<N>,
-    pub sck: Pin<SCK>,
-    pub mosi: Pin<MOSI>,
-    pub miso: Pin<MISO>,
+    pub resources: Parts<N, SCK, MOSI, MISO>,
 }
 impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> core::fmt::Debug
     for InitError<N, SCK, MOSI, MISO>
+where
+    Pin<SCK>: Sck<N>,
+    Pin<MOSI>: Mosi<N>,
+    Pin<MISO>: Miso<N>,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.error.fmt(f)
@@ -282,6 +289,10 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> core::fmt::Debu
 }
 impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> From<InitError<N, SCK, MOSI, MISO>>
     for Error
+where
+    Pin<SCK>: Sck<N>,
+    Pin<MOSI>: Mosi<N>,
+    Pin<MISO>: Miso<N>,
 {
     fn from(e: InitError<N, SCK, MOSI, MISO>) -> Self {
         e.error
@@ -319,7 +330,7 @@ impl<const N: u8> Token<N> {
     ///     // Retry once with 8-bit frames, then give up with `?`.
     ///     match token.init(sck, mosi, miso, clocks, config.with_frame_bits(32)) {
     ///         Ok(spi) => Ok(spi),
-    ///         Err(e) => Ok(e.token.init(e.sck, e.mosi, e.miso, clocks, config)?),
+    ///         Err(e) => Ok(e.resources.init(clocks, config)?),
     ///     }
     /// }
     /// ```
@@ -358,7 +369,12 @@ impl<const N: u8> Token<N> {
         clocks: &Clocks,
         config: Config,
         route: impl FnOnce(Pins<SCK, MOSI, MISO>) -> Pins<SCK, MOSI, MISO, Alternate>,
-    ) -> Result<Spi<N, SCK, MOSI, MISO>, InitError<N, SCK, MOSI, MISO>> {
+    ) -> Result<Spi<N, SCK, MOSI, MISO>, InitError<N, SCK, MOSI, MISO>>
+    where
+        Pin<SCK>: Sck<N>,
+        Pin<MOSI>: Mosi<N>,
+        Pin<MISO>: Miso<N>,
+    {
         match start(io, reset_bit(N), clocks, config) {
             Ok((depth, dfs32, cr0, div)) => {
                 let (_sck, _mosi, _miso) = route(pins);
@@ -379,10 +395,12 @@ impl<const N: u8> Token<N> {
                 let (sck, mosi, miso) = pins;
                 Err(InitError {
                     error,
-                    token: self,
-                    sck,
-                    mosi,
-                    miso,
+                    resources: Parts {
+                        token: self,
+                        sck,
+                        mosi,
+                        miso,
+                    },
                 })
             }
         }
@@ -1450,10 +1468,13 @@ mod tests {
             let mut routed = false;
             let InitError {
                 error,
-                token: t,
-                sck,
-                mosi,
-                miso,
+                resources:
+                    Parts {
+                        token: t,
+                        sck,
+                        mosi,
+                        miso,
+                    },
             } = init_model(token, &mut m, pins, config, &mut routed)
                 .err()
                 .expect("init must fail");
@@ -1472,14 +1493,13 @@ mod tests {
         assert_eq!(e.error, Error::Invalid);
         assert_eq!((m.resets.as_slice(), routed), (&[reset_bit(0)][..], false));
         let config = config.with_frame_bits(16).with_rx_sample_dly(3);
-        let spi = init_model(
-            e.token,
-            &mut m,
-            (e.sck, e.mosi, e.miso),
-            config,
-            &mut routed,
-        )
-        .expect("retry");
+        let Parts {
+            token,
+            sck,
+            mosi,
+            miso,
+        } = e.resources;
+        let spi = init_model(token, &mut m, (sck, mosi, miso), config, &mut routed).expect("retry");
         assert!(routed);
         assert_eq!(
             (spi.fifo_depth(), spi.has_32_bit_frames(), spi.frame_bits()),

@@ -103,11 +103,12 @@ loopback) wait for the bus to be idle and reprogram the disabled controller.
 
 `init` checks clk_sys, the rate and the frame size (up to 32 bits; the instance's own
 limit after the probe) before it releases the reset. On any error it returns `InitError`
-with the token and the untouched pins, so the caller can retry (`?` converts it to `Error`).
+whose `resources` are the token and the untouched pins as the `Parts` that `free` returns, so
+the caller can retry (`?` converts it to `Error`).
 STATIC (host model through an injected register interface): a stale clk_sys, a zero or too
 low rate and 3- or 33-bit frames write no register, leave the reset asserted and route no
 pin; 32-bit frames on a 16-bit instance fail after the probe, still without routing, and the
-destructured `InitError`'s token and pins initialise the controller on retry.
+`Parts` in the returned `InitError` initialise the controller on retry.
 
 `Config` is `#[non_exhaustive]`: build it with `Config::new(hz, mode)` and the `with_*`
 setters.

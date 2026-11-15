@@ -116,19 +116,30 @@ pub struct Uart<const N: u8, const TX: u8, const RX: u8> {
     _rx: Pin<RX, Alternate>,
     timeout_us: u32,
 }
-/// [`Token::init`] failed: the error, and the token and pins back (unchanged) for a retry.
-pub struct InitError<const N: u8, const TX: u8, const RX: u8> {
+/// [`Token::init`] failed: the error, and the token and pins back (unchanged) as the same
+/// [`Parts`] that [`Uart::free`] returns, ready for a retry.
+pub struct InitError<const N: u8, const TX: u8, const RX: u8>
+where
+    Pin<TX>: Tx<N>,
+    Pin<RX>: Rx<N>,
+{
     pub error: Error,
-    pub token: Token<N>,
-    pub tx: Pin<TX>,
-    pub rx: Pin<RX>,
+    pub resources: Parts<N, TX, RX>,
 }
-impl<const N: u8, const TX: u8, const RX: u8> fmt::Debug for InitError<N, TX, RX> {
+impl<const N: u8, const TX: u8, const RX: u8> fmt::Debug for InitError<N, TX, RX>
+where
+    Pin<TX>: Tx<N>,
+    Pin<RX>: Rx<N>,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.error.fmt(f)
     }
 }
-impl<const N: u8, const TX: u8, const RX: u8> From<InitError<N, TX, RX>> for Error {
+impl<const N: u8, const TX: u8, const RX: u8> From<InitError<N, TX, RX>> for Error
+where
+    Pin<TX>: Tx<N>,
+    Pin<RX>: Rx<N>,
+{
     fn from(e: InitError<N, TX, RX>) -> Self {
         e.error
     }
@@ -180,9 +191,11 @@ impl<const N: u8> Token<N> {
             }),
             Err(error) => Err(InitError {
                 error,
-                token: self,
-                tx,
-                rx,
+                resources: Parts {
+                    token: self,
+                    tx,
+                    rx,
+                },
             }),
         }
     }

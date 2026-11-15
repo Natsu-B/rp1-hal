@@ -93,19 +93,30 @@ const PAD: u32 = 0x7a;
 pub struct Token<const N: u8> {
     _private: (),
 }
-/// [`Token::init`] failed: the error, and the token and pins back (unchanged) for a retry.
-pub struct InitError<const N: u8, const SDA: u8, const SCL: u8> {
+/// [`Token::init`] failed: the error, and the token and pins back (unchanged) as the same
+/// [`Parts`] that [`I2c::free`] returns, ready for a retry.
+pub struct InitError<const N: u8, const SDA: u8, const SCL: u8>
+where
+    Pin<SDA>: Sda<N>,
+    Pin<SCL>: Scl<N>,
+{
     pub error: Error,
-    pub token: Token<N>,
-    pub sda: Pin<SDA>,
-    pub scl: Pin<SCL>,
+    pub resources: Parts<N, SDA, SCL>,
 }
-impl<const N: u8, const SDA: u8, const SCL: u8> core::fmt::Debug for InitError<N, SDA, SCL> {
+impl<const N: u8, const SDA: u8, const SCL: u8> core::fmt::Debug for InitError<N, SDA, SCL>
+where
+    Pin<SDA>: Sda<N>,
+    Pin<SCL>: Scl<N>,
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.error.fmt(f)
     }
 }
-impl<const N: u8, const SDA: u8, const SCL: u8> From<InitError<N, SDA, SCL>> for Error {
+impl<const N: u8, const SDA: u8, const SCL: u8> From<InitError<N, SDA, SCL>> for Error
+where
+    Pin<SDA>: Sda<N>,
+    Pin<SCL>: Scl<N>,
+{
     fn from(e: InitError<N, SDA, SCL>) -> Self {
         e.error
     }
@@ -137,7 +148,7 @@ impl<const N: u8> Token<N> {
     ///     // Fast mode, else standard mode, else the error through `?`.
     ///     match token.init(sda, scl, clocks, Speed::Fast) {
     ///         Ok(i2c) => Ok(i2c),
-    ///         Err(e) => Ok(e.token.init(e.sda, e.scl, clocks, Speed::Standard)?),
+    ///         Err(e) => Ok(e.resources.init(clocks, Speed::Standard)?),
     ///     }
     /// }
     /// ```
@@ -175,7 +186,11 @@ impl<const N: u8> Token<N> {
         clocks: &Clocks,
         speed: Speed,
         route: impl FnOnce((Pin<SDA>, Pin<SCL>)) -> (Pin<SDA, Alternate>, Pin<SCL, Alternate>),
-    ) -> Result<I2c<N, SDA, SCL>, InitError<N, SDA, SCL>> {
+    ) -> Result<I2c<N, SDA, SCL>, InitError<N, SDA, SCL>>
+    where
+        Pin<SDA>: Sda<N>,
+        Pin<SCL>: Scl<N>,
+    {
         match start(io, reset_bit(N), clocks, speed) {
             Ok(rx_depth) => {
                 let (_sda, _scl) = route((sda, scl));
@@ -189,9 +204,11 @@ impl<const N: u8> Token<N> {
             }
             Err(error) => Err(InitError {
                 error,
-                token: self,
-                sda,
-                scl,
+                resources: Parts {
+                    token: self,
+                    sda,
+                    scl,
+                },
             }),
         }
     }
@@ -838,9 +855,7 @@ mod tests {
             let mut routed = false;
             let InitError {
                 error,
-                token: t,
-                sda,
-                scl,
+                resources: Parts { token: t, sda, scl },
             } = init_model(token, &mut m, pins, &clocks, speed, &mut routed)
                 .err()
                 .expect("init must fail");

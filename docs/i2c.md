@@ -72,10 +72,10 @@ in 32-bit arithmetic: an `ic_clk` that is not a whole number of MHz is `Invalid`
 whole-MHz `ic_clk` the result (counts or `Invalid`) equals the earlier 64-bit formula's
 (STATIC, host test over all whole-MHz u32 values). `Clocks` only gives 50 or 200 MHz.
 `init` checks clk_sys and the speed before it releases the reset; on any error it returns
-`InitError` with the token and the untouched pins, so the caller can retry (`?` converts
-it to `Error`). STATIC (host model through an injected register interface): a stale
+`InitError` whose `resources` are the token and the untouched pins as the `Parts` that
+`free` returns, so the caller can retry (`?` converts it to `Error`). STATIC (host model through an injected register interface): a stale
 clk_sys or an impossible speed writes no register, leaves the reset asserted and routes no
-pin, and the returned token and pins initialise on retry.
+pin, and the returned `Parts` initialise on retry.
 A controller declared under `[proc1]` takes its `Clocks` from
 `Clocks::wait_from_proc0(&core, timeout_us)` (the value proc0's `Authority::init` published;
 see `docs/adc.md`, "Clocks on proc1"). STATIC: compile-checked in `examples/dual-core`.

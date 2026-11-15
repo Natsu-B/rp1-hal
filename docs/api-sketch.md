@@ -285,7 +285,7 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
 | 丁寧な解放 | `fn free(self) -> Result<資源, (Self, Error)>` | ハードが静止するまで（上限つき、経過時間で）待ち、割り込みをマスクし、ブロックを止めて資源を返す。失敗時は何も止めずにドライバ自身をエラーと一緒に返すので、呼び出し側はやり直せる |
 | 中止 | `fn abort(self) -> 資源` | 待たない・失敗しない。何が捨てられ、何が保証されるかを各ドライバの doc に書く |
 | 失敗しない解放 | `fn free(self) -> 資源` | 待つものが無いドライバ（`Adc`、`Dma`、`spi::Device`）。`abort` は無い |
-| 初期化の失敗 | `Err(InitError { error, 資源.. })` | `init` が消費した token とピンを返す。`?` は `InitError` をそのドライバの `Error` に変換する |
+| 初期化の失敗 | `Err(InitError { error, 資源 })` | `init` が消費した token とピンを返す。uart / i2c / spi は解放と同じ `Parts` を `resources` に入れて返すので、`e.resources.init(..)` でやり直せる（pwm / adc / dma は `token`）。`?` は `InitError` をそのドライバの `Error` に変換する |
 
 返る資源は `init` が消費したもの: `uart::Parts` / `i2c::Parts` / `spi::Parts`（そのまま `init` し直せる）、`pwm::Token`、
 PWM 出力は `(Channel, Pin)`、ADC と DMA は `Token`。
