@@ -317,11 +317,7 @@ impl Report {
 pub fn report(tx: &mut Producer<'_, u32, 8, Proc1, Proc0>, stack_free: u32) {
     REPORTED.store(true, Relaxed);
     let ipsr = DOORBELL.ipsr();
-    mark!(
-        "IRQ_P1_GPIO27 ipsr={} seen={}",
-        ipsr,
-        DOORBELL.count()
-    );
+    mark!("IRQ_P1_GPIO27 ipsr={} seen={}", ipsr, DOORBELL.count());
     expect(ipsr == 16, "p1_gpio27");
     let unhandled = interrupt::unhandled().map_or(0, |(_, count)| count);
     for word in [
