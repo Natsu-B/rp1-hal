@@ -8,8 +8,8 @@
 //!
 //! How a block is left depends on what was done to it, never on why its line ended: a block
 //! that was only read (a prerequisite failed) gets no further access; a written one always
-//! leaves through the ordered deassert and its cleanup; one whose deassert failed is not
-//! touched again, and the sweep stops.
+//! leaves through the ordered deassert and its cleanup; one whose deassert or reset failed is
+//! not touched again, and the sweep stops.
 use crate::blocks::{Adc, Bank, I2c, Pwm1, Spi};
 use crate::mark;
 use crate::reg::{Reset, now, poll, rd, wr};
@@ -49,6 +49,9 @@ pub enum Refusal {
     Untouched(Why),
     /// The block was written. It leaves like a swept block: the ordered deassert, then `cleanup`.
     Touched(Why),
+    /// Its reset did not complete, so the block may still be held in reset and its state is
+    /// not known: like a failed deassert, no further access, and the sweep stops.
+    Stuck(Why),
 }
 
 /// A register of the block that must read `expect` under `mask` before a stimulus.
@@ -137,8 +140,6 @@ pub trait Source: Sync {
     /// its output reading 0, in reset where the block has a reset of its own. Returns false,
     /// without holding the reset, if one of them does not read back 0.
     fn cleanup(&self) -> bool;
-    /// The state `cleanup` must leave.
-    fn settled(&self) -> bool;
 }
 
 pub struct Line {
@@ -306,7 +307,7 @@ enum End {
     Foreign,
     /// The block was lowered but did not return to its baseline.
     Broken(Why),
-    /// The deassert failed: the block gets no further access.
+    /// The deassert, or the reset in `prepare`, failed: the block gets no further access.
     Stuck(Why),
 }
 
@@ -334,7 +335,7 @@ fn deassert(source: &dyn Source, target: &Target) -> Result<[u32; 2], Why> {
 enum Exit {
     /// Only read: the block is exactly as it was found.
     Untouched,
-    /// Deasserted, cleaned up, and its postconditions hold.
+    /// Deasserted and cleaned up.
     Left,
     /// The step of leaving that failed. After a failed deassert the block is not touched again.
     Failed(&'static str),
@@ -354,11 +355,9 @@ fn leave(source: &dyn Source, target: &Target) -> Exit {
     if let Err(why) = deassert(source, target) {
         return Exit::Failed(why.reason);
     }
-    if !source.cleanup() {
+    // The target bit must also stay clear while the block is put away.
+    if !source.cleanup() || target.is_in(words(NVIC_ISPR)) {
         return Exit::Failed("cleanup");
-    }
-    if !source.settled() || target.is_in(words(NVIC_ISPR)) {
-        return Exit::Failed("postcondition");
     }
     Exit::Left
 }
@@ -457,6 +456,7 @@ fn sweep_line(line: &Line) -> Verdict {
             Ok(values) => (found, written) = (values, true),
             Err(Refusal::Untouched(why)) => end = Some(End::Unmet(why)),
             Err(Refusal::Touched(why)) => (end, written) = (Some(End::Unmet(why)), true),
+            Err(Refusal::Stuck(why)) => end = Some(End::Stuck(why)),
         }
     }
     'trials: for trial in 0..TRIALS {

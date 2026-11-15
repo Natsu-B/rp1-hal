@@ -44,10 +44,11 @@ impl Source for I2c {
     fn stages(&self) -> &'static [&'static str] {
         &["wrap0", "wrap1"]
     }
-    // The reset is cycled first, so every refusal has touched the block.
+    // The reset is cycled first, so every refusal has touched the block; one of the reset
+    // itself leaves it alone.
     fn prepare(&self) -> Result<Found, Refusal> {
         if !self.reset.cycle() {
-            return Err(Refusal::Touched(Why::new("reset")));
+            return Err(Refusal::Stuck(Why::new("reset")));
         }
         let found = [rd(self.base + WRAPPER), rd(self.base + i2c::COMP_TYPE)];
         if found[1] != i2c::DESIGNWARE {
@@ -104,9 +105,6 @@ impl Source for I2c {
         self.disable();
         rd(self.base + i2c::INTR_MASK) == 0 && self.lowered() && self.reset.hold()
     }
-    fn settled(&self) -> bool {
-        self.reset.held()
-    }
 }
 
 /// A DesignWare SSI master. `TXEI` is the level of the empty transmit FIFO once the block is
@@ -141,7 +139,7 @@ impl Source for Spi {
     // As for I2C, every refusal comes after the reset was cycled.
     fn prepare(&self) -> Result<Found, Refusal> {
         if !self.reset.cycle() {
-            return Err(Refusal::Touched(Why::new("reset")));
+            return Err(Refusal::Stuck(Why::new("reset")));
         }
         let found = [rd(self.base + WRAPPER), rd(self.base + ssi::VERSION_ID)];
         wr(self.base + ssi::SSIENR, 0);
@@ -196,9 +194,6 @@ impl Source for Spi {
     fn cleanup(&self) -> bool {
         wr(self.base + ssi::SSIENR, 0);
         rd(self.base + ssi::IMR) == 0 && self.lowered() && self.reset.hold()
-    }
-    fn settled(&self) -> bool {
-        self.reset.held()
     }
 }
 
@@ -272,9 +267,6 @@ impl Source for Pwm1 {
             && rd(pwm::BASE + pwm::INTE) == 0
             && self.lowered()
             && pwm::RESET.hold()
-    }
-    fn settled(&self) -> bool {
-        pwm::RESET.held()
     }
 }
 
@@ -396,10 +388,8 @@ impl Source for Adc {
         rd(adc::BASE + adc::INTE) == 0
             && rd(adc::BASE + adc::INTF) == 0
             && rd(adc::BASE + adc::CS) & 0x3 == 0
+            && rd(adc::BASE + adc::FCS) & 1 == 0
             && self.lowered()
-    }
-    fn settled(&self) -> bool {
-        rd(adc::BASE + adc::CS) & 0x3 == 0 && rd(adc::BASE + adc::FCS) & 1 == 0
     }
 }
 
@@ -460,9 +450,6 @@ impl Source for Bank {
     }
     // The deassert already cleared the one force bit; nothing else of the bank was written.
     fn cleanup(&self) -> bool {
-        self.lowered()
-    }
-    fn settled(&self) -> bool {
-        rd(self.base + bank::PROC0_INTE) == 0
+        self.lowered() && rd(self.base + bank::PROC0_INTE) == 0
     }
 }
