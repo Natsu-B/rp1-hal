@@ -93,31 +93,9 @@ const PAD: u32 = 0x7a;
 pub struct Token<const N: u8> {
     _private: (),
 }
-/// [`Token::init`] failed: the error, and the token and pins back (unchanged) as the same
-/// [`Parts`] that [`I2c::free`] returns, ready for a retry.
-pub struct InitError<const N: u8, const SDA: u8, const SCL: u8>
-where
-    Pin<SDA>: Sda<N>,
-    Pin<SCL>: Scl<N>,
-{
-    pub error: Error,
-    pub resources: Parts<N, SDA, SCL>,
-}
-impl<const N: u8, const SDA: u8, const SCL: u8> core::fmt::Debug for InitError<N, SDA, SCL>
-where
-    Pin<SDA>: Sda<N>,
-    Pin<SCL>: Scl<N>,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.error.fmt(f)
-    }
-}
-impl<const N: u8, const SDA: u8, const SCL: u8> From<InitError<N, SDA, SCL>> for Error
-where
-    Pin<SDA>: Sda<N>,
-    Pin<SCL>: Scl<N>,
-{
-    fn from(e: InitError<N, SDA, SCL>) -> Self {
+/// `?` on a failed [`Token::init`].
+impl<R> From<crate::InitError<R, Error>> for Error {
+    fn from(e: crate::InitError<R, Error>) -> Self {
         e.error
     }
 }
@@ -138,7 +116,8 @@ impl<const N: u8> Token<N> {
     }
     /// Checks clk_sys and the speed, releases only this controller's reset, then selects the
     /// typed SDA/SCL routes. GPIO bank0 and the raw microsecond timer must already be running
-    /// (cold bring-up). On error the token and the pins come back in [`InitError`]; the pins
+    /// (cold bring-up). On error the token and the pins come back as the [`Parts`] in
+    /// [`InitError`](crate::InitError); the pins
     /// are not touched before success, and a stale clk_sys or an impossible speed is reported
     /// before the reset is released.
     ///
@@ -158,7 +137,7 @@ impl<const N: u8> Token<N> {
         scl: Pin<SCL>,
         clocks: &Clocks,
         speed: Speed,
-    ) -> Result<I2c<N, SDA, SCL>, InitError<N, SDA, SCL>>
+    ) -> Result<I2c<N, SDA, SCL>, crate::InitError<Parts<N, SDA, SCL>, Error>>
     where
         Pin<SDA>: Sda<N>,
         Pin<SCL>: Scl<N>,
@@ -186,7 +165,7 @@ impl<const N: u8> Token<N> {
         clocks: &Clocks,
         speed: Speed,
         route: impl FnOnce((Pin<SDA>, Pin<SCL>)) -> (Pin<SDA, Alternate>, Pin<SCL, Alternate>),
-    ) -> Result<I2c<N, SDA, SCL>, InitError<N, SDA, SCL>>
+    ) -> Result<I2c<N, SDA, SCL>, crate::InitError<Parts<N, SDA, SCL>, Error>>
     where
         Pin<SDA>: Sda<N>,
         Pin<SCL>: Scl<N>,
@@ -202,7 +181,7 @@ impl<const N: u8> Token<N> {
                     clocks: *clocks,
                 })
             }
-            Err(error) => Err(InitError {
+            Err(error) => Err(crate::InitError {
                 error,
                 resources: Parts {
                     token: self,
@@ -234,7 +213,7 @@ where
         self,
         clocks: &Clocks,
         speed: Speed,
-    ) -> Result<I2c<N, SDA, SCL>, InitError<N, SDA, SCL>> {
+    ) -> Result<I2c<N, SDA, SCL>, crate::InitError<Parts<N, SDA, SCL>, Error>> {
         self.token.init(self.sda, self.scl, clocks, speed)
     }
 }
@@ -835,7 +814,7 @@ mod tests {
         clocks: &Clocks,
         speed: Speed,
         routed: &mut bool,
-    ) -> Result<I2c<1, 2, 3>, InitError<1, 2, 3>> {
+    ) -> Result<I2c<1, 2, 3>, crate::InitError<Parts<1, 2, 3>, Error>> {
         token.init_on(m, pins, clocks, speed, |(sda, scl)| {
             *routed = true;
             (sda.assume(), scl.assume())
@@ -857,7 +836,7 @@ mod tests {
             let mut m = Model::new(16);
             m.sys = sys;
             let mut routed = false;
-            let InitError {
+            let crate::InitError {
                 error,
                 resources: Parts { token: t, sda, scl },
             } = init_model(token, &mut m, pins, &clocks, speed, &mut routed)

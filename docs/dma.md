@@ -37,7 +37,7 @@ dma = {}          # the whole controller: reset, clk_dma, the DMA interrupt line
 
 - `dma::Token::init(&Clocks)` (once): clk_dma 100 MHz (DOC: datasheet ch. 9), release the reset,
   `DMAC_RESET` soft reset, every channel disabled with interrupts masked, `DMAC_CFG.DMAC_EN`.
-  Returns `Dma { ch0..ch7 }`, or `InitError` with the token for a retry. `Dma::free()` takes
+  Returns `Dma { ch0..ch7 }`, or `rp1_hal::InitError` with the token as `resources` for a retry. `Dma::free()` takes
   all eight channels back and returns the token; it cannot fail, since a transfer borrows
   its channel.
 - `Channel<N>::copy(&[u8], &mut [u8], timeout_us)`: safe, blocking. Both slices must be

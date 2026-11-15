@@ -166,14 +166,9 @@ fn wait(io: &mut impl Hardware, address: usize, mask: u32, value: u32) -> Result
 pub struct Token {
     _private: (),
 }
-/// Initialization failed; ownership is retained for a retry.
-#[derive(Debug)]
-pub struct InitError {
-    pub error: Error,
-    pub token: Token,
-}
-impl From<InitError> for Error {
-    fn from(e: InitError) -> Self {
+/// `?` on a failed [`Token::init`].
+impl<R> From<crate::InitError<R, Error>> for Error {
+    fn from(e: crate::InitError<R, Error>) -> Self {
         e.error
     }
 }
@@ -185,17 +180,21 @@ impl Token {
         Self { _private: () }
     }
     /// Starts clk_dma at 100 MHz, releases the DMA reset, soft-resets the DMAC, disables every
-    /// channel and its interrupts and enables the controller (interrupt output off).
-    pub fn init(self, clocks: &Clocks) -> Result<Dma, InitError> {
+    /// channel and its interrupts and enables the controller (interrupt output off). On error
+    /// the token comes back in [`InitError`](crate::InitError) for a retry.
+    pub fn init(self, clocks: &Clocks) -> Result<Dma, crate::InitError<Token, Error>> {
         if !clocks.still_current() {
-            return Err(InitError {
+            return Err(crate::InitError {
                 error: Error::Precondition,
-                token: self,
+                resources: self,
             });
         }
         match start(&mut Mmio) {
             Ok(()) => Ok(Dma::new()),
-            Err(error) => Err(InitError { error, token: self }),
+            Err(error) => Err(crate::InitError {
+                error,
+                resources: self,
+            }),
         }
     }
 }

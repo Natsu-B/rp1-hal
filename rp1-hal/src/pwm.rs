@@ -74,14 +74,9 @@ pub trait PinRoute<const N: u8, const C: u8>: sealed::Pin {
 pub struct Token<const N: u8> {
     _private: (),
 }
-/// Initialization failed; ownership is retained for a retry. No pin has been routed.
-#[derive(Debug)]
-pub struct InitError<const N: u8> {
-    pub error: Error,
-    pub token: Token<N>,
-}
-impl<const N: u8> From<InitError<N>> for Error {
-    fn from(e: InitError<N>) -> Self {
+/// `?` on a failed [`Token::init`].
+impl<R> From<crate::InitError<R, Error>> for Error {
+    fn from(e: crate::InitError<R, Error>) -> Self {
         e.error
     }
 }
@@ -95,12 +90,14 @@ impl<const N: u8> Token<N> {
     }
     /// Starts XOSC / 1, releases only this block's reset, disables DMA/interrupts and all
     /// channels. Periods start at 65535 ticks, duty at zero. GPIO bank0 and the raw timer must
-    /// already run (cold bring-up). On failure the block may be partly initialized.
-    pub fn init(self, clocks: &Clocks) -> Result<Channels<N>, InitError<N>> {
+    /// already run (cold bring-up). On failure the token comes back in
+    /// [`InitError`](crate::InitError), no pin has been routed, and the block may be partly
+    /// initialized.
+    pub fn init(self, clocks: &Clocks) -> Result<Channels<N>, crate::InitError<Token<N>, Error>> {
         if !clocks.still_current() {
-            return Err(InitError {
+            return Err(crate::InitError {
                 error: Error::Precondition,
-                token: self,
+                resources: self,
             });
         }
         match start(&mut Mmio, N) {
@@ -110,7 +107,10 @@ impl<const N: u8> Token<N> {
                 channel2: Channel::new(),
                 channel3: Channel::new(),
             }),
-            Err(error) => Err(InitError { error, token: self }),
+            Err(error) => Err(crate::InitError {
+                error,
+                resources: self,
+            }),
         }
     }
 }

@@ -265,36 +265,9 @@ pub struct Spi<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> {
     div: u32,
     rsd: u32,
 }
-/// [`Token::init`] failed: the error, and the token and pins back (unchanged) as the same
-/// [`Parts`] that [`Spi::free`] returns, ready for a retry.
-pub struct InitError<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8>
-where
-    Pin<SCK>: Sck<N>,
-    Pin<MOSI>: Mosi<N>,
-    Pin<MISO>: Miso<N>,
-{
-    pub error: Error,
-    pub resources: Parts<N, SCK, MOSI, MISO>,
-}
-impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> core::fmt::Debug
-    for InitError<N, SCK, MOSI, MISO>
-where
-    Pin<SCK>: Sck<N>,
-    Pin<MOSI>: Mosi<N>,
-    Pin<MISO>: Miso<N>,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.error.fmt(f)
-    }
-}
-impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> From<InitError<N, SCK, MOSI, MISO>>
-    for Error
-where
-    Pin<SCK>: Sck<N>,
-    Pin<MOSI>: Mosi<N>,
-    Pin<MISO>: Miso<N>,
-{
-    fn from(e: InitError<N, SCK, MOSI, MISO>) -> Self {
+/// `?` on a failed [`Token::init`].
+impl<R> From<crate::InitError<R, Error>> for Error {
+    fn from(e: crate::InitError<R, Error>) -> Self {
         e.error
     }
 }
@@ -316,8 +289,9 @@ impl<const N: u8> Token<N> {
     /// the block, detects the FIFO depth and frame field, then routes the typed pins. GPIO bank0
     /// and the raw microsecond timer must already run (cold bring-up); `clocks` may come from
     /// proc0 ([`crate::clocks::Clocks::from_proc0`]). On error the token and the pins come back
-    /// in [`InitError`]; the pins are not touched before success, and a stale clk_sys or an
-    /// invalid frequency / frame size is reported before the reset is released.
+    /// as the [`Parts`] in [`InitError`](crate::InitError); the pins are not touched before
+    /// success, and a stale clk_sys or an invalid frequency / frame size is reported before
+    /// the reset is released.
     ///
     /// ```no_run
     /// # use rp1_hal::{clocks::Clocks, gpio::Pin, spi::{Config, Error, Spi, Token}};
@@ -341,7 +315,7 @@ impl<const N: u8> Token<N> {
         miso: Pin<MISO>,
         clocks: &Clocks,
         config: Config,
-    ) -> Result<Spi<N, SCK, MOSI, MISO>, InitError<N, SCK, MOSI, MISO>>
+    ) -> Result<Spi<N, SCK, MOSI, MISO>, crate::InitError<Parts<N, SCK, MOSI, MISO>, Error>>
     where
         Pin<SCK>: Sck<N>,
         Pin<MOSI>: Mosi<N>,
@@ -369,7 +343,7 @@ impl<const N: u8> Token<N> {
         clocks: &Clocks,
         config: Config,
         route: impl FnOnce(Pins<SCK, MOSI, MISO>) -> Pins<SCK, MOSI, MISO, Alternate>,
-    ) -> Result<Spi<N, SCK, MOSI, MISO>, InitError<N, SCK, MOSI, MISO>>
+    ) -> Result<Spi<N, SCK, MOSI, MISO>, crate::InitError<Parts<N, SCK, MOSI, MISO>, Error>>
     where
         Pin<SCK>: Sck<N>,
         Pin<MOSI>: Mosi<N>,
@@ -393,7 +367,7 @@ impl<const N: u8> Token<N> {
             }
             Err(error) => {
                 let (sck, mosi, miso) = pins;
-                Err(InitError {
+                Err(crate::InitError {
                     error,
                     resources: Parts {
                         token: self,
@@ -429,7 +403,7 @@ where
         self,
         clocks: &Clocks,
         config: Config,
-    ) -> Result<Spi<N, SCK, MOSI, MISO>, InitError<N, SCK, MOSI, MISO>> {
+    ) -> Result<Spi<N, SCK, MOSI, MISO>, crate::InitError<Parts<N, SCK, MOSI, MISO>, Error>> {
         self.token
             .init(self.sck, self.mosi, self.miso, clocks, config)
     }
@@ -1432,7 +1406,7 @@ mod tests {
         pins: Pins<11, 10, 9>,
         config: Config,
         routed: &mut bool,
-    ) -> Result<Spi<0, 11, 10, 9>, InitError<0, 11, 10, 9>> {
+    ) -> Result<Spi<0, 11, 10, 9>, crate::InitError<Parts<0, 11, 10, 9>, Error>> {
         token.init_on(m, pins, &CLOCKS, config, |(sck, mosi, miso)| {
             *routed = true;
             (sck.assume(), mosi.assume(), miso.assume())
@@ -1470,7 +1444,7 @@ mod tests {
             let mut m = Model::new(64);
             m.sys = sys;
             let mut routed = false;
-            let InitError {
+            let crate::InitError {
                 error,
                 resources:
                     Parts {

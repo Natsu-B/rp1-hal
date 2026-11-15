@@ -33,6 +33,28 @@ pub mod spi;
 pub mod timer;
 pub mod uart;
 
+/// A driver's `init` that failed: the driver's error, and what `init` consumed, unchanged,
+/// for a retry. uart, i2c and spi return the [`Parts`](uart::Parts) bundle their `free` returns
+/// (token and pins), pwm, adc and dma their token. `Debug` prints only the error; `?` converts
+/// it to the driver's error, dropping the resources (nothing is running yet).
+///
+/// ```
+/// struct Token;
+/// let e = rp1_hal::InitError { error: rp1_hal::uart::Error::Invalid, resources: Token };
+/// assert_eq!(format!("{e:?}"), "Invalid");
+/// let error: rp1_hal::uart::Error = e.into();
+/// assert_eq!(error, rp1_hal::uart::Error::Invalid);
+/// ```
+pub struct InitError<R, E> {
+    pub error: E,
+    pub resources: R,
+}
+impl<R, E: core::fmt::Debug> core::fmt::Debug for InitError<R, E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
 /// A `free` that did not release: the driver, unchanged and still configured, and the
 /// driver's error. `Debug` prints only the error, so `.unwrap()` and `.expect()` work although
 /// drivers are not `Debug`. There is deliberately no `From` for the error: `?` would drop a

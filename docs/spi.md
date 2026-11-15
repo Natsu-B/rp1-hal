@@ -102,7 +102,7 @@ doctest compile-fail cases, through a generic bound and on `Spi`).
 loopback) wait for the bus to be idle and reprogram the disabled controller.
 
 `init` checks clk_sys, the rate and the frame size (up to 32 bits; the instance's own
-limit after the probe) before it releases the reset. On any error it returns `InitError`
+limit after the probe) before it releases the reset. On any error it returns `rp1_hal::InitError`
 whose `resources` are the token and the untouched pins as the `Parts` that `free` returns, so
 the caller can retry (`?` converts it to `Error`).
 STATIC (host model through an injected register interface): a stale clk_sys, a zero or too

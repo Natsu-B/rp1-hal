@@ -129,31 +129,9 @@ pub struct Uart<const N: u8, const TX: u8, const RX: u8> {
     read_timeout_us: u32,
     tx_bound_us: u32,
 }
-/// [`Token::init`] failed: the error, and the token and pins back (unchanged) as the same
-/// [`Parts`] that [`Uart::free`] returns, ready for a retry.
-pub struct InitError<const N: u8, const TX: u8, const RX: u8>
-where
-    Pin<TX>: Tx<N>,
-    Pin<RX>: Rx<N>,
-{
-    pub error: Error,
-    pub resources: Parts<N, TX, RX>,
-}
-impl<const N: u8, const TX: u8, const RX: u8> fmt::Debug for InitError<N, TX, RX>
-where
-    Pin<TX>: Tx<N>,
-    Pin<RX>: Rx<N>,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.error.fmt(f)
-    }
-}
-impl<const N: u8, const TX: u8, const RX: u8> From<InitError<N, TX, RX>> for Error
-where
-    Pin<TX>: Tx<N>,
-    Pin<RX>: Rx<N>,
-{
-    fn from(e: InitError<N, TX, RX>) -> Self {
+/// `?` on a failed [`Token::init`].
+impl<R> From<crate::InitError<R, Error>> for Error {
+    fn from(e: crate::InitError<R, Error>) -> Self {
         e.error
     }
 }
@@ -171,8 +149,8 @@ impl<const N: u8> Token<N> {
         Self { _private: () }
     }
     /// Checks clk_uart and the baud rate, releases only this UART's reset, configures 8N1 with
-    /// FIFOs, then routes the typed pins. On error the token and the pins come back in
-    /// [`InitError`]; the pins are not touched before success.
+    /// FIFOs, then routes the typed pins. On error the token and the pins come back as the
+    /// [`Parts`] in [`InitError`](crate::InitError); the pins are not touched before success.
     ///
     /// ```no_run
     /// # use rp1_hal::{clocks::Clocks, gpio::Pin, uart::{Error, Token, Uart}};
@@ -186,7 +164,7 @@ impl<const N: u8> Token<N> {
         rx: Pin<RX>,
         clocks: &Clocks,
         baud: u32,
-    ) -> Result<Uart<N, TX, RX>, InitError<N, TX, RX>>
+    ) -> Result<Uart<N, TX, RX>, crate::InitError<Parts<N, TX, RX>, Error>>
     where
         Pin<TX>: Tx<N>,
         Pin<RX>: Rx<N>,
@@ -203,7 +181,7 @@ impl<const N: u8> Token<N> {
                 read_timeout_us: DEFAULT_READ_TIMEOUT_US,
                 tx_bound_us: tx_bound_us(baud),
             }),
-            Err(error) => Err(InitError {
+            Err(error) => Err(crate::InitError {
                 error,
                 resources: Parts {
                     token: self,
@@ -244,7 +222,11 @@ where
     Pin<RX>: Rx<N>,
 {
     /// [`Token::init`] with the declared pins.
-    pub fn init(self, clocks: &Clocks, baud: u32) -> Result<Uart<N, TX, RX>, InitError<N, TX, RX>> {
+    pub fn init(
+        self,
+        clocks: &Clocks,
+        baud: u32,
+    ) -> Result<Uart<N, TX, RX>, crate::InitError<Parts<N, TX, RX>, Error>> {
         self.token.init(self.tx, self.rx, clocks, baud)
     }
 }

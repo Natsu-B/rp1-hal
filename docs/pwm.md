@@ -76,7 +76,7 @@ moment a new compare appears on a running channel is HW 未検証. No synchronou
 waveform-observation guarantee is implied by returning from a setter. Clock checks reject a changed rate or stopped clock before
 channel writes; every setter error (`Invalid`, `Enabled`, `Precondition`) is returned before
 any register write, so the cached period always matches RANGE. `Timeout` comes only from the
-reset DONE wait in `init`. `InitError` returns the token; a reset failure may leave partial
+reset DONE wait in `init`. `rp1_hal::InitError` returns the token as `resources`; a reset failure may leave partial
 hardware state. `Channels::free` and `Output::free` check the clock first: on
 `Precondition` nothing is written and the value comes back as `FreeError { driver, error }`, so the caller
 can retry once clk_pwm runs again. `abort` on either writes the same disable without the

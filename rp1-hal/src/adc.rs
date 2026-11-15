@@ -65,19 +65,9 @@ pub enum Error {
 pub struct Token {
     _private: (),
 }
-/// [`Token::init`] failed: the error, and the token back for a retry. The clock generator and
-/// the reset may already have been started.
-pub struct InitError {
-    pub error: Error,
-    pub token: Token,
-}
-impl core::fmt::Debug for InitError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.error.fmt(f)
-    }
-}
-impl From<InitError> for Error {
-    fn from(e: InitError) -> Self {
+/// `?` on a failed [`Token::init`].
+impl<R> From<crate::InitError<R, Error>> for Error {
+    fn from(e: crate::InitError<R, Error>) -> Self {
         e.error
     }
 }
@@ -93,7 +83,8 @@ impl Token {
     /// Starts clk_adc (XOSC / 1), releases the ADC reset, powers the ADC up with the interrupt
     /// off and the sticky error cleared, and waits for READY. `clocks` proves the cold bring-up
     /// and the clock authority ran first (the Linux-block bring-up then leaves clk_adc alone).
-    /// On error the token comes back in [`InitError`]:
+    /// On error the token comes back in [`InitError`](crate::InitError); the clock generator and
+    /// the reset may already have been started:
     ///
     /// ```no_run
     /// # use rp1_hal::{adc::{Adc, Error, Token}, clocks::Clocks};
@@ -101,17 +92,23 @@ impl Token {
     ///     // Once more, then the error through `?`.
     ///     match token.init(clocks) {
     ///         Ok(adc) => Ok(adc),
-    ///         Err(e) => Ok(e.token.init(clocks)?),
+    ///         Err(e) => Ok(e.resources.init(clocks)?),
     ///     }
     /// }
     /// ```
-    pub fn init(self, clocks: &crate::clocks::Clocks) -> Result<Adc, InitError> {
+    pub fn init(
+        self,
+        clocks: &crate::clocks::Clocks,
+    ) -> Result<Adc, crate::InitError<Token, Error>> {
         match start(clocks) {
             Ok(clk_hz) => Ok(Adc {
                 clk_hz,
                 temperature_sensor: false,
             }),
-            Err(error) => Err(InitError { error, token: self }),
+            Err(error) => Err(crate::InitError {
+                error,
+                resources: self,
+            }),
         }
     }
 }

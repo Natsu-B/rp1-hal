@@ -72,7 +72,7 @@ in 32-bit arithmetic: an `ic_clk` that is not a whole number of MHz is `Invalid`
 whole-MHz `ic_clk` the result (counts or `Invalid`) equals the earlier 64-bit formula's
 (STATIC, host test over all whole-MHz u32 values). `Clocks` only gives 50 or 200 MHz.
 `init` checks clk_sys and the speed before it releases the reset; on any error it returns
-`InitError` whose `resources` are the token and the untouched pins as the `Parts` that
+`rp1_hal::InitError` whose `resources` are the token and the untouched pins as the `Parts` that
 `free` returns, so the caller can retry (`?` converts it to `Error`). STATIC (host model through an injected register interface): a stale
 clk_sys or an impossible speed writes no register, leaves the reset asserted and routes no
 pin, and the returned `Parts` initialise on retry.
