@@ -21,15 +21,16 @@ PASS needs every marker once, with the values of the contract below (not just pr
 regression of the same boot is required too unless --proof-only is given. Findings that are
 not pass conditions (`IRQ_INTF_ONLY`) are printed as `INFO`.
 
---sweep checks that the sweep ran by its contract, not what it found: one `IRQ_SWEEP` line for
-each line of the table between `IRQ_SWEEP_BEGIN` and `IRQ_SWEEP_END`, every line with the
-boot's nonce, no line enabled in the NVIC, and the whole sweep before the PCIe link came up
-(`p0 pcie Ok` after `IRQ_SWEEP_END`, with a fresh PERSTn wait). Each result must also be borne
-out by its `IRQ_SWEEP_PRE` / `IRQ_SWEEP_TRIAL` records: the number and order of trials, the
-source raised (`raised=` and the status bit), the target bit clear at the baseline and after
-the deassert, the hit counts and the routed stage, and how the block was left (`exit=`: a
-block that was only read must be untouched, any other must have been left cleanly). `NOT_ROUTED`, `OTHER_LINE`,
-`NEW_PENDING` and `SKIP` are results; `ABORT` is a failure. --json writes the per-line results.
+--sweep PASS means every line of the table was routed by its expected stimulus: one
+`IRQ_SWEEP ... result=ROUTED exit=left` line per table line, in table order, with the hits of
+SWEEP_KINDS (I2C/SPI: wrapper closed 0/3, open 3/3; ADC: forced and real 3/3; PWM1 and the IO
+banks: forced 3/3), and its `IRQ_SWEEP_TRIAL` lines must bear that out: all trials in order,
+the source raised (`raised=1` and the status bit), the target bit clear before the stimulus and
+after the deassert, no other new pending bit, and the same hit counts. Any other result
+(NOT_ROUTED, OTHER_LINE, NEW_PENDING, SKIP, ABORT) is a FAIL that names it. The frame must hold
+too: every line with the boot's nonce, no line enabled in the NVIC, and the whole sweep before
+the PCIe link came up (`p0 pcie Ok` after `IRQ_SWEEP_END`, with a fresh PERSTn wait). --json
+writes the per-line results.
 UART10 is optional with --sweep; if given, the Linux side (`check-sweep.sh`) must have passed
 in the boot that printed the firmware's boot value.
 Exit 0 = PASS, 1 = FAIL, 2 = usage error.
@@ -263,31 +264,31 @@ def verify_uart10(text, nonce, steps):
 SWEEP_TABLE = {7: "i2c0", 9: "i2c2", 10: "i2c3", 20: "spi1", 22: "spi3", 52: "adc",
                41: "pwm1", 1: "io_bank1", 2: "io_bank2"}
 SWEEP_FORBIDDEN = (24, 40, 50, 51, 59, 60)
-SWEEP_RESULTS = ("ROUTED", "NOT_ROUTED", "OTHER_LINE", "NEW_PENDING", "SKIP", "ABORT")
 SWEEP_TRIALS = 3
-# Each kind of block (its name without the number): its stimuli, in the order the image runs
-# them, and the bit of its `status` that shows the source raised (lab/irq-sweep/src/blocks.rs).
-SWEEP_KINDS = {"i2c": (("wrap0", "wrap1"), 0x10), "spi": (("wrap0", "wrap1"), 0x1),
-               "adc": (("force", "real"), 0x1), "pwm": (("force",), 0x20),
-               "io_bank": (("force",), 0x1)}
+# Each kind of block (its name without the number): its stimuli in the order the image runs
+# them, the hits each must have for the line to count as routed, and the bit of its `status`
+# that shows the source raised (lab/irq-sweep/src/blocks.rs). For the DesignWare blocks the
+# closed wrapper must hide the source (wrap0 0/3) and the open one pass it (wrap1 3/3): that is
+# what shows the bit is this block's output and not something else's.
+SWEEP_KINDS = {
+    "i2c": (("wrap0", "wrap1"), (0, 3), 0x10),
+    "spi": (("wrap0", "wrap1"), (0, 3), 0x1),
+    "adc": (("force", "real"), (3, 3), 0x1),
+    "pwm": (("force",), (3,), 0x20),
+    "io_bank": (("force",), (3,), 0x1),
+}
 WRAPPER_STATUS = 1 << 16
-# SKIP reasons by what the image had done to the block: only read, or written. Lines after an
-# abort, or with a line enabled, are not even read.
-SKIP_UNTOUCHED = ("pin_routed", "proc0_in_use", "not_initialised")
-SKIP_NOT_RUN = ("after_abort", "irq_enabled")
-SKIP_WRITTEN = ("reset", "not_alive", "busy", "fifo", "baseline", "pending_before")
-# The refusals each block's `prepare` can return (blocks.rs), and the kinds with pins to check;
-# the baseline / source checks of the trial loop apply to every kind.
-SKIP_PREPARE = {"i2c": ("reset", "not_alive", "busy"), "spi": ("reset", "not_alive"),
-                "pwm": ("not_initialised",), "adc": ("not_initialised", "fifo"),
-                "io_bank": ("proc0_in_use",)}
-SWEEP_PINNED = ("i2c", "spi", "pwm")
-SWEEP_EXITS = ("untouched", "left", "output_stuck", "pending_after", "cleanup", "postcondition")
 NO_FRESH_PERSTN = 0xFFFF_FFFF
+ZERO_WORDS = "00000000,00000000"
 UART10_SWEEP = [
     ("script result", r"\bSWEEP_CHECK_RESULT=PASS\b"),
     ("terminal marker", r"\bSWEEP_CHECK_END\b"),
 ]
+
+
+def hexadecimal(text):
+    """One 32-bit word as the image prints it (lowercase hexadecimal, no sign), or None."""
+    return int(text, 16) if re.fullmatch(r"[0-9a-f]{1,8}", text or "") else None
 
 
 def word_pair(text):
@@ -298,196 +299,61 @@ def word_pair(text):
     return low | high << 32
 
 
-def sweep_line(fields):
-    """(failures, record) for one `IRQ_SWEEP` line."""
-    irq, block, result = number(fields.get("irq", "")), fields.get("block"), fields.get("result")
-    record = {"irq": irq, "block": block, "result": result, "reason": fields.get("reason"),
-              "detail": fields.get("detail"), "exit": fields.get("exit"), "hits": fields.get("hits"),
-              "ispr_before": fields.get("ispr_before"), "ispr_after": fields.get("ispr_after"),
-              "new": fields.get("new"), "status": fields.get("status")}
+def expected_hits(stages, wanted):
+    return ",".join(f"{stage}:{n}/{SWEEP_TRIALS}" for stage, n in zip(stages, wanted))
+
+
+def sweep_line(fields, trials):
+    """(failures, record) for one `IRQ_SWEEP` line and the `IRQ_SWEEP_TRIAL` lines before it.
+    The line passes only if it is ROUTED by the expected stimulus and its trials bear that out."""
+    irq, block = number(fields.get("irq", "")), fields.get("block")
+    record = {k: fields.get(k) for k in ("block", "result", "reason", "detail", "exit", "hits",
+                                         "ispr_before", "ispr_after", "new", "status")}
+    record["irq"] = irq
     if irq in SWEEP_FORBIDDEN:
         return [f"irq={irq}: must not be swept"], record
     if (irq, block) not in SWEEP_TABLE.items():
         return [f"irq={irq} block={block}: not in the sweep table"], record
-    if result not in SWEEP_RESULTS:
-        return [f"irq={irq}: result={result}"], record
-    absent = [k for k in ("reason", "detail", "exit", "hits", "status") if fields.get(k) is None]
-    if absent:
-        return [f"irq={irq}: {','.join(absent)} missing"], record
-    if None in (hexadecimal(fields["detail"]), hexadecimal(fields["status"])):
-        return [f"irq={irq}: detail={fields['detail']} or status={fields['status']} is not a 32-bit word"], record
-    before, after, new = (word_pair(fields.get(k)) for k in ("ispr_before", "ispr_after", "new"))
-    if None in (before, after, new):
-        return [f"irq={irq}: pending words missing or not hexadecimal"], record
-    failures, target = [], 1 << irq
-    if result == "ABORT":
-        failures.append(f"irq={irq}: ABORT reason={fields.get('reason')}")
-    if result not in ("SKIP", "ABORT") and hexadecimal(fields["detail"]) != 0:
-        failures.append(f"irq={irq}: result={result} detail={fields['detail']}")
-    # The image prints `new` from the two pending words whatever the result.
-    if new != after & ~before & ~target:
-        failures.append(f"irq={irq}: new={fields.get('new')} is not ispr_after minus ispr_before")
-    # The words must say what the result says.
-    if result in ("ROUTED", "NOT_ROUTED", "OTHER_LINE", "NEW_PENDING"):
-        if before & target:
-            failures.append(f"irq={irq}: result={result} but the target bit was pending before")
-        if bool(after & target) != (result in ("ROUTED", "NEW_PENDING")):
-            failures.append(f"irq={irq}: result={result} does not match ispr_after")
-        if bool(new) != (result in ("OTHER_LINE", "NEW_PENDING")):
-            failures.append(f"irq={irq}: result={result} does not match new={fields.get('new')}")
-    return failures, record
-
-
-def hexadecimal(text):
-    """One 32-bit word as the image prints it (lowercase hexadecimal, no sign), or None."""
-    return int(text, 16) if re.fullmatch(r"[0-9a-f]{1,8}", text or "") else None
-
-
-def trial_words(trial):
-    """The pending words, status and `raised` of one `IRQ_SWEEP_TRIAL` line, or None. The
-    diagnostic fields (`pre`, `intstat`, `us`) are not judged, but a capture without them is
-    incomplete."""
-    words = {k: word_pair(trial.get(k)) for k in ("pre", "base", "post", "intstat", "clr")}
-    status, raised = hexadecimal(trial.get("status")), trial.get("raised")
-    if None in words.values() or status is None or raised not in ("0", "1"):
-        return None
-    if not re.fullmatch(r"\d{1,10}", trial.get("us") or "") or int(trial["us"]) > 0xFFFF_FFFF:
-        return None
-    return dict(words, status=status, raised=raised == "1")
-
-
-def sweep_evidence(record, pres, trials):
-    """Failures where a line's PRE and TRIAL records do not support its result: the trials the
-    image must have run, in order, their pending words, and the summary line's numbers."""
-    irq, result, reason, exit_ = record["irq"], record["result"], record["reason"], record["exit"]
-    kind = record["block"].rstrip("0123456789")
-    stages, source_bit = SWEEP_KINDS[kind]
-    target, failures = 1 << irq, []
-
-    def fail(text):
-        failures.append(f"irq={irq}: {text}")
-
-    if exit_ not in SWEEP_EXITS:
-        fail(f"exit={exit_}")
-    elif exit_ not in ("untouched", "left") and result != "ABORT":
-        fail(f"result={result} but leaving the block failed (exit={exit_})")
-    not_run = result == "SKIP" and reason in SKIP_NOT_RUN
-    if len(pres) != (0 if not_run else 1):
-        fail(f"{len(pres)} IRQ_SWEEP_PRE lines")
-    for pre in pres:
-        # `fs` is `-` for a block without pins, else `gpio:funcsel` pairs (FUNCSEL is five bits);
-        # `found` is the block's identity words.
-        pins = r"\d+:1?[0-9a-f](,\d+:1?[0-9a-f])*" if kind in SWEEP_PINNED else "-"
-        if not re.fullmatch(pins, pre.get("fs") or "") or word_pair(pre.get("found")) is None:
-            fail(f"IRQ_SWEEP_PRE fs={pre.get('fs')} found={pre.get('found')} missing or malformed")
-    if result == "ABORT":
-        return failures
-    # Only a block that was never written may be left untouched, and it must be.
-    untouched = result == "SKIP" and reason in SKIP_UNTOUCHED + SKIP_NOT_RUN
-    if (exit_ == "untouched") != untouched:
-        fail(f"result={result} reason={reason} with exit={exit_}")
-    possible = (SKIP_PREPARE[kind] + SKIP_NOT_RUN + ("baseline", "pending_before", "source_fail")
-                + (("pin_routed",) if kind in SWEEP_PINNED else ()))
-    if result == "SKIP" and reason not in possible:
-        fail(f"SKIP reason={reason} is not a reason the image gives a block of kind {kind}")
-    if result in ("NOT_ROUTED", "OTHER_LINE", "NEW_PENDING") and reason != "-":
-        fail(f"result={result} reason={reason}")
-
-    parsed = []
-    for i, trial in enumerate(trials):
-        want = (str(i // len(stages)), stages[i % len(stages)])
-        if (trial.get("trial"), trial.get("stage")) != want:
-            fail(f"trial {i} is trial={trial.get('trial')} stage={trial.get('stage')}, not trial={want[0]} stage={want[1]}")
-            return failures
-        t = trial_words(trial)
-        if t is None:
-            fail(f"trial {i}: words, status or raised missing")
-            return failures
-        if t["base"] & target:
-            fail(f"trial {i}: target bit pending at the baseline")
-        if t["clr"] & target:
-            fail(f"trial {i}: target bit still pending after the deassert")
-        if t["raised"]:
-            wrapper = trial["stage"] == "wrap1"
-            if not t["status"] & source_bit or ("wrap" in trial["stage"] and bool(t["status"] & WRAPPER_STATUS) != wrapper):
-                fail(f"trial {i}: raised=1 but status={trial.get('status')} does not show the {trial['stage']} source")
-        t["foreign"] = t["post"] & ~t["base"] & ~target
-        parsed.append(t)
-
-    # How many trials each result needs, and what the last one must show.
-    full = SWEEP_TRIALS * len(stages)
-    if len(parsed) > full:
-        fail(f"{len(parsed)} trials, the image runs at most {full}")
-    early =[t for t in parsed[:-1] if not t["raised"] or t["foreign"]]
-    last = parsed[-1] if parsed else None
-    if result in ("ROUTED", "NOT_ROUTED"):
-        if len(parsed) != full or any(not t["raised"] or t["foreign"] for t in parsed):
-            fail(f"result={result} needs {full} clean trials with the source raised, not {len(parsed)}"
-                 f" ({sum(t['raised'] and not t['foreign'] for t in parsed)} clean)")
-    elif result in ("OTHER_LINE", "NEW_PENDING"):
-        if last is None or early or not last["raised"] or not last["foreign"]:
-            fail(f"result={result} needs earlier clean trials and a last one with a foreign bit")
-        elif bool(last["post"] & target) != (result == "NEW_PENDING"):
-            fail(f"result={result} does not match the last trial's target bit")
-    elif reason == "source_fail":
-        # The image checks the source before foreign bits, so the last trial may show either.
-        if last is None or early or last["raised"]:
-            fail("SKIP source_fail needs earlier clean trials and a last one without the source")
-        elif hexadecimal(record["detail"]) != last["status"]:
-            fail(f"SKIP source_fail detail={record['detail']} is not the last trial's status")
-    elif parsed:
-        fail(f"SKIP reason={reason} after {len(parsed)} trials")
-
-    # The image counts a hit only for a trial that ended cleanly (source raised, no foreign bit);
-    # the trial that stopped the line is not counted even when it shows the target bit.
-    hits = [sum(1 for i, t in enumerate(parsed) if i % len(stages) == s and t["post"] & target
-                and t["raised"] and not t["foreign"])
-            for s in range(len(stages))]
-    claimed = ",".join(f"{stage}:{n}/{SWEEP_TRIALS}" for stage, n in zip(stages, hits))
-    if record["hits"] != claimed:
-        fail(f"hits={record['hits']}, the trials say {claimed}")
-    routed = next((stages[s] for s, n in enumerate(hits) if n == SWEEP_TRIALS), None)
-    if result == "ROUTED" and (routed is None or reason != routed):
-        fail(f"ROUTED reason={reason}, the trials say {routed}")
-    if result == "NOT_ROUTED" and any(hits):
-        fail(f"NOT_ROUTED with hits {claimed}")
-
-    # The summary repeats the observation it rests on: the routed stage's last trial, else the
-    # last trial; without trials, the pending words as they were (unchanged).
-    shown = last
-    if result == "ROUTED" and routed is not None:
-        shown = parsed[max(i for i in range(len(parsed)) if stages[i % len(stages)] == routed)]
-    before, after = word_pair(record["ispr_before"]), word_pair(record["ispr_after"])
-    if shown is None:
-        # The image prints the pending words once, a zero status and so no new bit.
-        if before != after or hexadecimal(record["status"]) != 0 or word_pair(record["new"]) != 0:
-            fail("no trial, but ispr_before differs from ispr_after, or status or new is not 0")
-    elif (before, after, hexadecimal(record["status"])) != (shown["base"], shown["post"], shown["status"]):
-        fail("ispr_before, ispr_after or status is not the trial the result rests on")
-    return failures
-
-
-def sweep_blocking(records, iser):
-    """Failures where a line's not-run SKIP disagrees with the sweep as a whole. As in
-    sweep.rs run(): every line is `irq_enabled` when BEGIN shows an enabled line; otherwise the
-    lines run in table order until one ABORTs, and every later line is `after_abort` with that
-    line's IRQ as detail. No other line may carry these reasons."""
-    order = [r["irq"] for r in records]
-    # Lines whose IRQ did not parse, or missing / repeated lines, are reported elsewhere.
-    if None not in order and sorted(order) == sorted(SWEEP_TABLE) and order != list(SWEEP_TABLE):
-        return [f"lines out of table order: {order}"]
+    stages, wanted, source_bit = SWEEP_KINDS[block.rstrip("0123456789")]
+    routed_by = stages[wanted.index(SWEEP_TRIALS)]
+    want = expected_hits(stages, wanted)
+    if (record["result"], record["reason"], record["hits"]) != ("ROUTED", routed_by, want):
+        # NOT_ROUTED, OTHER_LINE, NEW_PENDING, SKIP and ABORT all end here.
+        return [f"irq={irq}: result={record['result']} reason={record['reason']} hits={record['hits']},"
+                f" not ROUTED by {routed_by} with {want}"], record
     failures = []
-    blocked = ("irq_enabled", "0") if iser != "00000000,00000000" else None
-    for r in records:
-        if blocked is not None:
-            if (r["result"], r["reason"], r["detail"]) != ("SKIP", *blocked):
-                failures.append(f"irq={r['irq']}: result={r['result']} reason={r['reason']} detail={r['detail']},"
-                                f" the sweep was blocked by {blocked[0]} detail={blocked[1]}")
-        elif r["result"] == "SKIP" and r["reason"] in SKIP_NOT_RUN:
-            failures.append(f"irq={r['irq']}: SKIP {r['reason']} without an earlier ABORT or an enabled line")
-        elif r["result"] == "ABORT":
-            blocked = ("after_abort", f"{r['irq']:x}" if r["irq"] is not None else "?")
-    return failures
+    if record["exit"] != "left":
+        failures.append(f"irq={irq}: exit={record['exit']}, the block was not left cleanly")
+
+    # The trials must be the image's full run, in order, each a clean observation: source
+    # raised, target bit clear before the stimulus and after the deassert, no other new bit.
+    target, hits = 1 << irq, [0] * len(stages)
+    if len(trials) != SWEEP_TRIALS * len(stages):
+        failures.append(f"irq={irq}: {len(trials)} trials, not {SWEEP_TRIALS * len(stages)}")
+    for i, trial in enumerate(trials):
+        stage = stages[i % len(stages)]
+        where = f"irq={irq}: trial {i} (trial={trial.get('trial')} stage={trial.get('stage')})"
+        if (trial.get("trial"), trial.get("stage")) != (str(i // len(stages)), stage):
+            failures.append(f"{where}: out of order")
+            break
+        base, post, clr = (word_pair(trial.get(k)) for k in ("base", "post", "clr"))
+        status = hexadecimal(trial.get("status"))
+        if None in (base, post, clr, status):
+            failures.append(f"{where}: base, post, clr or status missing")
+            continue
+        wrapper_open = bool(status & WRAPPER_STATUS)
+        if trial.get("raised") != "1" or not status & source_bit or (
+                stage.startswith("wrap") and wrapper_open != (stage == "wrap1")):
+            failures.append(f"{where}: raised={trial.get('raised')} status={trial['status']}"
+                            f" does not show the {stage} source")
+        if (base | clr) & target:
+            failures.append(f"{where}: target bit pending before the stimulus or after the deassert")
+        if post & ~base & ~target:
+            failures.append(f"{where}: another line became pending: post={trial['post']}")
+        hits[i % len(stages)] += bool(post & target)
+    if expected_hits(stages, hits) != want:
+        failures.append(f"irq={irq}: the trials say {expected_hits(stages, hits)}, not {want}")
+    return failures, record
 
 
 def verify_sweep(text, nonce=None):
@@ -507,7 +373,7 @@ def verify_sweep(text, nonce=None):
             return [f"UART0: {len(matching)} boots with nonce {nonce}"], summary
         boot = matching[0]
 
-    failures, records, pending, ended, link = [], {}, [], None, None
+    failures, seen, trials, ended, link = [], set(), [], None, None
     for line in boot:
         if re.search(r"\bp0 pcie ", line):
             m = re.search(r"\bp0 pcie Ok .*\bendpoint_programmed=true perstn_wait_us=(\d+)", line)
@@ -538,40 +404,39 @@ def verify_sweep(text, nonce=None):
             ended = fields
         elif ended is not None:
             failures.append(f"UART0 sweep line after IRQ_SWEEP_END: {line.strip()[:160]}")
+        elif name == "IRQ_SWEEP_TRIAL":
+            trials.append(fields)
         elif name == "IRQ_SWEEP":
-            more, record = sweep_line(fields)
+            # The TRIAL lines just before a result are that line's.
+            irq = number(fields.get("irq", ""))
+            if any(number(t.get("irq", "")) != irq for t in trials):
+                failures.append(f"UART0 IRQ_SWEEP irq={irq}: preceded by another line's trials")
+            more, record = sweep_line(fields, trials)
             failures += [f"UART0 IRQ_SWEEP {f}" for f in more]
-            if record["irq"] in records:
-                failures.append(f"UART0 IRQ_SWEEP irq={record['irq']}: more than once")
-            # The PRE and TRIAL lines just before a result are that line's.
-            if any(number(f.get("irq", "")) != record["irq"] for _, f in pending):
-                failures.append(f"UART0 IRQ_SWEEP irq={record['irq']}: preceded by another line's records")
-            pres = [f for n, f in pending if n == "IRQ_SWEEP_PRE"]
-            record["funcsel"] = pres[0].get("fs") if pres else None
-            record["trials"] = [f for n, f in pending if n == "IRQ_SWEEP_TRIAL"]
-            if (record["irq"], record["block"]) in SWEEP_TABLE.items() and record["result"] in SWEEP_RESULTS:
-                failures += [f"UART0 IRQ_SWEEP {f}" for f in sweep_evidence(record, pres, record["trials"])]
-            pending = []
-            records[record["irq"]] = record
+            if irq in seen:
+                failures.append(f"UART0 IRQ_SWEEP irq={irq}: more than once")
+            seen.add(irq)
+            trials = []
             summary["lines"].append(record)
-        elif name in ("IRQ_SWEEP_PRE", "IRQ_SWEEP_TRIAL"):
-            pending.append((name, fields))
-        else:
+        elif name != "IRQ_SWEEP_PRE":
+            # PRE (function selects and identity words) is for the reader, not the verdict.
             failures.append(f"UART0 unknown marker: {line.strip()[:160]}")
 
-    if pending:
-        failures.append(f"UART0: {len(pending)} IRQ_SWEEP_PRE/TRIAL lines without their result")
+    if trials:
+        failures.append(f"UART0: {len(trials)} IRQ_SWEEP_TRIAL lines without their result")
+    order = [r["irq"] for r in summary["lines"]]
     for irq in SWEEP_TABLE:
-        if irq not in records:
+        if irq not in seen:
             failures.append(f"UART0 IRQ_SWEEP irq={irq}: missing")
+    if sorted(map(str, order)) == sorted(map(str, SWEEP_TABLE)) and order != list(SWEEP_TABLE):
+        failures.append(f"UART0 IRQ_SWEEP lines out of table order: {order}")
     begin = summary.get("begin", {})
-    if begin.get("iser") != "00000000,00000000":
+    if begin.get("iser") != ZERO_WORDS:
         failures.append(f"UART0 IRQ_SWEEP_BEGIN: iser={begin.get('iser')} (a line was enabled)")
-    failures += [f"UART0 IRQ_SWEEP {f}" for f in sweep_blocking(summary["lines"], begin.get("iser"))]
     if ended is None:
         failures.append("UART0: no IRQ_SWEEP_END")
     else:
-        if ended.get("iser") != "00000000,00000000":
+        if ended.get("iser") != ZERO_WORDS:
             failures.append(f"UART0 IRQ_SWEEP_END: iser={ended.get('iser')} (a line was enabled)")
         if not number(ended.get("lines", "")) == number(begin.get("lines", "")) == len(summary["lines"]):
             failures.append(f"UART0 IRQ_SWEEP_END: lines={ended.get('lines')}, "

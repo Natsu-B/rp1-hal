@@ -230,83 +230,54 @@ def pair(bits, width=0):
     return f"{bits & 0xffffffff:0{width}x},{bits >> 32:0{width}x}"
 
 
-def sweep_records(irq, result="ROUTED", reason=None, exit_=None, detail=None):
-    """The PRE, TRIAL and result lines the image prints for one line (values invented; the
-    trials are the ones the image runs for that result, in its order). `detail` overrides the
-    printed detail (after_abort carries the aborting line's IRQ)."""
-    stages, source = v.SWEEP_KINDS[v.SWEEP_TABLE[irq].rstrip("0123456789")]
-    target, foreign = 1 << irq, 1 << 8 if irq != 8 else 1 << 3
-    trials = []
-
-    def trial(i, raised=True, hit=False, other=0):
+def sweep_records(irq):
+    """The PRE, TRIAL and result lines the image prints for a line routed as expected (the
+    shape and values of the 2026-11-15 hardware boots)."""
+    stages, wanted, source = v.SWEEP_KINDS[v.SWEEP_TABLE[irq].rstrip("0123456789")]
+    target = 1 << irq
+    fs = "-" if irq in (52, 1, 2) else "8:1f,9:1f"
+    lines = [f"IRQ_SWEEP_PRE irq={irq} fs={fs} found=0,44570140"]
+    for i in range(v.SWEEP_TRIALS * len(stages)):
         stage = stages[i % len(stages)]
-        status = (source | (1 << 16 if stage == "wrap1" else 0)) if raised else 0
-        post = (target if hit else 0) | other
-        trials.append(dict(stage=stage, trial=i // len(stages), raised=int(raised), post=post, status=status))
-
-    if result in ("ROUTED", "NOT_ROUTED"):
-        for i in range(v.SWEEP_TRIALS * len(stages)):
-            trial(i, hit=result == "ROUTED" and i % len(stages) == len(stages) - 1)
-    elif result in ("OTHER_LINE", "NEW_PENDING"):
-        trial(0)
-        trial(1 % (v.SWEEP_TRIALS * len(stages)), hit=result == "NEW_PENDING", other=foreign)
-    elif reason == "source_fail":
-        trial(0)
-        trial(1, raised=False)
-    # The hits the image prints for these scenarios, stated rather than counted from the trials:
-    # ROUTED hits on every trial of its last stage; every other scenario has no clean hit (the
-    # trial that stops OTHER_LINE / NEW_PENDING / source_fail is not counted).
-    hits = ",".join(f"{stage}:{3 if result == 'ROUTED' and stage == stages[-1] else 0}/3" for stage in stages)
-    if result == "ROUTED":
-        shown, reason = trials[-1], stages[-1]
-    else:
-        shown = trials[-1] if trials else dict(post=0, status=0)
-    if exit_ is None:
-        exit_ = "untouched" if reason in v.SKIP_UNTOUCHED + v.SKIP_NOT_RUN else "left"
-    detail = detail or (f"{shown['status']:x}" if reason == "source_fail" else "0")
-    new = shown["post"] & ~target
-    fs = "8:1f,9:1f" if v.SWEEP_TABLE[irq].rstrip("0123456789") in v.SWEEP_PINNED else "-"
-    lines = [] if reason in v.SKIP_NOT_RUN else [f"IRQ_SWEEP_PRE irq={irq} fs={fs} found=0,44570140"]
-    lines += [f"IRQ_SWEEP_TRIAL irq={irq} stage={t['stage']} trial={t['trial']} pre=0,0 base=0,0 "
-              f"raised={t['raised']} post={pair(t['post'])} status={t['status']:x} intstat=0,0 us=1 clr=0,0"
-              for t in trials]
-    lines.append(f"IRQ_SWEEP irq={irq} block={v.SWEEP_TABLE[irq]} result={result} reason={reason or '-'} "
-                 f"detail={detail} exit={exit_} hits={hits} ispr_before={pair(0, 8)} "
-                 f"ispr_after={pair(shown['post'], 8)} new={pair(new, 8)} status={shown['status']:x}")
+        status = source | (1 << 16 if stage in ("wrap1", "real") else 0)
+        post = target if wanted[i % len(stages)] else 0
+        lines.append(f"IRQ_SWEEP_TRIAL irq={irq} stage={stage} trial={i // len(stages)} pre=0,0 base=0,0 "
+                     f"raised=1 post={pair(post)} status={status:x} intstat=0,0 us=1 clr=0,0")
+    routed_by = stages[wanted.index(v.SWEEP_TRIALS)]
+    lines.append(f"IRQ_SWEEP irq={irq} block={v.SWEEP_TABLE[irq]} result=ROUTED reason={routed_by} detail=0 "
+                 f"exit=left hits={v.expected_hits(stages, wanted)} ispr_before={ZERO} "
+                 f"ispr_after={pair(target, 8)} new={ZERO} status={source:x}")
     return lines
 
 
-DEFAULT_RESULTS = {41: ("NOT_ROUTED",), 1: ("SKIP", "proc0_in_use")}
-
-
-def sweep_result(irq):
-    """The result line of `irq` in the default boot."""
-    return sweep_records(irq, *DEFAULT_RESULTS.get(irq, ()))[-1]
-
-
 def sweep_uart0(nonce=NONCE, results=None):
-    """The UART0 lines of one boot of lab/irq-sweep (values invented). `results` maps an IRQ to
-    the arguments of sweep_records, or to the list of its lines."""
-    results = {**DEFAULT_RESULTS, **(results or {})}
+    """The UART0 lines of one passing boot of lab/irq-sweep. `results` maps an IRQ to the list
+    of lines that replaces its own."""
+    results = results or {}
     lines = ["proc0 clocks programmed=true sys_hz=200000000 uart_hz=50000000",
              "p0 pwm1 init Some(true) adc init true",
              f"IRQ_SWEEP_BEGIN lines={len(v.SWEEP_TABLE)} iser={ZERO} ispr={ZERO}"]
     for irq in v.SWEEP_TABLE:
-        given = results.get(irq, ())
-        lines += given if isinstance(given, list) else sweep_records(irq, *given)
-    lines += [f"IRQ_SWEEP_END lines={len(v.SWEEP_TABLE)} iser={ZERO} us=412345",
-              "p0 pcie Ok clocks_programmed=true endpoint_programmed=true perstn_wait_us=1906849 "
+        lines += results.get(irq, sweep_records(irq))
+    lines += [f"IRQ_SWEEP_END lines={len(v.SWEEP_TABLE)} iser={ZERO} us=731638",
+              "p0 pcie Ok clocks_programmed=true endpoint_programmed=true perstn_wait_us=1766406 "
               "link_wait_us=8204 monitor2=0x1b0000",
               f"IRQ_SWEEP_BOOT boot={BOOT}",
               "proc0 scmi p14 m7 [3, 0] -> 0 votes=8"]
     return "".join((f"{l} nonce={nonce}" if l.startswith("IRQ_") else l) + "\r\n" for l in lines)
 
 
-def edited(irq, edit, *args):
-    """The lines of `irq` (sweep_records(irq, *args)) after `edit` changed the list."""
-    lines = sweep_records(irq, *args)
-    edit(lines)
+def edited(irq, *edits):
+    """The lines of `irq`, with each (index, old, new) replacement applied."""
+    lines = sweep_records(irq)
+    for index, old, new in edits:
+        assert old in lines[index], (old, lines[index])
+        lines[index] = lines[index].replace(old, new)
     return lines
+
+
+def sweep_failures(results):
+    return v.verify_sweep(sweep_uart0(results=results))[0]
 
 
 def sweep_uart10(boot=BOOT):
@@ -330,31 +301,93 @@ def sweep_changed(old, new):
 class VerifySweep(unittest.TestCase):
     assertFails = VerifyIrq.assertFails
 
-    def test_results_are_not_failures(self):
+    def test_all_lines_routed_pass(self):
         found, summary = v.verify_sweep(sweep_uart0())
         self.assertEqual(found, [])
         self.assertEqual((summary["nonce"], summary["boot"]), (NONCE, BOOT))
-        by_irq = {r["irq"]: r for r in summary["lines"]}
-        self.assertEqual(sorted(by_irq), sorted(v.SWEEP_TABLE))
-        self.assertEqual([by_irq[i]["result"] for i in (7, 41, 1)], ["ROUTED", "NOT_ROUTED", "SKIP"])
-        self.assertEqual(by_irq[7]["funcsel"], "8:1f,9:1f")
-        self.assertEqual(len(by_irq[7]["trials"]), 6)
-        self.assertEqual(by_irq[1]["exit"], "untouched")
+        self.assertEqual([r["irq"] for r in summary["lines"]], list(v.SWEEP_TABLE))
+        self.assertEqual({r["result"] for r in summary["lines"]}, {"ROUTED"})
+        stamped = "".join(f"2026-11-15T22:38:00+0900 {l}\n" for l in sweep_uart0().splitlines())
+        self.assertEqual(v.verify_sweep(stamped)[0], [])
+
+    def test_any_other_result_fails(self):
+        # What the image prints when I2C0's output lands on IRQ 8: the first wrap1 trial shows
+        # a foreign bit and the line stops.
+        other = sweep_records(7)[:3]
+        other[2] = other[2].replace("post=80,0", "post=100,0")
+        other.append(f"IRQ_SWEEP irq=7 block=i2c0 result=OTHER_LINE reason=- detail=0 exit=left "
+                     f"hits=wrap0:0/3,wrap1:0/3 ispr_before={ZERO} ispr_after=00000100,00000000 "
+                     f"new=00000100,00000000 status=10010")
+        self.assertFails(sweep_failures({7: other}), "irq=7: result=OTHER_LINE", "not ROUTED by wrap1")
+        # PWM1 never pending.
+        dead = [l.replace("post=0,200", "post=0,0") for l in sweep_records(41)]
+        dead[-1] = dead[-1].replace("result=ROUTED reason=force", "result=NOT_ROUTED reason=-").replace(
+            "force:3/3", "force:0/3")
+        self.assertFails(sweep_failures({41: dead}), "irq=41: result=NOT_ROUTED")
+        for result in ("SKIP reason=pin_routed", "ABORT reason=rearm", "NEW_PENDING reason=-"):
+            line = edited(20, (-1, "ROUTED reason=wrap1", result))
+            with self.subTest(result=result):
+                self.assertFails(sweep_failures({20: line}), f"irq=20: result={result.split()[0]}")
+
+    def test_routed_by_the_wrong_stimulus_fails(self):
+        # The wrapper did not gate the line: the bit is not shown to be this block's output.
+        ungated = [l.replace("post=0,0", "post=80,0") for l in sweep_records(7)]
+        ungated[-1] = ungated[-1].replace("wrap0:0/3", "wrap0:3/3").replace("reason=wrap1", "reason=wrap0")
+        self.assertFails(sweep_failures({7: ungated}), "irq=7: result=ROUTED reason=wrap0")
+        # ADC routed by force only.
+        forced = edited(52, *[(i, "post=0,100000", "post=0,0") for i in (2, 4, 6)],
+                        (-1, "real:3/3", "real:0/3"))
+        self.assertFails(sweep_failures({52: forced}), "irq=52: result=ROUTED reason=force hits=force:3/3,real:0/3")
+
+    def test_trials_must_bear_out_the_result(self):
+        cases = [
+            (edited(7, (2, "post=80,0", "post=0,0")), "the trials say wrap0:0/3,wrap1:2/3"),
+            (sweep_records(7)[:-2] + sweep_records(7)[-1:], "5 trials, not 6"),
+            (edited(7, (1, "stage=wrap0", "stage=wrap1")), "trial 0 (trial=0 stage=wrap1): out of order"),
+            (edited(7, (1, "raised=1", "raised=0")), "trial 0 (trial=0 stage=wrap0): raised=0"),
+            (edited(7, (1, "status=10 ", "status=0 ")), "does not show the wrap0 source"),
+            (edited(7, (2, "status=10010", "status=10")), "does not show the wrap1 source"),
+            (edited(7, (1, "base=0,0", "base=80,0")), "target bit pending before the stimulus"),
+            (edited(7, (2, "clr=0,0", "clr=80,0")), "or after the deassert"),
+            (edited(7, (2, "post=80,0", "post=180,0")), "another line became pending: post=180,0"),
+            (edited(7, (1, " post=0,0", "")), "base, post, clr or status missing"),
+            (edited(7, (-1, "exit=left", "exit=cleanup")), "exit=cleanup"),
+        ]
+        for lines, needle in cases:
+            with self.subTest(needle=needle):
+                self.assertFails(sweep_failures({7: lines}), needle)
+        moved = sweep_records(9)
+        moved.insert(1, sweep_records(7)[1])
+        self.assertFails(sweep_failures({9: moved}), "preceded by another line's trials")
+        orphan = sweep_changed("IRQ_SWEEP_END lines=9", f"{sweep_records(7)[1]} nonce={NONCE}\r\nIRQ_SWEEP_END lines=9")
+        self.assertFails(v.verify_sweep(orphan)[0], "without their result")
 
     def test_frame(self):
         self.assertFails(v.verify_sweep("p0 pcie Ok\n")[0], "no IRQ_SWEEP_BEGIN")
-        end = f"IRQ_SWEEP_END lines=9 iser={ZERO} us=412345 nonce={NONCE}\r\n"
+        end = f"IRQ_SWEEP_END lines=9 iser={ZERO} us=731638 nonce={NONCE}\r\n"
         self.assertFails(v.verify_sweep(sweep_changed(end, ""))[0], "no IRQ_SWEEP_END", "before IRQ_SWEEP_END")
         self.assertFails(v.verify_sweep(sweep_changed(end, end + end))[0], "more than once")
-        line = sweep_result(20) + f" nonce={NONCE}\r\n"
-        self.assertFails(v.verify_sweep(sweep_changed(line, ""))[0], "irq=20: missing", "lines=9")
-        self.assertFails(v.verify_sweep(sweep_changed(line, line + line))[0], "irq=20: more than once")
+        self.assertFails(sweep_failures({20: []}), "irq=20: missing", "lines=9")
+        self.assertFails(sweep_failures({20: sweep_records(20) * 2}), "irq=20: more than once")
         self.assertFails(v.verify_sweep(sweep_changed(f"iser={ZERO} ispr", "iser=00000080,00000000 ispr"))[0],
-                         "a line was enabled")
+                         "IRQ_SWEEP_BEGIN: iser=00000080")
+        self.assertFails(v.verify_sweep(sweep_changed(f"iser={ZERO} us", "iser=00000080,00000000 us"))[0],
+                         "IRQ_SWEEP_END: iser=00000080")
+        self.assertFails(v.verify_sweep(sweep_uart0() + f"IRQ_SWEEP_PANIC nonce={NONCE}\r\n")[0], "IRQ_SWEEP_PANIC")
+
+    def test_table(self):
+        dma = [l.replace("irq=7 block=i2c0", "irq=40 block=dma").replace("irq=7 ", "irq=40 ")
+               for l in sweep_records(7)]
+        self.assertFails(sweep_failures({7: dma}), "must not be swept")
+        self.assertFails(sweep_failures({7: edited(7, (-1, "block=i2c0", "block=i2c1"))}), "not in the sweep table")
+        # A line without its IRQ and block is reported, not a crash.
+        self.assertFails(sweep_failures({7: edited(7, (-1, "irq=7 block=i2c0 ", ""))}),
+                         "irq=None block=None: not in the sweep table", "irq=7: missing")
+        self.assertFails(sweep_failures({7: sweep_records(9), 9: sweep_records(7)}), "out of table order")
 
     def test_lines_of_another_boot(self):
-        stale = sweep_result(22) + f" nonce={OTHER}\r\n"
-        mine = sweep_result(22) + f" nonce={NONCE}\r\n"
+        stale = f"{sweep_records(22)[-1]} nonce={OTHER}\r\n"
+        mine = f"{sweep_records(22)[-1]} nonce={NONCE}\r\n"
         self.assertFails(v.verify_sweep(sweep_changed(mine, stale + mine))[0], "another boot")
         # Two boots in one capture: the last by default, either by nonce.
         both = sweep_uart0(OTHER) + sweep_uart0()
@@ -362,220 +395,9 @@ class VerifySweep(unittest.TestCase):
         self.assertEqual(v.verify_sweep(both, OTHER)[0], [])
         self.assertFails(v.verify_sweep(both, "ffffffff")[0], "0 boots")
 
-    def test_table_and_consistency(self):
-        dma = [l.replace("irq=7 block=i2c0", "irq=40 block=dma") for l in sweep_records(7)]
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: dma}))[0], "must not be swept")
-        wrong = edited(7, lambda l: l.__setitem__(-1, l[-1].replace("block=i2c0", "block=i2c1")))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: wrong}))[0], "not in the sweep table")
-        unset = edited(7, lambda l: l.__setitem__(-1, l[-1].replace("ispr_after=00000080", "ispr_after=00000000")))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: unset}))[0], "does not match ispr_after")
-        abort = sweep_records(7, "ABORT", "output_stuck", "output_stuck")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: abort}))[0], "ABORT reason=output_stuck")
-        # A line without both its IRQ and its block is reported, not a crash.
-        nameless = edited(7, lambda l: l.__setitem__(-1, l[-1].replace("irq=7 block=i2c0 ", "")))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: nameless}))[0],
-                         "irq=None block=None: not in the sweep table", "irq=7: missing")
-        # `new` follows from the pending words for every result, a SKIP's too.
-        foreign = edited(20, lambda l: l.__setitem__(-1, l[-1].replace("new=00000000,00000000", "new=ffffffff,ffffffff")),
-                         "SKIP", "source_fail")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={20: foreign}))[0], "is not ispr_after minus ispr_before")
-
-    def test_every_result_with_its_evidence(self):
-        cases = {9: ("OTHER_LINE",), 10: ("NEW_PENDING",), 20: ("SKIP", "source_fail"),
-                 22: ("SKIP", "pin_routed"), 52: ("SKIP", "not_initialised"), 2: ("SKIP", "baseline")}
-        self.assertEqual(v.verify_sweep(sweep_uart0(results=cases))[0], [])
-        blocked = {irq: ("SKIP", "after_abort", None, "16") for irq in (52, 41, 1, 2)}
-        found = v.verify_sweep(sweep_uart0(results={22: ("ABORT", "rearm"), **blocked}))[0]
-        self.assertEqual([f for f in found if "ABORT" not in f], [])
-
-    def test_blocked_lines_need_their_cause(self):
-        # The reviewer's counter-examples (round 3): each passed before.
-        everything = {irq: ("SKIP", "after_abort", None, "7") for irq in v.SWEEP_TABLE}
-        self.assertFails(v.verify_sweep(sweep_uart0(results=everything))[0],
-                         "irq=7: SKIP after_abort without an earlier ABORT")
-        enabled = {irq: ("SKIP", "irq_enabled") for irq in v.SWEEP_TABLE}
-        self.assertFails(v.verify_sweep(sweep_uart0(results=enabled))[0], "irq=7: SKIP irq_enabled without")
-        # After an ABORT every later line is after_abort, naming the aborting IRQ.
-        wrong = {22: ("ABORT", "rearm"), 52: ("SKIP", "after_abort", None, "7"),
-                 **{irq: ("SKIP", "after_abort", None, "16") for irq in (41, 1, 2)}}
-        self.assertFails(v.verify_sweep(sweep_uart0(results=wrong))[0], "irq=52: result=SKIP reason=after_abort detail=7")
-        ran = {22: ("ABORT", "rearm"), 52: ("NOT_ROUTED",),
-               **{irq: ("SKIP", "after_abort", None, "16") for irq in (41, 1, 2)}}
-        self.assertFails(v.verify_sweep(sweep_uart0(results=ran))[0], "irq=52: result=NOT_ROUTED")
-        # An enabled line at BEGIN blocks every line as irq_enabled.
-        text = sweep_uart0(results=enabled).replace(f"iser={ZERO} ispr", "iser=00000080,00000000 ispr", 1)
-        self.assertEqual([f for f in v.verify_sweep(text)[0] if "a line was enabled" not in f], [])
-
-    def test_skip_reasons_belong_to_the_block(self):
-        # Round 4: every block "proc0_in_use" passed, though only an IO bank can say it.
-        in_use = {irq: ("SKIP", "proc0_in_use") for irq in v.SWEEP_TABLE}
-        found = v.verify_sweep(sweep_uart0(results=in_use))[0]
-        for irq in (7, 9, 10, 20, 22, 52, 41):
-            self.assertTrue(any(f"irq={irq}: SKIP reason=proc0_in_use is not a reason the image gives" in f
-                                for f in found), irq)
-        self.assertFalse(any(f"irq={irq}:" in f for f in found for irq in (1, 2)), found)
-        for irq, reason in ((52, "pin_routed"), (1, "not_initialised"), (20, "busy"), (41, "fifo")):
-            self.assertFails(v.verify_sweep(sweep_uart0(results={irq: (("SKIP", reason))}))[0],
-                             f"irq={irq}: SKIP reason={reason} is not a reason")
-        # Each kind's own refusals pass.
-        own = {7: ("SKIP", "busy"), 20: ("SKIP", "not_alive"), 52: ("SKIP", "fifo"), 41: ("SKIP", "not_initialised")}
-        self.assertEqual(v.verify_sweep(sweep_uart0(results=own))[0], [])
-
-    def test_impossible_payloads(self):
-        # Round 4: values the image cannot print.
-        garbage = edited(1, lambda l: l.__setitem__(-1, l[-1].replace("status=0", "status=garbage")), "SKIP", "proc0_in_use")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={1: garbage}))[0], "status=garbage is not a 32-bit word")
-        new = edited(1, lambda l: l.__setitem__(-1, l[-1].replace(f"new={pair(0, 8)}", "new=00000100,00000000")),
-                     "SKIP", "proc0_in_use")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={1: new}))[0], "status or new is not 0")
-        signed = edited(7, lambda l: l.__setitem__(-1, l[-1].replace("detail=0", "detail=-1")))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: signed}))[0], "detail=-1 or status")
-        detail = edited(7, lambda l: l.__setitem__(-1, l[-1].replace("detail=0", "detail=5")))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: detail}))[0], "result=ROUTED detail=5")
-        wide = edited(7, lambda l: l.__setitem__(0, l[0].replace("fs=8:1f,9:1f", "fs=0:20,1:1f,8:1f,9:1f")))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: wide}))[0], "IRQ_SWEEP_PRE fs=0:20")
-        pinless = edited(52, lambda l: l.__setitem__(0, l[0].replace("fs=-", "fs=8:1f")))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={52: pinless}))[0], "IRQ_SWEEP_PRE fs=8:1f")
-        # A malformed or missing IRQ is a failure, not a crash.
-        for old, new_ in (("irq=7 block", "irq=bogus block"), ("irq=7 block", "block")):
-            found = v.verify_sweep(sweep_changed(f"IRQ_SWEEP {old}", f"IRQ_SWEEP {new_}"))[0]
-            self.assertTrue(found and any("irq=7: missing" in f for f in found), found)
-
-    def test_impossible_trials_and_fields(self):
-        # A seventh trial (trial=3) after six clean misses: the image runs trials 0..2 only.
-        extra = sweep_records(10, "NOT_ROUTED")
-        last = extra[-2].replace("stage=wrap1 trial=2", "stage=wrap0 trial=3").replace("post=0,0", "post=500,0")
-        extra[-1] = (extra[-1].replace("result=NOT_ROUTED", "result=NEW_PENDING")
-                     .replace(f"ispr_after={pair(0, 8)}", f"ispr_after={pair(0x500, 8)}")
-                     .replace(f"new={pair(0, 8)}", f"new={pair(0x100, 8)}"))
-        extra.insert(-1, last)
-        self.assertFails(v.verify_sweep(sweep_uart0(results={10: extra}))[0], "7 trials, the image runs at most 6")
-        # ROUTED without a reason, on trials with one hit: the image says ABORT unstable.
-        unstable = sweep_records(10, "NOT_ROUTED")
-        unstable[2] = unstable[2].replace("post=0,0", "post=400,0")
-        unstable[-1] = (unstable[-1].replace("result=NOT_ROUTED reason=- ", "result=ROUTED ")
-                        .replace("wrap1:0/3", "wrap1:1/3"))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={10: unstable}))[0], "irq=10: reason missing")
-        unstable[-1] = unstable[-1].replace("result=ROUTED ", "result=ROUTED reason=None ")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={10: unstable}))[0], "ROUTED reason=None, the trials say None")
-        # Words wider than 32 bits or signed, and a time that does not fit the image's u32.
-        for old, new in (("found=0,44570140", "found=-1,100000000"), ("pre=0,0", "pre=-1,0"),
-                         ("intstat=0,0", "intstat=0,100000000"), ("us=1 ", "us=4294967296 ")):
-            bad = sweep_records(7)
-            index = 0 if old.startswith("found") else 1
-            bad[index] = bad[index].replace(old, new)
-            self.assertFails(v.verify_sweep(sweep_uart0(results={7: bad}))[0], "irq=7")
-
-    # The reviewer's counter-examples: each passed before the evidence was checked.
-    def test_results_without_trials_fail(self):
-        bare = [l for l in sweep_records(7) if not l.startswith(("IRQ_SWEEP_PRE", "IRQ_SWEEP_TRIAL"))]
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: bare}))[0],
-                         "0 IRQ_SWEEP_PRE lines", "needs 6 clean trials", "hits=wrap0:0/3,wrap1:3/3")
-        short = edited(41, lambda l: l.pop(-2), "NOT_ROUTED")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={41: short}))[0], "needs 3 clean trials")
-        swapped = edited(7, lambda l: l.__setitem__(slice(1, 3), [l[2], l[1]]))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: swapped}))[0], "trial 0 is trial=0 stage=wrap1")
-        no_raised = edited(7, lambda l: l.__setitem__(1, l[1].replace(" raised=1", "")))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: no_raised}))[0], "raised missing")
-        foreign = sweep_records(9)
-        foreign[3] = foreign[3].replace("post=0,0", "post=100,0")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={9: foreign}))[0], "needs 6 clean trials")
-        moved = sweep_records(9)
-        moved.insert(0, sweep_records(7)[1])
-        self.assertFails(v.verify_sweep(sweep_uart0(results={9: moved}))[0], "another line's records")
-
-    def test_source_status_must_show_the_source(self):
-        zero = sweep_records(7)
-        zero[1] = zero[1].replace("status=10 ", "status=0 ")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: zero}))[0], "trial 0: raised=1 but status=0")
-        closed = sweep_records(7)
-        closed[2] = closed[2].replace("status=10010 ", "status=10 ")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: closed}))[0], "does not show the wrap1 source")
-        fail = sweep_records(20, "SKIP", "source_fail")
-        fail[-1] = fail[-1].replace("detail=0 ", "detail=1 ")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={20: fail}))[0], "detail=1 is not")
-
-    def test_summary_must_agree_with_the_trials(self):
-        # ROUTED with 0/3 hits: the trials of a line that was not routed.
-        zero_hits = sweep_records(7, "NOT_ROUTED")
-        zero_hits[-1] = zero_hits[-1].replace("result=NOT_ROUTED reason=-", "result=ROUTED reason=wrap1")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: zero_hits}))[0],
-                         "ROUTED reason=wrap1, the trials say None", "does not match ispr_after")
-        claimed = sweep_records(7, "NOT_ROUTED")
-        claimed[-1] = (claimed[-1].replace("result=NOT_ROUTED reason=-", "result=ROUTED reason=wrap1")
-                       .replace("wrap1:0/3", "wrap1:3/3").replace("ispr_after=00000000", "ispr_after=00000080"))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: claimed}))[0],
-                         "hits=wrap0:0/3,wrap1:3/3, the trials say wrap0:0/3,wrap1:0/3", "rests on")
-        stage = sweep_records(7)
-        stage[-1] = stage[-1].replace("reason=wrap1", "reason=wrap0")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: stage}))[0], "ROUTED reason=wrap0")
-        words = sweep_records(52)
-        words[-1] = words[-1].rsplit("status=", 1)[0] + "status=0"
-        self.assertFails(v.verify_sweep(sweep_uart0(results={52: words}))[0], "rests on")
-        reason = sweep_records(9, "OTHER_LINE")
-        reason[-1] = reason[-1].replace("reason=-", "reason=wrap1")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={9: reason}))[0], "result=OTHER_LINE reason=wrap1")
-
-    def test_the_stopping_trial_is_not_a_hit(self):
-        # IRQ10: wrap0 misses, then wrap1 shows the target and a foreign bit. The image ends the
-        # line on the foreign bit without counting that trial.
-        new = sweep_records(10, "NEW_PENDING")
-        self.assertIn("hits=wrap0:0/3,wrap1:0/3", new[-1])
-        self.assertEqual(v.verify_sweep(sweep_uart0(results={10: new}))[0], [])
-        counted = edited(10, lambda l: l.__setitem__(-1, l[-1].replace("wrap1:0/3", "wrap1:1/3")), "NEW_PENDING")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={10: counted}))[0],
-                         "hits=wrap0:0/3,wrap1:1/3, the trials say wrap0:0/3,wrap1:0/3")
-        # A source that failed while the target bit was pending: not counted either.
-        fail = sweep_records(20, "SKIP", "source_fail")
-        fail[2] = fail[2].replace("post=0,0", f"post={pair(1 << 20)}")
-        fail[-1] = fail[-1].replace(f"ispr_after={pair(0, 8)}", f"ispr_after={pair(1 << 20, 8)}")
-        self.assertEqual(v.verify_sweep(sweep_uart0(results={20: fail}))[0], [])
-        # An earlier clean hit is still counted.
-        early = sweep_records(10, "NEW_PENDING")
-        early[1] = early[1].replace("post=0,0", f"post={pair(1 << 10)}")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={10: early}))[0],
-                         "the trials say wrap0:1/3,wrap1:0/3")
-
-    def test_diagnostic_fields_are_required(self):
-        for field in ("fs=8:1f,9:1f ", "found=0,44570140"):
-            pre = edited(7, lambda l, f=field: l.__setitem__(0, l[0].replace(f, "")))
-            self.assertFails(v.verify_sweep(sweep_uart0(results={7: pre}))[0], "IRQ_SWEEP_PRE fs=")
-        bad = edited(7, lambda l: l.__setitem__(0, l[0].replace("fs=8:1f,9:1f", "fs=8")))
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: bad}))[0], "fs=8 found=0,44570140 missing")
-        for field in ("pre=0,0 ", "intstat=0,0 ", "us=1 "):
-            trial = edited(7, lambda l, f=field: l.__setitem__(1, l[1].replace(f, "")))
-            self.assertFails(v.verify_sweep(sweep_uart0(results={7: trial}))[0], "trial 0: words, status or raised missing")
-
-    def test_pending_transitions(self):
-        before = sweep_records(7)
-        before[1] = before[1].replace("base=0,0", "base=80,0")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: before}))[0], "target bit pending at the baseline")
-        after = sweep_records(7)
-        after[2] = after[2].replace("clr=0,0", "clr=80,0")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: after}))[0], "still pending after the deassert")
-
-    def test_how_the_block_was_left(self):
-        # A bank found in use was only read; any exit but untouched means it was written.
-        written = sweep_records(1, "SKIP", "proc0_in_use", "left")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={1: written}))[0],
-                         "reason=proc0_in_use with exit=left")
-        untouched = sweep_records(7, "ROUTED", None, "untouched")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: untouched}))[0], "with exit=untouched")
-        cleanup = sweep_records(7, "ROUTED", None, "cleanup")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: cleanup}))[0], "leaving the block failed")
-        unknown = sweep_records(7, "ROUTED", None, "gone")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: unknown}))[0], "exit=gone")
-        late = sweep_records(7, "SKIP", "baseline")
-        late[1:1] = sweep_records(7)[1:2]
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: late}))[0], "SKIP reason=baseline after 1 trials")
-        invented = sweep_records(7, "SKIP", "tired")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: invented}))[0], "not a reason the image gives")
-        orphan = sweep_changed(f"IRQ_SWEEP_END lines=9", f"{sweep_records(7)[1]} nonce={NONCE}\r\nIRQ_SWEEP_END lines=9")
-        self.assertFails(v.verify_sweep(orphan)[0], "without their result")
-
     def test_sweep_ends_before_the_link(self):
-        pcie = "p0 pcie Ok clocks_programmed=true endpoint_programmed=true perstn_wait_us=1906849"
-        self.assertFails(v.verify_sweep(sweep_changed(pcie, pcie.replace("1906849", "4294967295")))[0],
+        pcie = "p0 pcie Ok clocks_programmed=true endpoint_programmed=true perstn_wait_us=1766406"
+        self.assertFails(v.verify_sweep(sweep_changed(pcie, pcie.replace("1766406", "4294967295")))[0],
                          "no fresh PCIe bring-up")
         self.assertFails(v.verify_sweep(sweep_changed("endpoint_programmed=true", "endpoint_programmed=false"))[0],
                          "no fresh PCIe bring-up")
@@ -598,6 +420,8 @@ class VerifySweep(unittest.TestCase):
             u10.write_bytes(sweep_uart10("0badf00d").encode())
             self.assertEqual(v.main(args + ["--uart10", str(u10)]), 1)
             self.assertEqual(json.loads(out.read_text())["verdict"], "FAIL")
+            u0.write_bytes(sweep_uart0(results={41: edited(41, (-1, "result=ROUTED", "result=NOT_ROUTED"))}).encode())
+            self.assertEqual(v.main(args), 1)
 
     def test_table_matches_the_firmware_source(self):
         import re
@@ -616,7 +440,7 @@ class VerifySweep(unittest.TestCase):
         kinds = {"I2c": "i2c", "Spi": "spi", "Adc": "adc", "Pwm1": "pwm", "Bank": "io_bank"}
         found = re.findall(r'impl Source for (\w+) \{.*?fn stages\(&self\)[^{]*\{\s*&\[([^\]]*)\]', blocks, re.S)
         self.assertEqual({kinds[k]: tuple(re.findall(r'"(\w+)"', s)) for k, s in found},
-                         {k: stages for k, (stages, _) in v.SWEEP_KINDS.items()})
+                         {k: stages for k, (stages, _, _) in v.SWEEP_KINDS.items()})
         self.assertEqual(int(re.search(r"const TRIALS: usize = (\d+);", sweep).group(1)), v.SWEEP_TRIALS)
 
 
