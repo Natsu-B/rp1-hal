@@ -301,8 +301,12 @@ python3 lab/verify-irq.py --sweep --uart0 UART0_CAPTURE [--uart10 UART10_CAPTURE
 
 which checks one boot (the last, or `--nonce HEX`): the frame, one result per table line, no
 duplicate, no line of another boot, both enable words 0, and `IRQ_SWEEP_END` before a
-`p0 pcie Ok` line with a fresh PERSTn wait. It prints `IRQ_SWEEP_VERDICT=PASS|FAIL`; PASS means
-the sweep ran by its contract, whatever it found. `--json` writes the per-line results.
+`p0 pcie Ok` line with a fresh PERSTn wait. Each result must be borne out by its PRE and TRIAL
+records: the trials the image runs for that result, in order, the source raised (`raised=1` and
+its status bit), the target bit clear at the baseline and after each deassert, the hit counts,
+the routed stage, the summary's words, and `exit=` (`untouched` exactly when the block was only
+read). It prints `IRQ_SWEEP_VERDICT=PASS|FAIL`; PASS means the sweep ran by its contract,
+whatever it found. `--json` writes the per-line results.
 
 ## PWM loopback diagnostic (STATIC / HW 未検証)
 
