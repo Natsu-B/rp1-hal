@@ -131,19 +131,23 @@ impl<const N: u8> Channels<N> {
     /// Disables all channels and returns the token. Clock/reset remain running.
     ///
     /// [`Error::Precondition`]: clk_pwm is no longer enabled at 50 MHz, so the disable could
-    /// not latch; nothing was written and the channels come back with the error, to retry
+    /// not latch; nothing was written and the channels come back in
+    /// [`FreeError`](crate::FreeError) with the error, to retry
     /// once the clock runs again or to [`Self::abort`].
     ///
     /// ```no_run
     /// # use rp1_hal::pwm::{Channels, Token};
     /// fn release(channels: Channels<0>) -> Token<0> {
-    ///     channels.free().unwrap_or_else(|(channels, _)| channels.abort())
+    ///     channels.free().unwrap_or_else(|e| e.driver.abort())
     /// }
     /// ```
-    pub fn free(self) -> Result<Token<N>, (Self, Error)> {
+    pub fn free(self) -> Result<Token<N>, crate::FreeError<Self, Error>> {
         match release_block(&mut Mmio, N) {
             Ok(()) => Ok(Token { _private: () }),
-            Err(error) => Err((self, error)),
+            Err(error) => Err(crate::FreeError {
+                driver: self,
+                error,
+            }),
         }
     }
     /// [`Self::free`] without the clock check: the disable is written, but with clk_pwm
@@ -219,10 +223,13 @@ impl<const N: u8, const C: u8, const P: u8> Output<N, C, P> {
     /// then outputs a constant low (DOC/STATIC; HW 未検証). [`Channel::enable`] restores the
     /// trailing-edge mode. On failure (clock no longer 50 MHz) nothing is written and the
     /// output comes back with the error, as in [`Channels::free`].
-    pub fn free(self) -> Result<(Channel<N, C>, Pin<P>), (Self, Error)> {
+    pub fn free(self) -> Result<(Channel<N, C>, Pin<P>), crate::FreeError<Self, Error>> {
         match release_channel(&mut Mmio, N, C) {
             Ok(()) => Ok((self.channel, self.pin.release())),
-            Err(error) => Err((self, error)),
+            Err(error) => Err(crate::FreeError {
+                driver: self,
+                error,
+            }),
         }
     }
     /// [`Self::free`] without the clock check, with the limits of [`Channels::abort`]: the

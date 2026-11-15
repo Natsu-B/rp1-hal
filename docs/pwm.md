@@ -50,9 +50,9 @@ fn output(token: Token<0>, pin: Pin<12>, clocks: &Clocks) -> Result<(), Error> {
     output.enable()?;
     // Later, stop and return the output and pin before returning the whole block.
     // A failed `free` hands the output (or the channels) back with the error.
-    let (channel, pin) = output.free().map_err(|(_, e)| e)?;
+    let (channel, pin) = output.free().map_err(|e| e.error)?;
     channels.channel0 = channel;
-    let _token = channels.free().map_err(|(_, e)| e)?;
+    let _token = channels.free().map_err(|e| e.error)?;
     let _pin = pin;
     Ok(())
 }
@@ -78,7 +78,7 @@ channel writes; every setter error (`Invalid`, `Enabled`, `Precondition`) is ret
 any register write, so the cached period always matches RANGE. `Timeout` comes only from the
 reset DONE wait in `init`. `InitError` returns the token; a reset failure may leave partial
 hardware state. `Channels::free` and `Output::free` check the clock first: on
-`Precondition` nothing is written and the value comes back as `(Self, Error)`, so the caller
+`Precondition` nothing is written and the value comes back as `FreeError { driver, error }`, so the caller
 can retry once clk_pwm runs again. `abort` on either writes the same disable without the
 check and always returns the token (or channel and pin); with the clock stopped the disable
 may not latch (HW 未検証), and `Token::init` restarts the clock and disables all channels.

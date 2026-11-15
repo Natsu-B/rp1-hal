@@ -422,18 +422,22 @@ where
     /// characters, and one still arriving, are dropped.
     ///
     /// [`Error::Timeout`]: the line is still busy and nothing was changed; the UART comes
-    /// back with the error, to retry (transmission went on meanwhile) or to [`Uart::abort`].
+    /// back in [`FreeError`](crate::FreeError) with the error, to retry (transmission went on
+    /// meanwhile) or to [`Uart::abort`].
     ///
     /// ```no_run
     /// # use rp1_hal::uart::{Parts, Uart};
     /// fn release(uart: Uart<2, 4, 5>) -> Parts<2, 4, 5> {
-    ///     uart.free().unwrap_or_else(|(uart, _)| uart.abort())
+    ///     uart.free().unwrap_or_else(|e| e.driver.abort())
     /// }
     /// ```
-    pub fn free(self) -> Result<Parts<N, TX, RX>, (Self, Error)> {
+    pub fn free(self) -> Result<Parts<N, TX, RX>, crate::FreeError<Self, Error>> {
         match release(&mut Mmio, N, self.timeout_us) {
             Ok(()) => Ok(self.into_parts()),
-            Err(error) => Err((self, error)),
+            Err(error) => Err(crate::FreeError {
+                driver: self,
+                error,
+            }),
         }
     }
     /// [`Uart::free`] without the wait: holds the UART in its reset at once. Characters still

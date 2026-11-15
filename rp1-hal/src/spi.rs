@@ -826,11 +826,15 @@ where
     /// pins, ready for [`Parts::init`]. The reset stays released.
     ///
     /// [`Error::Timeout`]: the controller stayed busy for 100 ms and nothing was changed;
-    /// the driver comes back with the error, to retry or to [`Spi::abort`].
-    pub fn free(self) -> Result<Parts<N, SCK, MOSI, MISO>, (Self, Error)> {
+    /// the driver comes back in [`FreeError`](crate::FreeError) with the error, to retry or to
+    /// [`Spi::abort`].
+    pub fn free(self) -> Result<Parts<N, SCK, MOSI, MISO>, crate::FreeError<Self, Error>> {
         match release(&mut self.io()) {
             Ok(()) => Ok(self.into_parts()),
-            Err(error) => Err((self, error)),
+            Err(error) => Err(crate::FreeError {
+                driver: self,
+                error,
+            }),
         }
     }
     /// [`Spi::free`] without the wait. Disabling the controller empties both FIFOs and

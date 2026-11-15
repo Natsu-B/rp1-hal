@@ -33,6 +33,26 @@ pub mod spi;
 pub mod timer;
 pub mod uart;
 
+/// A `free` that did not release: the driver, unchanged and still configured, and the
+/// driver's error. `Debug` prints only the error, so `.unwrap()` and `.expect()` work although
+/// drivers are not `Debug`. There is deliberately no `From` for the error: `?` would drop a
+/// driver that still owns running hardware.
+///
+/// ```
+/// struct Driver;
+/// let e = rp1_hal::FreeError { driver: Driver, error: rp1_hal::uart::Error::Timeout };
+/// assert_eq!(format!("{e:?}"), "Timeout");
+/// ```
+pub struct FreeError<D, E> {
+    pub driver: D,
+    pub error: E,
+}
+impl<D, E: core::fmt::Debug> core::fmt::Debug for FreeError<D, E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     Timeout,

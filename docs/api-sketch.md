@@ -282,7 +282,7 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
 
 | 操作 | 形 | 意味 |
 |---|---|---|
-| 丁寧な解放 | `fn free(self) -> Result<資源, (Self, Error)>` | ハードが静止するまで（上限つき、経過時間で）待ち、割り込みをマスクし、ブロックを止めて資源を返す。失敗時は何も止めずにドライバ自身をエラーと一緒に返すので、呼び出し側はやり直せる |
+| 丁寧な解放 | `fn free(self) -> Result<資源, FreeError<Self, Error>>` | ハードが静止するまで（上限つき、経過時間で）待ち、割り込みをマスクし、ブロックを止めて資源を返す。失敗時は何も止めずにドライバ自身（`driver`）をエラー（`error`）と一緒に返すので、呼び出し側はやり直せる。`FreeError` の `Debug` はエラーだけを出すので `.unwrap()` / `.expect()` が使える。`?` で捨てると動作中のハードを持つドライバが失われるので、`From` は実装しない |
 | 中止 | `fn abort(self) -> 資源` | 待たない・失敗しない。何が捨てられ、何が保証されるかを各ドライバの doc に書く |
 | 失敗しない解放 | `fn free(self) -> 資源` | 待つものが無いドライバ（`Adc`、`Dma`、`spi::Device`）。`abort` は無い |
 | 初期化の失敗 | `Err(InitError { error, 資源 })` | `init` が消費した token とピンを返す。uart / i2c / spi は解放と同じ `Parts` を `resources` に入れて返すので、`e.resources.init(..)` でやり直せる（pwm / adc / dma は `token`）。`?` は `InitError` をそのドライバの `Error` に変換する |
@@ -304,7 +304,7 @@ GPIO の `Pin` と `timer::Alarm` はそれ自体が資源で、解放するド�
 // 送信が終わらなければ uart が戻るので、待ち直すか、あきらめて abort する。
 let parts = match uart.free() {
     Ok(parts) => parts,
-    Err((uart, _timeout)) => uart.abort(),
+    Err(e) => e.driver.abort(),
 };
 let mut uart = parts.init(&clocks, 9_600).unwrap();    // 返った Parts でそのまま初期化し直せる
 ```

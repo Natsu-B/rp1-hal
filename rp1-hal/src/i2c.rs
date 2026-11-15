@@ -520,11 +520,15 @@ where
     ///
     /// The exception is a handle poisoned by a disable that timed out (a slave holding SCL):
     /// the disable is requested again and waited for up to 100 ms. [`Error::Timeout`] returns
-    /// the driver with its interrupt mask unchanged, to retry or to [`I2c::abort`].
-    pub fn free(self) -> Result<Parts<N, SDA, SCL>, (Self, Error)> {
+    /// the driver in [`FreeError`](crate::FreeError) with its interrupt mask unchanged, to
+    /// retry or to [`I2c::abort`].
+    pub fn free(self) -> Result<Parts<N, SDA, SCL>, crate::FreeError<Self, Error>> {
         match release(&mut self.io()) {
             Ok(()) => Ok(self.into_parts()),
-            Err(error) => Err((self, error)),
+            Err(error) => Err(crate::FreeError {
+                driver: self,
+                error,
+            }),
         }
     }
     /// [`I2c::free`] without the wait: requests an abort (STOP, TX FIFO flushed) and the

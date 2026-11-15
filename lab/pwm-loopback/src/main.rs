@@ -107,11 +107,11 @@ fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
         a.set_period_ticks(50_000).unwrap();
         a.enable().unwrap();
     }
-    let (ch0, pin0) = a.free().map_err(|(_, e)| e).unwrap();
-    let (ch1, pin1) = b.free().map_err(|(_, e)| e).unwrap();
+    let (ch0, pin0) = a.free().unwrap();
+    let (ch1, pin1) = b.free().unwrap();
     channels.channel0 = ch0;
     channels.channel1 = ch1;
-    let token = channels.free().map_err(|(_, e)| e).unwrap();
+    let token = channels.free().unwrap();
     let channels = token.init(&clocks).unwrap();
     let mut a = channels.channel0.output(pin0);
     let mut b = channels.channel1.output(pin1);
