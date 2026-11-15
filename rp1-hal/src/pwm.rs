@@ -177,7 +177,7 @@ impl<const N: u8, const C: u8> Channel<N, C> {
         self.period
     }
     /// Period in 20 ns ticks. Only while disabled; resets duty to zero. A period of P gives
-    /// frequency 50 MHz / P (STATIC, Linux RP1 PWM range convention; HW 未検証).
+    /// frequency 50 MHz / P (STATIC, Linux RP1 PWM range convention; HW: not verified).
     /// Every error is reported before any register write, so on error both the hardware and
     /// [`Self::period_ticks`] keep the previous period.
     pub fn set_period_ticks(&mut self, period: u32) -> Result<(), Error> {
@@ -187,7 +187,7 @@ impl<const N: u8, const C: u8> Channel<N, C> {
     }
     /// Native 32-bit compare, 0..=period: zero is low, period is continuously high in normal
     /// polarity. DUTY has its own write strobe and, per the datasheet (Table 26),
-    /// takes effect at the next counter overflow of a running channel (HW 未検証). SET_UPDATE is
+    /// takes effect at the next counter overflow of a running channel (HW: not verified). SET_UPDATE is
     /// still written like the Linux driver, which does not wait for it either; its completion
     /// does not mean the compare has been applied, so it may appear only after the current
     /// period ends, not necessarily before return.
@@ -220,7 +220,7 @@ pub struct Output<const N: u8, const C: u8, const P: u8> {
 impl<const N: u8, const C: u8, const P: u8> Output<N, C, P> {
     /// Disables the channel and clears its MODE (generate 0), as Linux's `pwm-rp1` free does,
     /// then returns channel and unconfigured pin. The pad stays muxed to the channel, which
-    /// then outputs a constant low (DOC/STATIC; HW 未検証). [`Channel::enable`] restores the
+    /// then outputs a constant low (DOC/STATIC; HW: not verified). [`Channel::enable`] restores the
     /// trailing-edge mode. On failure (clock no longer 50 MHz) nothing is written and the
     /// output comes back with the error, as in [`Channels::free`].
     pub fn free(self) -> Result<(Channel<N, C>, Pin<P>), crate::FreeError<Self, Error>> {
@@ -300,7 +300,7 @@ fn clock_current(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
 /// `pwm-rp1` (`rp1_pwm_apply_config`), nothing waits for the bit to clear: if the latch
 /// happens at the end of the running period, a wait would have to last up to
 /// u32::MAX × 20 ns (about 86 s). A second request while one is pending is what Linux does
-/// as well. When the new values take effect is HW 未検証.
+/// as well. When the new values take effect is not verified on hardware.
 fn update(io: &mut impl Hardware, n: u8) {
     io.write(base(n) + GLOBAL_CTRL + SET, UPDATE);
 }
