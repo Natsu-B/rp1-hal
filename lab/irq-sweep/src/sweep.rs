@@ -5,6 +5,11 @@
 //! What the sweep may write: the registers of the declared blocks, their own reset bits, one
 //! force bit of IO_BANK1/2, and the target bit of the NVIC's clear-pending register. Never a
 //! pin (GPIO control, pads), an NVIC enable or priority, PCIe, or another block.
+//!
+//! How a block is left depends on what was done to it, never on why its line ended: a block
+//! that was only read (a prerequisite failed) gets no further access; a written one always
+//! leaves through the ordered deassert and its cleanup; one whose deassert failed is not
+//! touched again, and the sweep stops.
 use crate::blocks::{Adc, Bank, I2c, Pwm1, Spi};
 use crate::mark;
 use crate::reg::{Reset, now, poll, rd, wr};
@@ -128,9 +133,9 @@ pub trait Source: Sync {
     fn lowered(&self) -> bool;
     /// Back to the baseline after `lower`, for the next stimulus.
     fn rearm(&self) -> bool;
-    /// Lowers the source and leaves the block with every interrupt enable reading 0, in reset
-    /// where the block has a reset of its own. Returns false, without holding the reset, if an
-    /// enable does not read back 0.
+    /// Runs only after the deassert succeeded. Leaves the block with every interrupt enable and
+    /// its output reading 0, in reset where the block has a reset of its own. Returns false,
+    /// without holding the reset, if one of them does not read back 0.
     fn cleanup(&self) -> bool;
     /// The state `cleanup` must leave.
     fn settled(&self) -> bool;
@@ -286,6 +291,8 @@ struct Observation {
     us: u32,
     /// Pending words after the source was lowered and the target bit cleared.
     cleared: [u32; 2],
+    /// Whether the block reported what the stage intends.
+    raised: bool,
 }
 
 /// How an observation ended early.
@@ -297,8 +304,63 @@ enum End {
     /// A pending bit appeared that is not the target's. It is left pending: it has no owner
     /// here, and with every line disabled it cannot run a handler.
     Foreign,
-    /// The block or the NVIC did not return to the baseline.
+    /// The block was lowered but did not return to its baseline.
     Broken(Why),
+    /// The deassert failed: the block gets no further access.
+    Stuck(Why),
+}
+
+/// Ordered: source off, the block's output read back low, and only then the target bit, which
+/// must stay clear. Returns the pending words afterwards. If this fails, nothing more may be
+/// written to the block: its state is not known.
+fn deassert(source: &dyn Source, target: &Target) -> Result<[u32; 2], Why> {
+    source.lower();
+    rp1_proto::barrier();
+    if !poll(SETTLE_US, || source.lowered()) {
+        return Err(Why::new("output_stuck"));
+    }
+    target.clear();
+    // A level that is still high would set the bit again.
+    poll(SETTLE_US, || target.is_in(words(NVIC_ISPR)));
+    let cleared = words(NVIC_ISPR);
+    if target.is_in(cleared) {
+        return Err(Why::new("pending_after"));
+    }
+    Ok(cleared)
+}
+
+/// How a line left its block, printed as `exit=`.
+#[derive(Clone, Copy)]
+enum Exit {
+    /// Only read: the block is exactly as it was found.
+    Untouched,
+    /// Deasserted, cleaned up, and its postconditions hold.
+    Left,
+    /// The step of leaving that failed. After a failed deassert the block is not touched again.
+    Failed(&'static str),
+}
+impl Exit {
+    fn name(self) -> &'static str {
+        match self {
+            Exit::Untouched => "untouched",
+            Exit::Left => "left",
+            Exit::Failed(step) => step,
+        }
+    }
+}
+
+/// The only way out for a block the sweep has written, whatever ended its line.
+fn leave(source: &dyn Source, target: &Target) -> Exit {
+    if let Err(why) = deassert(source, target) {
+        return Exit::Failed(why.reason);
+    }
+    if !source.cleanup() {
+        return Exit::Failed("cleanup");
+    }
+    if !source.settled() || target.is_in(words(NVIC_ISPR)) {
+        return Exit::Failed("postcondition");
+    }
+    Exit::Left
 }
 
 fn observe(source: &dyn Source, target: &Target, o: &mut Observation) -> Result<bool, End> {
@@ -314,7 +376,7 @@ fn observe(source: &dyn Source, target: &Target, o: &mut Observation) -> Result<
         return Err(End::Unmet(Why::new("pending_before")));
     }
 
-    let raised = source.raise(usize::from(o.stage));
+    o.raised = source.raise(usize::from(o.stage));
     rp1_proto::barrier();
     let start = now();
     poll(SETTLE_US, || target.is_in(words(NVIC_ISPR)));
@@ -323,23 +385,11 @@ fn observe(source: &dyn Source, target: &Target, o: &mut Observation) -> Result<
     o.status = source.status();
     o.intstat = words(INTSTAT);
 
-    // Ordered: source off, the block's output read back low, and only then the pending bit.
-    source.lower();
-    rp1_proto::barrier();
-    if !poll(SETTLE_US, || source.lowered()) {
-        return Err(End::Broken(Why::new("output_stuck")));
-    }
-    target.clear();
-    // A level that is still high would set the bit again.
-    poll(SETTLE_US, || target.is_in(words(NVIC_ISPR)));
-    o.cleared = words(NVIC_ISPR);
-    if target.is_in(o.cleared) {
-        return Err(End::Broken(Why::new("pending_after")));
-    }
+    o.cleared = deassert(source, target).map_err(End::Stuck)?;
     if !source.rearm() {
         return Err(End::Broken(Why::new("rearm")));
     }
-    if !raised {
+    if !o.raised {
         return Err(End::NoSource);
     }
     if target.foreign(o.base, o.post) != [0; 2] {
@@ -414,10 +464,18 @@ fn sweep_line(line: &Line) -> Verdict {
             if end.is_some() {
                 break 'trials;
             }
-            let o = &mut observations[taken];
-            (o.stage, o.trial) = (stage as u8, trial as u8);
-            taken += 1;
-            match observe(source, &target, o) {
+            let mut o = Observation {
+                stage: stage as u8,
+                trial: trial as u8,
+                ..Observation::default()
+            };
+            let outcome = observe(source, &target, &mut o);
+            // A trial whose baseline did not hold raised nothing, so there is nothing to show.
+            if !matches!(outcome, Err(End::Unmet(_))) {
+                observations[taken] = o;
+                taken += 1;
+            }
+            match outcome {
                 Ok(pending) => *hit += u8::from(pending),
                 Err(stop) => end = Some(stop),
             }
@@ -427,8 +485,8 @@ fn sweep_line(line: &Line) -> Verdict {
     let last = observations[taken.saturating_sub(1)];
     let mut verdict = match end {
         // Before anything was raised the line is merely not run; later, the block drifted.
-        Some(End::Unmet(why)) if taken <= 1 => Verdict::Skip(why),
-        Some(End::Unmet(why) | End::Broken(why)) => Verdict::Abort(why),
+        Some(End::Unmet(why)) if taken == 0 => Verdict::Skip(why),
+        Some(End::Unmet(why) | End::Broken(why) | End::Stuck(why)) => Verdict::Abort(why),
         Some(End::NoSource) => Verdict::Skip(Why::with("source_fail", last.status)),
         Some(End::Foreign) if target.is_in(last.post) => Verdict::NewPending,
         Some(End::Foreign) => Verdict::OtherLine,
@@ -438,21 +496,19 @@ fn sweep_line(line: &Line) -> Verdict {
             None => Verdict::Abort(Why::new("unstable")),
         },
     };
-    // A block that was only read is left exactly as it was found.
-    if written {
-        let quiet = source.cleanup();
-        let after = if !quiet {
-            Some("cleanup")
-        } else if !source.settled() || target.is_in(words(NVIC_ISPR)) {
-            Some("postcondition")
-        } else if words(NVIC_ISER) != [0; 2] {
-            Some("iser")
-        } else {
-            None
-        };
-        if let (Some(reason), false) = (after, matches!(verdict, Verdict::Abort(_))) {
-            verdict = Verdict::Abort(Why::new(reason));
-        }
+    let exit = match end {
+        Some(End::Stuck(why)) => Exit::Failed(why.reason),
+        _ if written => leave(source, &target),
+        _ => Exit::Untouched,
+    };
+    // The first failure is the one reported; the exit is printed on its own.
+    let failed = match exit {
+        Exit::Failed(step) => Some(step),
+        _ if words(NVIC_ISER) != [0; 2] => Some("iser"),
+        _ => None,
+    };
+    if let (Some(reason), false) = (failed, matches!(verdict, Verdict::Abort(_))) {
+        verdict = Verdict::Abort(Why::new(reason));
     }
 
     mark!(
@@ -464,7 +520,7 @@ fn sweep_line(line: &Line) -> Verdict {
     );
     for o in &observations[..taken] {
         mark!(
-            "IRQ_SWEEP_TRIAL irq={} stage={} trial={} pre={:x},{:x} base={:x},{:x} post={:x},{:x} status={:x} intstat={:x},{:x} us={} clr={:x},{:x}",
+            "IRQ_SWEEP_TRIAL irq={} stage={} trial={} pre={:x},{:x} base={:x},{:x} raised={} post={:x},{:x} status={:x} intstat={:x},{:x} us={} clr={:x},{:x}",
             line.irq,
             stages[usize::from(o.stage)],
             o.trial,
@@ -472,6 +528,7 @@ fn sweep_line(line: &Line) -> Verdict {
             o.pre[1],
             o.base[0],
             o.base[1],
+            u8::from(o.raised),
             o.post[0],
             o.post[1],
             o.status,
@@ -499,11 +556,18 @@ fn sweep_line(line: &Line) -> Verdict {
             }
         }
     };
-    report(line, &verdict, Hits(stages, hits), &shown, &target);
+    report(line, &verdict, exit, Hits(stages, hits), &shown, &target);
     verdict
 }
 
-fn report(line: &Line, verdict: &Verdict, hits: Hits<'_>, o: &Observation, target: &Target) {
+fn report(
+    line: &Line,
+    verdict: &Verdict,
+    exit: Exit,
+    hits: Hits<'_>,
+    o: &Observation,
+    target: &Target,
+) {
     let (result, reason, detail) = match verdict {
         Verdict::Routed(stage) => ("ROUTED", hits.0[*stage], 0),
         Verdict::NotRouted => ("NOT_ROUTED", "-", 0),
@@ -514,12 +578,13 @@ fn report(line: &Line, verdict: &Verdict, hits: Hits<'_>, o: &Observation, targe
     };
     let new = target.foreign(o.base, o.post);
     mark!(
-        "IRQ_SWEEP irq={} block={} result={} reason={} detail={:x} hits={} ispr_before={:08x},{:08x} ispr_after={:08x},{:08x} new={:08x},{:08x} status={:x}",
+        "IRQ_SWEEP irq={} block={} result={} reason={} detail={:x} exit={} hits={} ispr_before={:08x},{:08x} ispr_after={:08x},{:08x} new={:08x},{:08x} status={:x}",
         line.irq,
         line.name,
         result,
         reason,
         detail,
+        exit.name(),
         hits,
         o.base[0],
         o.base[1],
@@ -564,6 +629,7 @@ pub fn run() {
                 report(
                     line,
                     &Verdict::Skip(why),
+                    Exit::Untouched,
                     hits,
                     &idle,
                     &Target::of(line.irq),

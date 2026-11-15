@@ -99,11 +99,10 @@ impl Source for I2c {
         self.disable()
     }
     fn cleanup(&self) -> bool {
-        self.lower();
         // A controller that does not report "disabled" is still put back into reset, as long
-        // as its interrupt enables read 0: their reset values are not known to be 0.
+        // as its mask, wrapper and output read 0: their reset values are not known to be 0.
         self.disable();
-        rd(self.base + i2c::INTR_MASK) == 0 && rd(self.base + WRAPPER) & 1 == 0 && self.reset.hold()
+        rd(self.base + i2c::INTR_MASK) == 0 && self.lowered() && self.reset.hold()
     }
     fn settled(&self) -> bool {
         self.reset.held()
@@ -195,9 +194,8 @@ impl Source for Spi {
         rd(self.base + ssi::SSIENR) & 1 == 0
     }
     fn cleanup(&self) -> bool {
-        self.lower();
         wr(self.base + ssi::SSIENR, 0);
-        rd(self.base + ssi::IMR) == 0 && rd(self.base + WRAPPER) & 1 == 0 && self.reset.hold()
+        rd(self.base + ssi::IMR) == 0 && self.lowered() && self.reset.hold()
     }
     fn settled(&self) -> bool {
         self.reset.held()
@@ -268,12 +266,11 @@ impl Source for Pwm1 {
         true
     }
     fn cleanup(&self) -> bool {
-        self.lower();
         wr(pwm::BASE + pwm::INTE, 0);
         wr(pwm::BASE + pwm::INTR, pwm::INTR_CLEAR);
         rd(pwm::BASE + pwm::GLOBAL_CTRL) & pwm::CHANNELS == 0
             && rd(pwm::BASE + pwm::INTE) == 0
-            && rd(pwm::BASE + pwm::INTF) == 0
+            && self.lowered()
             && pwm::RESET.hold()
     }
     fn settled(&self) -> bool {
@@ -391,7 +388,6 @@ impl Source for Adc {
         empty
     }
     fn cleanup(&self) -> bool {
-        self.lower();
         Self::drain();
         wr(adc::BASE + adc::FCS, 0);
         // Powered down like the driver's `free`. The reset stays released: the name of the
@@ -400,6 +396,7 @@ impl Source for Adc {
         rd(adc::BASE + adc::INTE) == 0
             && rd(adc::BASE + adc::INTF) == 0
             && rd(adc::BASE + adc::CS) & 0x3 == 0
+            && self.lowered()
     }
     fn settled(&self) -> bool {
         rd(adc::BASE + adc::CS) & 0x3 == 0 && rd(adc::BASE + adc::FCS) & 1 == 0
@@ -461,9 +458,9 @@ impl Source for Bank {
     fn rearm(&self) -> bool {
         true
     }
+    // The deassert already cleared the one force bit; nothing else of the bank was written.
     fn cleanup(&self) -> bool {
-        self.lower();
-        rd(self.base + bank::PROC0_INTF) & 1 == 0
+        self.lowered()
     }
     fn settled(&self) -> bool {
         rd(self.base + bank::PROC0_INTE) == 0

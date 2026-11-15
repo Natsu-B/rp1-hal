@@ -268,10 +268,13 @@ in the table; the image fails to build, and the checker fails, if one is added.
 
 For each line: prerequisites, then three trials of each stimulus. A trial checks the block's
 baseline (explicit masks and values), clears the target pending bit, raises the source, reads
-both pending words and the block's status, lowers the source, reads the block's output back
-low, clears the target bit and checks that it stays clear. Then the block's interrupt enables
-must read 0 and the block goes back into reset (the ADC is powered down instead). Every wait is
-at most 1 ms. Pins are only read: the I2C and SPI drivers are never initialised. The sweep
+both pending words and the block's status, then deasserts: lowers the source, reads the block's
+output back low, clears the target bit and checks that it stays clear. How the block is left
+depends only on what was done to it (`exit=` on the result line): a block that was only read
+(a prerequisite failed) gets no further access (`untouched`); a written one, however its line
+ended, is deasserted once more, its interrupt enables and output must read 0, and it goes back
+into reset (the ADC is powered down instead) (`left`); if a deassert fails, the block is not
+touched again and the sweep stops (`exit=` names the failed step). Every wait is at most 1 ms. Pins are only read: the I2C and SPI drivers are never initialised. The sweep
 runs only if both NVIC enable words read 0, and writes none.
 
 Results, one `IRQ_SWEEP irq= block= result= ...` line each, between `IRQ_SWEEP_BEGIN` and
