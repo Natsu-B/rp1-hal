@@ -314,6 +314,11 @@ PWM 出力は `(Channel, Pin)`、ADC と DMA は `Token`。
 
 GPIO の `Pin` と `timer::Alarm` はそれ自体が資源で、解放するドライバを持たない。
 
+割り込みを使うドライバ（`Uart` / `I2c` / `Spi`）の `free` / `abort` は周辺側のマスクを閉じるが、NVIC の線
+（生成資源の `rp1_rt::interrupt::Line`）はドライバが持たないので触らない。ARMv7-M では一度 pending になった割り込みは
+要因が消えても pending のまま残る（DOC）ので、ハンドラが解放後にもう 1 回走りうる（RP1 では HW 未検証）。
+呼び出し側が先に `Line::disable` と `Line::unpend` を行うか、ドライバが無いことをハンドラが許容する。
+
 ```rust
 // 送信が終わらなければ uart が戻るので、待ち直すか、あきらめて abort する。
 let parts = match uart.free() {

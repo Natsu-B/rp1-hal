@@ -501,6 +501,11 @@ where
     /// the disable is requested again and waited for up to 100 ms. [`Error::Timeout`] returns
     /// the driver in [`FreeError`](crate::FreeError) with its interrupt mask unchanged, to
     /// retry or to [`I2c::abort`].
+    ///
+    /// The driver does not own its NVIC line (an `rp1_rt::interrupt::Line` in the generated
+    /// resources): an interrupt that was already pending stays pending after this and after
+    /// [`I2c::abort`], so its handler may run once more. Disable and unpend the line first,
+    /// or write the handler so that it accepts the controller being gone.
     pub fn free(self) -> Result<Parts<N, SDA, SCL>, crate::FreeError<Self, Error>> {
         match release(&mut self.io()) {
             Ok(()) => Ok(self.into_parts()),

@@ -802,6 +802,11 @@ where
     /// [`Error::Timeout`]: the controller stayed busy for 100 ms and nothing was changed;
     /// the driver comes back in [`FreeError`](crate::FreeError) with the error, to retry or to
     /// [`Spi::abort`].
+    ///
+    /// The driver does not own its NVIC line (an `rp1_rt::interrupt::Line` in the generated
+    /// resources): an interrupt that was already pending stays pending after this and after
+    /// [`Spi::abort`], so its handler may run once more. Disable and unpend the line first,
+    /// or write the handler so that it accepts the controller being gone.
     pub fn free(self) -> Result<Parts<N, SCK, MOSI, MISO>, crate::FreeError<Self, Error>> {
         match release(&mut self.io()) {
             Ok(()) => Ok(self.into_parts()),

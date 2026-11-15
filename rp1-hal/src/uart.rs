@@ -416,6 +416,11 @@ where
     /// muxed) pins, ready for [`Parts::init`], which releases the reset. Unread received
     /// characters, and one still arriving, are dropped.
     ///
+    /// The driver does not own its NVIC line (an `rp1_rt::interrupt::Line` in the generated
+    /// resources): an interrupt that was already pending stays pending after this and after
+    /// [`Uart::abort`], so its handler may run once more. Disable and unpend the line first,
+    /// or write the handler so that it accepts the UART being gone.
+    ///
     /// [`Error::Timeout`]: the line is still busy after the TX bound (see
     /// [`Uart::set_read_timeout_us`]), which only a stalled transmitter exceeds, and nothing
     /// was changed; the UART comes
