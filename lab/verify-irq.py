@@ -335,10 +335,14 @@ def hexadecimal(text):
 
 
 def trial_words(trial):
-    """The pending words, status and `raised` of one `IRQ_SWEEP_TRIAL` line, or None."""
-    words = {k: word_pair(trial.get(k)) for k in ("base", "post", "clr")}
+    """The pending words, status and `raised` of one `IRQ_SWEEP_TRIAL` line, or None. The
+    diagnostic fields (`pre`, `intstat`, `us`) are not judged, but a capture without them is
+    incomplete."""
+    words = {k: word_pair(trial.get(k)) for k in ("pre", "base", "post", "intstat", "clr")}
     status, raised = hexadecimal(trial.get("status")), trial.get("raised")
     if None in words.values() or status is None or raised not in ("0", "1"):
+        return None
+    if not re.fullmatch(r"\d+", trial.get("us") or ""):
         return None
     return dict(words, status=status, raised=raised == "1")
 
@@ -360,6 +364,11 @@ def sweep_evidence(record, pres, trials):
     not_run = result == "SKIP" and reason in SKIP_NOT_RUN
     if len(pres) != (0 if not_run else 1):
         fail(f"{len(pres)} IRQ_SWEEP_PRE lines")
+    for pre in pres:
+        # `fs` is `-` (no pins) or `gpio:funcsel` pairs; `found` is the block's identity words.
+        if (not re.fullmatch(r"-|\d+:[0-9a-f]+(,\d+:[0-9a-f]+)*", pre.get("fs") or "")
+                or word_pair(pre.get("found")) is None):
+            fail(f"IRQ_SWEEP_PRE fs={pre.get('fs')} found={pre.get('found')} missing or malformed")
     if result == "ABORT":
         return failures
     # Only a block that was never written may be left untouched, and it must be.
@@ -414,7 +423,10 @@ def sweep_evidence(record, pres, trials):
     elif parsed:
         fail(f"SKIP reason={reason} after {len(parsed)} trials")
 
-    hits = [sum(1 for i, t in enumerate(parsed) if i % len(stages) == s and t["post"] & target)
+    # The image counts a hit only for a trial that ended cleanly (source raised, no foreign bit);
+    # the trial that stopped the line is not counted even when it shows the target bit.
+    hits = [sum(1 for i, t in enumerate(parsed) if i % len(stages) == s and t["post"] & target
+                and t["raised"] and not t["foreign"])
             for s in range(len(stages))]
     claimed = ",".join(f"{stage}:{n}/{SWEEP_TRIALS}" for stage, n in zip(stages, hits))
     if record["hits"] != claimed:
