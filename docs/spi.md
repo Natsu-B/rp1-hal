@@ -117,7 +117,8 @@ the pins on the SPI function, and the token is gone.
 Release (STATIC, host model): `free()` waits for the bus to be idle (TX FIFO empty and not
 BUSY, 100 ms bound), then masks the interrupts, disables the controller and returns `Parts`
 (token and pins, still muxed) for a new `init`. If the controller stays busy it changes
-nothing and returns `(Spi, Error::Timeout)`, so the call can be repeated. `abort()` disables
+nothing and returns `FreeError { driver, error: Error::Timeout }`, so the call can be repeated
+on `driver`. `abort()` disables
 at once: a frame on the wire is cut short and both FIFOs are emptied.
 `Device::free` returns the bus and the chip select as an unconfigured `Pin<CS>` (still driven
 high), so the same pin can make a new `Device` (STATIC: a host compile test).
