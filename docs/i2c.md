@@ -93,8 +93,9 @@ returns `Parts` (token and pins, still muxed) for a new `init`; the reset stays 
 The controller is disabled between transactions, so only a poisoned handle has something
 to wait for: `free()` requests the disable again, waits up to 100 ms, and on `Timeout`
 returns `FreeError { driver, error }` with the interrupt mask unchanged, so the call can be repeated once
-the slave lets go of SCL. `abort()` does not wait: it requests an abort and the disable of
-a controller that is still active, masks the interrupts and returns `Parts`; while the
+the slave lets go of SCL. `abort()` does not wait: it repeats the disable request (a failed
+transaction has already requested the abort, and ABORT is ignored while IC_ENABLE.ENABLE is
+0, DOC), masks the interrupts and returns `Parts`; while the
 controller is still active, `init` fails with `Timeout` and returns the parts again.
 
 STATIC: the polling loop is an `#[isram]` root; `cargo rp1 build` places its callees

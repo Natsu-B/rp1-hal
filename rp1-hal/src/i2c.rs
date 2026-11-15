@@ -366,11 +366,11 @@ fn release(io: &mut impl Io) -> Result<(), Error> {
     mask_interrupts(io);
     Ok(())
 }
-/// [`I2c::abort`]. ABORT only acts on, and is only written to, an enabled controller.
+/// [`I2c::abort`]. Outside a transaction IC_ENABLE.ENABLE is already 0: only a transaction
+/// sets it, and its error path has already written ABORT while it was set. ABORT is ignored
+/// unless ENABLE is set (DOC: DW_apb_i2c IC_ENABLE), and writing both would enable the
+/// controller again, so all that is left to do is to repeat the disable request.
 fn abort(io: &mut impl Io) {
-    if io.read(ENABLE_STATUS) & 1 != 0 {
-        io.write(ENABLE, 3);
-    }
     io.write(ENABLE, 0);
     mask_interrupts(io);
 }
@@ -510,10 +510,11 @@ where
             }),
         }
     }
-    /// [`I2c::free`] without the wait: requests an abort (STOP, TX FIFO flushed) and the
-    /// disable of a controller that is still active, and masks the interrupts. The
-    /// controller may stay active on the bus for as long as a slave holds SCL; until it lets
-    /// go, [`Parts::init`] fails with [`Error::Timeout`] and returns the parts again.
+    /// [`I2c::free`] without the wait: repeats the disable request and masks the interrupts.
+    /// A failed transaction already requested the abort (STOP, TX FIFO flushed), so there is
+    /// no transfer left to cut short. The controller of a poisoned handle may stay active on
+    /// the bus for as long as a slave holds SCL; until it lets go, [`Parts::init`] fails with
+    /// [`Error::Timeout`] and returns the parts again.
     pub fn abort(self) -> Parts<N, SDA, SCL> {
         abort(&mut self.io());
         self.into_parts()
@@ -951,17 +952,14 @@ mod tests {
         assert_eq!((m.mask, m.wrap), (0, 0x8));
     }
     #[test]
-    fn abort_requests_stop_and_disable_without_waiting() {
+    fn abort_repeats_the_disable_without_waiting() {
         let mut m = Model::new(2);
         (m.mask, m.wrap, m.stuck_enabled) = (0x250, 0x9, true);
         let before = m.tick;
         abort(&mut m);
-        assert_eq!(m.enable_writes, [3, 0]);
-        assert_eq!((m.mask, m.wrap, m.tick), (0, 0x8, before));
-        // An idle controller is not enabled just to be aborted.
-        let mut m = Model::new(2);
-        abort(&mut m);
+        // Never ENABLE | ABORT: that would enable the controller again.
         assert_eq!(m.enable_writes, [0]);
+        assert_eq!((m.mask, m.wrap, m.tick), (0, 0x8, before));
     }
 
     /// `?` on an init error inside a function returning the bus error (compile check).

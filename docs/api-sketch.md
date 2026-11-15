@@ -293,7 +293,7 @@ PWM 出力は `(Channel, Pin)`、ADC と DMA は `Token`。
 | ドライバ | `free` が待つもの（失敗） | `abort` で捨てられるもの | `abort` 後の状態 |
 |---|---|---|---|
 | `Uart` | 送信完了 BUSY=0（`Timeout`）。その後 `abort` と同じくこの UART のリセットを掛け、受信途中の文字と未読の受信分を捨てる | TX FIFO の未送信分、未読の受信分、送受信途中の文字（途中で切れるので相手には framing error に見えうる） | この UART だけをリセット保持（RESETS CTRL1 の自分のビット。他の UART と clk_uart には触れない）。割り込みマスク・無効・FIFO 空はリセット値による（DOC）。`init` がリセットを解除する。PL011 は文字の送受信中に LCR_H を変えることを禁じるので、FEN を落として FIFO を空ける方法は使わない |
-| `I2c` | 通常は無し。disable が timeout した（毒された）ハンドルだけ再度 100 ms 待つ（`Timeout`） | 進行中の転送（STOP を要求） | 割り込みマスク、disable 要求済み。スレーブが SCL を離すまでコントローラは動作中のままで、その間の `init` は `Timeout` |
+| `I2c` | 通常は無し。disable が timeout した（毒された）ハンドルだけ再度 100 ms 待つ（`Timeout`） | 無し（転送の失敗時に `transaction` が ABORT を要求済み。`abort` は disable 要求を繰り返すだけ） | 割り込みマスク、disable 要求済み。スレーブが SCL を離すまでコントローラは動作中のままで、その間の `init` は `Timeout` |
 | `Spi` | バスの静止 TFE かつ BUSY=0、100 ms（`Timeout`） | 送出中のフレーム（途中で切れる）と両 FIFO | 割り込みマスク、コントローラ無効、SCK 停止 |
 | `pwm::Channels` / `Output` | clk_pwm が 50 MHz で動作中であること（`Precondition`） | — | 停止を書くが、クロックが止まっていると反映されないことがある（HW 未検証）。`Token::init` がクロックを起動し直して全チャネルを止める |
 | DMA の `Transfer` | — | `cancel()` がブロックの残りを捨てる | 他と違い上限が無い: DMAC がバッファに触れなくなるまで戻らない（[dma.md](dma.md)）。動作中のブロックのバッファを返す `free` は無い |
