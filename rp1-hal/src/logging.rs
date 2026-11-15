@@ -55,7 +55,8 @@ impl Logger {
         crate::uart::start(&mut crate::linux_blocks::Mmio, 0, uart_hz, baud).map_err(|error| {
             match error {
                 crate::uart::Error::Invalid => Error::Invalid,
-                _ => Error::Timeout,
+                crate::uart::Error::Timeout => Error::Timeout,
+                _ => Error::Hardware,
             }
         })?;
         self.ready.store(1, Ordering::Release);
