@@ -153,7 +153,7 @@ STATIC: `ProcNResources.irq` は、宣言でそのコアに割り当てた線だ
 | `pwm0` / `pwm1` | `PWM0: Line<5>` / `PWM1: Line<41>` |
 | `adc` | `ADC_FIFO: Line<52>` |
 
-HW: 上の線の番号は実機で NVIC まで届くと確認された対応に限る（GPIO は両コア）。根拠と、I2C / SPI の
+HW: 上の線の番号は実機で NVIC まで届くと確認された対応に限る（GPIO は両コア。PWM0・TIMER_3 は試作ファームでの確認）。根拠と、I2C / SPI の
 出力イネーブル `+0x108` などの条件は `docs/interrupts.md`。
 STATIC: `rp1-build::board::IRQ_VERIFIED` が生成と ELF 検査の対応表である。
 SPI5 と DMA は IRQ 番号が実機未確認なので `Line` を生成しない。
