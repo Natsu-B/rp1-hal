@@ -110,9 +110,11 @@ RP1 implements 64 NVIC external interrupt slots: the valid local IRQn range is
 61..63 reserved. Generation uses the RP1 MSI-X source ID as the identical local
 NVIC IRQn.
 
-The existing evidence classification remains independent from that numbering
-assumption. UART0 through UART5 are `hardware`/`hardware`; the other named IRQs
-remain `linux`/`static`. Validation requires a positive 32-aligned NVIC slot
+The evidence classification is independent from that numbering assumption.
+UART0 through UART5 are `hardware`/`hardware`. IO_BANK0..2, PWM0/1, I2C0..3,
+SPI0/1/3, TIMER_0..3 and ADC_FIFO keep their Linux-derived number (`linux`) and
+are `hardware` verified: each was seen pending in the NVIC from its own block.
+The other named IRQs remain `linux`/`static`. Validation requires a positive 32-aligned NVIC slot
 count, unique and verified named interrupts, a complete contiguous named range,
 and all named IRQn values to fit both that range and the implemented NVIC slots.
 

@@ -469,17 +469,17 @@ verified = "static"
 name = "IO_BANK0"
 number = 0
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "IO_BANK1"
 number = 1
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "IO_BANK2"
 number = 2
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "AUDIO_IN"
 number = 3
@@ -494,7 +494,7 @@ verified = "static"
 name = "PWM0"
 number = 5
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "ETH"
 number = 6
@@ -504,22 +504,22 @@ verified = "static"
 name = "I2C0"
 number = 7
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "I2C1"
 number = 8
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "I2C2"
 number = 9
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "I2C3"
 number = 10
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "I2C4"
 number = 11
@@ -564,12 +564,12 @@ verified = "static"
 name = "SPI0"
 number = 19
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "SPI1"
 number = 20
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "SPI2"
 number = 21
@@ -579,7 +579,7 @@ verified = "static"
 name = "SPI3"
 number = 22
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "SPI4"
 number = 23
@@ -601,22 +601,22 @@ verified = "hardware"
 name = "TIMER_0"
 number = 26
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "TIMER_1"
 number = 27
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "TIMER_2"
 number = 28
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "TIMER_3"
 number = 29
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "USBHOST0"
 number = 30
@@ -676,7 +676,7 @@ verified = "static"
 name = "PWM1"
 number = 41
 origin = "linux"
-verified = "static"
+verified = "hardware"
 
 [[interrupt]]
 name = "UART1"
@@ -733,7 +733,7 @@ verified = "static"
 name = "ADC_FIFO"
 number = 52
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "PCIE_OUT"
 number = 53

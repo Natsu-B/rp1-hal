@@ -1504,16 +1504,12 @@ pub fn write_coverage(db: &Database, path: &Path) -> Result<()> {
     let hardware_interrupt_count = db
         .interrupts
         .iter()
-        .filter(|interrupt| {
-            interrupt.origin == Origin::Hardware && interrupt.verified == Verification::Hardware
-        })
+        .filter(|interrupt| interrupt.verified == Verification::Hardware)
         .count();
     let linux_interrupt_count = db
         .interrupts
         .iter()
-        .filter(|interrupt| {
-            interrupt.origin == Origin::Linux && interrupt.verified == Verification::Static
-        })
+        .filter(|interrupt| interrupt.origin == Origin::Linux)
         .count();
     let mut text = String::new();
     writeln!(text, "# RP1 regdb coverage\n").unwrap();
@@ -1553,7 +1549,7 @@ pub fn write_coverage(db: &Database, path: &Path) -> Result<()> {
     .unwrap();
     writeln!(
         text,
-        "- interrupt evidence: hardware/hardware {hardware_interrupt_count}; linux/static {linux_interrupt_count}"
+        "- interrupt evidence: hardware-verified {hardware_interrupt_count}; numbered from Linux {linux_interrupt_count}"
     )
     .unwrap();
     writeln!(text, "- clock IDs: {}", db.clocks.len()).unwrap();
