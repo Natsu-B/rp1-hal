@@ -4,13 +4,12 @@ use crate::proof::{
     self, Entries, Shared, Wrapped, expect, mark, now, put, settle, shared, ticker, wait, with,
 };
 use crate::rp1;
-use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
 use rp1_hal::{gpio::PinIrq, log, spi::Spi, timer::Alarm};
 use rp1_proto::link;
 use rp1_rt::{
     Proc0, Proc1, interrupt,
-    interrupt::{CriticalSection, Line, Mutex, free},
+    interrupt::{Line, free},
     pac::dw_ssi::int::TXEI,
     sync::Producer,
 };
@@ -32,11 +31,11 @@ static TICK_JOB: AtomicU8 = AtomicU8::new(TICK_ONLY);
 fn TIMER_1() {
     ticker::on_alarm(&ALARM, 1);
     match TICK_JOB.load(Relaxed) {
-        CHECK_PAIR => free(|cs| {
-            if !pair_consistent(cs) {
+        CHECK_PAIR => {
+            if !pair_consistent() {
                 proof::bump(&TORN);
             }
-        }),
+        }
         LOG_LINE => log_from_handler(),
         _ => {}
     }
@@ -118,22 +117,24 @@ pub fn run(parts: Parts) {
     irq.IO_BANK0.enable();
 }
 
-// The pair a critical section must keep consistent: B is always !A.
-static PAIR_A: Mutex<Cell<u32>> = Mutex::new(Cell::new(0));
-static PAIR_B: Mutex<Cell<u32>> = Mutex::new(Cell::new(!0));
+// The pair a critical section must keep consistent: B is always !A. Two atomics so that the
+// unmasked control is still sound Rust; Relaxed loads and stores are plain LDR/STR, so the pair
+// can tear exactly as two ordinary words would (no LDREX/STREX read-modify-write).
+static PAIR_A: AtomicU32 = AtomicU32::new(0);
+static PAIR_B: AtomicU32 = AtomicU32::new(!0);
 static TORN: AtomicU32 = AtomicU32::new(0);
 
-fn pair_consistent(cs: CriticalSection<'_>) -> bool {
-    PAIR_B.borrow(cs).get() == !PAIR_A.borrow(cs).get()
+fn pair_consistent() -> bool {
+    PAIR_B.load(Relaxed) == !PAIR_A.load(Relaxed)
 }
 /// Updates the pair in two steps, with a gap that an interrupt can fall into.
-fn pair_update(cs: CriticalSection<'_>) {
-    let a = PAIR_A.borrow(cs).get().wrapping_add(1);
-    PAIR_A.borrow(cs).set(a);
+fn pair_update() {
+    let a = PAIR_A.load(Relaxed).wrapping_add(1);
+    PAIR_A.store(a, Relaxed);
     // Not `nomem`: the compiler must then assume the block reads memory, so the store to A
     // stays in front of the gap whatever the optimiser does.
     unsafe { core::arch::asm!(".rept 16", "nop", ".endr", options(nostack)) };
-    PAIR_B.borrow(cs).set(!a);
+    PAIR_B.store(!a, Relaxed);
 }
 
 /// `IRQ_CS`: main updates the pair inside critical sections while a 10 kHz handler checks it.
@@ -151,7 +152,7 @@ fn critical_section_test(line: &mut Line<27>, idle: &mut dyn FnMut()) {
     while (iters < ITERATIONS || ticker::TICKS.count() < HANDLER_RUNS)
         && now().wrapping_sub(start) < 5_000_000
     {
-        free(pair_update);
+        free(|_| pair_update());
         iters += 1;
     }
     let (isr_n, torn) = (ticker::TICKS.count(), TORN.load(Relaxed));
@@ -160,9 +161,9 @@ fn critical_section_test(line: &mut Line<27>, idle: &mut dyn FnMut()) {
     let from = ticker::TICKS.count();
     wait(
         || {
-            // SAFETY: deliberately not a critical section; the pair is two `Cell<u32>` that
-            // only this core touches, and a torn pair is what this control is meant to produce.
-            pair_update(unsafe { CriticalSection::new() });
+            // Deliberately without a critical section: a torn pair is what this control is
+            // meant to produce.
+            pair_update();
             ticker::TICKS.count().wrapping_sub(from) >= HANDLER_RUNS
         },
         1_000_000,
