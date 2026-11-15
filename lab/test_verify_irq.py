@@ -371,6 +371,14 @@ class VerifySweep(unittest.TestCase):
         self.assertFails(v.verify_sweep(sweep_uart0(results={7: unset}))[0], "does not match ispr_after")
         abort = sweep_records(7, "ABORT", "output_stuck", "output_stuck")
         self.assertFails(v.verify_sweep(sweep_uart0(results={7: abort}))[0], "ABORT reason=output_stuck")
+        # A line without both its IRQ and its block is reported, not a crash.
+        nameless = edited(7, lambda l: l.__setitem__(-1, l[-1].replace("irq=7 block=i2c0 ", "")))
+        self.assertFails(v.verify_sweep(sweep_uart0(results={7: nameless}))[0],
+                         "irq=None block=None: not in the sweep table", "irq=7: missing")
+        # `new` follows from the pending words for every result, a SKIP's too.
+        foreign = edited(20, lambda l: l.__setitem__(-1, l[-1].replace("new=00000000,00000000", "new=ffffffff,ffffffff")),
+                         "SKIP", "source_fail")
+        self.assertFails(v.verify_sweep(sweep_uart0(results={20: foreign}))[0], "is not ispr_after minus ispr_before")
 
     def test_every_result_with_its_evidence(self):
         cases = {9: ("OTHER_LINE",), 10: ("NEW_PENDING",), 20: ("SKIP", "source_fail"),

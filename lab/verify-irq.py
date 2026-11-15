@@ -307,7 +307,7 @@ def sweep_line(fields):
               "new": fields.get("new"), "status": fields.get("status")}
     if irq in SWEEP_FORBIDDEN:
         return [f"irq={irq}: must not be swept"], record
-    if SWEEP_TABLE.get(irq) != block:
+    if (irq, block) not in SWEEP_TABLE.items():
         return [f"irq={irq} block={block}: not in the sweep table"], record
     if result not in SWEEP_RESULTS:
         return [f"irq={irq}: result={result}"], record
@@ -324,6 +324,9 @@ def sweep_line(fields):
         failures.append(f"irq={irq}: ABORT reason={fields.get('reason')}")
     if result not in ("SKIP", "ABORT") and hexadecimal(fields["detail"]) != 0:
         failures.append(f"irq={irq}: result={result} detail={fields['detail']}")
+    # The image prints `new` from the two pending words whatever the result.
+    if new != after & ~before & ~target:
+        failures.append(f"irq={irq}: new={fields.get('new')} is not ispr_after minus ispr_before")
     # The words must say what the result says.
     if result in ("ROUTED", "NOT_ROUTED", "OTHER_LINE", "NEW_PENDING"):
         if before & target:
@@ -332,8 +335,6 @@ def sweep_line(fields):
             failures.append(f"irq={irq}: result={result} does not match ispr_after")
         if bool(new) != (result in ("OTHER_LINE", "NEW_PENDING")):
             failures.append(f"irq={irq}: result={result} does not match new={fields.get('new')}")
-        if new != after & ~before & ~target:
-            failures.append(f"irq={irq}: new={fields.get('new')} is not ispr_after minus ispr_before")
     return failures, record
 
 
@@ -548,7 +549,7 @@ def verify_sweep(text, nonce=None):
             pres = [f for n, f in pending if n == "IRQ_SWEEP_PRE"]
             record["funcsel"] = pres[0].get("fs") if pres else None
             record["trials"] = [f for n, f in pending if n == "IRQ_SWEEP_TRIAL"]
-            if SWEEP_TABLE.get(record["irq"]) == record["block"] and record["result"] in SWEEP_RESULTS:
+            if (record["irq"], record["block"]) in SWEEP_TABLE.items() and record["result"] in SWEEP_RESULTS:
                 failures += [f"UART0 IRQ_SWEEP {f}" for f in sweep_evidence(record, pres, record["trials"])]
             pending = []
             records[record["irq"]] = record
