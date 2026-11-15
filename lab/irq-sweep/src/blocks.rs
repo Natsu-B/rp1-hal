@@ -1,7 +1,7 @@
 //! How each swept block raises and lowers its interrupt output without using a pin: the
 //! per-line contracts of the sweep. Offsets are relative to the block's base address.
 use crate::reg::{CLR, Reset, SET, clear, poll, rd, set, wr};
-use crate::sweep::{Check, Found, Pin, Rule, SETTLE_US, STEP_US, Source, Why};
+use crate::sweep::{Check, Found, Pin, Refusal, Rule, SETTLE_US, STEP_US, Source, Why};
 
 /// The RP1 wrapper around a DesignWare block: bit 0 lets its interrupt out.
 const WRAPPER: usize = 0x108;
@@ -44,22 +44,20 @@ impl Source for I2c {
     fn stages(&self) -> &'static [&'static str] {
         &["wrap0", "wrap1"]
     }
-    fn prepare(&self) -> Result<Found, Why> {
+    // The reset is cycled first, so every refusal has touched the block.
+    fn prepare(&self) -> Result<Found, Refusal> {
         if !self.reset.cycle() {
-            return Err(Why::new("reset"));
+            return Err(Refusal::Touched(Why::new("reset")));
         }
         let found = [rd(self.base + WRAPPER), rd(self.base + i2c::COMP_TYPE)];
         if found[1] != i2c::DESIGNWARE {
-            // Nothing was written to the block: back into reset, as it will stay.
-            self.reset.hold();
-            return Err(Why::with("not_alive", found[1]));
+            return Err(Refusal::Touched(Why::with("not_alive", found[1])));
         }
         wr(self.base + i2c::INTR_MASK, 0);
         clear(self.base + WRAPPER, 1);
         // The controller only takes its configuration while it is disabled.
         if !self.disable() {
-            self.reset.hold();
-            return Err(Why::new("busy"));
+            return Err(Refusal::Touched(Why::new("busy")));
         }
         rd(self.base + i2c::CLR_INTR);
         wr(self.base + i2c::CON, i2c::CON_MASTER);
@@ -141,17 +139,17 @@ impl Source for Spi {
     fn stages(&self) -> &'static [&'static str] {
         &["wrap0", "wrap1"]
     }
-    fn prepare(&self) -> Result<Found, Why> {
+    // As for I2C, every refusal comes after the reset was cycled.
+    fn prepare(&self) -> Result<Found, Refusal> {
         if !self.reset.cycle() {
-            return Err(Why::new("reset"));
+            return Err(Refusal::Touched(Why::new("reset")));
         }
         let found = [rd(self.base + WRAPPER), rd(self.base + ssi::VERSION_ID)];
         wr(self.base + ssi::SSIENR, 0);
         // The block answers if a writable register keeps a value (the driver's probe).
         wr(self.base + ssi::TXFTLR, 1);
         if rd(self.base + ssi::TXFTLR) != 1 {
-            self.reset.hold();
-            return Err(Why::with("not_alive", found[1]));
+            return Err(Refusal::Touched(Why::with("not_alive", found[1])));
         }
         wr(self.base + ssi::IMR, 0);
         clear(self.base + WRAPPER, 1);
@@ -236,10 +234,10 @@ impl Source for Pwm1 {
     fn stages(&self) -> &'static [&'static str] {
         &["force"]
     }
-    fn prepare(&self) -> Result<Found, Why> {
+    fn prepare(&self) -> Result<Found, Refusal> {
         // Out of reset only if the driver's `init` ran at startup.
         if pwm::RESET.held() {
-            return Err(Why::new("not_initialised"));
+            return Err(Refusal::Untouched(Why::new("not_initialised")));
         }
         wr(pwm::BASE + pwm::INTR, pwm::INTR_CLEAR);
         Ok([0; 2])
@@ -330,15 +328,16 @@ impl Source for Adc {
     fn stages(&self) -> &'static [&'static str] {
         &["force", "real"]
     }
-    fn prepare(&self) -> Result<Found, Why> {
+    fn prepare(&self) -> Result<Found, Refusal> {
         // Powered and ready only if the driver's `init` ran at startup.
         let cs = rd(adc::BASE + adc::CS);
         if cs & (adc::CS_EN | adc::CS_READY) != adc::CS_EN | adc::CS_READY {
-            return Err(Why::with("not_initialised", cs));
+            return Err(Refusal::Untouched(Why::with("not_initialised", cs)));
         }
         wr(adc::BASE + adc::INTF, 0);
         if !Self::drain() {
-            return Err(Why::with("fifo", rd(adc::BASE + adc::FCS)));
+            let fcs = rd(adc::BASE + adc::FCS);
+            return Err(Refusal::Touched(Why::with("fifo", fcs)));
         }
         Ok([0; 2])
     }
@@ -428,12 +427,13 @@ impl Source for Bank {
     fn stages(&self) -> &'static [&'static str] {
         &["force"]
     }
-    fn prepare(&self) -> Result<Found, Why> {
+    // Reads only: a bank in use is left exactly as it was found.
+    fn prepare(&self) -> Result<Found, Refusal> {
         let used = [bank::PROC0_INTE, bank::PROC0_INTF, bank::PROC0_INTS]
             .iter()
             .fold(0, |used, offset| used | rd(self.base + offset));
         if used != 0 {
-            return Err(Why::with("proc0_in_use", used));
+            return Err(Refusal::Untouched(Why::with("proc0_in_use", used)));
         }
         Ok([0; 2])
     }

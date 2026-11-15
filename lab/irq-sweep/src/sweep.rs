@@ -37,6 +37,15 @@ impl Why {
     }
 }
 
+/// Why `prepare` refused a line, and whether it had written the block by then: that decides
+/// how the block is left.
+pub enum Refusal {
+    /// Only reads happened. The block is left exactly as it was found, without another access.
+    Untouched(Why),
+    /// The block was written. It leaves like a swept block: the ordered deassert, then `cleanup`.
+    Touched(Why),
+}
+
 /// A register of the block that must read `expect` under `mask` before a stimulus.
 pub struct Check {
     offset: usize,
@@ -108,7 +117,7 @@ pub trait Source: Sync {
     /// The stimuli, each run from the baseline.
     fn stages(&self) -> &'static [&'static str];
     /// Checks the prerequisites and brings the block to its baseline, the source lowered.
-    fn prepare(&self) -> Result<Found, Why>;
+    fn prepare(&self) -> Result<Found, Refusal>;
     fn baseline(&self) -> &'static [Check];
     /// Raises the source; returns whether the block reports what this stage intends.
     fn raise(&self, stage: usize) -> bool;
@@ -384,6 +393,8 @@ fn sweep_line(line: &Line) -> Verdict {
     let mut funcsels = [0; MAX_PINS];
     let mut found = [0; 2];
     let mut end = None;
+    // Whether anything was written to the block: only then does it need leaving.
+    let mut written = false;
 
     for (pin, funcsel) in source.pins().iter().zip(&mut funcsels) {
         *funcsel = pin.funcsel();
@@ -391,11 +402,11 @@ fn sweep_line(line: &Line) -> Verdict {
             end = Some(End::Unmet(Why::with("pin_routed", u32::from(pin.gpio))));
         }
     }
-    let prepared = end.is_none();
-    if prepared {
+    if end.is_none() {
         match source.prepare() {
-            Ok(values) => found = values,
-            Err(why) => end = Some(End::Unmet(why)),
+            Ok(values) => (found, written) = (values, true),
+            Err(Refusal::Untouched(why)) => end = Some(End::Unmet(why)),
+            Err(Refusal::Touched(why)) => (end, written) = (Some(End::Unmet(why)), true),
         }
     }
     'trials: for trial in 0..TRIALS {
@@ -427,8 +438,8 @@ fn sweep_line(line: &Line) -> Verdict {
             None => Verdict::Abort(Why::new("unstable")),
         },
     };
-    // A block that was never prepared is left exactly as it was found.
-    if prepared {
+    // A block that was only read is left exactly as it was found.
+    if written {
         let quiet = source.cleanup();
         let after = if !quiet {
             Some("cleanup")
