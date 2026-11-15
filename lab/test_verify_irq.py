@@ -265,7 +265,8 @@ def sweep_records(irq, result="ROUTED", reason=None, exit_=None, detail=None):
         exit_ = "untouched" if reason in v.SKIP_UNTOUCHED + v.SKIP_NOT_RUN else "left"
     detail = detail or (f"{shown['status']:x}" if reason == "source_fail" else "0")
     new = shown["post"] & ~target
-    lines = [] if reason in v.SKIP_NOT_RUN else [f"IRQ_SWEEP_PRE irq={irq} fs=8:1f,9:1f found=0,44570140"]
+    fs = "8:1f,9:1f" if v.SWEEP_TABLE[irq].rstrip("0123456789") in v.SWEEP_PINNED else "-"
+    lines = [] if reason in v.SKIP_NOT_RUN else [f"IRQ_SWEEP_PRE irq={irq} fs={fs} found=0,44570140"]
     lines += [f"IRQ_SWEEP_TRIAL irq={irq} stage={t['stage']} trial={t['trial']} pre=0,0 base=0,0 "
               f"raised={t['raised']} post={pair(t['post'])} status={t['status']:x} intstat=0,0 us=1 clr=0,0"
               for t in trials]
@@ -373,7 +374,7 @@ class VerifySweep(unittest.TestCase):
 
     def test_every_result_with_its_evidence(self):
         cases = {9: ("OTHER_LINE",), 10: ("NEW_PENDING",), 20: ("SKIP", "source_fail"),
-                 22: ("SKIP", "pin_routed"), 52: ("SKIP", "not_alive"), 2: ("SKIP", "baseline")}
+                 22: ("SKIP", "pin_routed"), 52: ("SKIP", "not_initialised"), 2: ("SKIP", "baseline")}
         self.assertEqual(v.verify_sweep(sweep_uart0(results=cases))[0], [])
         blocked = {irq: ("SKIP", "after_abort", None, "16") for irq in (52, 41, 1, 2)}
         found = v.verify_sweep(sweep_uart0(results={22: ("ABORT", "rearm"), **blocked}))[0]
@@ -396,6 +397,41 @@ class VerifySweep(unittest.TestCase):
         # An enabled line at BEGIN blocks every line as irq_enabled.
         text = sweep_uart0(results=enabled).replace(f"iser={ZERO} ispr", "iser=00000080,00000000 ispr", 1)
         self.assertEqual([f for f in v.verify_sweep(text)[0] if "a line was enabled" not in f], [])
+
+    def test_skip_reasons_belong_to_the_block(self):
+        # Round 4: every block "proc0_in_use" passed, though only an IO bank can say it.
+        in_use = {irq: ("SKIP", "proc0_in_use") for irq in v.SWEEP_TABLE}
+        found = v.verify_sweep(sweep_uart0(results=in_use))[0]
+        for irq in (7, 9, 10, 20, 22, 52, 41):
+            self.assertTrue(any(f"irq={irq}: SKIP reason=proc0_in_use is not a reason the image gives" in f
+                                for f in found), irq)
+        self.assertFalse(any(f"irq={irq}:" in f for f in found for irq in (1, 2)), found)
+        for irq, reason in ((52, "pin_routed"), (1, "not_initialised"), (20, "busy"), (41, "fifo")):
+            self.assertFails(v.verify_sweep(sweep_uart0(results={irq: (("SKIP", reason))}))[0],
+                             f"irq={irq}: SKIP reason={reason} is not a reason")
+        # Each kind's own refusals pass.
+        own = {7: ("SKIP", "busy"), 20: ("SKIP", "not_alive"), 52: ("SKIP", "fifo"), 41: ("SKIP", "not_initialised")}
+        self.assertEqual(v.verify_sweep(sweep_uart0(results=own))[0], [])
+
+    def test_impossible_payloads(self):
+        # Round 4: values the image cannot print.
+        garbage = edited(1, lambda l: l.__setitem__(-1, l[-1].replace("status=0", "status=garbage")), "SKIP", "proc0_in_use")
+        self.assertFails(v.verify_sweep(sweep_uart0(results={1: garbage}))[0], "status=garbage is not a 32-bit word")
+        new = edited(1, lambda l: l.__setitem__(-1, l[-1].replace(f"new={pair(0, 8)}", "new=00000100,00000000")),
+                     "SKIP", "proc0_in_use")
+        self.assertFails(v.verify_sweep(sweep_uart0(results={1: new}))[0], "status or new is not 0")
+        signed = edited(7, lambda l: l.__setitem__(-1, l[-1].replace("detail=0", "detail=-1")))
+        self.assertFails(v.verify_sweep(sweep_uart0(results={7: signed}))[0], "detail=-1 or status")
+        detail = edited(7, lambda l: l.__setitem__(-1, l[-1].replace("detail=0", "detail=5")))
+        self.assertFails(v.verify_sweep(sweep_uart0(results={7: detail}))[0], "result=ROUTED detail=5")
+        wide = edited(7, lambda l: l.__setitem__(0, l[0].replace("fs=8:1f,9:1f", "fs=0:20,1:1f,8:1f,9:1f")))
+        self.assertFails(v.verify_sweep(sweep_uart0(results={7: wide}))[0], "IRQ_SWEEP_PRE fs=0:20")
+        pinless = edited(52, lambda l: l.__setitem__(0, l[0].replace("fs=-", "fs=8:1f")))
+        self.assertFails(v.verify_sweep(sweep_uart0(results={52: pinless}))[0], "IRQ_SWEEP_PRE fs=8:1f")
+        # A malformed or missing IRQ is a failure, not a crash.
+        for old, new_ in (("irq=7 block", "irq=bogus block"), ("irq=7 block", "block")):
+            found = v.verify_sweep(sweep_changed(f"IRQ_SWEEP {old}", f"IRQ_SWEEP {new_}"))[0]
+            self.assertTrue(found and any("irq=7: missing" in f for f in found), found)
 
     def test_impossible_trials_and_fields(self):
         # A seventh trial (trial=3) after six clean misses: the image runs trials 0..2 only.
@@ -525,7 +561,7 @@ class VerifySweep(unittest.TestCase):
         late[1:1] = sweep_records(7)[1:2]
         self.assertFails(v.verify_sweep(sweep_uart0(results={7: late}))[0], "SKIP reason=baseline after 1 trials")
         invented = sweep_records(7, "SKIP", "tired")
-        self.assertFails(v.verify_sweep(sweep_uart0(results={7: invented}))[0], "not a reason of the image")
+        self.assertFails(v.verify_sweep(sweep_uart0(results={7: invented}))[0], "not a reason the image gives")
         orphan = sweep_changed(f"IRQ_SWEEP_END lines=9", f"{sweep_records(7)[1]} nonce={NONCE}\r\nIRQ_SWEEP_END lines=9")
         self.assertFails(v.verify_sweep(orphan)[0], "without their result")
 
