@@ -248,12 +248,18 @@ marker line, the same nonce on the Linux console, `usb_pd_init status 3` and `ma
 in that boot's banner, and the Linux-side results (`--proof-only` leaves the SHM regression
 out). It prints `IRQ_PROOF_VERDICT=PASS|FAIL`. Host tests: `python3 lab/test_verify_irq.py`.
 
-## Interrupt sweep image (STATIC / HW 未検証)
+## Interrupt sweep image (HW 2026-11-15)
 
 `irq-sweep` answers one question for each line whose IRQ number is only an estimate: which NVIC
-pending bit of proc0 does the block's interrupt output raise? It has been built and checked
-(`cargo rp1 check`); it has not run on hardware. No line is enabled, so no handler runs; the
-image has no handlers at all.
+pending bit of proc0 does the block's interrupt output raise? No line is enabled, so no handler
+runs; the image has no handlers at all.
+
+HW (2026-11-15, 2 boots, identical results): all 9 lines ROUTED to the IRQ of the table
+below, on the image as first built. The five DesignWare blocks pended only with the wrapper open
+(`wrap0:0/3,wrap1:3/3`), the ADC with both stimuli (`force:3/3,real:3/3`), PWM1 and both IO
+banks when forced (`force:3/3`); no other pending bit appeared, and the sweep took about 0.7 s.
+Later changes to the image and its checker (the stricter verdict below, the reset and cleanup
+handling) are STATIC until the next run.
 
 | IRQ | Block | Stimulus | Runs only if |
 |---|---|---|---|
@@ -274,7 +280,8 @@ depends only on what was done to it (`exit=` on the result line): a block that w
 (a prerequisite failed) gets no further access (`untouched`); a written one, however its line
 ended, is deasserted once more, its interrupt enables and output must read 0, and it goes back
 into reset (the ADC is powered down instead) (`left`); if a deassert fails, the block is not
-touched again and the sweep stops (`exit=` names the failed step). Every wait is at most 1 ms. Pins are only read: the I2C and SPI drivers are never initialised. The sweep
+touched again and the sweep stops (`exit=` names the failed step); a block whose reset does
+not complete is treated the same way. Every wait is at most 1 ms. Pins are only read: the I2C and SPI drivers are never initialised. The sweep
 runs only if both NVIC enable words read 0, and writes none.
 
 Results, one `IRQ_SWEEP irq= block= result= ...` line each, between `IRQ_SWEEP_BEGIN` and
@@ -289,7 +296,7 @@ precede each result. A result says where the block's output is wired, nothing ab
 Ownership: the swept blocks are declared for proc0, so Linux's nodes are disabled, and the
 sweep runs before the image brings the PCIe endpoint up. `rp1boot` starts Linux right after
 RP1, but until the link is up Linux cannot reach an RP1 register. The price is that the sweep
-(about half a second, mostly log output) must end before Linux releases PERSTn.
+(about 0.7 s) must end before Linux releases PERSTn.
 
 Build a boot set with `FIRMWARE_PKG=irq-sweep bash lab/build-rp1boot.sh`. On the Linux console
 run `lab/check-sweep.sh` (the boot value and the swept blocks' device-tree status). The host
@@ -299,14 +306,15 @@ decides with
 python3 lab/verify-irq.py --sweep --uart0 UART0_CAPTURE [--uart10 UART10_CAPTURE] [--json OUT]
 ```
 
-which checks one boot (the last, or `--nonce HEX`): the frame, one result per table line, no
-duplicate, no line of another boot, both enable words 0, and `IRQ_SWEEP_END` before a
-`p0 pcie Ok` line with a fresh PERSTn wait. Each result must be borne out by its PRE and TRIAL
-records: the trials the image runs for that result, in order, the source raised (`raised=1` and
-its status bit), the target bit clear at the baseline and after each deassert, the hit counts,
-the routed stage, the summary's words, and `exit=` (`untouched` exactly when the block was only
-read). It prints `IRQ_SWEEP_VERDICT=PASS|FAIL`; PASS means the sweep ran by its contract,
-whatever it found. `--json` writes the per-line results.
+which checks one boot (the last, or `--nonce HEX`). PASS means every table line was routed by
+its expected stimulus: `result=ROUTED exit=left` with `wrap0:0/3,wrap1:3/3` for I2C and SPI,
+`force:3/3,real:3/3` for the ADC and `force:3/3` for PWM1 and the banks, borne out by its
+`IRQ_SWEEP_TRIAL` lines (all trials in order, the source raised, the target bit clear before the
+stimulus and after the deassert, no other new pending bit, the same hit counts). Any other result
+(`NOT_ROUTED`, `OTHER_LINE`, `NEW_PENDING`, `SKIP`, `ABORT`) fails and is named. The frame must
+hold as well: lines in table order with the boot's nonce, both enable words 0, and
+`IRQ_SWEEP_END` before a `p0 pcie Ok` line with a fresh PERSTn wait. It prints
+`IRQ_SWEEP_VERDICT=PASS|FAIL`; `--json` writes the per-line results.
 
 ## PWM loopback diagnostic (STATIC / HW 未検証)
 
