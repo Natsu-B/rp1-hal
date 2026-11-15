@@ -39,8 +39,20 @@ const fn reset_bit(n: u8) -> u32 {
 }
 /// Bound of the two waits of the bring-up (reset done, transmitter idle).
 const START_TIMEOUT_US: u32 = 10_000;
-/// [`Uart::set_timeout_us`] until changed. A full TX FIFO drains in 2.9 ms at 115200 baud.
-pub const DEFAULT_TIMEOUT_US: u32 = 100_000;
+/// [`Uart::set_read_timeout_us`] until changed.
+pub const DEFAULT_READ_TIMEOUT_US: u32 = 100_000;
+/// Bit times for a full TX FIFO to leave the line: 32 queued characters and the one being
+/// shifted, 10 bits each at 8N1.
+const FULL_FIFO_BITS: u64 = 330;
+
+/// Bound of the TX waits (room in the FIFO, drain) at `baud`. Without flow control the
+/// transmitter drains at the baud rate whatever the peer does, so the bound follows from it:
+/// twice a full FIFO, plus 1 ms for a core stalled by the other core or a handler. A bound
+/// set by the caller for reads would cut `free` short and make its `abort` fallback truncate.
+fn tx_bound_us(baud: u32) -> u32 {
+    let full_fifo_us = (FULL_FIFO_BITS * 1_000_000).div_ceil(u64::from(baud));
+    u32::try_from(2 * full_fifo_us + 1_000).unwrap_or(u32::MAX)
+}
 
 mod sealed {
     pub trait Pin {}
@@ -114,7 +126,8 @@ pub struct Token<const N: u8> {
 pub struct Uart<const N: u8, const TX: u8, const RX: u8> {
     _tx: Pin<TX, Alternate>,
     _rx: Pin<RX, Alternate>,
-    timeout_us: u32,
+    read_timeout_us: u32,
+    tx_bound_us: u32,
 }
 /// [`Token::init`] failed: the error, and the token and pins back (unchanged) as the same
 /// [`Parts`] that [`Uart::free`] returns, ready for a retry.
@@ -187,7 +200,8 @@ impl<const N: u8> Token<N> {
             Ok(()) => Ok(Uart {
                 _tx: tx.into_alternate(<Pin<TX> as Tx<N>>::FUNC, IDLE_PAD, TX_PAD),
                 _rx: rx.into_alternate(<Pin<RX> as Rx<N>>::FUNC, IDLE_PAD, IDLE_PAD),
-                timeout_us: DEFAULT_TIMEOUT_US,
+                read_timeout_us: DEFAULT_READ_TIMEOUT_US,
+                tx_bound_us: tx_bound_us(baud),
             }),
             Err(error) => Err(InitError {
                 error,
@@ -359,13 +373,12 @@ pub fn divisors(clock_hz: u32, baud: u32) -> Result<(u32, u32), Error> {
     Ok(((scaled / 64) as u32, (scaled % 64) as u32))
 }
 impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
-    /// Bound, in microseconds of the 1 MHz timer, of each wait of this driver: for room in
-    /// the TX FIFO ([`Uart::write`]), for a received byte ([`embedded_io::Read`]) and for the
-    /// transmitter to drain ([`Uart::flush`]). [`DEFAULT_TIMEOUT_US`] after `init`. A full TX
-    /// FIFO needs 330 bit times to drain (32 characters and the one being shifted), which is
-    /// longer than the default below 3300 baud.
-    pub fn set_timeout_us(&mut self, timeout_us: u32) {
-        self.timeout_us = timeout_us;
+    /// How long, in microseconds of the 1 MHz timer, [`embedded_io::Read`] waits for the peer
+    /// to send a byte. [`DEFAULT_READ_TIMEOUT_US`] after `init`; 0 makes a read a poll. The TX
+    /// waits ([`Uart::write`], [`Uart::flush`], [`Uart::free`]) are not affected: they are
+    /// bounded by twice the time a full TX FIFO takes at the configured baud rate, plus 1 ms.
+    pub fn set_read_timeout_us(&mut self, timeout_us: u32) {
+        self.read_timeout_us = timeout_us;
     }
     /// Queues a prefix of `bytes` for transmission and returns its length, as
     /// [`embedded_io::Write::write`]: waits for room in the TX FIFO for the first byte, then
@@ -373,7 +386,7 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     /// queued, so the same `bytes` can be written again without duplicating data. Queued is
     /// not transmitted: [`Uart::flush`] waits for the line.
     pub fn write(&mut self, bytes: &[u8]) -> Result<usize, Error> {
-        write(&mut Mmio, N, bytes, self.timeout_us)
+        write(&mut Mmio, N, bytes, self.tx_bound_us)
     }
     /// The next received character, `None` if the RX FIFO is empty. A character received with
     /// an error is dropped and the error returned in its place.
@@ -383,7 +396,7 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     /// Waits until everything queued has left the shift register (BUSY clear).
     /// [`Error::Timeout`] leaves the rest in transmission; flushing again continues the wait.
     pub fn flush(&mut self) -> Result<(), Error> {
-        wait(&mut Mmio, base(N) + FR, FR_BUSY, 0, self.timeout_us)
+        wait(&mut Mmio, base(N) + FR, FR_BUSY, 0, self.tx_bound_us)
     }
     /// Unmasks the receive interrupts: RX FIFO at its trigger level, and receive timeout so a
     /// short message is not left below the level. The NVIC line is `irq.UARTn` in the generated
@@ -421,7 +434,9 @@ where
     /// muxed) pins, ready for [`Parts::init`], which releases the reset. Unread received
     /// characters, and one still arriving, are dropped.
     ///
-    /// [`Error::Timeout`]: the line is still busy and nothing was changed; the UART comes
+    /// [`Error::Timeout`]: the line is still busy after the TX bound (see
+    /// [`Uart::set_read_timeout_us`]), which only a stalled transmitter exceeds, and nothing
+    /// was changed; the UART comes
     /// back in [`FreeError`](crate::FreeError) with the error, to retry (transmission went on
     /// meanwhile) or to [`Uart::abort`].
     ///
@@ -432,7 +447,7 @@ where
     /// }
     /// ```
     pub fn free(self) -> Result<Parts<N, TX, RX>, crate::FreeError<Self, Error>> {
-        match release(&mut Mmio, N, self.timeout_us) {
+        match release(&mut Mmio, N, self.tx_bound_us) {
             Ok(()) => Ok(self.into_parts()),
             Err(error) => Err(crate::FreeError {
                 driver: self,
@@ -474,14 +489,14 @@ impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Write for Uart<N, TX,
         Uart::flush(self)
     }
 }
-/// One byte per call. [`Error::Timeout`] if none arrives within [`Uart::set_timeout_us`];
+/// One byte per call. [`Error::Timeout`] if none arrives within [`Uart::set_read_timeout_us`];
 /// receive errors as in [`Uart::read_byte`].
 impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Read for Uart<N, TX, RX> {
     fn read(&mut self, b: &mut [u8]) -> Result<usize, Error> {
         let Some(first) = b.first_mut() else {
             return Ok(0);
         };
-        *first = read_wait(&mut Mmio, N, self.timeout_us)?;
+        *first = read_wait(&mut Mmio, N, self.read_timeout_us)?;
         Ok(1)
     }
 }
@@ -501,6 +516,8 @@ mod tests {
         writes: Vec<(usize, u32)>,
         rx: VecDeque<u32>,
         busy: bool,
+        /// `busy` clears once `elapsed_us` reaches this time.
+        drain_at: Option<u64>,
         receiving: bool,
         /// Free TX FIFO slots, and what was pushed.
         tx_room: usize,
@@ -519,6 +536,7 @@ mod tests {
                 writes: Vec::new(),
                 rx: VecDeque::new(),
                 busy: false,
+                drain_at: None,
                 receiving: false,
                 tx_room: 32,
                 tx: Vec::new(),
@@ -533,6 +551,9 @@ mod tests {
     impl Registers for Fake {
         fn read(&mut self, address: usize) -> u32 {
             if address == base(N) + FR {
+                if self.drain_at.is_some_and(|at| at <= self.elapsed_us) {
+                    self.busy = false;
+                }
                 if let Some((_, data)) = self.rx_later.take_if(|(at, _)| *at <= self.elapsed_us) {
                     self.rx.push_back(data);
                 }
@@ -746,6 +767,22 @@ mod tests {
         set_mask(&mut f, N, int::TX, true);
         set_mask(&mut f, N, int::RX | int::RT, false);
         assert_eq!(f.regs[&(base(N) + IMSC)], int::TX);
+    }
+    /// The TX bound covers a full FIFO at the slowest baud rate with a divisor and does not
+    /// depend on the read timeout.
+    #[test]
+    fn the_tx_bound_follows_the_baud_rate() {
+        assert_eq!(tx_bound_us(115_200), 2 * 2_865 + 1_000);
+        assert_eq!(tx_bound_us(1_000_000), 2 * 330 + 1_000);
+        assert_eq!(tx_bound_us(300), 2 * 1_100_000 + 1_000);
+        let slowest = 50_000_000 * 4 / (65535 * 64 + 63) + 1;
+        assert!(divisors(50_000_000, slowest).is_ok());
+        assert!(tx_bound_us(slowest) > 2 * 330 * 1_000_000 / slowest);
+        // A full FIFO at 115200 baud drains within the bound.
+        let mut f = Fake::new();
+        f.busy = true;
+        f.drain_at = Some(2_865);
+        assert_eq!(release(&mut f, N, tx_bound_us(115_200)), Ok(()));
     }
     #[test]
     fn baud_divisor_and_invalid_inputs() {
