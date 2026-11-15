@@ -99,8 +99,9 @@ pub struct VerifiedIrq {
     pub owner: IrqOwner,
 }
 
-/// HW: verified IRQ lines; UART0 is reserved for logging.
-/// I2C0/2/3, SPI1/3/5, PWM1, DMA and ADC are omitted: their IRQ numbers lack HW proof.
+/// HW: IRQ lines seen pending in the NVIC from their block; only these get a `Line` resource
+/// and may carry a handler. UART0 is reserved for logging. SPI5 (24) and DMA (40) have no
+/// proof yet. IO_BANK1/2 (1/2) are routed but their pins are Linux's, so nothing owns them.
 pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
     VerifiedIrq {
         name: "IO_BANK0",
@@ -113,14 +114,39 @@ pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
         owner: IrqOwner::Instance(BlockId::Pwm0),
     },
     VerifiedIrq {
+        name: "I2C0",
+        irq: 7,
+        owner: IrqOwner::Instance(BlockId::I2c0),
+    },
+    VerifiedIrq {
         name: "I2C1",
         irq: 8,
         owner: IrqOwner::Instance(BlockId::I2c1),
     },
     VerifiedIrq {
+        name: "I2C2",
+        irq: 9,
+        owner: IrqOwner::Instance(BlockId::I2c2),
+    },
+    VerifiedIrq {
+        name: "I2C3",
+        irq: 10,
+        owner: IrqOwner::Instance(BlockId::I2c3),
+    },
+    VerifiedIrq {
         name: "SPI0",
         irq: 19,
         owner: IrqOwner::Instance(BlockId::Spi0),
+    },
+    VerifiedIrq {
+        name: "SPI1",
+        irq: 20,
+        owner: IrqOwner::Instance(BlockId::Spi1),
+    },
+    VerifiedIrq {
+        name: "SPI3",
+        irq: 22,
+        owner: IrqOwner::Instance(BlockId::Spi3),
     },
     VerifiedIrq {
         name: "TIMER_0",
@@ -143,6 +169,11 @@ pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
         owner: IrqOwner::Alarm(3),
     },
     VerifiedIrq {
+        name: "PWM1",
+        irq: 41,
+        owner: IrqOwner::Instance(BlockId::Pwm1),
+    },
+    VerifiedIrq {
         name: "UART1",
         irq: 42,
         owner: IrqOwner::Instance(BlockId::Uart1),
@@ -161,6 +192,11 @@ pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
         name: "UART4",
         irq: 45,
         owner: IrqOwner::Instance(BlockId::Uart4),
+    },
+    VerifiedIrq {
+        name: "ADC_FIFO",
+        irq: 52,
+        owner: IrqOwner::Instance(BlockId::Adc),
     },
 ];
 

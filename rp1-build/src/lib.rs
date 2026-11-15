@@ -240,9 +240,11 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
             .filter(|line| match line.owner {
                 board::IrqOwner::GpioBank0 => !c.gpio_irq.is_empty(),
                 board::IrqOwner::Alarm(alarm) => c.timer.contains(&format!("ALARM{alarm}")),
-                board::IrqOwner::Instance(_) => {
-                    c.instances.contains_key(&line.name.to_ascii_lowercase())
-                }
+                // By block, not name: the ADC's line is ADC_FIFO.
+                board::IrqOwner::Instance(_) => c.instances.keys().any(|key| {
+                    metadata::peripheral_id(&key.to_ascii_uppercase()).ok()
+                        == Some(line.owner.ownership())
+                }),
             })
             .collect();
         s.push_str(&format!(
@@ -402,17 +404,17 @@ mod tests {
             ("uart2={tx=4,rx=5}", Some(("UART2", 43))),
             ("uart3={tx=8,rx=9}", Some(("UART3", 44))),
             ("uart4={tx=12,rx=13}", Some(("UART4", 45))),
-            ("i2c0={sda=0,scl=1}", None),
+            ("i2c0={sda=0,scl=1}", Some(("I2C0", 7))),
             ("i2c1={sda=2,scl=3}", Some(("I2C1", 8))),
-            ("i2c2={sda=4,scl=5}", None),
-            ("i2c3={sda=6,scl=7}", None),
+            ("i2c2={sda=4,scl=5}", Some(("I2C2", 9))),
+            ("i2c3={sda=6,scl=7}", Some(("I2C3", 10))),
             ("spi0={sck=11,mosi=10,miso=9}", Some(("SPI0", 19))),
-            ("spi1={sck=21,mosi=20,miso=19}", None),
-            ("spi3={sck=7,mosi=6,miso=5}", None),
+            ("spi1={sck=21,mosi=20,miso=19}", Some(("SPI1", 20))),
+            ("spi3={sck=7,mosi=6,miso=5}", Some(("SPI3", 22))),
             ("spi5={sck=15,mosi=14,miso=13}", None),
             ("pwm0={}", Some(("PWM0", 5))),
-            ("pwm1={}", None),
-            ("adc={}", None),
+            ("pwm1={}", Some(("PWM1", 41))),
+            ("adc={}", Some(("ADC_FIFO", 52))),
             ("dma={}", None),
             ("host_irq=true", None),
         ];
