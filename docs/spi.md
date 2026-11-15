@@ -143,7 +143,9 @@ The model keeps BUSY after the last frame is received, so `flush` must wait it o
 delay itself waits at least the requested time (the 1 MHz timer is read for `us + 1` steps,
 since the first step can come right after the start).
 
-There is no interrupt, DMA, dual/quad mode, or slave support.
+There is no interrupt-driven transfer, DMA, dual/quad mode, or slave support. The controller
+interrupt itself can be unmasked (`enable_interrupt`, which also opens the RP1 `+0x108` output
+enable) for a handler on the `SPIn` line; see `docs/interrupts.md`.
 
 ## Hardware proof
 

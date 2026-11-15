@@ -160,11 +160,10 @@ fn proc1_main(core: Proc1, p: rp1::Proc1Resources) -> ! {
 #[isram]
 fn sample() -> u32 { /* ... */ 0 }
 
-// 割り込みはコアを明示する。そのコアの NVIC とベクタ表にだけ登録される。
-// （v0.2 以降の案。v0.1 は未実装で、alarm はポーリング専用。design.md §5.1）
+// 割り込みはコアを明示する。そのコアのベクタ表にだけ入り、既定で ISRAM に置かれる。
+// 線（p.irq.TIMER_1）を宣言で所有したコアにしか置けない（cargo rp1 check、docs/interrupts.md）。
 #[interrupt(proc1)]
-#[isram]
-fn TIMER_IRQ_1() { /* ... */ }
+fn TIMER_1() { /* alarm.clear_interrupt() 相当で源を落としてから戻る */ }
 ```
 
 ### 4.1 コア専用・コアごとの static
@@ -180,9 +179,11 @@ static SCRATCH: AtomicU32 = AtomicU32::new(0); // 印の無い static はコア�
 ### 4.2 log!
 
 - 宣言 `log = { sink = "uart0" }` で UART0 はログ専用になり、`Resources` には `UART0` ではなく `log`（初期化用トークン）が入る。
-- `log!` は両コア・割り込みから使える。両コアの出力は EXAC によるコア間ロックで 1 行単位に直列化する。
-  割り込み中にロックが取れなければその行を捨てて数える（待たない）。`log::init` 前の出力も捨てて数える。
-- 115200 baud は約 11.5 byte/ms なので、`log!` は遅い。ISRAM の根（ISR・`#[isram]`）から `log!` に届くと cargo-rp1 が警告する。
+- `log!` は両コア・割り込みから使える。両コアの出力は load / store だけのコア間ロック（Peterson）で 1 行単位に直列化する。
+  main は相手コアの行が終わるのを待つ。ハンドラは待たず、ロックが取れなければその行を捨てて数える（`logging::dropped`）。
+  同じコアで書いている最中（ハンドラが割り込んだ場合など）の行も捨てて数える。`log::init` 前の出力はエラーを返す。
+- `log!` は割り込みを止めない。ロックを取れたハンドラはその中で 1 文字ずつ送るので、長い行はハンドラを数 ms 止める
+  （115200 baud は約 11.5 byte/ms）。ハンドラからは短い行にする（STATIC、警告する検査は無い）。
 - 将来 `sink = "link"`（Linux への通信路）を足せるようにしておく。
 
 **エラーにする条件**:

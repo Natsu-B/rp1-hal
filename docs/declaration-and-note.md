@@ -148,11 +148,15 @@ STATIC: `ProcNResources.irq` は、宣言でそのコアに割り当てた線だ
 | `timer = ["ALARMn"]` | `TIMER_n: rp1_rt::interrupt::Line<{26+n}>` |
 | `gpio_irq = [..]`（空でない） | `IO_BANK0: Line<0>` と、各ピンの `gpioN: rp1_hal::gpio::PinIrq<N, CORE>` |
 | `uart1`..`uart4` | `UARTn: Line<{41+n}>` |
-| `i2c1` / `spi0` / `pwm0` | `I2C1: Line<8>` / `SPI0: Line<19>` / `PWM0: Line<5>` |
+| `i2c0`..`i2c3` | `I2Cn: Line<{7+n}>` |
+| `spi0` / `spi1` / `spi3` | `SPIn: Line<{19+n}>` |
+| `pwm0` / `pwm1` | `PWM0: Line<5>` / `PWM1: Line<41>` |
+| `adc` | `ADC_FIFO: Line<52>` |
 
-HW: 上の線の番号は実機で確認された対応に限る（GPIO は proc1 の証拠。proc0 のハンドラへの配送は未検証）。
+HW: 上の線の番号は実機で NVIC まで届くと確認された対応に限る（GPIO は両コア）。根拠と、I2C / SPI の
+出力イネーブル `+0x108` などの条件は `docs/interrupts.md`。
 STATIC: `rp1-build::board::IRQ_VERIFIED` が生成と ELF 検査の対応表である。
-I2C0/2/3、SPI1/3/5、PWM1、DMA、ADC は IRQ 番号が実機未確認なので `Line` を生成しない。
+SPI5 と DMA は IRQ 番号が実機未確認なので `Line` を生成しない。
 インスタンスの所有やポーリング用トークンには影響しない。
 
 `gpio_irq` のピンは通常の `pins.gpioN` と別に割り込み権限を持つ。両コアがそれぞれ `gpio_irq` を宣言すると、

@@ -183,7 +183,7 @@ bulk = [{ name = "obs", size = 65536 }]
 | `#[proc0] static` / `#[proc1] static` | DSRAM | されない | `Local<T, Proc0>` に包まれ、`Proc0` トークンが無いと読めない（rustc） |
 | コア専用の処理 | — | — | 資源（`rp1::Proc0Resources` の中身）やトークンを引数に取る。相手コアは持っていないので呼べない（rustc） |
 | コア間で渡すもの | — | — | 値渡し（`Copy`）か `#[shared]` 領域へのハンドルだけを受け付ける API。DSRAM へのポインタは渡せない（rustc） |
-| 割り込み | 各コアのベクタ表 | — | `#[interrupt(proc1)]` でコアを明示（**v0.2 以降。v0.1 は未実装**: ベクタは全て既定ハンドラ（戻らない）で、登録 API が無い。v0.1 の alarm はポーリング専用で、`Alarm::enable_interrupt` は自前のベクタ表を入れた利用者向けの `unsafe fn`。レビュー 2 #5） |
+| 割り込み | 各コアのベクタ表 | — | `#[interrupt(proc1)]` でコアを明示し、線（`Line<N>`）は宣言でそのコアが所有したときだけ生成資源に入る。所有しない線のハンドラは `cargo rp1 check` がエラーにする。公開する線は実機で NVIC まで届くと確かめたものだけ（`docs/interrupts.md`） |
 
 ### 5.2 リンク後の ELF 検査（cargo-rp1、v0.1）
 
@@ -381,7 +381,7 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | Linux 共有メモリ `ring` と `block`（UIO、uncached） | 実行時の PCIe 状態機械、Linux 再起動への追従 |
 | SCMI クロックサーバー（clock.authority = rp1 が既定のため必須） | PIO / I2S のドライバ（I2C・ADC・SPI・PWM・DMA は v0.1 後に追加: `docs/i2c.md`、`docs/adc.md`、`docs/spi.md`、`docs/pwm.md`、`docs/dma.md`） |
 | `log!`（UART0） | `log!` の Linux 通信路への出力 |
-| GPIO / UART / timer（alarm、ポーリング）ドライバと embedded-hal | 割り込みハンドラの登録（`#[interrupt(procN)]`、ベクタ生成）と IRQ 駆動の alarm |
+| GPIO / UART / timer（alarm、ポーリング）ドライバと embedded-hal | 割り込みハンドラの登録（`#[interrupt(procN)]`、ベクタ生成）と IRQ 駆動の alarm → v0.1 後に実装済み（`docs/interrupts.md`） |
 | ELF 検査（共有 SRAM 上の LDREX/STREX、予算） | |
 
 ## 8. 進め方（最初の縦 1 本）
@@ -429,3 +429,4 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | 2026-10-30 | proc1 に宣言した ADC / I2C / UART の `Clocks` は、proc0 の `clocks::Authority::init` が成功時に rp1-hal 内部の `.shared` セルへ公開した値を `Clocks::from_proc0(&Proc1)` / `wait_from_proc0` で受け取る（周波数→ready の release store、acquire load、RMW なし）。`Clocks` を任意の値から作る経路は増やさず「init が走った証明」の意味を保つ。`Message` 化や利用者宣言の共有セルは採らない（宣言漏れでコア別 DSRAM に置かれる誤用を防ぐ） | 外部レビュー 4 #3。STATIC: `examples/dual-core` が proc1 で ADC と I2C1 を init してビルド。HW は lab の shm-firmware（ADC を proc1 へ移した回帰）で確認、結果は実行ノート |
 | 2026-10-30 | SPI マスターを追加（`peripherals = ["SPI0"]` など、OWNERSHIP 16+n）。bank 0 のマスター SPI0/1/3/5（rpi-cm5。SPI2 の MISO は Linux UART1 の GPIO1、SPI4/7 はスレーブ専用、SPI6/8 は bank 0 外）。クロックは clk_sys（RP1 所有、SCMI で保持・投票しない）を偶数 BAUDR で分周、リセットは CTRL1 bit 10+n。宣言すると overlay が `rp1_spiN` を disabled にし、そのリセットは Linux 用に解除しない。ネイティブ CS は配線せず、`spi::Device` が GPIO を CS にする（`docs/spi.md`） | HW（2026-10-30、cold boot ×2）: 内部ループバックで 1/10/25/50 MHz × 8/12/16 bit 一致、FIFO 64 段、既存の目印も成立 |
 | 2026-11-05 | DMA コントローラーを宣言できるようにする（`dma = {}`、OWNERSHIP 65、ボード表の Linux 必須ブロックから外す）。所有時は `rp1_dma` を無効化し clk_dma を SCMI で保持、`dmas` で `rp1_dma` を使う有効なノードは `pwms` と同じく衝突。`rp1_hal::dma` は単一ブロックの mem-to-mem（ポーリング完了）で、M3 アドレスはデータシートの 40-bit 写像で変換する（SRAM `0xC0_2000_0000`、ATU 窓 `0x80_0000_0000`、ホスト物理 `0x10_0000_0000 + p`） | HW（2026-11-05、cold boot）: SRAM→SRAM と SRAM→Linux DDR（ATU 窓・直接写像の両方）が全語一致。DDR へは 64 KiB ブロックで約 200 MB/s、CPU の posted 書き込みは約 8.5 MB/s（docs/dma.md） |
+| 2026-11-16 | 割り込みの線は、実機で「源を立てるとその線の NVIC pending bit だけが立つ」と確かめたものだけを `IRQ_VERIFIED` に入れて公開する（未確認の線は出さない、という 2026-11-11 の仮定どおり）。I2C0/2/3・SPI1/3・PWM1・ADC_FIFO を追加。IO_BANK1/2 は届くがピンが Linux のものなので出さない。I2C/SPI の RP1 出力イネーブル `+0x108` はドライバの `enable_interrupt` が開け、`free` / `abort` が閉じる | HW（2026-11、掃引 2 種のイメージで各 2 起動、9 本すべて同じ結果）。`+0x108` 閉で 0/3、開で 3/3（HW） |
