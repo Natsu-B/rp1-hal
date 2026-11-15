@@ -29,6 +29,9 @@ const FR_TXFF: u32 = 1 << 5;
 const LCR_H_8N1_FIFO: u32 = 0x70;
 /// UARTEN, TXE, RXE.
 const CR_ENABLE: u32 = 0x301;
+/// RESETS CTRL1 through its set and clear aliases: one bit per UART, so asserting or releasing
+/// this UART's reset leaves the sibling UARTs (possibly Linux's) and every other block alone.
+const RESETS_SET1: usize = 0x4001_6004;
 const RESETS_CLR1: usize = 0x4001_7004;
 const RESETS_DONE1: usize = 0x4001_401c;
 const fn reset_bit(n: u8) -> u32 {
@@ -218,7 +221,9 @@ where
     }
 }
 /// Releases UART `n`'s reset and configures it for 8N1 at `baud`. Nothing is written unless
-/// the divisors are valid.
+/// the divisors are valid. LCR_H is only legal to change with no character in progress. Out of
+/// reset (cold, or after [`Uart::free`] / [`Uart::abort`]) UARTEN has been clear since, so none
+/// can be; a UART an earlier image left running is only waited for until its transmitter is idle.
 pub(crate) fn start(io: &mut impl Hardware, n: u8, clock_hz: u32, baud: u32) -> Result<(), Error> {
     let (integer, fraction) = divisors(clock_hz, baud)?;
     io.write(RESETS_CLR1, reset_bit(n));
@@ -312,15 +317,17 @@ fn read_wait(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<u8, Error
 /// [`Uart::free`]: nothing is written unless the transmitter is idle in time.
 fn release(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<(), Error> {
     wait(io, base(n) + FR, FR_BUSY, 0, timeout_us)?;
-    disable(io, n);
+    hold_in_reset(io, n);
     Ok(())
 }
-/// Masks the interrupts and disables the UART. Clearing FEN empties both FIFOs (DOC: ARM
-/// DDI0183, UARTCR programming sequence), so a later bring-up does not send or receive what was left in them.
-fn disable(io: &mut impl Hardware, n: u8) {
-    io.write(base(n) + IMSC, 0);
-    io.write(base(n) + CR, 0);
-    io.write(base(n) + LCR_H, 0);
+/// Asserts only this UART's reset. The PL011 forbids changing LCR_H (and with it FEN, the
+/// only register way to empty the FIFOs) while a character is still being sent or received,
+/// even after UARTEN is cleared (DOC: ARM DDI0183, UARTCR and UARTLCR_H), and BUSY says
+/// nothing about reception. The reset ends any character at once and returns every register
+/// to its reset value: FIFOs empty, interrupts masked (IMSC = 0), UART disabled (DOC: ARM
+/// DDI0183, register reset values). [`start`] releases it again.
+fn hold_in_reset(io: &mut impl Hardware, n: u8) {
+    io.write(RESETS_SET1, reset_bit(n));
 }
 /// Sets or clears `bits` in UART `n`'s interrupt mask (IMSC).
 fn set_mask(io: &mut impl Hardware, n: u8, bits: u32, on: bool) {
@@ -395,9 +402,10 @@ where
     Pin<TX>: Tx<N>,
     Pin<RX>: Rx<N>,
 {
-    /// Waits for the transmitter to drain ([`Uart::flush`]), then masks the interrupts,
-    /// disables the UART and gives back the token and the (still muxed) pins, ready for
-    /// [`Parts::init`]. Unread received characters are dropped.
+    /// Waits for the transmitter to drain ([`Uart::flush`]), then holds the UART in its reset
+    /// (interrupts masked, disabled, FIFOs emptied) and gives back the token and the (still
+    /// muxed) pins, ready for [`Parts::init`], which releases the reset. Unread received
+    /// characters, and one still arriving, are dropped.
     ///
     /// [`Error::Timeout`]: the line is still busy and nothing was changed; the UART comes
     /// back with the error, to retry (transmission went on meanwhile) or to [`Uart::abort`].
@@ -414,12 +422,13 @@ where
             Err(error) => Err((self, error)),
         }
     }
-    /// [`Uart::free`] without the wait. Characters still in the TX FIFO are never sent and
-    /// unread received characters are dropped; the character being shifted is completed by
-    /// the PL011 (DOC: ARM DDI0183, UARTCR), so the line may stay busy for up to one
-    /// character after this returns. The interrupts are masked and the UART is disabled.
+    /// [`Uart::free`] without the wait: holds the UART in its reset at once. Characters still
+    /// in the TX FIFO are never sent and unread received characters are dropped. The character
+    /// being shifted out is cut short, so the peer may see it with a framing error. The TX pin
+    /// stays muxed to the UART, which should hold it at the idle (high) level while in reset
+    /// (HYP, not measured).
     pub fn abort(self) -> Parts<N, TX, RX> {
-        disable(&mut Mmio, N);
+        hold_in_reset(&mut Mmio, N);
         self.into_parts()
     }
     fn into_parts(self) -> Parts<N, TX, RX> {
@@ -466,12 +475,15 @@ mod tests {
 
     const N: u8 = 2;
     /// UART `N`'s registers. FR is derived: BUSY and TXFF from the test's switches, RXFE from
-    /// the queue of received DR values.
+    /// the queue of received DR values. A character in progress (`busy` for TX, `receiving`
+    /// for RX) outlives clearing UARTEN, as on the PL011, and makes an LCR_H write panic; only
+    /// asserting UART `N`'s reset ends it and empties the FIFOs.
     struct Fake {
         regs: BTreeMap<usize, u32>,
         writes: Vec<(usize, u32)>,
         rx: VecDeque<u32>,
         busy: bool,
+        receiving: bool,
         /// Free TX FIFO slots, and what was pushed.
         tx_room: usize,
         tx: Vec<u8>,
@@ -489,6 +501,7 @@ mod tests {
                 writes: Vec::new(),
                 rx: VecDeque::new(),
                 busy: false,
+                receiving: false,
                 tx_room: 32,
                 tx: Vec::new(),
                 rx_later: None,
@@ -520,6 +533,14 @@ mod tests {
                 self.tx.push(value as u8);
                 return;
             }
+            if address == base(N) + LCR_H {
+                assert!(!self.busy && !self.receiving, "LCR_H changed mid-character");
+            }
+            if address == RESETS_SET1 && value & reset_bit(N) != 0 {
+                (self.busy, self.receiving, self.tx_room) = (false, false, 32);
+                self.rx.clear();
+                self.rx_later = None;
+            }
             self.writes.push((address, value));
             self.regs.insert(address, value);
         }
@@ -538,6 +559,9 @@ mod tests {
         assert_eq!([LCR_H, CR, IMSC, MIS, ICR], [0x2c, 0x30, 0x38, 0x40, 0x44]);
         assert_eq!(crate::pac::UART0::PTR as usize, base(0));
         assert_eq!(crate::pac::UART4::PTR as usize, base(4));
+        // CTRL1 (+4) through RESETS' SET (+0x2000) and CLR (+0x3000) aliases.
+        let ctrl1 = crate::pac::RESETS::PTR as usize + 4;
+        assert_eq!([RESETS_SET1, RESETS_CLR1], [ctrl1 + 0x2000, ctrl1 + 0x3000]);
     }
     #[test]
     fn start_releases_the_reset_then_programs_8n1_and_enables() {
@@ -665,7 +689,7 @@ mod tests {
     /// and the error is reported, so the caller still has the UART. `abort` does not look.
     #[test]
     fn free_refuses_a_busy_transmitter_and_abort_does_not_wait() {
-        let stopped = [(base(N) + IMSC, 0), (base(N) + CR, 0), (base(N) + LCR_H, 0)];
+        let stopped = [(RESETS_SET1, 1 << 28)];
         let mut f = Fake::new();
         f.busy = true;
         assert_eq!(release(&mut f, N, 5_000), Err(Error::Timeout));
@@ -676,8 +700,26 @@ mod tests {
 
         let mut f = Fake::new();
         f.busy = true;
-        disable(&mut f, N);
+        hold_in_reset(&mut f, N);
         assert_eq!((f.writes.as_slice(), f.elapsed_us), (&stopped[..], 0));
+    }
+    /// `free` (TX drained, a character arriving) and `abort` (one being sent, one arriving)
+    /// never touch LCR_H under a live character, and a bring-up afterwards finds nothing left
+    /// to send or receive.
+    #[test]
+    fn release_ends_characters_in_progress_and_discards_the_fifos() {
+        for forced in [false, true] {
+            let mut f = Fake::new();
+            (f.receiving, f.busy, f.tx_room) = (true, forced, 30);
+            f.rx.extend([0x41, 0x42]);
+            if forced {
+                hold_in_reset(&mut f, N);
+            } else {
+                assert_eq!(release(&mut f, N, 5_000), Ok(()));
+            }
+            start(&mut f, N, 50_000_000, 115_200).unwrap();
+            assert_eq!((read_byte(&mut f, N), f.tx_room), (Ok(None), 32));
+        }
     }
     #[test]
     fn interrupt_mask_updates_keep_the_other_bits() {
