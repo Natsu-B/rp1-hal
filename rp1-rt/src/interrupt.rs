@@ -27,8 +27,9 @@
 //!
 //! Keep critical sections below 100 microseconds: PRIMASK also delays system IRQs. Handlers
 //! receive no core token and cannot access `#[proc0]`/`#[proc1]` locals. Share state with
-//! main through ordinary statics and a `Mutex` or DSRAM atomics. `log!` in a handler never
-//! waits: it drops the message when the log is busy.
+//! main through ordinary statics and a `Mutex` or DSRAM atomics. `log!` in a handler does not
+//! wait for the log lock: it drops the message when the log is busy, and otherwise sends it
+//! synchronously, polling the UART for each byte.
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use core::cell::Cell;
