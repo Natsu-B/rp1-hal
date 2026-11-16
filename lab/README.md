@@ -424,3 +424,52 @@ Adopt only after direct generation improves e2e at the same batch, larger batche
 selected workloads, and all validation completes. Finite HW runs qualify only those measured
 conditions; they do not prove the HYP AXI-to-PCIe ordering chain. Larger stages (8 KiB),
 double buffering and threshold retuning are outside this implementation.
+
+## Real Raspberry Pi OS environment (`realos/`)
+
+Use the **stock** Raspberry Pi OS kernel (6.12.75+rpt-rpi-2712, trixie) in an rp1boot
+bundle with an NFS root on a disposable copy of the Raspberry Pi OS root file system.
+The configuration selects `multi-user.target` and root autologin on ttyAMA10.
+
+HW: the stock kernel has no SCMI (`# CONFIG_ARM_SCMI_PROTOCOL is not set`). The overlay of
+`clock.authority = "rp1"` moves every RP1 clock consumer Linux keeps (Ethernet included) to
+`/firmware/scmi`, so with the stock kernel alone no RP1 device that needs a clock probes and
+there is no network for the root file system. `build-scmi-modules.sh` builds the SCMI core,
+the mailbox transport and `clk-scmi` as modules from the `linux-source-6.12` package of the
+same Debian version (the kernel image itself is unchanged); the initramfs loads them before
+it waits for `eth0`.
+
+| Step | Script | Runs as |
+|---|---|---|
+| SCMI modules | `build-scmi-modules.sh` (`KSRC`, `KHEADERS`, `OUT`) | user (cross gcc-14) |
+| Root file system | `prepare-rootfs.sh` (`ROOTFS`, `SCMI_MODULES`, `CLIENT_BIN`) | root |
+| initramfs | `build-initramfs.sh` (`ROOTFS`, `OUT`): the root file system's initramfs-tools in a chroot, `MODULES=list`, `BOOT=nfs`, xz. Requires `unmkinitramfs` on the host | root |
+| Boot set | `build-bootset.sh` (`ROOTFS`, `RP1_ELF`, `RP1BOOT_IMG`, `INITRAMFS`, `NFS_ROOT`, `OUT`). Requires `lsinitramfs` and a new output directory with an existing parent | user |
+| Target check | `check-realos.sh`, installed as `rp1-realos-check` | root on the target |
+
+- Command line: `console=ttyAMA10,115200 root=/dev/nfs nfsroot=<server>:<path>,nfsvers=3 rw
+  uio_pdrv_genirq.of_id=generic-uio`. No `ip=`: the kernel's own IP autoconfiguration would run
+  before the SCMI modules exist; the initramfs does DHCP on `eth0`.
+- The NFS export needs `rw,no_root_squash`; NFSv3 (klibc `nfsmount`).
+- `prepare-rootfs.sh` saves selected configuration files and module indexes as
+  `<file>.orig-realos`. Discard the prepared copy to undo all changes, including module
+  and client installs.
+- Before replacing `OUT`, `build-initramfs.sh` runs the unpacked `/bin/sh` in a chroot
+  and checks for executable entry points and the required NFS and module files.
+  `build-bootset.sh` checks the archive's module release against the selected kernel.
+  Both accept `KERNEL_RELEASE` when the root copy has several prepared releases.
+  HW (2026-10-28) verified bundle loading up to 32 MiB. Measure the new bundle before
+  relying on that boot range. When reusing a copy from the earlier experiment, remove its
+  `etc/initramfs-tools-rp1nfs/hooks/zz-rp1nfs-prune` hook first.
+- `check-realos.sh` prints an inventory (dmesg, lsmod, interrupts, bound platform devices,
+  deferred probes, i2c/spi/uio nodes, lsusb). PASS requires a mounted NFS root, active
+  `multi-user.target`, the `rp1:link`, `rp1:doorbell`, and `rp1:header` UIO nodes, and
+  successful `linux-doorbell` polling (1000 round trips by default with `examples/dual-core`).
+  For an SD boot with the same UIO setup, set `EXPECTED_ROOT_FSTYPE=ext4`.
+
+HW (2026-11-16, `examples/dual-core`, cold boot ×2 + `systemctl reboot` ×1; firmware from
+before SCMI moved to IRQ 57, not repeated since): multi-user in
+14–16 s of systemd time, three UIO nodes, doorbell rtt p50 about 2.3 µs, check PASS on each
+boot. `systemctl reboot` resets the whole board (new bootloader banner, rp1boot reloads the RP1
+firmware). `systemctl poweroff` powers down (no UART output, Ethernet link down); the power
+button sequence brings it back.
