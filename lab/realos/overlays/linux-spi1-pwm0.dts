@@ -1,0 +1,56 @@
+// Linux-side SPI1 (spidev) and PWM0 for check-linux-devices.sh, with pin groups in the string
+// form ("function" / "pins") that rp1boot can verify. The stock spi1-1cs and pwm overlays use
+// the legacy numeric brcm,pins / brcm,function form, which rp1boot refuses on RP1 GPIOs.
+// Pins: SPI1 SCK/MOSI/MISO = GPIO21/20/19, CS0 = GPIO18 (cs-gpios), PWM0 channel 0 = GPIO12.
+// Build: build-bootset.sh OVERLAYS=<this file>, or
+//        dtc -@ -I dts -O dtb -o linux-spi1-pwm0.dtbo linux-spi1-pwm0.dts
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2712";
+
+	fragment@0 {
+		target = <&rp1_gpio>;
+		__overlay__ {
+			linux_spi1_cs_gpio18: linux_spi1_cs_gpio18 {
+				function = "gpio";
+				pins = "gpio18";
+				bias-pull-up;
+			};
+			linux_pwm0_gpio12: linux_pwm0_gpio12 {
+				function = "pwm0";
+				pins = "gpio12";
+				bias-disable;
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&rp1_spi1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&rp1_spi1_gpio19 &linux_spi1_cs_gpio18>;
+			cs-gpios = <&rp1_gpio 18 1>;
+			status = "okay";
+
+			spidev@0 {
+				compatible = "spidev";
+				reg = <0>;
+				spi-max-frequency = <1000000>;
+				status = "okay";
+			};
+		};
+	};
+
+	fragment@2 {
+		target = <&rp1_pwm0>;
+		__overlay__ {
+			pinctrl-names = "default";
+			pinctrl-0 = <&linux_pwm0_gpio12>;
+			status = "okay";
+		};
+	};
+};

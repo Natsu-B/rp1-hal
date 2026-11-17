@@ -446,6 +446,7 @@ it waits for `eth0`.
 | initramfs | `build-initramfs.sh` (`ROOTFS`, `OUT`): the root file system's initramfs-tools in a chroot, `MODULES=list`, `BOOT=nfs`, xz. Requires `unmkinitramfs` on the host | root |
 | Boot set | `build-bootset.sh` (`ROOTFS`, `RP1_ELF`, `RP1BOOT_IMG`, `INITRAMFS`, `NFS_ROOT`, `OUT`). Requires `lsinitramfs` and a new output directory with an existing parent | user |
 | Target check | `check-realos.sh`, installed as `rp1-realos-check` | root on the target |
+| Device check | `check-linux-devices.sh`, installed as `rp1-device-check` | root on the target |
 
 - Command line: `console=ttyAMA10,115200 root=/dev/nfs nfsroot=<server>:<path>,nfsvers=3 rw
   uio_pdrv_genirq.of_id=generic-uio`. No `ip=`: the kernel's own IP autoconfiguration would run
@@ -473,3 +474,53 @@ before SCMI moved to IRQ 57, not repeated since): multi-user in
 boot. `systemctl reboot` resets the whole board (new bootloader banner, rp1boot reloads the RP1
 firmware). `systemctl poweroff` powers down (no UART output, Ethernet link down); the power
 button sequence brings it back.
+
+### Linux-side RP1 devices (`check-linux-devices.sh`)
+
+`build-bootset.sh` takes `CONFIG_EXTRA` (extra config.txt lines, one per line) and `OVERLAYS`
+(`.dts` files compiled with `dtc` into the bundle's `boot/overlays/` and enabled with
+`dtoverlay=` lines) to enable Linux devices. Copy `boot/overlays/*.dtbo` to the boot server's
+`overlays/` together with the rest of `boot/`. Run the installed checker as root on the target:
+
+```sh
+PING_HOST=192.0.2.10 rp1-device-check \
+    i2c2 i2c6 spi1.0 pwm0 fan eth:eth0 usb:3-1
+```
+
+Replace the example address with a peer reachable through the selected interface and use
+the bus numbers and USB port from your setup. Use `usb-storage:sda` for a direct disk read.
+The short I2C scan defaults to 0x08–0x0f. Set `FULL_SCAN=1` to opt into the full scan. The
+full scan runs only when the short scan took less than five seconds; otherwise its row fails
+with `reason=short_scan_slow`. The full scan uses i2cdetect's default quick-write/read-byte
+probing, so enable it only on buses without write-sensitive devices.
+
+The script emits a `DEVCHECK` row per probe, with the same keys on every row, and continues
+after failures. It ends with one `DEVCHECK_END result=PASS|FAIL` line. I2C scans, the 16-byte
+SPI transfer, Ethernet ping, and USB operations require an IRQ count increase for the
+selected controller. The 4096-byte SPI transfer goes through DMA and requires an increase on a
+shared DMA line. An increase is necessary, not attributed to the probe: background traffic
+(the NFS root on `eth0`, other xHCI devices, other DMA users) also counts, and the ping replies,
+the USB status reply and the disk read are the operation evidence. The I2C, SPI, Ethernet, and
+USB probes also require readable kernel logs with no matching timeouts during the probe.
+Failing `evidence=` codes are `no_cursor`, `log_lost`, `timeout`, `no_irq`, `io_error` and
+`unavailable` (see the script header). PWM reads its sysfs state back (`evidence=sysfs`: the PWM
+core accepted the setting, not a measured GPIO12 output), and an
+already-exported PWM channel produces a failed probe. The fan probe requires a nonzero tach
+reading (`evidence=tach`). The register dump uses read-only `busybox devmem` on bound
+blocks. Record the source revision and SHA-256 of the external `RP1_ELF` when comparing with
+stock RP1 firmware.
+
+`overlays/linux-spi1-pwm0.dts` enables SPI1 (GPIO18–21, spidev) and PWM0 channel 0
+(GPIO12) with pin groups in the string form. The stock `spi1-1cs` and `pwm` overlays use the
+legacy numeric `brcm,pins` / `brcm,function` form, which rp1boot refuses on RP1 GPIOs even
+when the pins are not RP1-owned (`RP1BOOT_LINUX_REFUSED ... legacy numeric brcm,function`,
+HW): the boot stops. `cargo rp1 check --dtb` reports the same.
+
+Pre-fix history (HW, 2026-11-17): I2C2/I2C6 and the 16-byte SPI1 transfer timed out with
+I2C/SPI wrapper `+0x108` bit 0 clear. The 4096-byte SPI1 transfer completed using DMA.
+USBHOST `+0x98` was zero while xHCI interrupts arrived.
+
+STATIC: rp1-hal enables the Linux-owned I2C/SPI wrapper gates and programs the USBHOST
+wrapper words before Linux starts. HW (2026-11, [interrupts](../docs/interrupts.md#4-根拠)):
+Linux-side IRQ delivery observed for I2C2, I2C6, SPI1, Ethernet, and USB. HW unverified: this
+checker's result on firmware after SCMI moved to IRQ 57; the runs above predate it.

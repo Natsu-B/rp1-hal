@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Adjust a Raspberry Pi OS (trixie) root file system copy so it boots as an NFS root under
-# rp1-hal. Installs the SCMI modules and the target check, enables serial root autologin,
+# rp1-hal. Installs the SCMI modules and target checks, enables serial root autologin,
 # and configures the NFS initramfs. Idempotent; run as root on the host.
 #
 # Selected configuration files and module indexes are saved as <file>.orig-realos (once).
@@ -113,6 +113,8 @@ clk-scmi"
 here=$(cd "$(dirname "$0")" && pwd)
 install -D -m 0755 "$here/check-realos.sh" "$root/usr/local/sbin/rp1-realos-check"
 echo "installed usr/local/sbin/rp1-realos-check"
+install -m 0755 "$here/check-linux-devices.sh" "$root/usr/local/sbin/rp1-device-check"
+echo "installed usr/local/sbin/rp1-device-check"
 if [[ -n ${CLIENT_BIN:-} ]]; then
     shopt -s nullglob
     clients=("$CLIENT_BIN"/*)
