@@ -58,6 +58,7 @@ adc = {}                                  # ピンの無いブロック
 dma = {}                                  # DMA コントローラー全体（8 チャネル、docs/dma.md）
 spi0 = { sck = 11, mosi = 10, miso = 9 }  # ハードの csN は未対応（エラー）
 host_irq = true                           # 不安定: RP1 → Linux 割り込み（rp1-hal の unstable-host-irq、design.md §6.2）
+heartbeat = { period_ms = 100 }           # 任意: このコアが rp1_rt::status::beat() を N ms ごとに呼ぶ。Linux の health 判定に使う（protocol.md §9）
 
 [[package.metadata.rp1.shm]]
 name = "ctl"                              # [a-z][a-z0-9_]{0,23}。UIO 名は rp1:<name>
@@ -274,6 +275,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 | 0x0013 | 1 | BOOT | config.txt の SHA-256、cmdline.txt の SHA-256、本来のカーネルのファイル名（文字列） |
 | 0x0020 | 1 | SHM_AREA | 24 bytes: DDR 合計サイズ u32（1 MiB 単位、1..16 MiB）、領域境界 u32（65536）、SRAM ハンドオフアドレス u32、SRAM 使用末尾 u16、予約 0 u16、DDR CPU 物理アドレス u64（STATIC: rpi-cm5 は 0x22000000）。旧 14-byte 形式は拒否 |
 | 0x0021 | 1 | SHM_REGION | 1 件 1 レコード: kind u8、direction u8、core u8、notify u8、linux_map u8、writer u8、overflow u8（1 reject / 2 overwrite）、placement u8（1 reader-local / 2 linux）、DDR オフセット/長さ u32×2、SRAM オフセット/長さ u16×2、要素長 u32、depth u32、型 ID u64（要求/応答で 2 つ）、名前（u8 長さ + UTF-8）、型名（同） |
+| 0x0022 | 0 | LINK | 12 bytes: 版 u8 = 1、予約 u8 = 0、状態語のオフセット u16 = 0x40、コアごとに（proc0、proc1）ドアベルのピン u8（0xff = 無し。今は常に無し）、host_irq の MSI-X vector u8（0 = 無し）、心拍の周期 ms u16（0 = 宣言なし） |
 
 - 文字列は `u8 長さ + UTF-8`（最大 255）。
 - id（ピン番号、ブロック番号）の割り当ては `rp1-proto` の enum が正本。番号は一度決めたら変えない。

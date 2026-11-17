@@ -24,6 +24,18 @@ M3 側（`rp1-link`）と Linux 側（`rp1-linux`）の両方がそれを使う�
   link ページは全リングで共用する。ファームのイメージは残り 48 KiB（`0x2000_0000..0x2000_c000`）に収める。
 - DDR 領域は `shm` ごとに UIO（名前 `rp1:<name>`）を分ける（権限を分けられる）。
 
+### 1.1.1 link ページの先頭（`rp1_proto::link`、`rp1_proto::status`）
+
+| オフセット | 内容 | 書く側 |
+|---|---|---|
+| 0x00〜0x23 | 固定語: ハンドオフ（0x00〜0x0c）、例のドアベル要求 / 返答（0x10 / 0x14）、`SHM_GENERATION` / `SHM_STATUS` / `SHM_REQUEST`（0x18 / 0x1c / 0x20） | ローダー / Linux / proc0 |
+| 0x24〜0x3f | lab と診断用（lab のファームとスクリプトが 0x24 / 0x28 / 0x2c を使う）。ライブラリは使わない | lab |
+| 0x40〜0xbf | ファームの状態語（§9） | rp1-rt |
+| 0xc0〜 | 宣言した領域の SRAM 部分（割り当ての開始。0xc0 より前に置いた note は読み手が拒否する） | 端点 |
+| 0x17c0〜0x18bf | SCMI shmem | Linux / proc0 |
+
+0x00〜0x3f は凍結する。新しい語は足さない。
+
 ### 1.2 配置の選択（`placement`）
 
 | 値 | 内容 | link ページ | v0.1 |
@@ -235,3 +247,37 @@ offset 8.. T             8 バイト境界
 2. 満杯時: 既定は `reject`（`Full`）。上書きする `overwrite` も選べる（§2.3）。
 3. 通知の間引き: 相手の `waiting` が奇数で、まだ通知していない値のときだけ通知する（2026-11-05、旗から眠りカウンタへ変更）。
 4. Linux プロセスの再起動: `tail` を共有メモリに残して続きから読む。
+
+## 9. ファームの状態語（link ページ 0x40〜0xbf）
+
+すべて `u32` LE。書き手は 1 つ: `EPOCH` / `ABI` は proc0、コアのブロックはそのコア。RMW は無い。
+
+| オフセット | 語 | 内容 |
+|---|---|---|
+| 0x40 | `EPOCH` | proc0 が起動時に 奇数 → 両ブロックのゼロ化 → `ABI` → 偶数 の順に書く。前の値が有効（偶数で `ABI` が一致）なら +2、でなければ 2 |
+| 0x44 | `ABI` | `"RL"` + 版 `u16 = 2` |
+| 0x50〜0x7f / 0x80〜0xaf | proc0 / proc1 のブロック | 下表 |
+| 0x48〜0x4f、0xb0〜0xbf | 予約 0 | |
+
+| ブロック内 | 語 | 内容 |
+|---|---|---|
+| 0x00 | `STATE` | 0 未起動、2 実行中（各コアの `main` の前に rp1-rt が書く）、3 停止（`status::stop`）、4 panic、5 fault。他は予約 |
+| 0x04 | `REASON` | 停止のコード / fault の例外番号 |
+| 0x08 | `LINE` | panic の行（feature `panic-location` のときだけ。既定は 0）/ fault の積まれた PC |
+| 0x0c | `AUX` | fault の CFSR |
+| 0x10 | `BEAT` | 最後の `status::beat()` の TIMER µs（下位 32 bit）。変わったかだけに意味がある |
+| 0x18〜0x2b | `FILE` | panic のファイル名の末尾 20 バイト（NUL 埋め、`panic-location` のときだけ） |
+
+- 終端の状態（3 / 4 / 5）は、詳細 → barrier → `STATE` の順に、critical section の中で「今 2 か」を見てから書く。上書きしない。
+- `beat()` は TIMER の読み出しと store を 1 つの critical section で行う（ハンドラの心拍を古い値で上書きしない）。
+- panic の位置は既定では記録しない。ハンドラが `PanicInfo` を読むと、全 panic 箇所の `fmt::Arguments` と、
+  unwrap したエラーの `Debug` 実装がイメージに残り、2.5〜4.7 KiB 増える（STATIC、2026-11-17、ワークスペースの全ファーム構成の
+  `cargo rp1 check` の image_bytes の前後差）。lab の大きい構成は 48 KiB に入らなくなる。余裕のあるファームだけ
+  rp1-rt の feature `panic-location` で有効にする（`examples/dual-core`）。
+- Linux（`rp1_linux::Monitor`、`Firmware::status` / `health`）:
+  - `status()`: `ABI` が一致し `EPOCH` が偶数で前後同じときだけ返す（それ以外は `NotReady`。一度も起動していない場合も同じ）。
+    `STATE` が終端のときに限り、barrier の後に読んだ詳細は確定した値。実行中の詳細は返さない。2 つのコア・`BEAT`・`SHM_*` が同じ時点の値である保証は無い。
+    BAR2 が `0xffff_ffff` を返したらリンク断のエラー。
+  - `health(window)`: 終端・未知の状態のコアは `Down`。宣言 `heartbeat` のあるコアの `BEAT` を
+    `max(window, 2 × 宣言した周期の最大)` あけて 2 回読み、変わらなければ `Stalled`。宣言どおりに打つコアを `Stalled` と言わない。
+  - `Monitor::open()` は `rp1:link` を読み取り専用・ロックなしで開く（UIO の読み取り専用 mmap は HYP、実機未確認）。
