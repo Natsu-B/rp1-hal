@@ -15,6 +15,11 @@ use std::{
     time::{Duration, Instant},
 };
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+mod status;
+pub use status::{CoreState, CoreStatus, Health, Monitor, ShmState, Status};
+
+/// The firmware's note as the loader put it in the boot DT.
+const NOTE: &str = "/sys/firmware/devicetree/base/rp1-firmware/rp1,note";
 
 struct Mapping {
     base: NonNull<u8>,
@@ -22,24 +27,26 @@ struct Mapping {
     _file: File,
 }
 impl Mapping {
+    /// Map a UIO node read-write and hold its exclusive `flock`.
     fn open(name: &str, phys: u64, len: usize) -> Result<Rc<Self>> {
-        let path = &find_uio(name)?;
-        let hex = |field: &str| -> Result<u64> {
-            let text = fs::read_to_string(path.join("maps/map0").join(field))?;
-            Ok(u64::from_str_radix(
-                text.trim().trim_start_matches("0x"),
-                16,
-            )?)
-        };
-        if hex("addr")? != phys || hex("size")? != len as u64 || hex("offset")? != 0 {
-            return Err(format!("UIO {name} mapping differs from note/board table").into());
-        }
-        let file = open_exclusive(path)?;
+        let path = find_mapping(name, phys, len)?;
+        Self::map(
+            open_exclusive(&path)?,
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+        )
+    }
+    /// Map a UIO node read-only, without a lock.
+    fn open_read_only(name: &str, phys: u64, len: usize) -> Result<Rc<Self>> {
+        let path = find_mapping(name, phys, len)?;
+        Self::map(File::open(dev_path(&path)?)?, len, libc::PROT_READ)
+    }
+    fn map(file: File, len: usize, prot: libc::c_int) -> Result<Rc<Self>> {
         let pointer = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
                 len,
-                libc::PROT_READ | libc::PROT_WRITE,
+                prot,
                 libc::MAP_SHARED,
                 file.as_raw_fd(),
                 0,
@@ -81,12 +88,30 @@ fn find_uio(name: &str) -> Result<PathBuf> {
     }
     Ok(matches.remove(0))
 }
+/// The UIO named `name`, checked against the note's / board table's address and size.
+fn find_mapping(name: &str, phys: u64, len: usize) -> Result<PathBuf> {
+    let path = find_uio(name)?;
+    let hex = |field: &str| -> Result<u64> {
+        let text = fs::read_to_string(path.join("maps/map0").join(field))?;
+        Ok(u64::from_str_radix(
+            text.trim().trim_start_matches("0x"),
+            16,
+        )?)
+    };
+    if hex("addr")? != phys || hex("size")? != len as u64 || hex("offset")? != 0 {
+        return Err(format!("UIO {name} mapping differs from note/board table").into());
+    }
+    Ok(path)
+}
+fn dev_path(sys: &Path) -> Result<PathBuf> {
+    Ok(Path::new("/dev").join(sys.file_name().ok_or("invalid UIO path")?))
+}
 /// Open `/dev/uioN` for a sysfs entry, with an exclusive non-blocking `flock` (one owner).
 fn open_exclusive(sys: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
-        .open(Path::new("/dev").join(sys.file_name().ok_or("invalid UIO path")?))?;
+        .open(dev_path(sys)?)?;
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
@@ -115,6 +140,7 @@ impl Session {
 pub struct Firmware {
     note: Vec<u8>,
     link: Rc<Mapping>,
+    monitor: Monitor,
     session: Rc<Session>,
     taken: HashSet<String>,
 }
@@ -122,7 +148,7 @@ impl Firmware {
     /// Match the boot DT's note to UIO names/addresses and the published DDR note hash.
     /// If necessary, request cold-boot initialization after Linux PCIe probe is complete.
     pub fn open() -> Result<Self> {
-        let bytes = fs::read("/sys/firmware/devicetree/base/rp1-firmware/rp1,note")?;
+        let bytes = fs::read(NOTE)?;
         let note = Note::parse(&bytes)?;
         let area = ShmArea::parse(note.get(SHM_AREA).ok_or(Error::Invalid)?.value)?;
         let link = Mapping::open(&format!("rp1:{}", uio::LINK), rp1_proto::LINK_PHYS, 0x4000)?;
@@ -160,6 +186,7 @@ impl Firmware {
             _link: link.clone(),
         });
         Ok(Self {
+            monitor: Monitor::new(link.clone(), &bytes)?,
             note: bytes,
             link,
             session,
@@ -269,6 +296,14 @@ impl Firmware {
     }
     pub fn generation(&self) -> u32 {
         self.session.header.generation()
+    }
+    /// [`Monitor::status`] through this owner's link mapping.
+    pub fn status(&self) -> Result<Status> {
+        self.monitor.status()
+    }
+    /// [`Monitor::health`] through this owner's link mapping.
+    pub fn health(&self, window: Duration) -> Result<Health> {
+        self.monitor.health(window)
     }
 }
 fn overflow(overwrite: bool) -> shm::Overflow {
@@ -629,7 +664,7 @@ mod tests {
     use std::os::{fd::OwnedFd, unix::net::UnixStream};
 
     /// Anonymous memory standing in for a UIO mapping.
-    fn anon(len: usize) -> Rc<Mapping> {
+    pub(crate) fn anon(len: usize) -> Rc<Mapping> {
         let p = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
