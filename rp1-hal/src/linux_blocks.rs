@@ -46,7 +46,7 @@ const USB_CLOCKS: [usize; 4] = [0x4001_80f4, 0x4001_8104, 0x4001_8114, 0x4001_81
 /// - USBHOSTn_CFG +0 = 1. Without it an access to the xHCI (AXI) never completes and wedges the
 ///   RP1 fabric for the M3 and PCIe alike (HW: M3 read of 0x4020_c120 hung).
 /// - VBUSCTRL +0 = 0x1111, +4 = 0x0200_1111.
-/// - The interrupt-output enables in [`IRQ_ENABLES`].
+/// - The stock enable table in [`IRQ_ENABLES`].
 const PADS_ETH: usize = 0x400f_c000;
 const PADS_ETH_BIT: u32 = 1 << 25;
 const PAD_ENABLED: u32 = 0x40;
@@ -55,12 +55,14 @@ const VBUSCTRL: usize = 0x4017_0000;
 const VBUSCTRL_BIT: u32 = 1 << 2;
 const VBUSCTRL_STOCK: [u32; 2] = [0x1111, 0x0200_1111];
 const ETH_IP_BIT: u32 = 1 << 5;
-/// Interrupt-output enables of the Linux blocks: the stock firmware sets them at the end of its
-/// init (F6588 table at 0x2000455c) and no Linux driver does. Without them the block's
-/// interrupt never reaches Linux (HW: macb never completes ARP, i2c_designware and spi-dw time
-/// out). USB +0x98 is not needed (HW: xhci interrupts arrive with it 0) and I2S is untested;
-/// both mirror the stock firmware. SDIO (+0x28 = 3 in the same table) is left out: its resets
-/// are not Linux's here, so the block stays in reset.
+/// The enable table the stock RP1 firmware (the one embedded in the bootloader: table at
+/// 0x2000455c, applied by the function at 0x20000e00) applies to every block at the end of its
+/// init, for the Linux blocks; no Linux driver writes these. ETH_CFG INTE and the I2C / SPI
+/// +0x108 IRQ_EN gate the block's interrupt: without them it never reaches Linux (HW: macb never
+/// completes ARP, i2c_designware and spi-dw time out). I2S +0x408 and USB +0x98 are copied
+/// without knowing what they gate (HW: xhci interrupts arrive with +0x98 = 0; I2S untested).
+/// SDIO (+0x28 = 3 in the same table) is left out: its resets are not Linux's here, so the
+/// block stays in reset.
 /// Each row: (reset bank, reset bit of the first instance, instances, register, stride, bits).
 const IRQ_ENABLES: [(usize, u32, u32, usize, usize, u32); 6] = [
     (0, 5, 1, 0x4010_4020, 0, 1),            // ETH_CFG INTE.ETHERNET
@@ -146,9 +148,10 @@ pub(crate) trait Hardware: Registers {
 /// the stock firmware starts, and releases the resets. Generators of declared blocks
 /// ([`LinuxBlocks::held_clocks`]) are not touched. Fails before touching any reset if
 /// PLL_SYS_SEC does not read back as programmed, and with [`crate::Error::Hardware`] before any
-/// block register is written if a released reset (other than ADC's, which has no DONE) does not
-/// report DONE within 10 ms: the Ethernet / pads / USB / VBUS set-up and the SCMI service that
-/// lets Linux probe these blocks must not run on a block still in reset (review 3 #6).
+/// block register is read or written if a released reset (other than ADC's, which has no DONE)
+/// does not report DONE within 10 ms: the block set-up (pads, USB, VBUS, [`IRQ_ENABLES`]) and
+/// the SCMI service that lets Linux probe these blocks must not run on a block still in reset
+/// (review 3 #6).
 /// Idempotent: a running set-up is left as it is.
 pub(crate) fn bring_up(r: &mut impl Hardware, blocks: LinuxBlocks) -> Result<Report, crate::Error> {
     let sec = r.read(PLL_SYS_SEC);
@@ -279,11 +282,13 @@ mod tests {
     struct Fake {
         regs: BTreeMap<usize, u32>,
         writes: Vec<(usize, u32)>,
+        reads: Vec<usize>,
         clock: u32,
         done: [u32; 3],
     }
     impl Registers for Fake {
         fn read(&mut self, address: usize) -> u32 {
+            self.reads.push(address);
             if (RESETS_DONE..RESETS_DONE + 12).contains(&address) {
                 return self.done[(address - RESETS_DONE) / 4];
             }
@@ -322,6 +327,19 @@ mod tests {
             Kind::Linux(g) => g.ctrl,
             Kind::Fixed(_) => unreachable!(),
         }
+    }
+    impl Fake {
+        fn touched(&self, address: usize) -> bool {
+            self.reads.contains(&address) || self.writes.iter().any(|w| w.0 == address)
+        }
+    }
+    /// Registers of the blocks whose resets `bring_up` releases (set up after DONE).
+    fn block_registers() -> Vec<usize> {
+        let mut r: Vec<usize> = (PADS_ETH..=PADS_ETH + 0x3c).step_by(4).collect();
+        r.extend(USBHOST_CFG);
+        r.extend([VBUSCTRL, VBUSCTRL + 4]);
+        r.extend(STOCK_IRQ_ENABLES.iter().map(|e| e.0));
+        r
     }
     const ALL: LinuxBlocks = unsafe { LinuxBlocks::new(ALLOWED) };
 
@@ -375,7 +393,7 @@ mod tests {
         assert_eq!(after[19..], STOCK_IRQ_ENABLES);
     }
 
-    /// The stock firmware table entries for the blocks in [`ALLOWED`], in its order.
+    /// Expected writes: the stock firmware table's (address, mask) for every block in [`ALLOWED`].
     const STOCK_IRQ_ENABLES: [(usize, u32); 22] = [
         (0x4010_4020, 1),
         (0x4007_0108, 1),
@@ -402,6 +420,24 @@ mod tests {
     ];
 
     #[test]
+    fn interrupt_enables_keep_the_other_bits() {
+        let mut f = cold();
+        let preset = [
+            (0x4010_4020, 0x6, 0x7),                 // ETH_CFG: other INTE bits set
+            (0x4007_8108, 0x8000_0000, 0x8000_0001), // I2C2
+            (0x400a_0408, 0x00ff_00f0, 0x00ff_ffff), // I2S0: part of the mask already set
+            (0x4016_0098, 0x10, 0x11),               // USBHOST0 cfg +0x98
+        ];
+        for (a, v, _) in preset {
+            f.regs.insert(a, v);
+        }
+        bring_up(&mut f, ALL).unwrap();
+        for (a, _, expected) in preset {
+            assert_eq!(f.regs[&a], expected, "0x{a:x}");
+        }
+    }
+
+    #[test]
     fn running_state_is_left_alone() {
         let mut f = cold();
         bring_up(&mut f, ALL).unwrap();
@@ -426,9 +462,12 @@ mod tests {
             ])
         };
         let report = bring_up(&mut f, blocks).unwrap();
-        // The owned blocks' drivers own their interrupt-output enables.
-        for owned in [0x4007_4108, 0x4005_0108, 0x4016_0098, 0x4016_4098] {
-            assert!(!f.regs.contains_key(&owned), "0x{owned:x}");
+        // The owned blocks' drivers own their registers: not even read here.
+        for owned in [0x4007_4108, 0x4005_0108, 0x4016_0098, 0x4016_4098]
+            .into_iter()
+            .chain(USBHOST_CFG)
+        {
+            assert!(!f.touched(owned), "0x{owned:x}");
         }
         assert_eq!(f.regs[&0x4007_0108], 1);
         assert_eq!(f.regs[&0x4005_4108], 1);
@@ -487,17 +526,10 @@ mod tests {
         }
         let mut s = Stuck(f);
         // USBHOST0's DONE (bank 2 bit 0) never comes up: an error, and none of the block
-        // registers that need the reset released is written (review 3 #6).
+        // registers that need the reset released is read or written (review 3 #6).
         assert_eq!(bring_up(&mut s, ALL), Err(crate::Error::Hardware));
-        for (a, _) in &s.0.writes {
-            assert!(
-                !USBHOST_CFG.contains(a)
-                    && *a != VBUSCTRL
-                    && *a != VBUSCTRL + 4
-                    && !STOCK_IRQ_ENABLES.iter().any(|e| e.0 == *a)
-                    && !(PADS_ETH..=PADS_ETH + 0x3c).contains(a),
-                "wrote 0x{a:x} after a stuck DONE"
-            );
+        for a in block_registers() {
+            assert!(!s.0.touched(a), "touched 0x{a:x} after a stuck DONE");
         }
         // ADC (bank 0 bit 0, NO_DONE) stuck alone is not waited for.
         let mut f = cold();

@@ -64,12 +64,13 @@ I2C と SPI の割り込みは、コントローラのマスクの先にある R
 転送そのものは今もブロッキングで、割り込み駆動の転送 API は無い。同じコントローラで割り込み駆動と
 ブロッキングを混ぜる使い方は対応しない。
 
-Linux に残したブロックの出力イネーブルは、標準ファームが初期化の最後に立てる値（標準ファームの表、
-STATIC）を `linux_blocks::bring_up` が同じように立てる。対象は Linux 用にリセットを解除したインスタンスだけで、
-宣言したブロックのものはそのドライバが持つ。ETH_CFG INTE と I2C / SPI の `+0x108` は、無いと Linux の
-ドライバが割り込みを受けない（HW: macb の ARP が終わらない、i2c_designware / spi-dw が timeout）。
-USB cfg の `+0x98` は無くても xhci の割り込みは届く（HW）が、I2S の `+0x408` = 0xffff（未試験）とともに
-標準ファームに揃えて立てる。SDIO（標準ファームは `+0x28` = 3）は rp1-hal がリセットを解除しないので立てない。
+Linux に残したブロックには、標準 RP1 ファーム（ブートローダー内蔵）が初期化の最後に全ブロックへ書く
+イネーブルの表と同じ値を `linux_blocks::bring_up` が立てる（RMW。表の番地と値は STATIC）。対象は Linux 用に
+リセットを解除したインスタンスだけで、宣言したブロックのものはそのドライバが持つ。このうち割り込みの出力
+イネーブルと分かっているのは ETH_CFG INTE と I2C / SPI の `+0x108` で、無いと Linux のドライバが割り込みを
+受けない（HW: macb の ARP が終わらない、i2c_designware / spi-dw が timeout）。USB cfg の `+0x98` と
+I2S の `+0x408` = 0xffff は、何をゲートするか分からないまま標準ファームの値を写している（USB は `+0x98` = 0 でも
+xhci の割り込みが届く: HW。I2S は未試験）。SDIO（標準ファームは `+0x28` = 3）は rp1-hal がリセットを解除しないので書かない。
 USB の線は公開していない。
 
 ## 4. 根拠
@@ -92,6 +93,7 @@ NVIC だけを見ている。proc1 で受けたのは TIMER_1・IO_BANK0・SPI0 
 | IO_BANK1 / IO_BANK2（1 / 2） | proc0 の INTF force で 3/3 | HW（同上）。ピンが Linux のものなので公開しない |
 | PWM0（5）、UART1〜4（42〜45） | 番号を実機で確認（ハンドラへの配送は上の試験に含まない） | HW（rp1-hal より前の試作ファーム。rp1-hal では再確認していない） |
 | TIMER_3（29） | rp1-hal では `TIMER.INTF` bit 3 で Linux の MSI-X vector 29 が起きるのを確認（`host_irq`、design.md §6.2）。NVIC 29 に届いたのは試作ファームでだけ | MSI-X は HW（2026-11）、NVIC は HW（試作ファーム）。rp1-hal では NVIC を再確認していない |
+| Linux に残したブロック（上の表を立てた rp1-hal ファーム） | Linux 側で割り込みが届くのを見たのは I2C2 / I2C6 / SPI1 / ETH / USB。I2C0/3/4/5、SPI2..8、I2S は値が標準ファームと同じことまで | HW（2026-11、cold boot と再起動で各 1 回） |
 | SPI5（24）、DMA（40）、PIO（50 / 51）、CLOCKS（59）、VBUS（60） | 安全な刺激が無く未確認 | 公開しない |
 
 PWM0 と TIMER_3 は試作ファームでの観測を根拠に `IRQ_VERIFIED` に入れて公開している。線の配線は RP1 の
