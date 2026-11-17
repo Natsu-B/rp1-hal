@@ -16,11 +16,11 @@ case ${SHM_PROFILE:-0} in
     *) echo 'SHM_PROFILE must be 0 or 1' >&2; exit 1 ;;
 esac
 cargo build --offline -p shm-firmware --target thumbv7m-none-eabi --release ${profile_args[@]+"${profile_args[@]}"}
-cargo build --offline -p shm-linux -p linux-doorbell --target aarch64-unknown-linux-musl --release ${profile_args[@]+"${profile_args[@]}"}
+cargo build --offline -p shm-linux -p linux-doorbell -p linux-status --target aarch64-unknown-linux-musl --release ${profile_args[@]+"${profile_args[@]}"}
 cp target/thumbv7m-none-eabi/release/shm-firmware "$out/fw/RP1.elf"
 # The bss smoke test needs a real .bss in the image (review #10).
 arm-none-eabi-size -A "$out/fw/RP1.elf" | awk '$1==".bss" { found = $2 > 0 } END { exit !found }'
-cp target/aarch64-unknown-linux-musl/release/{shm-linux,linux-doorbell} "$out/"
+cp target/aarch64-unknown-linux-musl/release/{shm-linux,linux-doorbell,linux-status} "$out/"
 llvm-objcopy --dump-section .rp1.dtbo="$out/dtb/app.dtbo" "$out/fw/RP1.elf"
 fdtoverlay -i "$base" -o "$out/dtb/scmi_linux.dtb" "$out/dtb/app.dtbo"
 args=$(fdtget -t s "$out/dtb/scmi_linux.dtb" /chosen bootargs)

@@ -1,0 +1,8 @@
+[package]
+name = "linux-status"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rp1-linux = { path = "../../rp1-linux" }
