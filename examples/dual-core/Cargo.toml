@@ -10,10 +10,15 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[features]
+# Test build: Linux makes a core panic by writing `PANIC_PROC0` / `PANIC_PROC1` to the doorbell
+# request word (proc1 then needs the doorbell), to check what it reads in the status words.
+panic-request = []
+
 [dependencies]
 embedded-hal = "1"
 rp1-hal = { path = "../../rp1-hal" }
-rp1-rt = { path = "../../rp1-rt" }
+rp1-rt = { path = "../../rp1-rt", features = ["panic-location"] }
 rp1-proto = { path = "../../rp1-proto" }
 
 [build-dependencies]
@@ -28,6 +33,7 @@ log = { sink = "uart0", baudrate = 115200 }
 [package.metadata.rp1.proc0]
 gpio = [8, 22] # 8 = SPI0 chip select driven as GPIO
 timer = ["ALARM0"]
+heartbeat = { period_ms = 1000 } # TIMER_0 beats once per tick
 spi0 = { sck = 11, mosi = 10, miso = 9 }
 
 [package.metadata.rp1.proc1]

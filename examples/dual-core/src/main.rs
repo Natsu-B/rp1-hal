@@ -40,8 +40,12 @@ static ALARM0: Mutex<RefCell<Option<Alarm<0>>>> = Mutex::new(RefCell::new(None))
 static TICKS: AtomicU32 = AtomicU32::new(0);
 static DOORBELL: Mutex<RefCell<Option<PinIrq<27, 1>>>> = Mutex::new(RefCell::new(None));
 const TICK_US: u32 = 1_000_000;
+#[cfg(feature = "panic-request")]
+const PANIC_PROC0: u32 = 0x0dea_d000;
+#[cfg(feature = "panic-request")]
+const PANIC_PROC1: u32 = 0x0dea_d001;
 
-/// proc0's heartbeat: count the tick and arm the next one.
+/// proc0's heartbeat: count the tick, tell Linux (the declared `heartbeat`), arm the next one.
 #[interrupt(proc0)]
 fn TIMER_0() {
     free(|cs| {
@@ -52,6 +56,7 @@ fn TIMER_0() {
     });
     // The handler is the only writer: a load and a store, no read-modify-write.
     TICKS.store(TICKS.load(Relaxed) + 1, Relaxed);
+    rp1_rt::status::beat();
 }
 /// Linux's doorbell (examples/linux-doorbell): it wrote a request word and forced GPIO27 in
 /// PROC1_INTF. Drop the force, then echo the request as the reply, which Linux polls for.
@@ -65,6 +70,10 @@ fn IO_BANK0() {
     let page = rp1_proto::LINK_START as usize;
     unsafe {
         let request = ((page + link::DOORBELL_REQUEST) as *const u32).read_volatile();
+        #[cfg(feature = "panic-request")]
+        if request == PANIC_PROC1 {
+            panic!("proc1 panic requested by Linux");
+        }
         ((page + link::DOORBELL_REPLY) as *mut u32).write_volatile(request);
     }
     rp1_proto::barrier();
@@ -126,6 +135,15 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     let mut logged = 0;
     loop {
+        #[cfg(feature = "panic-request")]
+        {
+            let page = rp1_proto::LINK_START as usize;
+            let request =
+                unsafe { ((page + link::DOORBELL_REQUEST) as *const u32).read_volatile() };
+            if request == PANIC_PROC0 {
+                panic!("proc0 panic requested by Linux");
+            }
+        }
         let ticks = TICKS.load(Relaxed);
         if ticks != logged {
             logged = ticks;
