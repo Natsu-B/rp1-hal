@@ -130,6 +130,8 @@ fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     rp1_rt::status::record_panic(info);
+    // A literal message: the log path formats nothing that could panic again. It may wait for
+    // the other core's message, so the state is recorded first.
     let _ = log!("PWM_FAIL panic\n");
     loop {
         rp1_rt::wait_for_event();

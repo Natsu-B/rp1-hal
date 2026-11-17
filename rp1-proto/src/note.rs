@@ -388,7 +388,8 @@ impl<'a> ShmRegion<'a> {
 }
 
 /// LINK (non-critical, one per note): what each core declared for the link page. The status
-/// words are at `crate::status::EPOCH`.
+/// words are at `crate::status::EPOCH`. Per core: a byte reserved for a doorbell pin (0xff),
+/// the host interrupt vector (0 = none), the heartbeat period in ms (0 = none).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Link {
     /// proc0, proc1.
@@ -396,8 +397,6 @@ pub struct Link {
 }
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LinkCore {
-    /// Bank-0 pin whose `PROCn_INTF` force bit is this core's doorbell.
-    pub doorbell_pin: Option<u8>,
     /// MSI-X vector this core raises towards Linux.
     pub host_irq_vector: Option<u8>,
     /// Declared `heartbeat.period_ms`.
@@ -414,7 +413,6 @@ impl Link {
             return Err(Error::Invalid);
         }
         let core = |b: &[u8]| LinkCore {
-            doorbell_pin: (b[0] != 0xff).then_some(b[0]),
             host_irq_vector: (b[1] != 0).then_some(b[1]),
             heartbeat_ms: Some(u16::from_le_bytes([b[2], b[3]])).filter(|ms| *ms != 0),
         };
@@ -427,7 +425,7 @@ impl Link {
         v[0] = 1;
         v[2..4].copy_from_slice(&(crate::status::EPOCH as u16).to_le_bytes());
         for (b, c) in v[4..].as_chunks_mut::<4>().0.iter_mut().zip(&self.cores) {
-            b[0] = c.doorbell_pin.unwrap_or(0xff);
+            b[0] = 0xff;
             b[1] = c.host_irq_vector.unwrap_or(0);
             b[2..].copy_from_slice(&c.heartbeat_ms.unwrap_or(0).to_le_bytes());
         }
@@ -529,14 +527,13 @@ mod tests {
                     ..LinkCore::default()
                 },
                 LinkCore {
-                    doorbell_pin: Some(27),
                     host_irq_vector: Some(29),
                     heartbeat_ms: None,
                 },
             ],
         };
         let v = link.encode();
-        assert_eq!(v, [1, 0, 0x40, 0, 0xff, 0, 0xe8, 3, 27, 29, 0, 0]);
+        assert_eq!(v, [1, 0, 0x40, 0, 0xff, 0, 0xe8, 3, 0xff, 29, 0, 0]);
         assert_eq!(Link::parse(&v), Ok(link));
         let mut bad = v;
         bad[2] = 0x50;

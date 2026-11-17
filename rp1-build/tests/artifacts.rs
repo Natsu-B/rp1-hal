@@ -499,7 +499,7 @@ fn link_record_carries_host_irq_and_heartbeat() {
     assert_eq!(link.cores[0].host_irq_vector, None);
     assert_eq!(link.cores[1].host_irq_vector, Some(29));
     assert_eq!(link.cores[1].heartbeat_ms, None);
-    assert!(link.cores.iter().all(|c| c.doorbell_pin.is_none()));
+    assert_eq!([record.value[4], record.value[8]], [0xff, 0xff]);
 }
 #[test]
 fn note_is_deterministic_and_rejects_corruption() {

@@ -105,7 +105,6 @@ pub fn descriptor(
     string(&mut v, "linux_2712.img")?;
     tlv(&mut out, BOOT, true, &v);
     let core = |c: &crate::metadata::Core| LinkCore {
-        doorbell_pin: None,
         host_irq_vector: c.host_irq.then_some(rp1_proto::irq::VECTOR as u8),
         heartbeat_ms: c.heartbeat.map(|h| h.period_ms),
     };

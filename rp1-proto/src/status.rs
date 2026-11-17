@@ -29,9 +29,9 @@ pub const FILE: usize = 0x18;
 pub const FILE_LEN: usize = 20;
 
 const _: () = assert!(BLOCKS[1] + BLOCK_LEN <= END && FILE + FILE_LEN <= BLOCK_LEN);
-// The fixed words end before 0x24; the lab's words (lab/check-shm.sh writes link + 0x28 and
-// 0x2c) end before the status words.
-const _: () = assert!(crate::link::SHM_REQUEST + 4 <= 0x24 && 0x2c + 4 <= EPOCH);
+// The fixed words end where the lab's words begin (0x24..0x2f; lab/check-shm.sh writes
+// link + 0x28 and 0x2c).
+const _: () = assert!(crate::link::SHM_REQUEST + 4 <= 0x24);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CoreState {

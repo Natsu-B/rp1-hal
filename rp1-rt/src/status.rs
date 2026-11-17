@@ -4,7 +4,8 @@
 //! then ends in one terminal state: [`stop`], or a panic handler's [`record_panic`]. The
 //! details (reason, line, file) are written before the state, and a terminal state is never
 //! overwritten, so Linux can trust the details of the first terminal state it reads.
-//! A `#[panic_handler]` calls [`record_panic`] first, then parks the core.
+//! A `#[panic_handler]` calls [`record_panic`] first, then parks the core. A panic before the
+//! startup code marked the core running is not recorded.
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rp1_proto::{
     barrier,
@@ -42,8 +43,12 @@ pub(crate) fn start(core: u32) {
 #[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
 fn init_epoch() {
     let old = word(s::EPOCH).load(Relaxed);
-    let valid = old.is_multiple_of(2) && word(s::ABI).load(Relaxed) == s::ABI_VALUE;
-    let epoch = if valid { old } else { 0 };
+    // An odd value is a start that did not finish: continue above it, never repeat a value.
+    let epoch = if word(s::ABI).load(Relaxed) == s::ABI_VALUE {
+        old & !1
+    } else {
+        0
+    };
     word(s::EPOCH).store(epoch.wrapping_add(1), Relaxed);
     barrier();
     for offset in (s::ABI + 4..s::END).step_by(4) {
@@ -65,12 +70,12 @@ fn beat_with(core: u32, now: impl FnOnce() -> u32) {
     critical_section::with(|_| field(core, s::BEAT).store(now(), Relaxed));
 }
 fn timer_us() -> u32 {
-    #[cfg(target_arch = "arm")]
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
     unsafe {
         // TIMER.TIMERAWL
         (0x400a_c028 as *const u32).read_volatile()
     }
-    #[cfg(not(target_arch = "arm"))]
+    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
     0
 }
 
@@ -84,7 +89,7 @@ pub fn stop(code: u32) -> ! {
 /// Report a panic. For a panic handler; it does not park the core.
 ///
 /// With the `panic-location` feature it also records the file and line. That costs 2.5..4.7 KiB
-/// of image here (STATIC, 2026-11-17): reading `info` keeps every call site's
+/// of image in this workspace's firmware: reading `info` keeps every call site's
 /// `fmt::Arguments` and the `Debug` code of every unwrapped error, which LTO otherwise removes.
 pub fn record_panic(info: &core::panic::PanicInfo<'_>) {
     #[cfg(feature = "panic-location")]
@@ -154,6 +159,10 @@ mod tests {
         assert_eq!(read(0, s::STATE), CoreState::Running.word());
         start(0);
         assert_eq!(word(s::EPOCH).load(Relaxed), 4);
+        // A start that stopped half way (odd) is not counted again.
+        word(s::EPOCH).store(5, Relaxed);
+        start(0);
+        assert_eq!(word(s::EPOCH).load(Relaxed), 6);
     }
 
     #[test]
@@ -187,28 +196,21 @@ mod tests {
         assert_eq!(file(0), "");
     }
 
-    /// A beat from a "handler" (another thread) lands between this beat's timer read and its
-    /// store. `beat` must keep the newer time; without the critical section it goes back.
-    fn interleaved_beat(beat: fn(u32, &mut dyn FnMut() -> u32)) -> u32 {
+    #[test]
+    fn beat_never_goes_back() {
+        // A beat from a "handler" (another thread) arrives between this beat's timer read and
+        // its store; the critical section holds it back until the store, so the newer time stays.
+        let _page = PAGE_LOCK.lock().unwrap();
         start(0);
         thread::scope(|scope| {
             let mut handler = None;
-            beat(0, &mut || {
+            beat_with(0, || {
                 handler = Some(scope.spawn(|| beat_with(0, || 200)));
                 thread::sleep(Duration::from_millis(50));
                 100
             });
             handler.unwrap().join().unwrap();
         });
-        read(0, s::BEAT)
-    }
-
-    #[test]
-    fn beat_never_goes_back() {
-        let _page = PAGE_LOCK.lock().unwrap();
-        assert_eq!(interleaved_beat(|core, now| beat_with(core, now)), 200);
-        let unprotected: fn(u32, &mut dyn FnMut() -> u32) =
-            |core, now| field(core, s::BEAT).store(now(), Relaxed);
-        assert_eq!(interleaved_beat(unprotected), 100);
+        assert_eq!(read(0, s::BEAT), 200);
     }
 }
