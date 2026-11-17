@@ -464,6 +464,8 @@ depth=16
     d.types.insert("u32".into(), TypeInfo::of::<u32>());
     let r = d.regions().unwrap();
     assert_eq!(r[0].sram_len, 384);
+    // 0x00..0xc0 are the fixed, lab and status words (rp1_proto::status).
+    assert_eq!(r[0].sram_offset, 0xc0);
     assert_eq!(r[0].ddr_offset, 65536);
     let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
     assert!(Note::parse(&a.note).is_ok());

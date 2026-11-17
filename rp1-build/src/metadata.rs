@@ -261,7 +261,7 @@ pub struct Region<'a> {
     pub sram_len: u16,
 }
 pub const SCMI_OFFSET: usize = 0x17c0; // Existing scmi_linux.dtb shmem at SRAM + 0xd7c0.
-pub const SRAM_ALLOC_START: usize = 64;
+pub const SRAM_ALLOC_START: usize = rp1_proto::status::END;
 pub const fn align(n: usize, a: usize) -> usize {
     (n + a - 1) & !(a - 1)
 }

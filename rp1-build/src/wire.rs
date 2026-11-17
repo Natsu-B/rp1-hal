@@ -107,7 +107,9 @@ pub fn descriptor(
     let regions = d.regions()?;
     let sram_end = regions
         .last()
-        .map_or(64, |r| u32::from(r.sram_offset) + u32::from(r.sram_len));
+        .map_or(crate::metadata::SRAM_ALLOC_START as u32, |r| {
+            u32::from(r.sram_offset) + u32::from(r.sram_len)
+        });
     v.clear();
     v.extend(
         ShmArea {

@@ -4,6 +4,7 @@
 pub mod bundle;
 pub mod note;
 pub mod shm;
+pub mod status;
 pub use rp1_macros::Message;
 
 pub const SRAM_START: u32 = 0x2000_0000;
@@ -19,7 +20,8 @@ pub const LINK_PHYS: u64 = 0x1f_0040_c000;
 /// Loader -> firmware handoff words live at the start of the link page (see [`link`]).
 pub const HANDOFF: u32 = LINK_START;
 
-/// Fixed words in the first cache line of the link page (shared SRAM 0x2000_c000).
+/// Fixed words in the first cache line of the link page (shared SRAM 0x2000_c000). 0x24..0x3f
+/// are the lab's; [`status`] follows at 0x40.
 pub mod link {
     /// Loader writes `HANDOFF_MAGIC`, then the DDR physical address and size of the
     /// shared-memory reservation, over I2C before it starts RP1.
@@ -32,8 +34,10 @@ pub mod link {
     pub const DOORBELL_REPLY: usize = 0x14;
     /// Written by proc0 after `Area::enable`: the published DDR generation (even) or 0.
     pub const SHM_GENERATION: usize = 0x18;
-    /// 0 = not enabled yet, 1 = ready, other = error code from enable.
+    /// 0 = not enabled yet, 1 = ready, `SHM_WINDOW_LOST`, other = error code from enable.
     pub const SHM_STATUS: usize = 0x1c;
+    /// `SHM_STATUS` after a PCIe reset took the outbound window away.
+    pub const SHM_WINDOW_LOST: u32 = 0x10;
     /// Linux requests initialization after PCIe probe; RP1 enables ATU after the final PERSTn.
     pub const SHM_REQUEST: usize = 0x20;
     pub const MAGIC: u32 = u32::from_le_bytes(*b"RP1H");

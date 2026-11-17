@@ -368,7 +368,7 @@ fn validate_regions(note: &Note<'_>) -> Result<()> {
             return Err("block storage is too short".into());
         }
         if slen != 0
-            && (!within(soff, slen, 64, sram)
+            && (!within(soff, slen, rp1_proto::status::END as u64, sram)
                 || soff % 64 != 0
                 || (soff < 0x18c0 && soff + slen > 0x17c0))
         {

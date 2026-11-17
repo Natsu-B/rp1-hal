@@ -362,7 +362,7 @@ impl<'a> ShmRegion<'a> {
                 .checked_add(r.ddr_len)
                 .is_none_or(|e| e > crate::SHM_MAX)
             || (sram != 0
-                && (start < 64
+                && (start < crate::status::END
                     || !start.is_multiple_of(64)
                     || end > crate::LINK_LEN
                     || (start < 0x18c0 && end > 0x17c0)))
@@ -462,7 +462,7 @@ mod tests {
         let mut v = std::vec![1, 1, 1, 0, 1, 0, 1, 1];
         v.extend(65536u32.to_le_bytes());
         v.extend(ddr_len.to_le_bytes());
-        v.extend(64u16.to_le_bytes());
+        v.extend(0xc0u16.to_le_bytes());
         v.extend(128u16.to_le_bytes());
         v.extend(4u32.to_le_bytes());
         v.extend(depth.to_le_bytes());

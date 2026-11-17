@@ -129,13 +129,13 @@ fn existing_declarations_have_byte_identical_notes_after_conversion() {
     let cases = [
         (
             "examples/dual-core/Cargo.toml",
-            "e482486a731041c79ce549334bfe34367b972ce0a2b9ddaf4f4aa459969cf0a1",
+            "3d7c05b4dd3ee967b6685bd46d861c8b2568795547bbaf84dbc9df5514741e2e",
             "[proc0]\npins=[8,9,10,11,22]\nperipherals=['TIMER.ALARM0','SPI0']\n\
              [proc1]\npins=[2,3,27]\ngpio_irq=[27]\nperipherals=['TIMER.ALARM1','ADC','I2C1']",
         ),
         (
             "lab/shm-firmware/Cargo.toml",
-            "0078b969d9effde052279c0ed1a52e240a9c9f2fb6cede165eace7bf4d7d8905",
+            "af0763c2722407feb4a39a4df2ecfc0a23a6d4da1a25b2d0d01e86f7c3fc759a",
             "[proc0]\npins=[2,3,22]\nperipherals=['TIMER.ALARM0','I2C1']\n\
              [proc1]\npins=[8,9,10,11,27]\ngpio_irq=[27]\nperipherals=['TIMER.ALARM1','ADC','SPI0']",
         ),
