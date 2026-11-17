@@ -122,7 +122,8 @@ fn main1(_core: Proc1, _p: rp1::Proc1Resources) -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    rp1_rt::status::record_panic(info);
     let _ = log!("IRQ_SWEEP_PANIC\n");
     loop {
         rp1_rt::wait_for_event();

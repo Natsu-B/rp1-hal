@@ -497,7 +497,8 @@ unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    rp1_rt::status::record_panic(info);
     loop {
         rp1_rt::wait_for_event();
     }

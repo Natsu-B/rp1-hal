@@ -81,12 +81,16 @@ pub fn stop(code: u32) -> ! {
         crate::wait_for_event();
     }
 }
-/// Report a panic with its file and line. For a panic handler; it does not park the core.
+/// Report a panic. For a panic handler; it does not park the core.
 ///
-/// Reading `info` keeps every panic message, and the `Debug` code of every unwrapped error, in
-/// the image: 2.5..4.7 KiB in the workspace firmware (STATIC, 2026-11-17).
+/// With the `panic-location` feature it also records the file and line. That costs 2.5..4.7 KiB
+/// of image here (STATIC, 2026-11-17): reading `info` keeps every call site's
+/// `fmt::Arguments` and the `Debug` code of every unwrapped error, which LTO otherwise removes.
 pub fn record_panic(info: &core::panic::PanicInfo<'_>) {
+    #[cfg(feature = "panic-location")]
     let (file, line) = info.location().map_or(("", 0), |l| (l.file(), l.line()));
+    #[cfg(not(feature = "panic-location"))]
+    let (file, line, _) = ("", 0, info);
     finish(CORE.load(Relaxed), CoreState::Panicked, 0, line, 0, file);
 }
 /// Report a fault: its exception number, stacked PC and CFSR. For a fault handler.
