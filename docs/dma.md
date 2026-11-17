@@ -63,7 +63,7 @@ dma = {}          # the whole controller: reset, clk_dma, the DMA interrupt line
   flow control no handshake is used either way (HW: both copy correctly). Single-block contiguous mode
   (no LLI) is not what Linux uses; it works on RP1 (HW below).
 - Not in v1: linked lists, interrupts (the line is RP1 IRQ 40, unused), peripheral handshakes.
-- Ring producer: `shm::RingDma` (below, "DMA ring producer").
+- Ring producer: `shm::RingDma`, feature `unstable-ring-dma` (below, "DMA ring producer").
 
 ## Cancellation and the abort register
 

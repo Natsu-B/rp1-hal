@@ -1,4 +1,4 @@
-//! Reject-mode rings: full, wrap, resume, batches, invalid attachments.
+//! The CPU ring paths: full, wrap, resume, batches, generated payloads, invalid attachments.
 use super::mem;
 use crate::Error;
 use crate::shm::access::{ld, st};
@@ -121,4 +121,72 @@ fn invalid_mapping_and_odd_message_size() {
     assert_eq!(rx.pop(), Ok(Some([11, 22, 33])));
     let header = unsafe { HeaderInit::begin(d, u32::MAX) };
     assert_eq!(header.generation(), 2);
+}
+
+/// The CPU generator: a batch across the end of the ring and the index wrap, a full ring that
+/// never calls `fill`, and an overwrite ring given more messages than its depth.
+#[test]
+fn push_with_wraps_stops_when_full_and_overwrites() {
+    let mut data = mem::<{ CONTROL_SIZE + 4 * 16 }>();
+    let mut ctrl = mem::<CONTROL_SIZE>();
+    let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+    let len = CONTROL_SIZE + 4 * 16;
+    unsafe {
+        st(d, HEAD, u32::MAX - 1);
+        st(c, TAIL, u32::MAX - 1);
+    }
+    let mut tx = unsafe { RingTx::<u64>::attach(d, len, c, 128, 4, Overflow::Reject) }.unwrap();
+    let mut rx = unsafe { RingRx::<u64>::attach(d, len, c, 128, 4, Overflow::Reject) }.unwrap();
+    // Slots 2, 3, 0: one head store for the batch.
+    assert_eq!(tx.push_with(3, |k, v| *v = 10 + k as u64), 3);
+    assert_eq!(unsafe { ld(d, HEAD) }, 1);
+    let mut calls = 0;
+    assert_eq!(
+        tx.push_with(5, |_, v| {
+            calls += 1;
+            *v = 13;
+        }),
+        1
+    );
+    assert_eq!(calls, 1);
+    assert_eq!(tx.push_with(5, |_, _| panic!("full")), 0);
+    let mut out = [0u64; 4];
+    assert_eq!(rx.pop_into(&mut out), Ok(4));
+    assert_eq!(out, [10, 11, 12, 13]);
+
+    data.0.fill(0);
+    ctrl.0.fill(0);
+    let mut tx = unsafe { RingTx::<u64>::attach(d, len, c, 128, 4, Overflow::Overwrite) }.unwrap();
+    let mut rx = unsafe { RingRx::<u64>::attach(d, len, c, 128, 4, Overflow::Overwrite) }.unwrap();
+    assert_eq!(tx.push_with(6, |k, v| *v = k as u64), 6);
+    assert_eq!(rx.pop(), Err(Error::Lost(2)));
+    let got: vec::Vec<_> = core::iter::from_fn(|| rx.pop().unwrap()).collect();
+    assert_eq!(got, [2, 3, 4, 5]);
+}
+
+/// A panicking generator publishes nothing on a reject ring: `head` and the remote `dropped`
+/// count stay as they were until the next successful batch.
+#[test]
+fn push_with_panic_publishes_nothing() {
+    let mut data = mem::<{ CONTROL_SIZE + 4 * 16 }>();
+    let mut ctrl = mem::<CONTROL_SIZE>();
+    let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+    let len = CONTROL_SIZE + 4 * 16;
+    let mut tx = unsafe { RingTx::<u64>::attach(d, len, c, 128, 4, Overflow::Reject) }.unwrap();
+    assert_eq!(tx.push_with(4, |_, v| *v = 1), 4);
+    assert_eq!(tx.push(&2), Err(Error::Full));
+    unsafe { st(c, TAIL, 4) };
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tx.push_with(2, |k, v| {
+            if k == 1 {
+                panic!("generator");
+            }
+            *v = 3;
+        });
+    }));
+    assert!(panic.is_err());
+    assert_eq!(tx.head(), 4);
+    assert_eq!(unsafe { (ld(d, HEAD), ld(d, DROPPED)) }, (4, 0));
+    assert_eq!(tx.push_with(1, |_, v| *v = 4), 1);
+    assert_eq!(unsafe { ld(d, DROPPED) }, 1);
 }

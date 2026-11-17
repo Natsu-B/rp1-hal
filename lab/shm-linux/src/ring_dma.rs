@@ -9,6 +9,8 @@ use protocol::{
     GENERATE_DMA, Perf,
 };
 const BASELINE_BATCH_CAPACITY: [u32; 3] = [32, 32, 8];
+/// The firmware's `rp1_hal::shm::RingDma::DEFAULT_THRESHOLD` (staged bytes that go by DMA).
+const DMA_THRESHOLD: usize = 256;
 use crate::{Control, response, sample};
 use rp1_linux::{BlockMap, Firmware, Irq, Result, RingRx};
 use rp1_proto::Error;
@@ -442,7 +444,7 @@ fn path_matches(mode: u32, batch: u32, phase_count: u32, size: usize, dma: u32, 
         // Backpressure may send partial batches through the CPU.
         AUTO | GENERATE_AUTO
             if batch.min(phase_count) as usize * rp1_proto::shm::slot_size(size)
-                >= rp1_hal::shm::RingDma::DEFAULT_THRESHOLD =>
+                >= DMA_THRESHOLD =>
         {
             dma > 0
         }
