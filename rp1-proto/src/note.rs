@@ -29,6 +29,7 @@ pub const LOG: u16 = 0x12;
 pub const BOOT: u16 = 0x13;
 pub const SHM_AREA: u16 = 0x20;
 pub const SHM_REGION: u16 = 0x21;
+pub const LINK: u16 = 0x22;
 
 pub const fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = !0u32;
@@ -386,6 +387,54 @@ impl<'a> ShmRegion<'a> {
     }
 }
 
+/// LINK (non-critical, one per note): what each core declared for the link page. The status
+/// words are at `crate::status::EPOCH`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Link {
+    /// proc0, proc1.
+    pub cores: [LinkCore; 2],
+}
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LinkCore {
+    /// Bank-0 pin whose `PROCn_INTF` force bit is this core's doorbell.
+    pub doorbell_pin: Option<u8>,
+    /// MSI-X vector this core raises towards Linux.
+    pub host_irq_vector: Option<u8>,
+    /// Declared `heartbeat.period_ms`.
+    pub heartbeat_ms: Option<u16>,
+}
+pub const LINK_LEN: usize = 12;
+impl Link {
+    pub fn parse(v: &[u8]) -> Result<Self, Error> {
+        if v.len() != LINK_LEN
+            || v[0] != 1
+            || v[1] != 0
+            || usize::from(u16_at(v, 2)?) != crate::status::EPOCH
+        {
+            return Err(Error::Invalid);
+        }
+        let core = |b: &[u8]| LinkCore {
+            doorbell_pin: (b[0] != 0xff).then_some(b[0]),
+            host_irq_vector: (b[1] != 0).then_some(b[1]),
+            heartbeat_ms: Some(u16::from_le_bytes([b[2], b[3]])).filter(|ms| *ms != 0),
+        };
+        Ok(Self {
+            cores: [core(&v[4..8]), core(&v[8..12])],
+        })
+    }
+    pub fn encode(&self) -> [u8; LINK_LEN] {
+        let mut v = [0; LINK_LEN];
+        v[0] = 1;
+        v[2..4].copy_from_slice(&(crate::status::EPOCH as u16).to_le_bytes());
+        for (b, c) in v[4..].as_chunks_mut::<4>().0.iter_mut().zip(&self.cores) {
+            b[0] = c.doorbell_pin.unwrap_or(0xff);
+            b[1] = c.host_irq_vector.unwrap_or(0);
+            b[2..].copy_from_slice(&c.heartbeat_ms.unwrap_or(0).to_le_bytes());
+        }
+        v
+    }
+}
+
 pub struct Records<'a> {
     bytes: &'a [u8],
 }
@@ -469,6 +518,30 @@ mod tests {
         v.extend([0; 16]);
         v.extend([2, b'u', b'p', 3, b'u', b'3', b'2']);
         v
+    }
+
+    #[test]
+    fn link_round_trips() {
+        let link = Link {
+            cores: [
+                LinkCore {
+                    heartbeat_ms: Some(1000),
+                    ..LinkCore::default()
+                },
+                LinkCore {
+                    doorbell_pin: Some(27),
+                    host_irq_vector: Some(29),
+                    heartbeat_ms: None,
+                },
+            ],
+        };
+        let v = link.encode();
+        assert_eq!(v, [1, 0, 0x40, 0, 0xff, 0, 0xe8, 3, 27, 29, 0, 0]);
+        assert_eq!(Link::parse(&v), Ok(link));
+        let mut bad = v;
+        bad[2] = 0x50;
+        assert_eq!(Link::parse(&bad), Err(Error::Invalid));
+        assert_eq!(Link::parse(&v[..11]), Err(Error::Invalid));
     }
 
     #[test]

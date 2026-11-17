@@ -220,7 +220,7 @@ impl Default for Stack {
     }
 }
 pub use crate::board::{Gpiomem, Linux, OnConflict};
-pub use crate::declaration::{Core, I2cPins, Instance, PwmPins, SpiPins, UartPins};
+pub use crate::declaration::{Core, Heartbeat, I2cPins, Instance, PwmPins, SpiPins, UartPins};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

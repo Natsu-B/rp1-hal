@@ -330,6 +330,10 @@ pub struct Core {
     /// unstable) and the overlay adds the `rp1:irq` UIO node.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub host_irq: bool,
+    /// `heartbeat = { period_ms = N }`: this core calls `rp1_rt::status::beat` at least every
+    /// N ms, so Linux may judge it stalled (note LINK).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heartbeat: Option<Heartbeat>,
     #[serde(flatten)]
     pub instances: BTreeMap<String, Instance>,
     // Ordering hints preserve schema 1 note bytes without making the old lists authoritative.
@@ -337,6 +341,12 @@ pub struct Core {
     pin_order: Vec<u8>,
     #[serde(skip)]
     peripheral_order: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Heartbeat {
+    pub period_ms: u16,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -412,6 +422,13 @@ impl Core {
         }
         if let Some(v) = values.remove("host_irq") {
             core.host_irq = field(v, format!("{owner}.host_irq"))?;
+        }
+        if let Some(v) = values.remove("heartbeat") {
+            let heartbeat: Heartbeat = field(v, format!("{owner}.heartbeat"))?;
+            if heartbeat.period_ms == 0 {
+                return Err(format!("E0: {owner}.heartbeat.period_ms must be at least 1").into());
+            }
+            core.heartbeat = Some(heartbeat);
         }
         for (name, value) in values {
             core.instances

@@ -440,3 +440,23 @@ fn dma_is_one_pinless_controller_owned_by_one_core() {
             .any(|(b, _)| *b == "DMA")
     );
 }
+
+#[test]
+fn heartbeat_period() {
+    let d = parse("[proc0]\nheartbeat={period_ms=100}");
+    d.validate().unwrap();
+    assert_eq!(d.proc0.heartbeat.map(|h| h.period_ms), Some(100));
+    assert_eq!(d.proc1.heartbeat, None);
+    error(
+        "[proc0]\nheartbeat={period_ms=0}",
+        &["E0", "proc0.heartbeat.period_ms must be at least 1"],
+    );
+    error(
+        "[proc1]\nheartbeat={period=100}",
+        &["E0", "proc1.heartbeat"],
+    );
+    error(
+        "[proc1]\nheartbeat={period_ms=70000}",
+        &["E0", "proc1.heartbeat"],
+    );
+}

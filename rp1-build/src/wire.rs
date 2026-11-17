@@ -104,6 +104,15 @@ pub fn descriptor(
     v = vec![0; 64];
     string(&mut v, "linux_2712.img")?;
     tlv(&mut out, BOOT, true, &v);
+    let core = |c: &crate::metadata::Core| LinkCore {
+        doorbell_pin: None,
+        host_irq_vector: c.host_irq.then_some(rp1_proto::irq::VECTOR as u8),
+        heartbeat_ms: c.heartbeat.map(|h| h.period_ms),
+    };
+    let link = Link {
+        cores: [core(&d.proc0), core(&d.proc1)],
+    };
+    tlv(&mut out, LINK, false, &link.encode());
     let regions = d.regions()?;
     let sram_end = regions
         .last()

@@ -3,7 +3,7 @@ use rp1_build::{
     metadata::{Declaration, I2cPins, Instance, SpiPins, TypeInfo, UartPins},
 };
 use rp1_proto::note::ownership_kind;
-use rp1_proto::note::{ENTRY, Note};
+use rp1_proto::note::{ENTRY, LINK, Link, Note};
 use std::{fs, path::Path, process::Command};
 
 fn declaration() -> Declaration {
@@ -482,6 +482,24 @@ depth=16
     assert!(d.regions().is_err());
     d.shm[0].placement = Some("linux".into());
     assert!(d.validate().is_err());
+}
+#[test]
+fn link_record_carries_host_irq_and_heartbeat() {
+    let d: Declaration =
+        toml::from_str("schema=2\n[proc0]\nheartbeat={period_ms=250}\n[proc1]\nhost_irq=true")
+            .unwrap();
+    d.validate().unwrap();
+    let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    let note = Note::parse(&a.note).unwrap();
+    let record = note.get(LINK).unwrap();
+    // Not critical: loaders that predate it skip it.
+    assert_eq!(record.flags, 0);
+    let link = Link::parse(record.value).unwrap();
+    assert_eq!(link.cores[0].heartbeat_ms, Some(250));
+    assert_eq!(link.cores[0].host_irq_vector, None);
+    assert_eq!(link.cores[1].host_irq_vector, Some(29));
+    assert_eq!(link.cores[1].heartbeat_ms, None);
+    assert!(link.cores.iter().all(|c| c.doorbell_pin.is_none()));
 }
 #[test]
 fn note_is_deterministic_and_rejects_corruption() {
