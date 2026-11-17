@@ -54,7 +54,8 @@ pub struct RingTx<T> {
     dropped_dirty: bool,
     /// The odd `waiting` value (reader sleep) already notified; 0 = none.
     pub(super) woken: u32,
-    /// A failed copy may leave remote writes in flight.
+    /// A failed DMA copy may leave remote writes in flight.
+    #[cfg(feature = "unstable-ring-dma")]
     pub(super) fenced: bool,
     _t: PhantomData<fn(T)>,
 }
@@ -99,9 +100,18 @@ impl<T: Message> RingTx<T> {
             dropped_dirty: false,
             // A reader already asleep when this writer attaches is notified on the next call.
             woken: 0,
+            #[cfg(feature = "unstable-ring-dma")]
             fenced: false,
             _t: PhantomData,
         })
+    }
+    /// Only a failed DMA copy fences a writer; without the DMA producer this is constant.
+    #[inline(always)]
+    fn fenced(&self) -> bool {
+        #[cfg(feature = "unstable-ring-dma")]
+        return self.fenced;
+        #[cfg(not(feature = "unstable-ring-dma"))]
+        false
     }
     #[inline]
     fn slot(&self, index: u32) -> *mut u8 {
@@ -112,7 +122,7 @@ impl<T: Message> RingTx<T> {
     }
     /// Free slots as last seen (reads the local `tail`).
     pub fn free(&self) -> u32 {
-        if self.fenced {
+        if self.fenced() {
             return 0;
         }
         let tail = unsafe { ld(self.ctrl, TAIL) };
@@ -121,7 +131,7 @@ impl<T: Message> RingTx<T> {
     /// Slots this writer can publish now (all slots for overwrite, zero when fenced).
     /// Reject mode refreshes the cached tail only when necessary.
     pub fn writable(&mut self) -> u32 {
-        if self.fenced {
+        if self.fenced() {
             0
         } else if self.overflow == Overflow::Overwrite {
             self.mask + 1
@@ -162,7 +172,7 @@ impl<T: Message> RingTx<T> {
     /// Publish one message. Order: payload, seq, length → barrier → head (protocol.md §2.3).
     #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn push(&mut self, value: &T) -> Result<(), Error> {
-        if self.fenced {
+        if self.fenced() {
             return Err(Error::NotReady);
         }
         let len = size_of::<T>() as u32;
@@ -208,7 +218,7 @@ impl<T: Message> RingTx<T> {
     /// `dropped`; the caller still holds the rest. `overwrite` rings push one by one.
     #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn push_slice(&mut self, values: &[T]) -> usize {
-        if self.fenced {
+        if self.fenced() {
             return 0;
         }
         if self.overflow == Overflow::Overwrite {
@@ -250,7 +260,7 @@ impl<T: Message> RingTx<T> {
     /// An overwrite ring may have published earlier messages.
     #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn push_with(&mut self, count: usize, mut fill: impl FnMut(usize, &mut T)) -> usize {
-        if self.fenced {
+        if self.fenced() {
             return 0;
         }
         let n = match self.overflow {

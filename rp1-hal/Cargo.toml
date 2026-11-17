@@ -8,6 +8,9 @@ license.workspace = true
 # proc1 -> Linux interrupt on RP1 MSI-X vector 29 (`host_irq`, TIMER alarm 3, which host_irq
 # owns). Unstable: delivery is a hint that receivers must re-check (docs/design.md 6.2).
 unstable-host-irq = []
+# DMA ring producer (`shm::RingDma`, `SlotCopy` for `dma::Channel`). Unstable: the DMA
+# ordering chain is a hypothesis and the last hardware campaign failed (docs/dma.md).
+unstable-ring-dma = ["rp1-proto/unstable-ring-dma"]
 
 [dependencies]
 rp1-pac = { path = "../rp1-pac" }

@@ -333,6 +333,7 @@ impl<const N: u8> Channel<N> {
 
 /// Bound of one block of a ring copy ([`rp1_proto::shm::SlotCopy`]); a 64 KiB block takes
 /// about 0.3 ms (HW, docs/dma.md).
+#[cfg(feature = "unstable-ring-dma")]
 pub const RING_TIMEOUT_US: u32 = 10_000;
 
 /// A channel moves staged ring slots into the reader's memory for
@@ -344,6 +345,7 @@ pub const RING_TIMEOUT_US: u32 = 10_000;
 /// nothing but `dst..dst + src.len()`. All blocks set bit30 and AW_CACHE=0; the assumed
 /// response-to-PCIe-ordering-point chain is documented as HYP in docs/dma.md. On error the
 /// engine stops reading src, but accepted remote writes may remain: RingTx fences reuse.
+#[cfg(feature = "unstable-ring-dma")]
 unsafe impl<const N: u8> rp1_proto::shm::SlotCopy for Channel<N> {
     type Error = Error;
     unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Error> {
@@ -353,6 +355,7 @@ unsafe impl<const N: u8> rp1_proto::shm::SlotCopy for Channel<N> {
 
 /// # Safety
 /// `src..src+len` readable and `dst..dst+len` writable by the DMAC, nothing else writes `dst`.
+#[cfg(feature = "unstable-ring-dma")]
 unsafe fn ring_copy(
     io: &mut impl Hardware,
     n: u8,
@@ -766,6 +769,7 @@ mod tests {
         f.writes.iter().rev().find(|w| w.0 == a).unwrap().1
     }
 
+    #[cfg(feature = "unstable-ring-dma")]
     #[test]
     fn ring_copy_moves_staged_slots_from_sram_to_the_window() {
         let mut f = running();

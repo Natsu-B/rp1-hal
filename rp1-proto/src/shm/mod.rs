@@ -13,11 +13,13 @@
 //! - no exclusive (LDREX/STREX) or RMW access; every shared word has a single writer.
 //!
 //! This module holds the layout constants; the mapping accessors are in `access`, the ring
-//! ends in `ring`, the sleep/notify handshake in `wait`, the DMA producer in `staged`.
+//! ends in `ring`, the sleep/notify handshake in `wait`, the DMA producer (feature
+//! `unstable-ring-dma`) in `staged`.
 mod access;
 mod block;
 mod header;
 mod ring;
+#[cfg(feature = "unstable-ring-dma")]
 mod staged;
 #[cfg(test)]
 mod tests;
@@ -27,6 +29,7 @@ pub use access::{copy_from_mapping, copy_to_mapping};
 pub use block::{Block, BlockReader, BlockWriter};
 pub use header::{Header, HeaderInit};
 pub use ring::{Overflow, RingRx, RingTx};
+#[cfg(feature = "unstable-ring-dma")]
 pub use staged::{SlotCopy, Staged};
 pub use wait::{Wait, Waiter, wait_any_with};
 

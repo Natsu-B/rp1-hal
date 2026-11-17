@@ -11,3 +11,6 @@ rp1-macros = { path = "../rp1-macros" }
 # Place the ring hot paths (push/pop and their batch forms) in core-local ISRAM on RP1.
 default = ["isram"]
 isram = []
+# The DMA ring producer (`shm::SlotCopy`, `RingTx::push_*_staged`). Unstable: its ordering
+# chain is a hypothesis and the last hardware campaign failed (docs/dma.md).
+unstable-ring-dma = []

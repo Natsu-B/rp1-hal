@@ -5,6 +5,7 @@ mod block;
 pub(super) mod model;
 mod overwrite;
 mod ring;
+#[cfg(feature = "unstable-ring-dma")]
 mod staged;
 mod wait;
 

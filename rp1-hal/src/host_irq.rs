@@ -124,6 +124,7 @@ impl HostIrq {
     /// Channel's AXI-to-PCIe ordering chain remains HYP (docs/dma.md). The notification reads
     /// `head` back; it does not verify the payload or establish that ordering chain.
     /// Accepts any blocking [`SlotCopy`](crate::shm::SlotCopy), including channel wrappers.
+    #[cfg(feature = "unstable-ring-dma")]
     #[inline(always)]
     pub fn push_slice_dma_notify<T: rp1_proto::Message, C: crate::shm::SlotCopy>(
         &mut self,
@@ -139,6 +140,7 @@ impl HostIrq {
     /// [`crate::shm::RingDma::push_with`] then [`HostIrq::notify_ring`], including on full
     /// rings and errors. Uses the same ordering and notification contract as
     /// [`HostIrq::push_slice_dma_notify`]. See the [callback contract](crate::shm::RingTx::push_with).
+    #[cfg(feature = "unstable-ring-dma")]
     #[inline(always)]
     pub fn push_with_dma_notify<T: rp1_proto::Message, C: crate::shm::SlotCopy>(
         &mut self,
