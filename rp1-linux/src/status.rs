@@ -50,8 +50,9 @@ pub enum Health {
     },
 }
 
-/// Reads the status words. Works with any rp1-hal firmware, before shared memory is enabled, and
-/// next to the process that holds [`super::Firmware`].
+/// Reads the status words of a firmware whose note has a LINK record (every firmware built with
+/// this rp1-hal), also before shared memory is enabled and next to the process that holds
+/// [`super::Firmware`].
 pub struct Monitor {
     link: Rc<Mapping>,
     heartbeat_ms: [Option<u16>; 2],
@@ -69,14 +70,14 @@ impl Monitor {
         Self::new(link, &note)
     }
     pub(crate) fn new(link: Rc<Mapping>, note: &[u8]) -> Result<Self> {
-        let declared = Note::parse(note)?
+        // Without the record the words at 0x40.. are not status words, or are stale ones (the
+        // loader does not clear them).
+        let record = Note::parse(note)?
             .get(LINK)
-            .map(|r| Link::parse(r.value))
-            .transpose()?
-            .unwrap_or_default();
+            .ok_or("this firmware has no status words (no LINK note record)")?;
         Ok(Self {
             link,
-            heartbeat_ms: declared.cores.map(|c| c.heartbeat_ms),
+            heartbeat_ms: Link::parse(record.value)?.cores.map(|c| c.heartbeat_ms),
         })
     }
 
@@ -145,32 +146,53 @@ impl Monitor {
     /// declared heartbeat did not change between two reads, else `Ok`.
     ///
     /// The reads are `max(window, 2 × the largest declared period)` apart, so a core that beats
-    /// at its declared period is never reported stalled. Without a declared heartbeat it
-    /// returns after one read. `Err(Reset)`: the firmware restarted in between.
+    /// at its declared period is never reported stalled. A beat that is unchanged over a longer
+    /// interval is read once more after `2 ×` that period: the 32-bit µs timer comes round to
+    /// the same value every ~71.6 min. Without a declared heartbeat it returns after one read.
+    /// `Err(Reset)`: the firmware restarted in between.
     pub fn health(&self, window: Duration) -> Result<Health> {
-        let first = self.status()?;
-        if let Some(down) = down(&first) {
-            return Ok(down);
-        }
-        let Some(period) = self.heartbeat_ms.iter().flatten().max() else {
-            return Ok(Health::Ok);
-        };
-        std::thread::sleep(window.max(2 * Duration::from_millis((*period).into())));
-        let second = self.status()?;
-        if second.epoch != first.epoch {
+        judge(
+            self.heartbeat_ms,
+            window,
+            || self.status(),
+            std::thread::sleep,
+        )
+    }
+}
+/// [`Monitor::health`] over `read` and `sleep`.
+fn judge(
+    heartbeat_ms: [Option<u16>; 2],
+    window: Duration,
+    mut read: impl FnMut() -> Result<Status>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<Health> {
+    let mut before = read()?;
+    if let Some(down) = down(&before) {
+        return Ok(down);
+    }
+    let Some(period) = heartbeat_ms.iter().flatten().max() else {
+        return Ok(Health::Ok);
+    };
+    let short = 2 * Duration::from_millis((*period).into());
+    let mut interval = window.max(short);
+    loop {
+        sleep(interval);
+        let after = read()?;
+        if after.epoch != before.epoch {
             return Err(Error::Reset.into());
         }
-        if let Some(down) = down(&second) {
+        if let Some(down) = down(&after) {
             return Ok(down);
         }
-        for core in 0..2 {
-            if self.heartbeat_ms[core].is_some()
-                && first.cores[core].beat == second.cores[core].beat
-            {
-                return Ok(Health::Stalled { core: core as u8 });
-            }
+        let unchanged = (0..2).find(|&core| {
+            heartbeat_ms[core].is_some() && before.cores[core].beat == after.cores[core].beat
+        });
+        match unchanged {
+            None => return Ok(Health::Ok),
+            Some(_) if interval > short => interval = short,
+            Some(core) => return Ok(Health::Stalled { core: core as u8 }),
         }
-        Ok(Health::Ok)
+        before = after;
     }
 }
 fn down(status: &Status) -> Option<Health> {
@@ -257,8 +279,8 @@ mod tests {
 
     #[test]
     fn short_window_does_not_stall_a_healthy_core() {
-        // proc0 declares 20 ms and beats every 10 ms; proc1 declares nothing and never beats.
-        let m = monitor([Some(20), None]);
+        // proc0 declares 200 ms and beats every 10 ms; proc1 declares nothing and never beats.
+        let m = monitor([Some(200), None]);
         let beat = unsafe { &*m.link.ptr().add(s::BLOCKS[0] + s::BEAT).cast::<AtomicU32>() };
         let stop = AtomicBool::new(false);
         thread::scope(|scope| {
@@ -270,17 +292,53 @@ mod tests {
             });
             let start = Instant::now();
             assert_eq!(m.health(Duration::from_millis(1)).unwrap(), Health::Ok);
-            assert!(start.elapsed() >= Duration::from_millis(40));
+            assert!(start.elapsed() >= Duration::from_millis(400));
             stop.store(true, Relaxed);
         });
-        assert_eq!(
-            m.health(Duration::from_millis(1)).unwrap(),
-            Health::Stalled { core: 0 }
-        );
         // No declared heartbeat: one read, no wait.
         let start = Instant::now();
         let m = monitor([None; 2]);
         assert_eq!(m.health(Duration::from_secs(60)).unwrap(), Health::Ok);
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    /// `judge` with proc0 declaring 200 ms and these proc0 beats read in turn; returns the
+    /// result and the sleeps it asked for.
+    fn judge_beats(window: Duration, beats: &[u32]) -> (Health, Vec<Duration>) {
+        let mut reads = beats.iter().map(|&beat| Status {
+            epoch: 2,
+            shm: ShmState::NotEnabled,
+            shm_generation: 0,
+            cores: [0, 1].map(|core| CoreStatus {
+                state: CoreState::Running,
+                beat: if core == 0 { beat } else { 0 },
+                ..CoreStatus::default()
+            }),
+        });
+        let mut sleeps = Vec::new();
+        let health = judge(
+            [Some(200), None],
+            window,
+            || Ok(reads.next().unwrap()),
+            |d| sleeps.push(d),
+        );
+        assert!(reads.next().is_none(), "unused reads");
+        (health.unwrap(), sleeps)
+    }
+
+    #[test]
+    fn equal_beats_after_a_long_window_are_read_again() {
+        let (long, short) = (Duration::from_secs(4296), Duration::from_millis(400));
+        // The timer came round to the same value over the long window, then moved on.
+        assert_eq!(
+            judge_beats(long, &[5, 5, 6]),
+            (Health::Ok, vec![long, short])
+        );
+        // A real stall stays unchanged over the short interval too.
+        let stalled = Health::Stalled { core: 0 };
+        assert_eq!(judge_beats(long, &[5, 5, 5]), (stalled, vec![long, short]));
+        // Over the short interval already: no second look.
+        assert_eq!(judge_beats(Duration::ZERO, &[5, 5]), (stalled, vec![short]));
+        assert_eq!(judge_beats(long, &[5, 9]), (Health::Ok, vec![long]));
     }
 }
