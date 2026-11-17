@@ -2,7 +2,8 @@
 //! Two cores share code; ordinary statics have a private DSRAM copy on each core.
 //!
 //! Startup contract: each core installs its own vector table, disables all 64 NVIC
-//! lines, clears pending IRQs, sets their priority to 4, and enters main with PRIMASK
+//! lines, clears pending IRQs, sets their priority to 4, marks itself running in the link
+//! page's [`status`] words (proc0 first starts a new epoch), and enters main with PRIMASK
 //! cleared. Peripheral IRQs remain disabled until explicitly enabled. Unhandled external
 //! IRQs mask themselves and update [`interrupt::unhandled`]; system exceptions still stop
 //! in the default handler.
@@ -12,6 +13,7 @@ pub use rp1_proto::SharedSafe;
 pub mod interrupt;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod startup;
+pub mod status;
 pub mod sync;
 pub use rp1_pac as pac;
 

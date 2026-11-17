@@ -73,6 +73,7 @@ unsafe extern "C" fn __rp1_initialize(core: u32) -> ! {
         (0xe000_ed08 as *mut u32).write_volatile(vectors as u32);
         core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags));
         crate::interrupt::reset_all_lines();
+        crate::status::start(core);
         core::arch::asm!(
             "dsb sy",
             "isb sy",
