@@ -46,10 +46,7 @@ const USB_CLOCKS: [usize; 4] = [0x4001_80f4, 0x4001_8104, 0x4001_8114, 0x4001_81
 /// - USBHOSTn_CFG +0 = 1. Without it an access to the xHCI (AXI) never completes and wedges the
 ///   RP1 fabric for the M3 and PCIe alike (HW: M3 read of 0x4020_c120 hung).
 /// - VBUSCTRL +0 = 0x1111, +4 = 0x0200_1111.
-/// - ETH_CFG INTE.ETHERNET (+0x20 bit 0). The GEM interrupt reaches the RP1 interrupt
-///   controller (MSI-X vector 6) only through this wrapper enable, and macb does not program
-///   ETH_CFG. Without it frames go out and come back (HW: GEM frame counters, host capture) but
-///   eth0 never takes an interrupt, so ARP never completes.
+/// - The interrupt-output enables in [`IRQ_ENABLES`].
 const PADS_ETH: usize = 0x400f_c000;
 const PADS_ETH_BIT: u32 = 1 << 25;
 const PAD_ENABLED: u32 = 0x40;
@@ -57,8 +54,22 @@ const USBHOST_CFG: [usize; 2] = [0x4016_0000, 0x4016_4000];
 const VBUSCTRL: usize = 0x4017_0000;
 const VBUSCTRL_BIT: u32 = 1 << 2;
 const VBUSCTRL_STOCK: [u32; 2] = [0x1111, 0x0200_1111];
-const ETH_CFG_INTE: usize = 0x4010_4020;
 const ETH_IP_BIT: u32 = 1 << 5;
+/// Interrupt-output enables of the Linux blocks: the stock firmware sets them at the end of its
+/// init (F6588 table at 0x2000455c) and no Linux driver does. Without them the block's
+/// interrupt never reaches Linux (HW: macb never completes ARP, i2c_designware and spi-dw time
+/// out). USB +0x98 is not needed (HW: xhci interrupts arrive with it 0) and I2S is untested;
+/// both mirror the stock firmware. SDIO (+0x28 = 3 in the same table) is left out: its resets
+/// are not Linux's here, so the block stays in reset.
+/// Each row: (reset bank, reset bit of the first instance, instances, register, stride, bits).
+const IRQ_ENABLES: [(usize, u32, u32, usize, usize, u32); 6] = [
+    (0, 5, 1, 0x4010_4020, 0, 1),            // ETH_CFG INTE.ETHERNET
+    (0, 7, 7, 0x4007_0108, 0x4000, 1),       // I2C0..6 IRQ_EN
+    (0, 14, 3, 0x400a_0408, 0x4000, 0xffff), // I2S0..2
+    (1, 10, 8, 0x4005_0108, 0x4000, 1),      // SPI0..7 IRQ_EN
+    (1, 18, 1, 0x4004_c108, 0, 1),           // SPI8 IRQ_EN
+    (2, 0, 2, 0x4016_0098, 0x4000, 1),       // USBHOST0/1 cfg +0x98
+];
 /// SCMI clocks that run before Linux probes, as under the stock firmware.
 const STARTED: [u32; 3] = [
     crate::scmi::id::DMA,
@@ -197,12 +208,6 @@ pub(crate) fn bring_up(r: &mut impl Hardware, blocks: LinuxBlocks) -> Result<Rep
         }
     }
     // After the release: these blocks ignore writes while in reset.
-    if resets[0] & ETH_IP_BIT != 0 {
-        let inte = r.read(ETH_CFG_INTE);
-        if inte & 1 == 0 {
-            r.write(ETH_CFG_INTE, inte | 1);
-        }
-    }
     let mut set = |a: usize, v: u32| {
         if r.read(a) != v {
             r.write(a, v);
@@ -221,6 +226,18 @@ pub(crate) fn bring_up(r: &mut impl Hardware, blocks: LinuxBlocks) -> Result<Rep
     if resets[2] & VBUSCTRL_BIT != 0 {
         set(VBUSCTRL, VBUSCTRL_STOCK[0]);
         set(VBUSCTRL + 4, VBUSCTRL_STOCK[1]);
+    }
+    for (bank, first, count, reg, stride, bits) in IRQ_ENABLES {
+        for i in 0..count {
+            if resets[bank] & (1 << (first + i)) == 0 {
+                continue;
+            }
+            let a = reg + stride * i as usize;
+            let v = r.read(a);
+            if v & bits != bits {
+                r.write(a, v | bits);
+            }
+        }
     }
     Ok(Report {
         released: resets,
@@ -339,16 +356,15 @@ mod tests {
                 (RESETS_CLR + 8, ALLOWED[2])
             ]
         );
-        assert_eq!(f.writes[n + 3], (ETH_CFG_INTE, 1));
-        let after: Vec<_> = f.writes[n + 4..].to_vec();
-        assert_eq!(after.len(), 15 + 2 + 2);
+        let after: Vec<_> = f.writes[n + 3..].to_vec();
+        assert_eq!(after.len(), 15 + 2 + 2 + STOCK_IRQ_ENABLES.len());
         assert!(
             after[..15]
                 .iter()
                 .all(|&(a, v)| (PADS_ETH + 4..=PADS_ETH + 0x3c).contains(&a) && v == PAD_ENABLED)
         );
         assert_eq!(
-            after[15..],
+            after[15..19],
             [
                 (USBHOST_CFG[0], 1),
                 (USBHOST_CFG[1], 1),
@@ -356,7 +372,34 @@ mod tests {
                 (VBUSCTRL + 4, 0x0200_1111)
             ]
         );
+        assert_eq!(after[19..], STOCK_IRQ_ENABLES);
     }
+
+    /// The stock firmware table entries for the blocks in [`ALLOWED`], in its order.
+    const STOCK_IRQ_ENABLES: [(usize, u32); 22] = [
+        (0x4010_4020, 1),
+        (0x4007_0108, 1),
+        (0x4007_4108, 1),
+        (0x4007_8108, 1),
+        (0x4007_c108, 1),
+        (0x4008_0108, 1),
+        (0x4008_4108, 1),
+        (0x4008_8108, 1),
+        (0x400a_0408, 0xffff),
+        (0x400a_4408, 0xffff),
+        (0x400a_8408, 0xffff),
+        (0x4005_0108, 1),
+        (0x4005_4108, 1),
+        (0x4005_8108, 1),
+        (0x4005_c108, 1),
+        (0x4006_0108, 1),
+        (0x4006_4108, 1),
+        (0x4006_8108, 1),
+        (0x4006_c108, 1),
+        (0x4004_c108, 1),
+        (0x4016_0098, 1),
+        (0x4016_4098, 1),
+    ];
 
     #[test]
     fn running_state_is_left_alone() {
@@ -374,10 +417,21 @@ mod tests {
     #[test]
     fn declared_blocks_are_not_released_and_usb_clocks_follow_usb() {
         let mut f = cold();
-        // e.g. an image that owns I2C1 and UART0; no USB for Linux.
-        let blocks =
-            unsafe { LinuxBlocks::new([ALLOWED[0] & !(1 << 8), ALLOWED[1] & !(1 << 26), 0]) };
+        // e.g. an image that owns I2C1, SPI0 and UART0; no USB for Linux.
+        let blocks = unsafe {
+            LinuxBlocks::new([
+                ALLOWED[0] & !(1 << 8),
+                ALLOWED[1] & !(1 << 26) & !(1 << 10),
+                0,
+            ])
+        };
         let report = bring_up(&mut f, blocks).unwrap();
+        // The owned blocks' drivers own their interrupt-output enables.
+        for owned in [0x4007_4108, 0x4005_0108, 0x4016_0098, 0x4016_4098] {
+            assert!(!f.regs.contains_key(&owned), "0x{owned:x}");
+        }
+        assert_eq!(f.regs[&0x4007_0108], 1);
+        assert_eq!(f.regs[&0x4005_4108], 1);
         assert_eq!(f.regs[&RESETS_CLR] & (1 << 8), 0);
         assert_eq!(f.regs[&(RESETS_CLR + 4)] & (1 << 26), 0);
         assert!(!f.regs.contains_key(&(RESETS_CLR + 8)));
@@ -440,7 +494,7 @@ mod tests {
                 !USBHOST_CFG.contains(a)
                     && *a != VBUSCTRL
                     && *a != VBUSCTRL + 4
-                    && *a != ETH_CFG_INTE
+                    && !STOCK_IRQ_ENABLES.iter().any(|e| e.0 == *a)
                     && !(PADS_ETH..=PADS_ETH + 0x3c).contains(a),
                 "wrote 0x{a:x} after a stuck DONE"
             );

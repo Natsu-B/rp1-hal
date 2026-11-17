@@ -138,6 +138,8 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 PCIe、mailbox ch0（SCMI 用）、共有 SRAM の予約域は、ボード表が「RP1 システム」として固定で持ち、宣言はできない。
 rpi-cm5 のボード表は GPIO 28..53（ETH_RST_N、VBUS など）と Ethernet・USB・PCIe・PIO を Linux に残す（DMA は 2026-11-05 から宣言できる。宣言しなければ Linux のまま。`dmas` で `rp1_dma` を使う有効なノードは衝突として扱う。[dma.md](dma.md)）。この「Linux に要る
 ブロック」の表は、ビルドの宣言検査とローダーの保護ノード（§3.2）が共有する。
+宣言しなかったブロックは、`rp1_hal::linux_blocks` が標準ファームと同じようにリセットを解除し、クロックと
+割り込み出力イネーブル（ETH_CFG INTE、I2C / SPI の `+0x108` など: [interrupts.md](interrupts.md) §3）を設定してから Linux に渡す。
 
 ### 1.3.1 コアごとの割り込み所有
 
