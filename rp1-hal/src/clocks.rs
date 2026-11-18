@@ -21,9 +21,11 @@
 //!
 //! proc1: only proc0 runs the platform init, so a driver owned by proc1 (ADC, I2C, UART
 //! declared under `[proc1]`) gets its [`Clocks`] from [`Clocks::from_proc0`] /
-//! [`Clocks::wait_from_proc0`]. The init publishes the value it returns in a `.shared` cell
-//! before returning, so proc1 can only ever obtain a `Clocks` that proc0's init created;
-//! launch proc1 after init (or let proc1 wait).
+//! [`Clocks::wait_from_proc0`]. The init publishes the value in a `.shared` cell as soon as
+//! its clock step ([`init`]: clk_sys and the blocks Linux owns) succeeds, so proc1 can only
+//! ever obtain a `Clocks` that proc0's init created. A later init step that fails does not
+//! withdraw it: a published value means the clocks are up, not that the whole platform init
+//! succeeded. Launch proc1 after init (or let proc1 wait).
 use crate::{Error, read};
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -156,7 +158,8 @@ impl Clocks {
     /// proc1's copy of the [`Clocks`] that proc0's platform init returned. Takes the
     /// proc1 token: proc0 already has its own value.
     ///
-    /// - [`Error::NotReady`]: init has not succeeded (yet); nothing is published.
+    /// - [`Error::NotReady`]: the clock step of init has not succeeded (yet); nothing is
+    ///   published.
     /// - [`Error::Precondition`]: init published a value, but the clock tree no longer
     ///   matches it (the same error the drivers return for a stale `Clocks`).
     pub fn from_proc0(_core: &rp1_rt::Proc1) -> Result<Clocks, Error> {
@@ -388,7 +391,8 @@ fn select_pll_sys(r: &mut impl Registers) -> Result<u32, Error> {
 /// from `sys_hz`. Already on PLL_SYS (warm restart): nothing is written to clk_sys.
 ///
 /// On success, and only then, the same [`Clocks`] is published once for proc1
-/// ([`Clocks::from_proc0`]); on any error proc1 keeps seeing [`Error::NotReady`].
+/// ([`Clocks::from_proc0`]); on any error here proc1 keeps seeing [`Error::NotReady`]. The
+/// later platform steps never withdraw it.
 pub(crate) fn init(
     linux: crate::linux_blocks::LinuxBlocks,
     sys_hz: u32,

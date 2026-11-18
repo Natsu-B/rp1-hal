@@ -49,6 +49,10 @@ pub struct Pcie {
 }
 
 /// The values init read on its way (for the log).
+///
+/// On `Ok`, `warm` / `ltssm_off` / `link_before_scmi` (as printed) are always 0 / 1 / 0: each
+/// other value makes init fail. They record that the checks ran; the facts a log checker
+/// needs are `ok=1` and `perstn_wait_us` (u32::MAX: no fresh PERSTn release).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InitReport {
     /// false: the clocks were already running and were left untouched.
@@ -174,6 +178,10 @@ fn run<S: Steps>(
     let clocks_programmed = s.clocks().map_err(InitError::Clocks)?;
     let (clocks, linux_blocks) = s.authority().map_err(InitError::Authority)?;
     log(s).map_err(InitError::Log)?;
+    // Before the warm check on purpose: the lab's sweep keeps the position it had before
+    // `init` existed (after the log, before the endpoint), where its hardware results were
+    // taken. A warm start still fails init after it, so a sweep log of such a boot ends in
+    // `PLAT_INIT ok=0`, which lab/verify-irq.py rejects.
     before_link(s, &clocks);
     let monitor2_at_start = s.monitor2();
     if monitor2_at_start & cold::LINK != 0 {

@@ -45,13 +45,17 @@ Either core may own the ADC. On proc1, `init` needs proc0's clocks: `Clocks::fro
 ## Clocks on proc1
 
 STATIC: only proc0 holds the platform token, so only proc0's `platform::init` creates a
-`Clocks`. Just before it returns `Ok`, and only then, init stores the same value in a
-rp1-hal-private `.shared` cell (frequencies first, then a ready word with a release store).
+`Clocks`. When its clock step (step 2: clk_sys and the blocks Linux owns) succeeds, and only
+then, init stores the value in a rp1-hal-private `.shared` cell (frequencies first, then a
+ready word with a release store). A later step that fails (log, warm start, quiesce,
+endpoint, SYSCFG) does not withdraw it: a published value means the clocks are up, not that
+the whole platform init succeeded. A failing clock step leaves the ready word 0.
 The value is published once per image load: `init` consumes the one `platform::Token`, and
-`.shared` is loaded with the image (ready word 0). A failing init leaves the ready word 0.
+`.shared` is loaded with the image (ready word 0).
 `Clocks::from_proc0(&Proc1)` reads the ready word with an acquire load and returns that
-copy. It returns `Error::NotReady` before init has succeeded, and `Error::Precondition` if
-a value was published but the clock tree no longer matches it (as the drivers do).
+copy. It returns `Error::NotReady` before the clock step has succeeded, and
+`Error::Precondition` if a value was published but the clock tree no longer matches it (as
+the drivers do).
 `Clocks::wait_from_proc0(&Proc1, timeout_us)` retries only `NotReady`, against the 64-bit
 1 MHz timer, trying at least once; it returns `Error::NotReady` once `timeout_us` has
 elapsed (any `u32` value ends) and `Precondition` at once.
