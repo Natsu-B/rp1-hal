@@ -25,7 +25,7 @@ llvm-objcopy --dump-section .rp1.dtbo="$out/dtb/app.dtbo" "$out/fw/RP1.elf"
 fdtoverlay -i "$base" -o "$out/dtb/scmi_linux.dtb" "$out/dtb/app.dtbo"
 args=$(fdtget -t s "$out/dtb/scmi_linux.dtb" /chosen bootargs)
 fdtput -t s "$out/dtb/scmi_linux.dtb" /chosen bootargs "${args// clk_ignore_unused/}"
-cargo rp1 check "$out/fw/RP1.elf" --dtb "$out/dtb/scmi_linux.dtb"
+cargo rp1 check "$out/fw/RP1.elf" --dtb "$base"
 export RP1_HAL_DEV_ELF_SHA256 RP1_HAL_DEV_DTB_SHA256 RP1_HAL_DEV_SHM_SIZE
 RP1_HAL_DEV_ELF_SHA256=$(sha256sum "$out/fw/RP1.elf" | cut -c1-64)
 RP1_HAL_DEV_DTB_SHA256=$(sha256sum "$out/dtb/scmi_linux.dtb" | cut -c1-64)
