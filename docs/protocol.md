@@ -281,4 +281,4 @@ offset 8.. T             8 バイト境界
     BAR2 が `0xffff_ffff` を返したらリンク断のエラー。
   - `health(window)`: 終端・未知の状態のコアは `Down`。宣言 `heartbeat` のあるコアの `BEAT` を
     `max(window, 2 × 宣言した周期の最大)` あけて 2 回読み、変わらなければ `Stalled`。宣言どおりに打つコアを `Stalled` と言わない。
-  - `Monitor::open()` は `rp1:link` を読み取り専用・ロックなしで開く（UIO の読み取り専用 mmap は HYP、実機未確認）。
+  - `Monitor::open()` は `rp1:link` を読み取り専用・ロックなしで開く（HW、2026-11-18: 標準カーネルの実 OS と BusyBox 環境で UIO の読み取り専用 mmap を確認）。
