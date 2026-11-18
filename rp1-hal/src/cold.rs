@@ -215,8 +215,11 @@ fn cold_clocks() -> Result<bool, ColdError> {
     Ok(true)
 }
 
-/// PoC endpoint clock + PCIe state 1..5. Returns (perstn_wait_us, link_wait_us, monitor2).
-fn endpoint() -> Result<(u32, u32, u32), ColdError> {
+/// First half of the PoC endpoint sequence: endpoint clock and pre-state 1, which also drops
+/// LTSSM enable (PCIE_CONTROL bit 2) and checks the read-back. Returns the PCIE_CONTROL value
+/// read back. While LTSSM enable is 0 the link cannot come up, so Linux cannot reach RP1 until
+/// [`bring_up`] enables it again.
+fn quiesce() -> Result<u32, ColdError> {
     // Endpoint clock (RESETS CTRL0 bit 26), with the PoC's ~5 ms phases around it.
     wait_us(5_000);
     modify(RESETS_CTRL0, |v| v & !ENDPOINT_RESET);
@@ -256,7 +259,12 @@ fn endpoint() -> Result<(u32, u32, u32), ColdError> {
     if obs & 0x1ff != 0x1ff {
         return Err(ColdError::PreState1(obs));
     }
+    Ok(control)
+}
 
+/// Second half of the PoC endpoint sequence, after [`quiesce`]: PCIe states 1..5 (PERSTn wait,
+/// core alive, DBI, LTSSM enable, link). Returns (perstn_wait_us, link_wait_us, monitor2).
+fn bring_up() -> Result<(u32, u32, u32), ColdError> {
     // States 1/2: wait (<=100 ms) for PERSTn deassertion from the host.
     modify(PCIE_INTE, |v| v & !0x7f);
     modify(PCIE_RESET_SEQ_C8, |v| v | 1 << 1);
@@ -369,7 +377,8 @@ pub unsafe fn endpoint_and_syscfg(clocks_programmed: bool) -> Result<ColdReport,
         monitor2: read(PCIE_MONITOR2),
     };
     if report.monitor2 & (1 << 20) == 0 {
-        let (perstn, link, monitor2) = endpoint()?;
+        quiesce()?;
+        let (perstn, link, monitor2) = bring_up()?;
         report.endpoint_programmed = true;
         report.perstn_wait_us = perstn;
         report.link_wait_us = link;
