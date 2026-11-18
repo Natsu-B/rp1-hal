@@ -272,8 +272,7 @@ mod tests {
         BeforeLink,
         /// A PCIE_MONITOR2 read and whether it showed the link.
         Monitor2(bool),
-        /// The quiesce, with LTSSM enable as read back.
-        Quiesce(bool),
+        Quiesce,
         ScmiReset,
         BringUp,
         Syscfg,
@@ -380,7 +379,7 @@ mod tests {
             // Dropping LTSSM enable does not take an established link down (assumed, the
             // conservative case).
             self.ltssm = false;
-            self.trace.push(Ev::Quiesce(self.ltssm));
+            self.trace.push(Ev::Quiesce);
             Ok(0x0000_0081)
         }
         fn start_scmi(&mut self) {
@@ -415,7 +414,7 @@ mod tests {
                 Ev::Log,
                 Ev::BeforeLink,
                 Ev::Monitor2(false),
-                Ev::Quiesce(false),
+                Ev::Quiesce,
                 Ev::Monitor2(false),
                 Ev::ScmiReset,
                 Ev::BringUp,
@@ -451,7 +450,7 @@ mod tests {
         f.link = true;
         assert_eq!(f.run().unwrap_err(), InitError::Warm { monitor2: UP });
         assert_eq!(f.trace.last(), Some(&Ev::Monitor2(true)));
-        for ev in [Ev::Quiesce(false), Ev::ScmiReset, Ev::BringUp, Ev::Syscfg] {
+        for ev in [Ev::Quiesce, Ev::ScmiReset, Ev::BringUp, Ev::Syscfg] {
             assert!(!f.has(ev), "{ev:?}");
         }
     }
@@ -532,5 +531,150 @@ mod tests {
         };
         assert!(format!("{warm}").starts_with("warm=1 "));
         assert!(format!("{warm}").contains(" perstn_wait_us=4294967295 "));
+    }
+
+    /// RP1's registers for the real `cold::quiesce_with` and `scmi::reset_channel`: the step
+    /// model above cannot see a missing read-back check. Unset registers read 0; `sticky` bits
+    /// of PCIE_CONTROL cannot be cleared.
+    struct Regs {
+        values: std::collections::BTreeMap<usize, u32>,
+        sticky: u32,
+        /// (write?, address) in program order.
+        log: Vec<(bool, usize)>,
+        now: u64,
+    }
+    const AUX_CTRL: usize = 0x4001_80e4;
+    impl Regs {
+        fn cold(control: u32, sticky: u32) -> Self {
+            let values = [
+                (cold::PCIE_CONTROL, control),
+                (cold::RESETS_DONE0, 1 << 26),
+                // PCIe AUX clock selected: XOSC.
+                (0x4001_80f0, 1),
+            ];
+            Self {
+                values: values.into_iter().collect(),
+                sticky,
+                log: Vec::new(),
+                now: 0,
+            }
+        }
+        fn writes_in(&self, range: core::ops::Range<usize>) -> Vec<usize> {
+            let i = self.log.iter().enumerate();
+            i.filter(|(_, (w, a))| *w && range.contains(a))
+                .map(|(i, _)| i)
+                .collect()
+        }
+    }
+    impl cold::Io for Regs {
+        fn read(&mut self, address: usize) -> u32 {
+            self.log.push((false, address));
+            self.values.get(&address).copied().unwrap_or(0)
+        }
+        fn write(&mut self, address: usize, value: u32) {
+            self.log.push((true, address));
+            let old = self.values.get(&address).copied().unwrap_or(0);
+            let (address, value) = match address {
+                // The SET alias of the AUX clock control.
+                a if a == AUX_CTRL + 0x2000 => (
+                    AUX_CTRL,
+                    self.values.get(&AUX_CTRL).copied().unwrap_or(0) | value,
+                ),
+                cold::PCIE_CONTROL => (address, value | (old & self.sticky)),
+                _ => (address, value),
+            };
+            self.values.insert(address, value);
+        }
+        fn now_us(&mut self) -> u64 {
+            self.now += 500;
+            self.now
+        }
+    }
+    impl scmi::Transport for Regs {
+        fn take_event(&mut self) -> bool {
+            unreachable!()
+        }
+        fn read(&mut self, _: usize) -> u32 {
+            unreachable!()
+        }
+        fn write(&mut self, word: usize, value: u32) {
+            cold::Io::write(self, scmi::SHMEM + 4 * word, value);
+        }
+        fn barrier(&mut self) {}
+        fn notify(&mut self) {
+            unreachable!()
+        }
+    }
+    /// The real quiesce, link read and channel reset on [`Regs`]; the other steps succeed.
+    impl Steps for Regs {
+        type Scmi = ();
+        fn set_pcie_state(&mut self, _: u32) {}
+        fn clocks(&mut self) -> Result<bool, ColdError> {
+            Ok(true)
+        }
+        fn authority(&mut self) -> Result<(Clocks, linux_blocks::Report), Error> {
+            Ok((
+                CLOCKS,
+                linux_blocks::Report {
+                    released: [0; 3],
+                    pending: [0; 3],
+                },
+            ))
+        }
+        fn monitor2(&mut self) -> u32 {
+            cold::Io::read(self, cold::PCIE_MONITOR2)
+        }
+        fn quiesce(&mut self) -> Result<u32, ColdError> {
+            cold::quiesce_with(self)
+        }
+        fn start_scmi(&mut self) {
+            scmi::reset_channel(self);
+        }
+        fn bring_up(&mut self) -> Result<(u32, u32, u32), ColdError> {
+            Ok((PERSTN_US, LINK_US, UP))
+        }
+        fn release_syscfg(&mut self) -> Result<(), ColdError> {
+            Ok(())
+        }
+    }
+    const SHMEM: core::ops::Range<usize> = scmi::SHMEM..scmi::SHMEM + 256;
+    /// NVIC ISER0..7 and ISPR0..7: no line is enabled or pended.
+    const NVIC_SET: [core::ops::Range<usize>; 2] =
+        [0xe000_e100..0xe000_e120, 0xe000_e200..0xe000_e220];
+
+    /// I1 / I3 on the registers: LTSSM enable that stays set after the quiesce's write fails
+    /// init with no write to the SCMI area; when it clears, the area is first written after
+    /// the PCIE_CONTROL read-back and the second link read. No NVIC set-enable / set-pending.
+    #[test]
+    fn ltssm_read_back_guards_the_scmi_area() {
+        let mut stuck = Regs::cold(cold::LTSSM_ENABLE, cold::LTSSM_ENABLE);
+        assert_eq!(
+            run(&mut stuck, |_| Ok(()), |_, _| {}).unwrap_err(),
+            InitError::Quiesce(ColdError::PreState1(0x1fb))
+        );
+        assert!(
+            stuck
+                .writes_in(cold::PCIE_CONTROL..cold::PCIE_CONTROL + 4)
+                .len()
+                >= 3
+        );
+        assert!(stuck.writes_in(SHMEM).is_empty());
+
+        let mut r = Regs::cold(cold::LTSSM_ENABLE, 0);
+        let (_, report, ()) = run(&mut r, |_| Ok(()), |_, _| {}).unwrap();
+        assert!(report.ltssm_off);
+        let first = r.writes_in(SHMEM)[0];
+        let reads = |address| {
+            let i = r.log.iter().enumerate();
+            i.filter(move |(_, e)| **e == (false, address))
+                .map(|(i, _)| i)
+        };
+        assert!(reads(cold::PCIE_CONTROL).all(|i| i < first));
+        assert_eq!(reads(cold::PCIE_MONITOR2).count(), 2);
+        assert!(reads(cold::PCIE_MONITOR2).all(|i| i < first));
+        assert_eq!(r.writes_in(SHMEM).len(), 65, "64 zeroes, then FREE");
+        for range in NVIC_SET {
+            assert!(r.writes_in(range.clone()).is_empty() && stuck.writes_in(range).is_empty());
+        }
     }
 }

@@ -16,7 +16,7 @@ use crate::{Error, read};
 
 const RESETS_CTRL0: usize = 0x4001_4000;
 const RESETS_CTRL1: usize = 0x4001_4004;
-const RESETS_DONE0: usize = 0x4001_4018;
+pub(crate) const RESETS_DONE0: usize = 0x4001_4018;
 const RESETS_DONE1: usize = 0x4001_401c;
 const RESETS_CLR1: usize = 0x4001_7004;
 const PLL_SYS: usize = 0x4002_0000;
@@ -30,10 +30,10 @@ const UART0_RESET: u32 = 1 << 26;
 const SYSCFG_RESET: u32 = 1 << 22;
 
 const PCIE_SEL: usize = 0x4010_8000;
-const PCIE_CONTROL: usize = 0x4010_8004;
+pub(crate) const PCIE_CONTROL: usize = 0x4010_8004;
 const PCIE_CFG_188: usize = 0x4010_8188;
 const PCIE_PM_CONTROL: usize = 0x4010_8194;
-const PCIE_MONITOR2: usize = 0x4010_81a4;
+pub(crate) const PCIE_MONITOR2: usize = 0x4010_81a4;
 const PCIE_INTR: usize = 0x4010_81a8;
 const PCIE_INTE: usize = 0x4010_81ac;
 const PCIE_INTS: usize = 0x4010_81b4;
@@ -71,41 +71,72 @@ pub enum ColdError {
     Syscfg(u32),
 }
 
+/// Register access and time for the sequences: RP1's MMIO ([`Mmio`]), or a host test's
+/// register file. Writes are plain stores; the sequences place their own barriers.
+pub(crate) trait Io {
+    fn read(&mut self, address: usize) -> u32;
+    fn write(&mut self, address: usize, value: u32);
+    /// The 64-bit 1 MHz TIMER.
+    fn now_us(&mut self) -> u64;
+
+    fn modify(&mut self, address: usize, f: impl FnOnce(u32) -> u32) {
+        let value = self.read(address);
+        self.write(address, f(value));
+    }
+    fn wait_us(&mut self, us: u64) {
+        let start = self.now_us();
+        while self.now_us().wrapping_sub(start) < us {
+            core::hint::spin_loop();
+        }
+    }
+    /// Polls `done` for up to `us`; returns the time it took to become true.
+    fn poll_us(&mut self, us: u64, mut done: impl FnMut(&mut Self) -> bool) -> Option<u32> {
+        let start = self.now_us();
+        loop {
+            if done(self) {
+                return Some(self.now_us().wrapping_sub(start) as u32);
+            }
+            if self.now_us().wrapping_sub(start) > us {
+                return None;
+            }
+            core::hint::spin_loop();
+        }
+    }
+}
+
+pub(crate) struct Mmio;
+impl Io for Mmio {
+    fn read(&mut self, address: usize) -> u32 {
+        read(address)
+    }
+    fn write(&mut self, address: usize, value: u32) {
+        unsafe { (address as *mut u32).write_volatile(value) };
+    }
+    fn now_us(&mut self) -> u64 {
+        loop {
+            let hi = read(0x400a_c024);
+            let lo = read(0x400a_c028);
+            if hi == read(0x400a_c024) {
+                return (u64::from(hi) << 32) | u64::from(lo);
+            }
+        }
+    }
+}
+
 fn write(address: usize, value: u32) {
-    unsafe { (address as *mut u32).write_volatile(value) };
+    Mmio.write(address, value);
 }
 fn modify(address: usize, f: impl FnOnce(u32) -> u32) {
-    write(address, f(read(address)));
+    Mmio.modify(address, f);
 }
 fn dsb() {
     rp1_proto::barrier();
 }
-fn now_us() -> u64 {
-    loop {
-        let hi = read(0x400a_c024);
-        let lo = read(0x400a_c028);
-        if hi == read(0x400a_c024) {
-            return (u64::from(hi) << 32) | u64::from(lo);
-        }
-    }
-}
 fn wait_us(us: u64) {
-    let start = now_us();
-    while now_us().wrapping_sub(start) < us {
-        core::hint::spin_loop();
-    }
+    Mmio.wait_us(us);
 }
 fn poll_us(us: u64, mut done: impl FnMut() -> bool) -> Option<u32> {
-    let start = now_us();
-    loop {
-        if done() {
-            return Some(now_us().wrapping_sub(start) as u32);
-        }
-        if now_us().wrapping_sub(start) > us {
-            return None;
-        }
-        core::hint::spin_loop();
-    }
+    Mmio.poll_us(us, |_| done())
 }
 
 fn clock_snapshot() -> [u32; 10] {
@@ -215,42 +246,48 @@ pub(crate) fn clocks() -> Result<bool, ColdError> {
 /// read back. While LTSSM enable is 0 the link cannot come up, so Linux cannot reach RP1 until
 /// [`bring_up`] enables it again.
 pub(crate) fn quiesce() -> Result<u32, ColdError> {
+    quiesce_with(&mut Mmio)
+}
+pub(crate) fn quiesce_with(io: &mut impl Io) -> Result<u32, ColdError> {
     // Endpoint clock (RESETS CTRL0 bit 26), with the PoC's ~5 ms phases around it.
-    wait_us(5_000);
-    modify(RESETS_CTRL0, |v| v & !ENDPOINT_RESET);
+    io.wait_us(5_000);
+    io.modify(RESETS_CTRL0, |v| v & !ENDPOINT_RESET);
     dsb();
-    if read(RESETS_CTRL0) & ENDPOINT_RESET != 0 {
+    if io.read(RESETS_CTRL0) & ENDPOINT_RESET != 0 {
         return Err(ColdError::EndpointClock);
     }
-    wait_us(5_000);
-    if poll_us(100_000, || read(RESETS_DONE0) & ENDPOINT_RESET != 0).is_none() {
+    io.wait_us(5_000);
+    if io
+        .poll_us(100_000, |io| io.read(RESETS_DONE0) & ENDPOINT_RESET != 0)
+        .is_none()
+    {
         return Err(ColdError::EndpointClock);
     }
-    wait_us(5_000);
+    io.wait_us(5_000);
 
     // Pre-state 1: reset sequence, control, PM, PCIe AUX clock = XOSC / 1.
-    modify(PCIE_RESET_SEQ_C8, |v| v | 1 << 1);
-    modify(PCIE_RESET_SEQ_C0, |v| v & !(1 << 1));
-    modify(PCIE_CONTROL, |v| v & !(1 << 2));
-    modify(PCIE_CONTROL, |v| v | 1);
-    modify(PCIE_PM_CONTROL, |v| v & !(1 << 3));
-    modify(PCIE_CONTROL, |v| v | 1 << 7);
-    modify(0x4001_80e4, |v| (v & !0x1e3) | 1);
-    write(0x4001_80e8, 1);
-    write(0x4001_80ec, 0);
-    write(0x4001_a0e4, 1 << 11);
+    io.modify(PCIE_RESET_SEQ_C8, |v| v | 1 << 1);
+    io.modify(PCIE_RESET_SEQ_C0, |v| v & !(1 << 1));
+    io.modify(PCIE_CONTROL, |v| v & !(1 << 2));
+    io.modify(PCIE_CONTROL, |v| v | 1);
+    io.modify(PCIE_PM_CONTROL, |v| v & !(1 << 3));
+    io.modify(PCIE_CONTROL, |v| v | 1 << 7);
+    io.modify(0x4001_80e4, |v| (v & !0x1e3) | 1);
+    io.write(0x4001_80e8, 1);
+    io.write(0x4001_80ec, 0);
+    io.write(0x4001_a0e4, 1 << 11);
     dsb();
-    let control = read(PCIE_CONTROL);
-    let sel = read(0x4001_80f0);
-    let mut obs = (read(PCIE_RESET_SEQ_C8) >> 1) & 1;
-    obs |= (((read(PCIE_RESET_SEQ_C0) >> 1) & 1) ^ 1) << 1;
+    let control = io.read(PCIE_CONTROL);
+    let sel = io.read(0x4001_80f0);
+    let mut obs = (io.read(PCIE_RESET_SEQ_C8) >> 1) & 1;
+    obs |= (((io.read(PCIE_RESET_SEQ_C0) >> 1) & 1) ^ 1) << 1;
     obs |= (((control >> 2) & 1) ^ 1) << 2;
     obs |= (control & 1) << 3;
-    obs |= (((read(PCIE_PM_CONTROL) >> 3) & 1) ^ 1) << 4;
+    obs |= (((io.read(PCIE_PM_CONTROL) >> 3) & 1) ^ 1) << 4;
     obs |= ((control >> 7) & 1) << 5;
-    obs |= u32::from(read(0x4001_80e4) & (1 << 11) != 0 && sel == 1) << 6;
-    obs |= u32::from(read(0x4001_80e8) == 1) << 7;
-    obs |= u32::from(read(0x4001_80ec) == 0) << 8;
+    obs |= u32::from(io.read(0x4001_80e4) & (1 << 11) != 0 && sel == 1) << 6;
+    obs |= u32::from(io.read(0x4001_80e8) == 1) << 7;
+    obs |= u32::from(io.read(0x4001_80ec) == 0) << 8;
     if obs & 0x1ff != 0x1ff {
         return Err(ColdError::PreState1(obs));
     }

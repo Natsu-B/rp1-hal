@@ -229,9 +229,6 @@ struct Pll {
 }
 
 impl Pll {
-    fn take() -> Self {
-        Self::take_with(&mut read)
-    }
     fn take_with(read: &mut impl FnMut(usize) -> u32) -> Self {
         Self {
             cs: read(PLL_SYS_CS),
@@ -311,7 +308,10 @@ fn decode_uart(ctrl: u32, div: u32, sel: u32) -> Option<u32> {
 
 /// Current clk_uart rate from the registers (read twice), `None` if unknown or changing.
 pub fn uart_hz() -> Option<u32> {
-    let once = || {
+    uart_hz_with(&mut read)
+}
+fn uart_hz_with(read: &mut impl FnMut(usize) -> u32) -> Option<u32> {
+    let mut once = || {
         decode_uart(
             read(CLK_UART_CTRL),
             read(CLK_UART_DIV_INT),
@@ -324,8 +324,11 @@ pub fn uart_hz() -> Option<u32> {
 
 /// PLL_SYS and CLK_UART are on the tuple the cold bring-up programs (clk_sys mux not included).
 pub(crate) fn running_tuple_admitted() -> bool {
-    let a = Pll::take();
-    a == Pll::take() && a.is_200mhz() && uart_hz() == Some(XOSC_HZ)
+    running_tuple_admitted_with(&mut read)
+}
+fn running_tuple_admitted_with(read: &mut impl FnMut(usize) -> u32) -> bool {
+    let a = Pll::take_with(read);
+    a == Pll::take_with(read) && a.is_200mhz() && uart_hz_with(read) == Some(XOSC_HZ)
 }
 
 trait Registers {
@@ -397,22 +400,38 @@ pub(crate) fn init(
     linux: crate::linux_blocks::LinuxBlocks,
     sys_hz: u32,
 ) -> Result<(Clocks, crate::linux_blocks::Report), Error> {
-    publish_on_success(&HANDOFF, || {
+    init_with(
+        &mut Mmio,
+        &mut crate::linux_blocks::Mmio,
+        &HANDOFF,
+        linux,
+        sys_hz,
+    )
+}
+/// [`init`] over the clock registers `r`, the Linux blocks' registers `blocks` and `handoff`.
+fn init_with(
+    r: &mut impl Registers,
+    blocks: &mut impl crate::linux_blocks::Hardware,
+    handoff: &Handoff,
+    linux: crate::linux_blocks::LinuxBlocks,
+    sys_hz: u32,
+) -> Result<(Clocks, crate::linux_blocks::Report), Error> {
+    publish_on_success(handoff, || {
         if sys_hz != PLL_SYS_HZ {
             return Err(Error::Invalid);
         }
-        if !running_tuple_admitted() {
+        if !running_tuple_admitted_with(&mut |a| r.read(a)) {
             return Err(Error::Precondition);
         }
-        select_pll_sys(&mut Mmio)?;
+        select_pll_sys(r)?;
         let clocks = Clocks {
-            sys_hz: self::sys_hz().ok_or(Error::Hardware)?,
-            uart_hz: uart_hz().ok_or(Error::Precondition)?,
+            sys_hz: sys_hz_with(|a| r.read(a)).ok_or(Error::Hardware)?,
+            uart_hz: uart_hz_with(&mut |a| r.read(a)).ok_or(Error::Precondition)?,
         };
         if clocks.sys_hz != sys_hz {
             return Err(Error::Hardware);
         }
-        let report = crate::linux_blocks::bring_up(&mut crate::linux_blocks::Mmio, linux)?;
+        let report = crate::linux_blocks::bring_up(blocks, linux)?;
         Ok((clocks, report))
     })
 }
@@ -777,7 +796,7 @@ mod tests {
     }
 
     struct Fake {
-        regs: [(usize, u32); 8],
+        regs: [(usize, u32); 11],
         sels: [u32; 3],
         sel_reads: usize,
         writes: usize,
@@ -795,6 +814,9 @@ mod tests {
                     (CLK_SYS_CTRL, 0),
                     (CLK_SYS_DIV_INT, 1),
                     (CLK_SYS_SEL, 1),
+                    (CLK_UART_CTRL, 0x1000_0840),
+                    (CLK_UART_DIV_INT, 1),
+                    (CLK_UART_SEL, 1),
                 ],
                 sels: [1, 0, 4],
                 sel_reads: 0,
@@ -868,5 +890,44 @@ mod tests {
         assert_eq!(select_pll_sys(&mut f), Err(Error::Hardware));
         assert_eq!(f.writes, 1);
         assert!(f.sel_reads <= 12);
+    }
+
+    /// The Linux blocks' registers: every read is 0, so `bring_up` fails on its first check
+    /// (PLL_SYS_SEC without the IMPL bit) before it writes anything.
+    #[derive(Default)]
+    struct DeadBlocks {
+        reads: usize,
+    }
+    impl crate::scmi::Registers for DeadBlocks {
+        fn read(&mut self, _: usize) -> u32 {
+            self.reads += 1;
+            0
+        }
+        fn write(&mut self, address: usize, _: u32) {
+            panic!("write to {address:#x}");
+        }
+    }
+    impl crate::linux_blocks::Hardware for DeadBlocks {
+        fn now_us(&mut self) -> u32 {
+            0
+        }
+    }
+
+    /// I4 on the real init: clk_sys is switched, then the Linux blocks fail, and proc1 sees
+    /// nothing published.
+    #[test]
+    fn linux_block_failure_publishes_no_clocks() {
+        let h = Handoff::new();
+        let mut f = Fake::cold();
+        let mut blocks = DeadBlocks::default();
+        let linux = unsafe { crate::linux_blocks::LinuxBlocks::new(crate::linux_blocks::ALLOWED) };
+        assert_eq!(
+            init_with(&mut f, &mut blocks, &h, linux, PLL_SYS_HZ),
+            Err(Error::Precondition)
+        );
+        assert_eq!(f.writes, 1, "clk_sys was switched to PLL_SYS first");
+        assert!(blocks.reads > 0, "the Linux-block step ran");
+        assert_eq!(h.ready.load(Ordering::Relaxed), 0);
+        assert_eq!(h.take(), None);
     }
 }
