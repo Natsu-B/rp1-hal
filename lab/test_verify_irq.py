@@ -16,7 +16,8 @@ OTHER = "0badf00d"
 def uart0(nonce=NONCE):
     """The UART0 lines of one passing boot (values invented; the shape is the firmware's)."""
     lines = [
-        "proc0 clocks programmed=true sys_hz=200000000 uart_hz=50000000",
+        "PLAT_INIT ok=1 warm=0 ltssm_off=1 link_before_scmi=0 perstn_wait_us=1766406 link_wait_us=8204 "
+        "monitor2=0x1b0000 clocks_programmed=1 sys_hz=200000000 uart_hz=50000000",
         "IRQ_PROOF_BEGIN sweep=0",
         "p0 i2c1 init Ok(())",
         "p1 spi0 init true",
@@ -254,14 +255,14 @@ def sweep_uart0(nonce=NONCE, results=None):
     """The UART0 lines of one passing boot of lab/irq-sweep. `results` maps an IRQ to the list
     of lines that replaces its own."""
     results = results or {}
-    lines = ["proc0 clocks programmed=true sys_hz=200000000 uart_hz=50000000",
+    lines = ["proc0 clocks sys_hz=200000000 uart_hz=50000000",
              "p0 pwm1 init Some(true) adc init true",
              f"IRQ_SWEEP_BEGIN lines={len(v.SWEEP_TABLE)} iser={ZERO} ispr={ZERO}"]
     for irq in v.SWEEP_TABLE:
         lines += results.get(irq, sweep_records(irq))
     lines += [f"IRQ_SWEEP_END lines={len(v.SWEEP_TABLE)} iser={ZERO} us=731638",
-              "p0 pcie Ok clocks_programmed=true endpoint_programmed=true perstn_wait_us=1766406 "
-              "link_wait_us=8204 monitor2=0x1b0000",
+              "PLAT_INIT ok=1 warm=0 ltssm_off=1 link_before_scmi=0 perstn_wait_us=1766406 "
+              "link_wait_us=8204 monitor2=0x1b0000 clocks_programmed=1",
               f"IRQ_SWEEP_BOOT boot={BOOT}",
               "proc0 scmi p14 m7 [3, 0] -> 0 votes=8"]
     return "".join((f"{l} nonce={nonce}" if l.startswith("IRQ_") else l) + "\r\n" for l in lines)
@@ -363,7 +364,7 @@ class VerifySweep(unittest.TestCase):
         self.assertFails(v.verify_sweep(orphan)[0], "without their result")
 
     def test_frame(self):
-        self.assertFails(v.verify_sweep("p0 pcie Ok\n")[0], "no IRQ_SWEEP_BEGIN")
+        self.assertFails(v.verify_sweep("PLAT_INIT ok=1\n")[0], "no IRQ_SWEEP_BEGIN")
         end = f"IRQ_SWEEP_END lines=9 iser={ZERO} us=731638 nonce={NONCE}\r\n"
         self.assertFails(v.verify_sweep(sweep_changed(end, ""))[0], "no IRQ_SWEEP_END", "before IRQ_SWEEP_END")
         self.assertFails(v.verify_sweep(sweep_changed(end, end + end))[0], "more than once")
@@ -396,10 +397,10 @@ class VerifySweep(unittest.TestCase):
         self.assertFails(v.verify_sweep(both, "ffffffff")[0], "0 boots")
 
     def test_sweep_ends_before_the_link(self):
-        pcie = "p0 pcie Ok clocks_programmed=true endpoint_programmed=true perstn_wait_us=1766406"
+        pcie = "PLAT_INIT ok=1 warm=0 ltssm_off=1 link_before_scmi=0 perstn_wait_us=1766406"
         self.assertFails(v.verify_sweep(sweep_changed(pcie, pcie.replace("1766406", "4294967295")))[0],
                          "no fresh PCIe bring-up")
-        self.assertFails(v.verify_sweep(sweep_changed("endpoint_programmed=true", "endpoint_programmed=false"))[0],
+        self.assertFails(v.verify_sweep(sweep_changed("PLAT_INIT ok=1", "PLAT_INIT ok=0"))[0],
                          "no fresh PCIe bring-up")
         early = sweep_changed("IRQ_SWEEP_PRE irq=7", pcie + " link_wait_us=1 monitor2=0x0\r\nIRQ_SWEEP_PRE irq=7")
         self.assertFails(v.verify_sweep(early)[0], "before IRQ_SWEEP_END")

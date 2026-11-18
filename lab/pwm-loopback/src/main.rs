@@ -12,16 +12,13 @@ rp1_rt::bind!();
 
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
-    let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
-    let (_, mut scmi) = p.clock_authority.init(200_000_000).unwrap();
-    rp1::log::init(&mut core).unwrap();
-    let report = unsafe { rp1_hal::cold::endpoint_and_syscfg(programmed) }.unwrap();
-    log!("PWM_BOOT pcie={:?}\n", report).unwrap();
+    let mut sys = rp1::platform::init(&mut core, p.platform).unwrap();
+    log!("PWM_BOOT PLAT_INIT ok=1 {}\n", sys.report).unwrap();
     p.proc1.launch(&mut core).unwrap();
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     loop {
         endpoint.poll();
-        scmi.poll();
+        sys.poll_services();
     }
 }
 

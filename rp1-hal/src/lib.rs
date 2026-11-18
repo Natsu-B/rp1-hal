@@ -26,6 +26,7 @@ pub mod i2c;
 pub mod linux_blocks;
 pub mod logging;
 mod pinmux;
+pub mod platform;
 pub mod pwm;
 pub mod scmi;
 pub mod shm;

@@ -8,6 +8,11 @@ pub const EPOCH: usize = 0x40;
 /// `ABI_VALUE` once proc0 has initialized the words of this layout.
 pub const ABI: usize = 0x44;
 pub const ABI_VALUE: u32 = u32::from_le_bytes([b'R', b'L', 2, 0]);
+/// The platform's PCIe state, written by proc0's platform init. `ABI_VALUE` does not cover it
+/// yet: readers of this layout do not decode it.
+pub const PLAT_PCIE: usize = 0x48;
+/// `PLAT_PCIE` while the platform init brings the endpoint up (0 = not started).
+pub const PLAT_PCIE_INITIALIZING: u32 = 1;
 /// Status block of proc0 and proc1.
 pub const BLOCKS: [usize; 2] = [0x50, 0x80];
 pub const BLOCK_LEN: usize = 0x30;

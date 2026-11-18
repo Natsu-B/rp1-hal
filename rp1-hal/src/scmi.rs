@@ -761,30 +761,24 @@ impl<T: Transport, H: ClockHardware> Channel<T, H> {
     pub(crate) fn serve(&mut self) -> Option<Event> {
         serve(&mut self.server, &mut self.transport)
     }
-
-    pub(crate) fn votes(&self) -> u32 {
-        self.server.votes()
-    }
 }
 
-/// The SCMI server on proc0. Created by [`crate::clocks::Authority::init`].
-pub struct Service {
+/// The SCMI server on proc0. Created and held by the platform init ([`crate::platform`]).
+pub(crate) struct Service {
     channel: Channel<Rp1Transport, Rp1Clocks>,
-    linux_blocks: crate::linux_blocks::Report,
 }
 
 impl Service {
     /// # Safety
     /// One instance, proc0, holding clock authority; no other user of mailbox channel 0, the
     /// shmem area or the Linux-owned clock generators on RP1.
-    pub(crate) unsafe fn new(linux_blocks: crate::linux_blocks::Report, held: u32) -> Self {
+    pub(crate) unsafe fn new(held: u32) -> Self {
         Self {
             channel: Channel::start(
                 Rp1Transport { _private: () },
                 Rp1Clocks { _private: () },
                 held,
             ),
-            linux_blocks,
         }
     }
 
@@ -793,7 +787,7 @@ impl Service {
     /// The idle check (one SYSCFG read) runs from ISRAM; the request handling is cold and
     /// stays in shared SRAM, so a polling loop does not fetch from shared SRAM while idle.
     #[rp1_rt::isram]
-    pub fn poll(&mut self) -> Option<Event> {
+    pub(crate) fn poll(&mut self) -> Option<Event> {
         if read(PROC_EVENTS) & CHANNEL == 0 {
             return None;
         }
@@ -802,15 +796,6 @@ impl Service {
     #[rp1_rt::cold]
     fn serve_pending(&mut self) -> Option<Event> {
         self.channel.serve()
-    }
-
-    pub fn votes(&self) -> u32 {
-        self.channel.votes()
-    }
-
-    /// What the bring-up of the Linux-owned blocks did (for logging).
-    pub fn linux_blocks(&self) -> crate::linux_blocks::Report {
-        self.linux_blocks
     }
 }
 
@@ -1255,7 +1240,7 @@ mod tests {
         c.transport.event = true;
         assert_eq!(c.serve(), Some(want));
         assert_eq!(c.transport.words, expected.words);
-        assert_eq!(c.votes(), reference.votes());
+        assert_eq!(c.server.votes(), reference.votes());
         assert!(c.server.hw.writes.is_empty());
         c.transport.event = true;
         assert!(c.serve().is_none(), "duplicate doorbell after FREE");

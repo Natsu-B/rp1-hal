@@ -29,7 +29,7 @@ the source raised (`raised=1` and the status bit), the target bit clear before t
 after the deassert, no other new pending bit, and the same hit counts. Any other result
 (NOT_ROUTED, OTHER_LINE, NEW_PENDING, SKIP, ABORT) is a FAIL that names it. The frame must hold
 too: every line with the boot's nonce, no line enabled in the NVIC, and the whole sweep before
-the PCIe link came up (`p0 pcie Ok` after `IRQ_SWEEP_END`, with a fresh PERSTn wait). --json
+the PCIe link came up (`PLAT_INIT ok=1` after `IRQ_SWEEP_END`, with a fresh PERSTn wait). --json
 writes the per-line results.
 UART10 is optional with --sweep; if given, the Linux side (`check-sweep.sh`) must have passed
 in the boot that printed the firmware's boot value.
@@ -375,8 +375,8 @@ def verify_sweep(text, nonce=None):
 
     failures, seen, trials, ended, link = [], set(), [], None, None
     for line in boot:
-        if re.search(r"\bp0 pcie ", line):
-            m = re.search(r"\bp0 pcie Ok .*\bendpoint_programmed=true perstn_wait_us=(\d+)", line)
+        if re.search(r"\bPLAT_INIT ", line):
+            m = re.search(r"\bPLAT_INIT ok=1 .*\bperstn_wait_us=(\d+)", line)
             # The link may only come up after the sweep, on a PERSTn release seen by the image.
             if ended is None:
                 failures.append("UART0: the PCIe endpoint was brought up before IRQ_SWEEP_END")
@@ -443,7 +443,7 @@ def verify_sweep(text, nonce=None):
                             f"{len(summary['lines'])} IRQ_SWEEP lines, BEGIN lines={begin.get('lines')}")
         summary["us"] = number(ended.get("us", ""))
     if link is None:
-        failures.append("UART0: no `p0 pcie` line after the sweep")
+        failures.append("UART0: no `PLAT_INIT` line after the sweep")
     if summary["boot"] is None:
         failures.append("UART0: no IRQ_SWEEP_BOOT")
     if re.search(r"\bIRQ_SWEEP_PANIC\b", "\n".join(boot)):

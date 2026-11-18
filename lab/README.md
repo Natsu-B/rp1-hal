@@ -316,7 +316,7 @@ its expected stimulus: `result=ROUTED exit=left` with `wrap0:0/3,wrap1:3/3` for 
 stimulus and after the deassert, no other new pending bit, the same hit counts). Any other result
 (`NOT_ROUTED`, `OTHER_LINE`, `NEW_PENDING`, `SKIP`, `ABORT`) fails and is named. The frame must
 hold as well: lines in table order with the boot's nonce, both enable words 0, and
-`IRQ_SWEEP_END` before a `p0 pcie Ok` line with a fresh PERSTn wait. It prints
+`IRQ_SWEEP_END` before a `PLAT_INIT ok=1` line with a fresh PERSTn wait. It prints
 `IRQ_SWEEP_VERDICT=PASS|FAIL`; `--json` writes the per-line results.
 
 ## PWM loopback diagnostic (STATIC / HW 未検証)

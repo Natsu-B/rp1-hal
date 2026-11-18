@@ -50,33 +50,23 @@ fn make_nonce(seeds: [u32; 3]) -> u32 {
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     // SAFETY: proc0, and no NVIC line is enabled yet.
     let stack = unsafe { stack::paint(0) };
-    let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
-    let (clocks, scmi) = p.clock_authority.init(200_000_000).unwrap();
-    rp1::log::init(&mut core).unwrap();
+    let sys = match rp1::platform::init(&mut core, p.platform) {
+        Ok(sys) => sys,
+        Err(e) => {
+            let _ = log!("PLAT_INIT ok=0 {:?}\n", e);
+            panic!("platform init failed");
+        }
+    };
+    let clocks = sys.clocks;
     log!(
-        "proc0 clocks programmed={} sys_hz={} uart_hz={}\n",
-        programmed,
+        "PLAT_INIT ok=1 {} sys_hz={} uart_hz={}\n",
+        sys.report,
         clocks.sys_hz(),
         clocks.uart_hz()
     )
     .unwrap();
-    let mut waits = [0; 2];
-    match unsafe { rp1_hal::cold::endpoint_and_syscfg(programmed) } {
-        Ok(r) => {
-            waits = [r.perstn_wait_us, r.link_wait_us];
-            log!(
-                "p0 pcie Ok clocks_programmed={} endpoint_programmed={} perstn_wait_us={} link_wait_us={} monitor2=0x{:x}\n",
-                r.clocks_programmed,
-                r.endpoint_programmed,
-                r.perstn_wait_us,
-                r.link_wait_us,
-                r.monitor2
-            )
-        }
-        Err(e) => log!("p0 pcie Err({:?})\n", e),
-    }
-    .unwrap();
-    let nonce = make_nonce([waits[0], waits[1], now()]);
+    let (perstn, link) = (sys.report.perstn_wait_us, sys.report.link_wait_us);
+    let nonce = make_nonce([perstn, link, now()]);
     proof::set_nonce(nonce);
     proof::publish_nonce();
     // `sweep=0`: this image raises none of the lines that only lab/irq-sweep proved.
@@ -91,13 +81,13 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
 
     let mut system = System {
         endpoint: unsafe { rp1_hal::cold::EndpointService::new() },
-        scmi,
+        sys,
         probed: false,
         attempted: false,
     };
     // The system services keep running while proc0's items wait for their interrupts.
     proc0::run(p.TIMER_ALARM0, i2c.ok(), p.irq, &mut || {
-        let (perst, event) = (system.endpoint.poll(), system.scmi.poll());
+        let (perst, event) = (system.endpoint.poll(), system.sys.poll_services());
         system.handle(perst, event);
     });
 
@@ -125,7 +115,7 @@ type Perst = Option<Result<rp1_hal::cold::Reconfigured, rp1_hal::cold::ReconfigE
 /// clock server, and the two shm requests Linux makes through the link page.
 struct System {
     endpoint: rp1_hal::cold::EndpointService,
-    scmi: rp1_hal::scmi::Service,
+    sys: rp1_hal::platform::System,
     probed: bool,
     attempted: bool,
 }
@@ -192,7 +182,7 @@ fn idle0(
     loop {
         let word = rx.pop();
         let perst = system.endpoint.poll();
-        let event = system.scmi.poll();
+        let event = system.sys.poll_services();
         let request = link_read(link::SHM_REQUEST);
         if word.is_some()
             || perst.is_some()

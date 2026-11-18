@@ -10,7 +10,8 @@
 //! `enable_endpoint_clock_bit26`, `pre_state1_reset_clock_boundary`,
 //! `state1_2_perstn_qualified_boundary`, `state3_composite_boundary`,
 //! `state5_composite_boundary`), with the same values, order and timeouts. Each step checks its
-//! precondition and fails closed before writing anything.
+//! precondition and fails closed before writing anything. [`crate::platform`] runs them in
+//! its order.
 use crate::{Error, read};
 
 const RESETS_CTRL0: usize = 0x4001_4000;
@@ -39,6 +40,10 @@ const PCIE_INTS: usize = 0x4010_81b4;
 const PCIE_RESET_SEQ_C0: usize = 0x4010_81c0;
 const PCIE_RESET_SEQ_C8: usize = 0x4010_81c8;
 const DBI: usize = 0x4010_9000;
+/// PCIE_MONITOR2 bit 20: the link is up.
+pub(crate) const LINK: u32 = 1 << 20;
+/// PCIE_CONTROL bit 2: LTSSM enable.
+pub(crate) const LTSSM_ENABLE: u32 = 1 << 2;
 /// Fresh PERSTn wait. The PoC loader re-initialized the root complex ~0.5 s after start;
 /// rp1boot does not touch PCIe, and the VPU firmware leaves PERSTn asserted ("PCI1/PCI2
 /// reset" before starting the OS), so the first deassertion is Linux's brcm-pcie probe a few
@@ -61,20 +66,9 @@ pub enum ColdError {
     Perstn(u32),
     CoreAlive(u32),
     LinkTimeout(u32),
+    /// The link was up (PCIE_MONITOR2) after LTSSM enable was dropped.
+    LinkUp(u32),
     Syscfg(u32),
-}
-
-/// What [`bring_up`] did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ColdReport {
-    /// false: clocks were already running (warm) and were left untouched.
-    pub clocks_programmed: bool,
-    /// false: the PCIe endpoint was already up and was left untouched.
-    pub endpoint_programmed: bool,
-    /// u32::MAX: no fresh PERSTn event; continued on the deasserted level.
-    pub perstn_wait_us: u32,
-    pub link_wait_us: u32,
-    pub monitor2: u32,
 }
 
 fn write(address: usize, value: u32) {
@@ -131,7 +125,8 @@ fn clock_snapshot() -> [u32; 10] {
 
 /// PoC `scmi_cold_clock::prepare`: PLL_SYS 1 GHz VCO, PRIM /5 /1 + PRI_PH, CLK_UART = XOSC,
 /// UART0 reset released. Returns false (no writes) if the clocks are already running.
-fn cold_clocks() -> Result<bool, ColdError> {
+/// Before the clk_sys switch and the log.
+pub(crate) fn clocks() -> Result<bool, ColdError> {
     let before = clock_snapshot();
     if before != clock_snapshot() {
         return Err(ColdError::ClockPrecondition(0xffff_ffff));
@@ -219,7 +214,7 @@ fn cold_clocks() -> Result<bool, ColdError> {
 /// LTSSM enable (PCIE_CONTROL bit 2) and checks the read-back. Returns the PCIE_CONTROL value
 /// read back. While LTSSM enable is 0 the link cannot come up, so Linux cannot reach RP1 until
 /// [`bring_up`] enables it again.
-fn quiesce() -> Result<u32, ColdError> {
+pub(crate) fn quiesce() -> Result<u32, ColdError> {
     // Endpoint clock (RESETS CTRL0 bit 26), with the PoC's ~5 ms phases around it.
     wait_us(5_000);
     modify(RESETS_CTRL0, |v| v & !ENDPOINT_RESET);
@@ -264,7 +259,7 @@ fn quiesce() -> Result<u32, ColdError> {
 
 /// Second half of the PoC endpoint sequence, after [`quiesce`]: PCIe states 1..5 (PERSTn wait,
 /// core alive, DBI, LTSSM enable, link). Returns (perstn_wait_us, link_wait_us, monitor2).
-fn bring_up() -> Result<(u32, u32, u32), ColdError> {
+pub(crate) fn bring_up() -> Result<(u32, u32, u32), ColdError> {
     // States 1/2: wait (<=100 ms) for PERSTn deassertion from the host.
     modify(PCIE_INTE, |v| v & !0x7f);
     modify(PCIE_RESET_SEQ_C8, |v| v | 1 << 1);
@@ -343,8 +338,12 @@ fn bring_up() -> Result<(u32, u32, u32), ColdError> {
     Ok((perstn, link, read(PCIE_MONITOR2)))
 }
 
-/// PoC `scmi_cold_clock::release_syscfg` without the proc-event route (no SCMI server in v0.1).
-fn release_syscfg() -> Result<(), ColdError> {
+pub(crate) fn monitor2() -> u32 {
+    read(PCIE_MONITOR2)
+}
+
+/// PoC `scmi_cold_clock::release_syscfg` without the proc-event route.
+pub(crate) fn release_syscfg() -> Result<(), ColdError> {
     let ctrl = read(RESETS_CTRL1);
     if ctrl & SYSCFG_RESET == 0 {
         return Ok(());
@@ -354,38 +353,6 @@ fn release_syscfg() -> Result<(), ColdError> {
     poll_us(10_000, || read(RESETS_DONE1) & SYSCFG_RESET != 0)
         .map(|_| ())
         .ok_or(ColdError::Syscfg(read(RESETS_DONE1)))
-}
-
-/// Program clocks (only if at cold defaults). Call before `Authority::init` and `log::init`.
-///
-/// # Safety
-/// proc0 only, once, before any other driver. Requires `clock.authority = "rp1"`.
-pub unsafe fn clocks() -> Result<bool, ColdError> {
-    cold_clocks()
-}
-
-/// Bring the PCIe endpoint up (only if the link is down) and release SYSCFG.
-///
-/// # Safety
-/// proc0 only, once, after [`clocks`]. The host must be waiting for the link.
-pub unsafe fn endpoint_and_syscfg(clocks_programmed: bool) -> Result<ColdReport, ColdError> {
-    let mut report = ColdReport {
-        clocks_programmed,
-        endpoint_programmed: false,
-        perstn_wait_us: 0,
-        link_wait_us: 0,
-        monitor2: read(PCIE_MONITOR2),
-    };
-    if report.monitor2 & (1 << 20) == 0 {
-        quiesce()?;
-        let (perstn, link, monitor2) = bring_up()?;
-        report.endpoint_programmed = true;
-        report.perstn_wait_us = perstn;
-        report.link_wait_us = link;
-        report.monitor2 = monitor2;
-    }
-    release_syscfg()?;
-    Ok(report)
 }
 
 impl From<ColdError> for Error {
@@ -435,7 +402,7 @@ pub const RECONFIG_BUDGET_US: u32 = 5_000;
 
 impl EndpointService {
     /// # Safety
-    /// proc0 only, one instance, after [`endpoint_and_syscfg`].
+    /// proc0 only, one instance, after [`crate::platform`]'s init.
     ///
     /// Exclusion contract (replaces the PoC's "proc1 held in reset" check): while this service
     /// is in use, no other code may access the PCIe DBI selector (0x4010_8000), DBI

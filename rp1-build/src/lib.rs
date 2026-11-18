@@ -279,7 +279,7 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         if index == 0 {
             s.push_str("pub proc1: ::rp1_rt::Proc1Launcher,\n");
             if d.clock.authority == "rp1" {
-                s.push_str("pub clock_authority: ::rp1_hal::clocks::Authority,\n");
+                s.push_str("pub platform: ::rp1_hal::platform::Token,\n");
             }
         }
         s.push_str(&format!("}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub unsafe fn new() -> Self {{ Self {{ pins: Proc{index}Pins {{\n"));
@@ -316,10 +316,21 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
             s.push_str("proc1: unsafe { ::rp1_rt::Proc1Launcher::new() },\n");
             if d.clock.authority == "rp1" {
                 let [r0, r1, r2] = d.linux_resets();
-                s.push_str(&format!("clock_authority: unsafe {{ ::rp1_hal::clocks::Authority::new(::rp1_hal::linux_blocks::LinuxBlocks::new([{r0:#x}, {r1:#x}, {r2:#x}])) }},\n"));
+                // The only clk_sys rate v0.1 accepts, also when the declaration leaves it out.
+                let sys_hz = d.clock.clk_sys_hz.unwrap_or(200_000_000);
+                s.push_str(&format!("platform: unsafe {{ ::rp1_hal::platform::Token::new(::rp1_hal::linux_blocks::LinuxBlocks::new([{r0:#x}, {r1:#x}, {r2:#x}]), {sys_hz}) }},\n"));
             }
         }
         s.push_str("} } }\n");
+    }
+    if d.clock.authority == "rp1" {
+        // Step 3 of the platform init is the declared log, if there is one.
+        let log = if d.log.is_some() {
+            "super::log::init"
+        } else {
+            "|_| Ok(())"
+        };
+        s.push_str(&format!("pub mod platform {{\n/// Clocks, the blocks Linux owns, the log, the PCIe endpoint and the SCMI server (`rp1_hal::platform`). proc0, once, before any driver; returns when the link is up.\npub fn init(core: &mut ::rp1_rt::Proc0, token: ::rp1_hal::platform::Token) -> ::core::result::Result<::rp1_hal::platform::System, ::rp1_hal::platform::InitError> {{ token.init(core, {log}, |_| {{}}) }}\n/// [`init`] that runs `before_link` after the log, before the PCIe endpoint: lab only.\n#[doc(hidden)]\npub fn __init_before_link(core: &mut ::rp1_rt::Proc0, token: ::rp1_hal::platform::Token, before_link: impl FnOnce(&::rp1_hal::clocks::Clocks)) -> ::core::result::Result<::rp1_hal::platform::System, ::rp1_hal::platform::InitError> {{ token.init(core, {log}, before_link) }}\n}}\n"));
     }
     if let Some(log) = &d.log {
         s.push_str(&format!("pub mod log {{\n#[unsafe(link_section=\".shared\")] static LOGGER: ::rp1_hal::logging::Logger = unsafe {{ ::rp1_hal::logging::Logger::new() }};\npub fn init(core: &mut ::rp1_rt::Proc0) -> Result<(),::rp1_hal::Error> {{ LOGGER.init(core,{}) }}\npub fn write(args: ::core::fmt::Arguments<'_>) -> ::core::fmt::Result {{ LOGGER.write(args) }}\npub fn dropped() -> u32 {{ ::rp1_hal::logging::dropped() }}\n}}\n",log.baudrate));

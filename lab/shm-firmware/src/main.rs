@@ -70,12 +70,18 @@ fn proof_reply(request: u32, success: bool) {
 
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
-    let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
-    let (clocks, mut scmi) = p.clock_authority.init(200_000_000).unwrap();
-    rp1::log::init(&mut core).unwrap();
+    let mut sys = match rp1::platform::init(&mut core, p.platform) {
+        Ok(sys) => sys,
+        // Without the error: its derived Debug costs about 1 KiB of the 48 KiB image.
+        Err(_) => {
+            let _ = log!("PLAT_INIT ok=0\n");
+            panic!("platform init failed");
+        }
+    };
+    log!("PLAT_INIT ok=1 {}\n", sys.report).unwrap();
+    let clocks = sys.clocks;
     log!(
-        "proc0 clocks programmed={} sys_hz={} uart_hz={} clk_sys ctrl=0x{:x} div={} sel=0x{:x}\n",
-        programmed,
+        "proc0 clocks sys_hz={} uart_hz={} clk_sys ctrl=0x{:x} div={} sel=0x{:x}\n",
         clocks.sys_hz(),
         clocks.uart_hz(),
         reg(0x4001_8014),
@@ -83,7 +89,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         reg(0x4001_8020)
     )
     .unwrap();
-    let lb = scmi.linux_blocks();
+    let lb = sys.report.linux_blocks;
     log!(
         "proc0 linux_blocks released={:x},{:x},{:x} pending={:x},{:x},{:x}\n",
         lb.released[0],
@@ -93,20 +99,6 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         lb.pending[1],
         lb.pending[2]
     )
-    .unwrap();
-    // Fields printed one by one: the derived Debug of the whole result costs ~1 KiB of the
-    // 48 KiB shared SRAM image.
-    match unsafe { rp1_hal::cold::endpoint_and_syscfg(programmed) } {
-        Ok(r) => log!(
-            "p0 pcie Ok clocks_programmed={} endpoint_programmed={} perstn_wait_us={} link_wait_us={} monitor2=0x{:x}\n",
-            r.clocks_programmed,
-            r.endpoint_programmed,
-            r.perstn_wait_us,
-            r.link_wait_us,
-            r.monitor2
-        ),
-        Err(e) => log!("p0 pcie Err({:?})\n", e),
-    }
     .unwrap();
     log!("p0 ready bss=0x{:x}\n", bss_check(0xb55_0000)).unwrap();
     // Lets the verifier catch a profile firmware run with a default client (and vice versa).
@@ -135,8 +127,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
             #[cfg(not(feature = "i2c"))]
             proof_reply(request, false);
         }
-        let (value, perst, scmi_event) =
-            idle0(&mut rx, &mut endpoint, &mut scmi, probed, attempted);
+        let (value, perst, scmi_event) = idle0(&mut rx, &mut endpoint, &mut sys, probed, attempted);
         if let Some(v) = value {
             log!("p0 received {}\n", v).unwrap();
         }
@@ -202,7 +193,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     // SAFETY: proc1 owns its private DSRAM; interrupts are still masked at entry.
     let stack = unsafe { stack_watermark::paint() };
     log!("p1 ready bss=0x{:x}\n", bss_check(0xb55_1000)).unwrap();
-    // The ADC is declared on proc1: its Clocks come from proc0's clock_authority.init
+    // The ADC is declared on proc1: its Clocks come from proc0's platform init
     // (published before proc0 launches proc1).
     #[cfg(any(
         feature = "adc",
@@ -561,14 +552,14 @@ type Perst = Option<Result<rp1_hal::cold::Reconfigured, rp1_hal::cold::ReconfigE
 fn idle0(
     rx: &mut rp1_rt::sync::Consumer<'_, u32, 8, Proc1, Proc0>,
     endpoint: &mut rp1_hal::cold::EndpointService,
-    scmi: &mut rp1_hal::scmi::Service,
+    sys: &mut rp1_hal::platform::System,
     probed: bool,
     attempted: bool,
 ) -> (Option<u32>, Perst, Option<rp1_hal::scmi::Event>) {
     loop {
         let value = rx.pop();
         let perst = endpoint.poll();
-        let event = scmi.poll();
+        let event = sys.poll_services();
         let request = link_read(link::SHM_REQUEST);
         if value.is_some()
             || perst.is_some()

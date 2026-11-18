@@ -238,7 +238,9 @@ pub mod rp1 {
 
 `#[entry(proc0)]` / `#[entry(proc1)]` は、対応する `rp1::ProcNResources` を受け取る。
 `Proc0Resources` だけが `proc1: rp1_rt::Proc1Launcher` と、`clock.authority = "rp1"` のときの
-`clock_authority: rp1_hal::clocks::Authority` を持つ。宣言が空でも `ProcNIrq` と `irq` フィールドは生成する。
+`platform: rp1_hal::platform::Token` を持つ。宣言が空でも `ProcNIrq` と `irq` フィールドは生成する。
+`platform` は生成される `rp1::platform::init(&mut core, p.platform)` に渡す。これがクロック・Linux 側ブロック・
+宣言した log・PCIe エンドポイント・SCMI サーバーを順に立ち上げ（`rp1_hal::platform`）、`System`（`clocks`、`pcie`、`report`）を返す。
 
 ## 2. `.note.rp1` v2 の形式
 

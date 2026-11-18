@@ -10,11 +10,11 @@ peripherals = ["ADC"]
 ```
 
 ```rust,ignore
-let mut adc = p.adc.init(&clocks)?;          // after clocks::Authority::init
+let mut adc = p.adc.init(&sys.clocks)?;      // sys = rp1::platform::init(..)
 let raw: u16 = adc.read(0)?;                 // input 0, 0..=0xfff
 let mc: i32 = adc.read_temperature()?;       // millidegrees Celsius
 
-// Declared under [proc1] instead: proc1 takes the Clocks proc0's Authority::init published.
+// Declared under [proc1] instead: proc1 takes the Clocks proc0's platform::init published.
 let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000)?;   // core: Proc1
 let mut adc = p.adc.init(&clocks)?;
 
@@ -39,15 +39,15 @@ STATIC: declaring `ADC` does three things.
 Without the declaration, the ADC stays Linux's, as before.
 
 Either core may own the ADC. On proc1, `init` needs proc0's clocks: `Clocks::from_proc0` /
-`Clocks::wait_from_proc0` return the value proc0's `clocks::Authority::init` published
+`Clocks::wait_from_proc0` return the value proc0's `platform::init` published
 (see [Clocks on proc1](#clocks-on-proc1)).
 
 ## Clocks on proc1
 
-STATIC: only proc0 holds the clock authority, so only proc0's `Authority::init` creates a
+STATIC: only proc0 holds the platform token, so only proc0's `platform::init` creates a
 `Clocks`. Just before it returns `Ok`, and only then, init stores the same value in a
 rp1-hal-private `.shared` cell (frequencies first, then a ready word with a release store).
-The value is published once per image load: `init` consumes the one `Authority`, and
+The value is published once per image load: `init` consumes the one `platform::Token`, and
 `.shared` is loaded with the image (ready word 0). A failing init leaves the ready word 0.
 `Clocks::from_proc0(&Proc1)` reads the ready word with an acquire load and returns that
 copy. It returns `Error::NotReady` before init has succeeded, and `Error::Precondition` if

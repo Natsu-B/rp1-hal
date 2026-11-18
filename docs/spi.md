@@ -49,7 +49,7 @@ Wrong or swapped pins fail to compile (`tests/ui/spi_wrong_pins.rs`).
   (Linux dw_spi rounds the same way: up, then to even). At 200 MHz: 100 MHz maximum,
   1 MHz = /200, 10 MHz = /20, 25 MHz = /8, 50 MHz = /4; the lowest rate is about 3.05 kHz.
   clk_sys belongs to RP1 (`clock.authority = "rp1"`): no SCMI clock is held or voted for
-  SPI, and `Clocks` comes either from proc0's `Authority::init` or, on proc1, from
+  SPI, and `Clocks` comes either from proc0's `platform::init` or, on proc1, from
   `Clocks::wait_from_proc0`. A clk_sys that no longer matches the value returns
   `Precondition` before the FIFO is touched. SCLK depends on clk_sys only, so clk_uart is
   not compared. `init` and every reconfiguration read CLK_SYS CTRL/DIV/SEL and the PLL_SYS

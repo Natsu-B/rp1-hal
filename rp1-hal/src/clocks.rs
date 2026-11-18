@@ -1,11 +1,11 @@
 //! Clock authority (`clock.authority = "rp1"`): selects the official clk_sys and reports the
 //! rates the drivers must use.
 //!
-//! After a loader reset RP1 is at cold defaults; [`crate::cold::clocks`] locks PLL_SYS
-//! (1 GHz VCO, PRIM /5 /1 = 200 MHz) and starts CLK_UART = XOSC / 1 (HW 2026-10-28). clk_sys
-//! is still on XOSC (50 MHz) at that point (HW 2026-10-29: SysTick 50154 cycles / 1004 µs).
-//! [`Authority::init`] then moves the clk_sys mux to PLL_SYS, the 200 MHz the official RP1
-//! firmware runs at.
+//! After a loader reset RP1 is at cold defaults; the platform init ([`crate::platform`]) first
+//! locks PLL_SYS (1 GHz VCO, PRIM /5 /1 = 200 MHz) and starts CLK_UART = XOSC / 1 (HW
+//! 2026-10-28). clk_sys is still on XOSC (50 MHz) at that point (HW 2026-10-29: SysTick 50154
+//! cycles / 1004 µs). Its next step moves the clk_sys mux to PLL_SYS, the 200 MHz the official
+//! RP1 firmware runs at, and creates the [`Clocks`].
 //!
 //! The switch is the HW-proven PoC sequence (the PoC HAL's `clk_sys::switch`): with PLL_SYS
 //! locked on the admitted tuple and CLK_SYS_DIV_INT = 1, write only CLK_SYS_CTRL.SRC[1:0] = 2
@@ -19,11 +19,11 @@
 //! the 1 MHz timer (HW), CLK_UART (separate generator, XOSC / 1) and PLL_SYS PRI_PH (the
 //! 100 MHz `uart_apb` that SCMI reports, a PLL output independent of the clk_sys mux, DOC).
 //!
-//! proc1: only proc0 holds the [`Authority`], so a driver owned by proc1 (ADC, I2C, UART
+//! proc1: only proc0 runs the platform init, so a driver owned by proc1 (ADC, I2C, UART
 //! declared under `[proc1]`) gets its [`Clocks`] from [`Clocks::from_proc0`] /
-//! [`Clocks::wait_from_proc0`]. [`Authority::init`] publishes the value it returns in a
-//! `.shared` cell before returning, so proc1 can only ever obtain a `Clocks` that proc0's
-//! init created; launch proc1 after init (or let proc1 wait).
+//! [`Clocks::wait_from_proc0`]. The init publishes the value it returns in a `.shared` cell
+//! before returning, so proc1 can only ever obtain a `Clocks` that proc0's init created;
+//! launch proc1 after init (or let proc1 wait).
 use crate::{Error, read};
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -50,12 +50,7 @@ const SEL_XOSC: u32 = 1 << SRC_XOSC;
 const SEL_PLL_SYS: u32 = 1 << SRC_PLL_SYS;
 const SWITCH_TIMEOUT_US: u32 = 10_000;
 
-/// Proof that this image holds clock authority (`clock.authority = "rp1"`), issued to proc0.
-pub struct Authority {
-    linux: crate::linux_blocks::LinuxBlocks,
-}
-
-/// Frequencies the drivers rely on. Only [`Authority::init`] creates one, from the registers;
+/// Frequencies the drivers rely on. Only the platform init creates one, from the registers;
 /// proc1 receives a copy of that value through [`Clocks::from_proc0`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Clocks {
@@ -109,10 +104,10 @@ impl Clocks {
     }
 }
 
-/// [`Authority::init`]'s result for proc1: written by proc0 only (init), read by proc1 only.
+/// [`init`]'s result for proc1: written by proc0 only (init), read by proc1 only.
 /// Plain acquire/release loads and stores, no LDREX/STREX (shared SRAM). `.shared` is loaded
 /// with the image (`ready` = 0), and the value is published at most once per image load:
-/// [`Authority::init`] consumes the one `Authority`. The `withdraw` at the start of init is
+/// the platform init consumes the one [`crate::platform::Token`]. The `withdraw` at the start of init is
 /// defensive only; readers do not re-check `ready`, so this is not a protocol for publishing
 /// a second value.
 struct Handoff {
@@ -136,7 +131,7 @@ impl Handoff {
     fn withdraw(&self) {
         self.ready.store(0, Ordering::Release);
     }
-    /// Only called by [`Authority::init`] with the value it is about to return.
+    /// Only called by [`init`] with the value it is about to return.
     fn publish(&self, clocks: &Clocks) {
         self.sys_hz.store(clocks.sys_hz, Ordering::Relaxed);
         self.uart_hz.store(clocks.uart_hz, Ordering::Relaxed);
@@ -158,7 +153,7 @@ impl Handoff {
 }
 
 impl Clocks {
-    /// proc1's copy of the [`Clocks`] that proc0's [`Authority::init`] returned. Takes the
+    /// proc1's copy of the [`Clocks`] that proc0's platform init returned. Takes the
     /// proc1 token: proc0 already has its own value.
     ///
     /// - [`Error::NotReady`]: init has not succeeded (yet); nothing is published.
@@ -209,7 +204,7 @@ fn wait_until(
     }
 }
 
-/// [`Authority::init`]'s publication rule: `ready` is cleared first and the value is published
+/// [`init`]'s publication rule: `ready` is cleared first and the value is published
 /// only if `body` succeeds.
 fn publish_on_success<S>(
     handoff: &Handoff,
@@ -244,7 +239,7 @@ impl Pll {
         }
     }
     /// Locked, 50 MHz × 20 = 1 GHz VCO, PRIM /5 /1 (PRI_PH bit 4 either way). The only tuple
-    /// written by `cold::clocks` and observed on hardware.
+    /// written by the cold bring-up and observed on hardware.
     fn is_200mhz(&self) -> bool {
         self.cs == PLL_CS_LOCKED
             && self.pwr == 4
@@ -307,7 +302,7 @@ pub fn sys_hz() -> Option<u32> {
 }
 
 fn decode_uart(ctrl: u32, div: u32, sel: u32) -> Option<u32> {
-    // The exact CTRL value `cold::clocks` leaves (ENABLE bit 11, AUXSRC 2 << 5) as read on HW.
+    // The exact CTRL value the cold bring-up leaves (ENABLE bit 11, AUXSRC 2 << 5) as read on HW.
     (ctrl == 0x1000_0840 && div == 1 && sel == 1).then_some(XOSC_HZ)
 }
 
@@ -324,7 +319,7 @@ pub fn uart_hz() -> Option<u32> {
     (a == once()).then_some(a).flatten()
 }
 
-/// PLL_SYS and CLK_UART are on the tuple `cold::clocks` programs (clk_sys mux not included).
+/// PLL_SYS and CLK_UART are on the tuple the cold bring-up programs (clk_sys mux not included).
 pub(crate) fn running_tuple_admitted() -> bool {
     let a = Pll::take();
     a == Pll::take() && a.is_200mhz() && uart_hz() == Some(XOSC_HZ)
@@ -383,50 +378,39 @@ fn select_pll_sys(r: &mut impl Registers) -> Result<u32, Error> {
     }
 }
 
-impl Authority {
-    /// # Safety
-    /// Issued once to proc0 by the generated resources. Linux must not own the clock generator.
-    /// `linux` is the set of blocks the declaration leaves to Linux.
-    pub const unsafe fn new(linux: crate::linux_blocks::LinuxBlocks) -> Self {
-        Self { linux }
-    }
-
-    /// Selects clk_sys = `sys_hz` (the declared `clk_sys_hz`; only the official 200 MHz is
-    /// accepted), checks PLL_SYS / CLK_UART, and starts the SCMI service that publishes the
-    /// RP1 clocks to Linux (authority = rp1 means Linux's DT points its RP1 clock users at
-    /// SCMI, so the server is part of the obligation). It also brings up the blocks Linux owns
-    /// ([`crate::linux_blocks`]: PLL_SYS_SEC, their clock generators and resets), since Linux
-    /// can no longer do that through clk-rp1. Poll the returned [`crate::scmi::Service`] from
-    /// proc0's main loop; [`crate::scmi::Service::linux_blocks`] reports the reset release.
-    ///
-    /// Call after [`crate::cold::clocks`] and before any driver that depends on clk_sys
-    /// (I2C). The returned [`Clocks`] is read back from the registers, not from `sys_hz`.
-    /// Already on PLL_SYS (warm restart): nothing is written.
-    ///
-    /// On success, and only then, the same [`Clocks`] is published once for proc1
-    /// ([`Clocks::from_proc0`]); on any error proc1 keeps seeing [`Error::NotReady`].
-    pub fn init(self, sys_hz: u32) -> Result<(Clocks, crate::scmi::Service), Error> {
-        publish_on_success(&HANDOFF, || {
-            if sys_hz != PLL_SYS_HZ {
-                return Err(Error::Invalid);
-            }
-            if !running_tuple_admitted() {
-                return Err(Error::Precondition);
-            }
-            select_pll_sys(&mut Mmio)?;
-            let clocks = Clocks {
-                sys_hz: self::sys_hz().ok_or(Error::Hardware)?,
-                uart_hz: uart_hz().ok_or(Error::Precondition)?,
-            };
-            if clocks.sys_hz != sys_hz {
-                return Err(Error::Hardware);
-            }
-            let linux = crate::linux_blocks::bring_up(&mut crate::linux_blocks::Mmio, self.linux)?;
-            // SAFETY: `self` is the one clock authority, issued to proc0.
-            let scmi = unsafe { crate::scmi::Service::new(linux, self.linux.held_clocks()) };
-            Ok((clocks, scmi))
-        })
-    }
+/// Step 2 of the platform init ([`crate::platform`]): selects clk_sys = `sys_hz` (the
+/// declared `clk_sys_hz`; only the official 200 MHz is accepted), checks PLL_SYS / CLK_UART,
+/// and brings up the blocks Linux owns (`linux`: PLL_SYS_SEC, their clock generators and
+/// resets, [`crate::linux_blocks`]), since Linux can no longer do that through clk-rp1. The
+/// SCMI server that publishes the RP1 clocks to Linux is the platform init's later step.
+///
+/// Runs after the cold clocks. The returned [`Clocks`] is read back from the registers, not
+/// from `sys_hz`. Already on PLL_SYS (warm restart): nothing is written to clk_sys.
+///
+/// On success, and only then, the same [`Clocks`] is published once for proc1
+/// ([`Clocks::from_proc0`]); on any error proc1 keeps seeing [`Error::NotReady`].
+pub(crate) fn init(
+    linux: crate::linux_blocks::LinuxBlocks,
+    sys_hz: u32,
+) -> Result<(Clocks, crate::linux_blocks::Report), Error> {
+    publish_on_success(&HANDOFF, || {
+        if sys_hz != PLL_SYS_HZ {
+            return Err(Error::Invalid);
+        }
+        if !running_tuple_admitted() {
+            return Err(Error::Precondition);
+        }
+        select_pll_sys(&mut Mmio)?;
+        let clocks = Clocks {
+            sys_hz: self::sys_hz().ok_or(Error::Hardware)?,
+            uart_hz: uart_hz().ok_or(Error::Precondition)?,
+        };
+        if clocks.sys_hz != sys_hz {
+            return Err(Error::Hardware);
+        }
+        let report = crate::linux_blocks::bring_up(&mut crate::linux_blocks::Mmio, linux)?;
+        Ok((clocks, report))
+    })
 }
 
 #[cfg(test)]
@@ -506,7 +490,7 @@ mod tests {
         assert!(!PUBLISHED.matches(Some(PLL_SYS_HZ), None));
     }
 
-    /// clk_sys at 200 MHz from PLL_SYS and clk_uart = XOSC, as `cold::clocks` + init leave them.
+    /// clk_sys at 200 MHz from PLL_SYS and clk_uart = XOSC, as the platform init leaves them.
     const TREE: [(usize, u32); 11] = [
         (CLK_SYS_CTRL, 0x800 | SRC_PLL_SYS),
         (CLK_SYS_DIV_INT, 1),

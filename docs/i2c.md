@@ -53,7 +53,7 @@ cold bring-up must already have started GPIO bank0 and the raw microsecond timer
 
 HW: the controller clock (`ic_clk`) is clk_sys. With clk_sys on XOSC it measured
 50 MHz (high period exactly HCNT + SPKLEN + 7 cycles of 20 ns); since
-`clocks::Authority::init` selects PLL_SYS it is 200 MHz. The driver computes the counts
+`platform::init` selects PLL_SYS it is 200 MHz. The driver computes the counts
 from `Clocks::sys_hz()` at init and `set_speed`: SCL high/low targets 4.6/5.4 us,
 0.9/1.6 us and 0.4/0.6 us (I2C minimums kept, nominal 100 kHz, 400 kHz, 1 MHz), a 50 ns
 spike filter (3 cycles at 50 MHz, 10 at 200 MHz) and 100 ns of pull-up rise taken off
@@ -77,7 +77,7 @@ whole-MHz `ic_clk` the result (counts or `Invalid`) equals the earlier 64-bit fo
 clk_sys or an impossible speed writes no register, leaves the reset asserted and routes no
 pin, and the returned `Parts` initialise on retry.
 A controller declared under `[proc1]` takes its `Clocks` from
-`Clocks::wait_from_proc0(&core, timeout_us)` (the value proc0's `Authority::init` published;
+`Clocks::wait_from_proc0(&core, timeout_us)` (the value proc0's `platform::init` published;
 see `docs/adc.md`, "Clocks on proc1"). STATIC: compile-checked in `examples/dual-core`.
 
 STATIC: address NACK, data NACK and arbitration loss map to embedded-hal's matching

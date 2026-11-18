@@ -84,16 +84,16 @@ fn next_tick() -> u32 {
 
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
-    // After a loader reset RP1 is at cold defaults: lock PLL_SYS, then select clk_sys = 200 MHz.
-    let programmed = unsafe { rp1_hal::cold::clocks() }.unwrap();
-    let (clocks, mut scmi) = p.clock_authority.init(200_000_000).unwrap();
-    rp1::log::init(&mut core).unwrap();
-    log!("proc0 clocks programmed={}\n", programmed).unwrap();
-    // The host is waiting for the PCIe link; bring the endpoint up before anything slow.
-    match unsafe { rp1_hal::cold::endpoint_and_syscfg(programmed) } {
-        Ok(r) => log!("proc0 pcie {:?}\n", r).unwrap(),
-        Err(e) => log!("proc0 pcie failed {:?}\n", e).unwrap(),
-    }
+    // Clocks (200 MHz clk_sys), Linux's blocks, the log, the PCIe endpoint (waits for Linux's
+    // probe, about 3 s after RP1 starts) and the SCMI clock server.
+    let mut sys = match rp1::platform::init(&mut core, p.platform) {
+        Ok(sys) => sys,
+        Err(e) => {
+            let _ = log!("PLAT_INIT ok=0 {:?}\n", e);
+            panic!("platform init failed");
+        }
+    };
+    log!("PLAT_INIT ok=1 {}\n", sys.report).unwrap();
     let private = PRIVATE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let bss = bss_check(0xb55_0000 | private);
     log!("proc0 ready private={} bss=0x{:x}\n", private, bss).unwrap();
@@ -102,7 +102,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let bus = p
         .spi0
         .init(
-            &clocks,
+            &sys.clocks,
             rp1_hal::spi::Config::new(10_000_000, embedded_hal::spi::MODE_0),
         )
         .unwrap();
@@ -156,7 +156,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
             log!("proc0 pcie perst {:?}\n", r).unwrap();
         }
         // Linux's arm-scmi asks for the RP1 clocks (serial@34000 uses clk_uart via SCMI).
-        if let Some(e) = scmi.poll() {
+        if let Some(e) = sys.poll_services() {
             log!(
                 "proc0 scmi p{:x} m{} {:x?} -> {} votes={:x}\n",
                 e.protocol,
@@ -176,7 +176,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let bss = bss_check(0xb55_1000 | private);
     log!("proc1 ready private={} bss=0x{:x}\n", private, bss).unwrap();
     // ADC and I2C1 are declared on proc1: their drivers take the Clocks that proc0's
-    // `clock_authority.init` published (proc0 launches proc1 only after that, so no wait).
+    // platform init published (proc0 launches proc1 only after that, so no wait).
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000).unwrap();
     let mut adc = p.adc.init(&clocks).unwrap();
     log!("proc1 temp_mc={}\n", adc.read_temperature().unwrap()).unwrap();
