@@ -739,10 +739,37 @@ impl ClockHardware for Rp1Clocks {
     }
 }
 
+/// One SCMI channel: the server for the RP1 clock table and its transport. Generic so that
+/// the host tests run the code the firmware runs.
+pub(crate) struct Channel<T, H: 'static> {
+    server: Server<'static, H>,
+    transport: T,
+}
+
+impl<T: Transport, H: ClockHardware> Channel<T, H> {
+    /// Clears the shared memory and marks it free (Linux waits for FREE before its first
+    /// request), then serves [`RP1_CLOCKS`] with the `held` clocks reported but never changed.
+    pub(crate) fn start(mut transport: T, hw: H, held: u32) -> Self {
+        reset_channel(&mut transport);
+        Self {
+            server: Server::new(RP1_CLOCKS, hw).holding(held),
+            transport,
+        }
+    }
+
+    /// Serves at most one pending request ([`serve`]).
+    pub(crate) fn serve(&mut self) -> Option<Event> {
+        serve(&mut self.server, &mut self.transport)
+    }
+
+    pub(crate) fn votes(&self) -> u32 {
+        self.server.votes()
+    }
+}
+
 /// The SCMI server on proc0. Created by [`crate::clocks::Authority::init`].
 pub struct Service {
-    server: Server<'static, Rp1Clocks>,
-    transport: Rp1Transport,
+    channel: Channel<Rp1Transport, Rp1Clocks>,
     linux_blocks: crate::linux_blocks::Report,
 }
 
@@ -751,11 +778,12 @@ impl Service {
     /// One instance, proc0, holding clock authority; no other user of mailbox channel 0, the
     /// shmem area or the Linux-owned clock generators on RP1.
     pub(crate) unsafe fn new(linux_blocks: crate::linux_blocks::Report, held: u32) -> Self {
-        let mut transport = Rp1Transport { _private: () };
-        reset_channel(&mut transport);
         Self {
-            server: Server::new(RP1_CLOCKS, Rp1Clocks { _private: () }).holding(held),
-            transport,
+            channel: Channel::start(
+                Rp1Transport { _private: () },
+                Rp1Clocks { _private: () },
+                held,
+            ),
             linux_blocks,
         }
     }
@@ -773,11 +801,11 @@ impl Service {
     }
     #[rp1_rt::cold]
     fn serve_pending(&mut self) -> Option<Event> {
-        serve(&mut self.server, &mut self.transport)
+        self.channel.serve()
     }
 
     pub fn votes(&self) -> u32 {
-        self.server.votes()
+        self.channel.votes()
     }
 
     /// What the bring-up of the Linux-owned blocks did (for logging).
@@ -1193,5 +1221,43 @@ mod tests {
         reset_channel(&mut f);
         assert_eq!(f.words[STATUS], FREE);
         assert_eq!(f.words[FLAGS], 0);
+    }
+
+    /// A started channel, driven the way proc0's loop drives it (I6): the area is cleared and
+    /// free first, idle calls and a doorbell without a request answer nothing, and a request
+    /// gets the response a server built the same way gives, once.
+    #[test]
+    fn started_channel_answers_like_the_server_once_per_request() {
+        let held = 1 << id::ETH;
+        let dirty = Fake {
+            words: [0xdead_beef; WORDS],
+            event: false,
+            log: Vec::new(),
+        };
+        let mut c = Channel::start(dirty, Hw::default(), held);
+        let mut cleared = [0; WORDS];
+        cleared[STATUS] = FREE;
+        assert_eq!(c.transport.words, cleared);
+        for _ in 0..3 {
+            assert!(c.serve().is_none());
+        }
+        c.transport.event = true;
+        assert!(c.serve().is_none(), "doorbell on a free channel");
+
+        // CLOCK_CONFIG_SET enable of the held clock: reported, nothing written.
+        let header = (0x11 << 18) | (u32::from(CLOCK_PROTOCOL) << 10) | 7;
+        let args = [id::ETH, 1];
+        let mut expected = request(header, &args, FLAG_INTR);
+        let mut reference = Server::new(RP1_CLOCKS, Hw::default()).holding(held);
+        let want = serve(&mut reference, &mut expected).unwrap();
+        let asked = request(header, &args, FLAG_INTR);
+        c.transport.words = asked.words;
+        c.transport.event = true;
+        assert_eq!(c.serve(), Some(want));
+        assert_eq!(c.transport.words, expected.words);
+        assert_eq!(c.votes(), reference.votes());
+        assert!(c.server.hw.writes.is_empty());
+        c.transport.event = true;
+        assert!(c.serve().is_none(), "duplicate doorbell after FREE");
     }
 }
