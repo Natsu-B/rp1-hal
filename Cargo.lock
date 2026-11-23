@@ -521,6 +521,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "scmi-starvation"
+version = "0.1.0"
+dependencies = [
+ "rp1-build",
+ "rp1-hal",
+ "rp1-proto",
+ "rp1-rt",
+]
+
+[[package]]
 name = "semver"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
