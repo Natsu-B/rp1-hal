@@ -721,14 +721,14 @@ mod tests {
         }
     }
     /// An `Irq` on one end of a socket pair; writing 4 bytes to the other end is an event.
-    fn irq() -> (Irq, UnixStream) {
+    fn irq() -> (Irq, File) {
         let (a, b) = UnixStream::pair().unwrap();
         let irq = Irq {
             file: File::from(OwnedFd::from(a)),
             wakes: 0,
             count: 0,
         };
-        (irq, b)
+        (irq, File::from(OwnedFd::from(b)))
     }
 
     #[test]
