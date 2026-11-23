@@ -17,6 +17,17 @@ fn error(body: &str, expected: &[&str]) {
 }
 
 #[test]
+fn requires_schema_2() {
+    for body in ["schema = 1\n[proc0]\npins = [22]", "schema = 3", ""] {
+        let message = toml::from_str::<Declaration>(body).unwrap_err().to_string();
+        assert!(
+            message.contains("E0: manifest requires schema = 2"),
+            "{body:?}: {message}"
+        );
+    }
+}
+
+#[test]
 fn pin_twice_across_cores() {
     error(
         "[proc0]\ngpio=[10]\n[proc1]\nspi0={sck=11,mosi=10,miso=9}",
@@ -309,6 +320,30 @@ fn schema2_typed_instances_and_roundtrip() {
         roundtrip.declaration_hash().unwrap()
     );
 }
+
+#[test]
+fn canonical_claim_order() {
+    let d = parse(
+        "[proc0]\ngpio=[22,7,6]\ngpio_irq=[22]\ntimer=['ALARM1','ALARM0']\n\
+         uart2={tx=4,rx=5}\ni2c1={sda=10,scl=11}\nadc={}",
+    );
+    d.validate().unwrap();
+    assert_eq!(d.proc0.gpio, [22, 7, 6]);
+    assert_eq!(d.proc0.pins(), [4, 5, 6, 7, 10, 11, 22]);
+    assert_eq!(
+        d.proc0.peripherals(),
+        ["TIMER.ALARM1", "TIMER.ALARM0", "ADC", "I2C1", "UART2"]
+    );
+}
+
+#[test]
+fn declaration_hash_tracks_edits_after_parsing() {
+    let mut d = parse("[proc0]\ngpio=[22]");
+    let hash = d.declaration_hash().unwrap();
+    d.proc0.gpio.push(23);
+    assert_ne!(d.declaration_hash().unwrap(), hash);
+}
+
 #[test]
 fn linux_keep_conflicts_with_itself_and_log() {
     error(

@@ -133,25 +133,7 @@ proc0 が RP1 側の PCIe エンドポイントを立ち上げ、ホストが RC
 
 ### 4.1 宣言（ビルド前に必要）
 
-ファーム crate の `Cargo.toml` に書く。省略した項目は `boards/rpi-cm5` の既定値。
-
-```toml
-[package.metadata.rp1]
-board = "rpi-cm5"
-clock = { authority = "rp1", clk_sys_hz = 200_000_000 }   # authority = "linux" なら RP1 は clock を書かない
-
-[package.metadata.rp1.proc0]
-peripherals = ["UART0", "TIMER.ALARM0"]
-pins = [14, 15]
-
-[package.metadata.rp1.proc1]
-peripherals = ["TIMER.ALARM1"]
-pins = [22]
-
-[package.metadata.rp1.link]                                 # Linux 連携
-channels = [{ name = "ctl", core = "proc1", doorbell = "gpio-intf:27", ring = 4096 }]
-bulk = [{ name = "obs", size = 65536 }]
-```
+ファーム crate の `Cargo.toml` に書く。記述例は [宣言の全項目](declaration-and-note.md#12-全項目)を参照。
 
 `rp1-build`（build.rs）がこれを読んで次を生成する:
 

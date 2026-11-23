@@ -9,7 +9,7 @@ use crate::{
 };
 use rp1_pinmux::{I2cSignal, Signal, SpiSignal, UartSignal, candidate_pins, funcsel};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -207,66 +207,6 @@ impl Instance {
             Self::Adc {} | Self::Dma {} | Self::Pwm(_) => &[],
         }
     }
-    /// Schema 1 listed raw pins next to a block name. Infer only the required signals, each
-    /// from exactly one listed pin; optional signals (UART CTS/RTS) and `gpio_irq` pins stay GPIO.
-    fn infer_schema1(
-        &self,
-        name: &str,
-        pins: &[u8],
-        irq: &[u8],
-    ) -> std::result::Result<Self, String> {
-        let mut chosen = BTreeMap::new();
-        for (role, _, signal) in self.signals(Self::number(name)) {
-            if !self.required().contains(&role) {
-                continue;
-            }
-            let listed: Vec<u8> = candidate_pins(signal)
-                .filter(|p| pins.contains(p))
-                .collect();
-            let usable: Vec<u8> = listed
-                .iter()
-                .copied()
-                .filter(|p| !irq.contains(p))
-                .collect();
-            match (usable.as_slice(), listed.as_slice()) {
-                ([pin], _) => {
-                    chosen.insert(role, *pin);
-                }
-                ([], [pin, ..]) => {
-                    return Err(format!(
-                        "GPIO {pin} is in gpio_irq, so it stays GPIO and cannot be {}",
-                        signal_name(signal)
-                    ));
-                }
-                _ => {
-                    return Err(format!(
-                        "cannot infer {} pins from {pins:?}",
-                        name.to_ascii_uppercase()
-                    ));
-                }
-            }
-        }
-        let pin = |role| chosen.get(role).copied();
-        Ok(match self {
-            Self::Uart(_) => Self::Uart(UartPins {
-                tx: pin("tx"),
-                rx: pin("rx"),
-                ..UartPins::default()
-            }),
-            Self::I2c(_) => Self::I2c(I2cPins {
-                sda: pin("sda"),
-                scl: pin("scl"),
-            }),
-            Self::Spi(_) => Self::Spi(SpiPins {
-                sck: pin("sck"),
-                mosi: pin("mosi"),
-                miso: pin("miso"),
-            }),
-            Self::Adc {} => Self::Adc {},
-            Self::Dma {} => Self::Dma {},
-            Self::Pwm(_) => Self::Pwm(PwmPins::default()),
-        })
-    }
     fn number(name: &str) -> u8 {
         board::find_instance(name).map_or(0, |i| i.number)
     }
@@ -321,7 +261,7 @@ impl Instance {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct Core {
     pub gpio: Vec<u8>,
     pub gpio_irq: Vec<u8>,
@@ -336,11 +276,6 @@ pub struct Core {
     pub heartbeat: Option<Heartbeat>,
     #[serde(flatten)]
     pub instances: BTreeMap<String, Instance>,
-    // Ordering hints preserve schema 1 note bytes without making the old lists authoritative.
-    #[serde(skip)]
-    pin_order: Vec<u8>,
-    #[serde(skip)]
-    peripheral_order: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -349,64 +284,8 @@ pub struct Heartbeat {
     pub period_ms: u16,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct LegacyCore {
-    pub pins: Vec<u8>,
-    pub peripherals: Vec<String>,
-    pub gpio_irq: Vec<u8>,
-}
 impl Core {
-    pub(crate) fn parse(
-        mut values: BTreeMap<String, toml::Value>,
-        schema: u32,
-        owner: &str,
-    ) -> Result<Self> {
-        if schema == 1 {
-            let old: LegacyCore = toml::Value::try_from(values)?.try_into()?;
-            let mut core = Self {
-                gpio: old.pins.clone(),
-                gpio_irq: old.gpio_irq,
-                pin_order: old.pins.clone(),
-                peripheral_order: old.peripherals.clone(),
-                ..Self::default()
-            };
-            let mut seen = BTreeSet::new();
-            for pin in &old.pins {
-                if !seen.insert(pin) {
-                    return Err(format!("E1: GPIO {pin} is claimed twice in {owner}.pins").into());
-                }
-            }
-            for block in old.peripherals {
-                peripheral_type(&block)?;
-                if let Some(alarm) = block.strip_prefix("TIMER.") {
-                    core.timer.push(alarm.into());
-                    continue;
-                }
-                let name = block.to_ascii_lowercase();
-                let empty = Instance::parse(&name, toml::Value::Table(toml::Table::new()), owner)?;
-                let instance = empty
-                    .infer_schema1(&name, &old.pins, &core.gpio_irq)
-                    .map_err(|why| {
-                        let fields: Vec<_> = empty
-                            .required()
-                            .iter()
-                            .map(|r| format!("{r} = .."))
-                            .collect();
-                        format!(
-                            "schema 1: {why}; write {name} = {{ {} }} (schema 2)",
-                            fields.join(", ")
-                        )
-                    })?;
-                for (_, pin) in instance.pins(&name) {
-                    core.gpio.retain(|p| *p != pin);
-                }
-                if core.instances.insert(name, instance).is_some() {
-                    return Err(format!("E3: {block} is declared twice by {owner}").into());
-                }
-            }
-            return Ok(core);
-        }
+    pub(crate) fn parse(mut values: BTreeMap<String, toml::Value>, owner: &str) -> Result<Self> {
         let mut core = Self::default();
         fn field<T: serde::de::DeserializeOwned>(v: toml::Value, path: String) -> Result<T> {
             v.try_into().map_err(|e| format!("E0: {path}: {e}").into())
@@ -436,37 +315,23 @@ impl Core {
         }
         Ok(core)
     }
-    /// All owned pins; legacy declaration order is retained for note compatibility.
+    /// All owned pins in ascending order.
     pub fn pins(&self) -> Vec<u8> {
         let mut pins = self.gpio.clone();
         for (name, instance) in &self.instances {
             pins.extend(instance.pins(name).into_iter().map(|(_, p)| p));
         }
-        pins.sort_by_key(|p| {
-            (
-                self.pin_order
-                    .iter()
-                    .position(|n| n == p)
-                    .unwrap_or(usize::MAX),
-                *p,
-            )
-        });
+        pins.sort_unstable();
         pins
     }
+
+    /// Timer alarms in declaration order, then instances in name order.
     pub fn peripherals(&self) -> Vec<String> {
-        let mut blocks: Vec<_> = self
-            .timer
+        self.timer
             .iter()
             .map(|s| format!("TIMER.{s}"))
             .chain(self.instances.keys().map(|s| s.to_ascii_uppercase()))
-            .collect();
-        blocks.sort_by_key(|p| {
-            self.peripheral_order
-                .iter()
-                .position(|n| n == p)
-                .unwrap_or(usize::MAX)
-        });
-        blocks
+            .collect()
     }
 }
 

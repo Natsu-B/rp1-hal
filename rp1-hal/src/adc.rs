@@ -61,7 +61,7 @@ pub enum Error {
     Invalid,
 }
 
-/// Ownership of the ADC block, issued by the generated resources for `peripherals = ["ADC"]`.
+/// Ownership of the ADC block, issued by the generated resources for `adc = {}`.
 pub struct Token {
     _private: (),
 }

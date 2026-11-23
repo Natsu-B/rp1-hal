@@ -6,7 +6,7 @@ temperature sensor.
 
 ```toml
 [package.metadata.rp1.proc0]
-peripherals = ["ADC"]
+adc = {}
 ```
 
 ```rust,ignore

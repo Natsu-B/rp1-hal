@@ -1,6 +1,7 @@
 use rp1_build::{
     generate,
     metadata::{Declaration, I2cPins, Instance, SpiPins, TypeInfo, UartPins},
+    wire,
 };
 use rp1_proto::note::ownership_kind;
 use rp1_proto::note::{ENTRY, LINK, Link, Note};
@@ -9,16 +10,16 @@ use std::{fs, path::Path, process::Command};
 fn declaration() -> Declaration {
     toml::from_str(
         r#"
-schema=1
+schema=2
 board="rpi-cm5"
 log={sink="uart0",baudrate=115200}
 [proc0]
-pins=[22]
-peripherals=["TIMER.ALARM0"]
+gpio=[22]
+timer=["ALARM0"]
 [proc1]
-pins=[27]
+gpio=[27]
 gpio_irq=[27]
-peripherals=["TIMER.ALARM1"]
+timer=["ALARM1"]
 "#,
     )
     .unwrap()
@@ -155,7 +156,7 @@ fn rejects_mistakes_before_building() {
     }
     d.clock.authority = "linux".into();
     assert!(d.validate().is_err());
-    assert!(toml::from_str::<Declaration>("typo=1").is_err());
+    assert!(toml::from_str::<Declaration>("schema = 2\ntypo=1").is_err());
 }
 #[test]
 fn i2c_ownership_and_board_management_pins() {
@@ -348,10 +349,11 @@ fn unusable_bus_numbers_are_rejected_by_name() {
 fn rejects_unsupported_clock_authority_and_notify() {
     let mut d: Declaration = toml::from_str(
         r#"
+schema = 2
 [clock]
 authority="linux"
 [proc0]
-pins=[22]
+gpio=[22]
 "#,
     )
     .unwrap();
@@ -365,6 +367,7 @@ pins=[22]
     for (notify, ok) in [("poll", true), ("irq", false), ("doorbell", false)] {
         let d: Declaration = toml::from_str(&format!(
             r#"
+schema = 2
 [[shm]]
 name="up"
 kind="ring"
@@ -419,6 +422,7 @@ fn shm_names_of_builtin_uio_nodes_are_rejected() {
     let region = |name: &str| -> Declaration {
         let mut d: Declaration = toml::from_str(&format!(
             r#"
+schema = 2
 [[shm]]
 name="{name}"
 kind="ring"
@@ -449,6 +453,7 @@ depth=16
 fn typed_regions_and_sram_budget() {
     let mut d: Declaration = toml::from_str(
         r#"
+schema = 2
 [[shm]]
 name="commands"
 kind="ring"
@@ -520,10 +525,62 @@ fn note_is_deterministic_and_rejects_corruption() {
     bad[40] ^= 1;
     assert!(Note::parse(&bad).is_err());
 }
+
+#[test]
+fn in_tree_declarations_have_stable_notes() {
+    use sha2::{Digest, Sha256};
+
+    // Fix the source commit so the snapshots cover the manifest and note encoding.
+    for (manifest, expected) in [
+        (
+            "examples/dual-core/Cargo.toml",
+            "ccb1231fb2b7b71eb66193ed5f71473ac4729ea6be6c19c167f39c785ac4a527",
+        ),
+        (
+            "lab/shm-firmware/Cargo.toml",
+            "baa8766c5db9b67adea8d060235d7c66ced05b7c671bba7f2472f011ecbb50b6",
+        ),
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(manifest);
+        let (name, version, mut d) = rp1_build::declaration(&path).unwrap();
+        let serialized = toml::to_string(&d).unwrap();
+        let roundtrip: Declaration = toml::from_str(&serialized).unwrap();
+        roundtrip.validate().unwrap();
+        assert_eq!(roundtrip.proc0, d.proc0, "{manifest}");
+        assert_eq!(roundtrip.proc1, d.proc1, "{manifest}");
+        assert_eq!(roundtrip.linux, d.linux, "{manifest}");
+        assert_eq!(
+            toml::to_string(&roundtrip).unwrap(),
+            serialized,
+            "{manifest}"
+        );
+        assert!(d.warnings().is_empty(), "{manifest}");
+
+        // The lab build script supplies these types separately from the manifest.
+        d.types.extend([
+            ("Sample".into(), TypeInfo::of::<[u32; 4]>()),
+            ("Wide64".into(), TypeInfo::of::<[u32; 16]>()),
+            ("Wide256".into(), TypeInfo::of::<[u32; 64]>()),
+            ("Control".into(), TypeInfo::of::<[u32; 16]>()),
+            ("Bulk".into(), TypeInfo::of::<[u32; 262144]>()),
+        ]);
+        let hash = d.declaration_hash().unwrap();
+        let note = wire::descriptor(&name, &version, &d, hash, [0; 20]).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(wire::elf_note(&note))),
+            expected,
+            "{manifest}"
+        );
+    }
+}
+
 #[test]
 fn large_block_and_malformed_region() {
     let mut d: Declaration = toml::from_str(
         r#"
+schema = 2
 [[shm]]
 name="bulk"
 kind="block"

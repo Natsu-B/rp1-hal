@@ -37,7 +37,7 @@ rp1_rt::bind!();          // include!(concat!(env!("OUT_DIR"), "/rp1.rs")) → m
 
 ```toml
 [package.metadata.rp1]
-schema = 2                                # 宣言の版（1 は読み続けるが非推奨。§1.2.1）
+schema = 2                                # 宣言の版（必須。2 のみ）
 board = "rpi-cm5"                         # ボード表（Linux に残すピン・ブロック、DT ラベル）。rp1-build に同梱
 clock = { authority = "rp1", clk_sys_hz = 200_000_000 }  # authority: "rp1" | "linux"
 log = { sink = "uart0", baudrate = 115_200 }             # = システム所有の uart0 { tx = 14, rx = 15 }。省略すると log! はコンパイルエラー
@@ -111,19 +111,6 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 既存の回帰（shm・doorbell・I2C・SPI・ADC・SCMI）が全て合格。同じ起動で Linux の UART1（ttyAMA1、GPIO 0/1）がホストとの
 送受信の両方向で合格し、その間も RP1 の UART0 ログは出続けた。
 
-#### 1.2.1 schema 1 からの移行
-
-- `schema = 1`（`pins = [..]`、`peripherals = ["I2C1", "TIMER.ALARM0", ..]`）は読み続け、ビルド時に schema 2 へ変換する
-  （`cargo:warning=schema 1 is deprecated`）。UART/I2C/SPI の割り当ては、そのコアの `pins` から機能表で一意に決まるものを探し、
-  残りのピンは `gpio` になる。決まらなければエラー（`schema 1: cannot infer I2C1 pins from [2, 3, 10, 11]; write i2c1 = { .. } (schema 2)`）。
-- 現行生成器では、変換しても note は同一（旧来の宣言ハッシュを保つ）。schema 2 に書き換えると宣言の SHA-256（とそれを覆うヘッダーの CRC）は必ず
-  変わる。ほかは、schema 1 の `pins`・`peripherals` の並びが schema 2 の並び（ピンは昇順、ブロックはタイマーを書いた順の後にインスタンスを名前順）と同じときだけ
-  同一。違う並び（例 `pins = [7, 6, 5, 4, 22]`、`peripherals = ["UART2", "TIMER.ALARM1", "ADC"]`）では、所有の集合は同じでも
-  OWNERSHIP の並びが正規化されてバイト列が変わる。lab の `shm-firmware` と `examples/dual-core` は schema 2 に移した（STATIC: この 2 つは
-  固定した schema 1 の入力から作る note と、ハッシュと CRC 以外が一致することを `rp1-build` の試験で確認）。
-- 変わる挙動（BREAKING）: `gpio-reserved-ranges` は以前の「GPIO 2..27 全部」から「RP1 所有ピンちょうど」に縮む。宣言外の
-  2..27 は Linux が使える。
-
 ### 1.3 語彙（所有の単位）
 
 | 種類 | 名前の例 | 単位 | 付いてくるもの |
@@ -181,7 +168,7 @@ IRQ53/57 の上書きは proc0 だけに許す。ハンドラを定義せず線�
 
 | # | 条件 | メッセージの例 |
 |---|---|---|
-| E0 | `schema` が未知、知らないキー・インスタンス、形式違反 | `unknown key 'uart9' in proc1 (instances: uart0, .., adc)` |
+| E0 | `schema` が未指定または未知、知らないキー・インスタンス、形式違反 | `unknown key 'uart9' in proc1 (instances: uart0, .., adc)` |
 | E1 | 同じピンを 2 回（コア間、機能と `gpio`、log と機能、`linux.keep` と RP1） | `GPIO 10 is claimed by both proc1.spi0.mosi and proc0.gpio` |
 | E2 | ピンがその信号を出せない・bank 0 にピンが無い | `proc0.uart2.tx = 6: GPIO6 is UART2_CTS (alt2), not UART2_TX; UART2_TX is on GPIO4` / `SPI6 has no bank-0 pins` |
 | E3 | 同じインスタンスを 2 回（proc0 と proc1、log と core、RP1 と `linux.keep`）、`host_irq` を両コアで | `I2C1 is declared by both proc0 and proc1` |
@@ -257,7 +244,7 @@ ELF の note（`SHT_NOTE`、非ロード）。name = `"RP1\0"`、type = `0x5250_
 | 12 | `u32` | desc 全体の長さ |
 | 16 | `u32` | flags（予約、0） |
 | 20 | `u32` | CRC32（ヘッダーの後ろからの全レコード） |
-| 24 | `u32` | 宣言の schema 版 |
+| 24 | `u32` | 固定値 = 1（読み手は 1 以外を拒否。manifest の schema とは無関係） |
 | 28 | `u32` | 予約 0 |
 
 ### 2.2 レコード（TLV）
@@ -284,12 +271,9 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 - 型 ID: `#[derive(Message)]` が「型名・サイズ・各フィールドのオフセットと型」から計算する 64 bit のハッシュ。
   Linux 側の `fw.channel::<Cmd, Reply>("ctl")` はこれを note と照合し、違えば開けない。
 - note に含めないもの: イメージのハッシュ（ローダーが自分で計算する）、Linux DT のノード名（ビルド時にボード表から overlay に焼き込む）。
-- 宣言の SHA-256 は宣言の書き方で決まる。`schema = 1` のまま読む（ビルド時に schema 2 へ自動変換）と旧来のハッシュを保つ。
-  `gpio_irq` がある note には kind 6 の所有レコードが加わるので、旧生成器とはバイト列が変わる。
-  旧版の note パーサーは kind 6 を拒否するため、ツールとファームを同じ版でビルドする。
-  schema 2 に書き換えると、note のこのハッシュ（と、それを覆うヘッダーの CRC）は必ず変わる。
-  ほかが同一なのは schema 1 の並びが schema 2 の正規の並びと同じときだけで、そうでなければ OWNERSHIP の並びも変わる
-  （§1.2.1。lab の 2 宣言はハッシュと CRC 以外が同一: STATIC、`rp1-build` の試験）。
+- 宣言の SHA-256 は、正規化した宣言を TOML にシリアライズした結果から計算する。
+- OWNERSHIP はコアごとにピン番号の昇順、タイマーの宣言順、インスタンス名の昇順で記録する。
+- `gpio_irq` が空でないコアには OWNERSHIP の kind 6 の項目が加わる。旧版の note パーサーは kind 6 を拒否するため、ツールとファームを同じ版でビルドする。
 
 ### 2.3 読み手の動き
 

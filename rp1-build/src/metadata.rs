@@ -10,23 +10,21 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct InputDeclaration {
-    pub schema: u32,
-    pub board: String,
-    pub clock: Clock,
-    pub log: Option<Log>,
-    pub stack: Stack,
-    pub link_page: String,
-    pub proc0: BTreeMap<String, toml::Value>,
-    pub proc1: BTreeMap<String, toml::Value>,
-    pub shm: Vec<Shm>,
-    pub linux: Linux,
-    #[serde(skip)]
-    pub types: BTreeMap<String, TypeInfo>,
+    schema: Option<u32>,
+    board: String,
+    clock: Clock,
+    log: Option<Log>,
+    stack: Stack,
+    link_page: String,
+    proc0: BTreeMap<String, toml::Value>,
+    proc1: BTreeMap<String, toml::Value>,
+    shm: Vec<Shm>,
+    linux: Linux,
 }
 impl Default for InputDeclaration {
     fn default() -> Self {
         Self {
-            schema: 1,
+            schema: None,
             board: "rpi-cm5".into(),
             clock: Clock::default(),
             log: None,
@@ -36,11 +34,10 @@ impl Default for InputDeclaration {
             proc1: BTreeMap::new(),
             shm: Vec::new(),
             linux: Linux::default(),
-            types: BTreeMap::new(),
         }
     }
 }
-/// Normalized schema 2 declaration. Schema 1 input is converted during deserialization.
+/// Normalized schema 2 declaration.
 #[derive(Clone, Debug, Serialize)]
 pub struct Declaration {
     pub schema: u32,
@@ -55,8 +52,6 @@ pub struct Declaration {
     pub linux: Linux,
     #[serde(skip)]
     pub types: BTreeMap<String, TypeInfo>,
-    #[serde(skip)]
-    schema1: bool,
 }
 impl Default for Declaration {
     fn default() -> Self {
@@ -72,7 +67,6 @@ impl Default for Declaration {
             shm: Vec::new(),
             linux: Linux::default(),
             types: BTreeMap::new(),
-            schema1: false,
         }
     }
 }
@@ -94,10 +88,9 @@ impl Declaration {
     }
 
     fn from_input(input: InputDeclaration) -> Result<Self> {
-        if !matches!(input.schema, 1 | 2) {
-            return Err("unsupported schema".into());
+        if input.schema != Some(2) {
+            return Err("E0: manifest requires schema = 2".into());
         }
-        let schema1 = input.schema == 1;
         Ok(Self {
             schema: 2,
             board: input.board,
@@ -105,84 +98,24 @@ impl Declaration {
             log: input.log,
             stack: input.stack,
             link_page: input.link_page,
-            proc0: Core::parse(input.proc0, input.schema, "proc0")?,
-            proc1: Core::parse(input.proc1, input.schema, "proc1")?,
+            proc0: Core::parse(input.proc0, "proc0")?,
+            proc1: Core::parse(input.proc1, "proc1")?,
             shm: input.shm,
             linux: input.linux,
-            types: input.types,
-            schema1,
+            types: BTreeMap::new(),
         })
     }
     /// Warnings emitted by build.rs; also available to manifest inspection tools.
     pub fn warnings(&self) -> Vec<&'static str> {
         let mut warnings = Vec::new();
-        if self.schema1 {
-            warnings.push("schema 1 is deprecated; use schema 2");
-        }
         if !self.linux.kept().contains_key("uart1") {
             warnings.push("linux.keep omits uart1: GPIO 0/1 are available to RP1 on rpi-cm5");
         }
         warnings
     }
     /// SHA-256 of the declaration, recorded in the note's FIRMWARE record.
-    ///
-    /// A `schema = 1` manifest read through the automatic conversion keeps its legacy hash, so
-    /// its note is unchanged. Rewriting it as schema 2 changes this hash (the text differs);
-    /// the rest of the note stays identical.
     pub fn declaration_hash(&self) -> Result<[u8; 32]> {
-        let default_linux = Linux::default();
-        if self.schema1
-            && self.linux.keep == default_linux.keep
-            && self.linux.gpiomem == default_linux.gpiomem
-            && self.linux.on_conflict == default_linux.on_conflict
-        {
-            return self.legacy_hash();
-        }
         Ok(Sha256::digest(toml::to_string(self)?.as_bytes()).into())
-    }
-}
-impl Declaration {
-    fn legacy_hash(&self) -> Result<[u8; 32]> {
-        #[derive(Serialize)]
-        struct LegacyLinux<'a> {
-            uio_group: &'a str,
-        }
-        #[derive(Serialize)]
-        struct Legacy<'a> {
-            schema: u32,
-            board: &'a str,
-            clock: &'a Clock,
-            log: &'a Option<Log>,
-            stack: &'a Stack,
-            link_page: &'a str,
-            proc0: crate::declaration::LegacyCore,
-            proc1: crate::declaration::LegacyCore,
-            shm: &'a [Shm],
-            linux: LegacyLinux<'a>,
-        }
-        let view = Legacy {
-            schema: 1,
-            board: &self.board,
-            clock: &self.clock,
-            log: &self.log,
-            stack: &self.stack,
-            link_page: &self.link_page,
-            proc0: crate::declaration::LegacyCore {
-                pins: self.proc0.pins(),
-                peripherals: self.proc0.peripherals(),
-                gpio_irq: self.proc0.gpio_irq.clone(),
-            },
-            proc1: crate::declaration::LegacyCore {
-                pins: self.proc1.pins(),
-                peripherals: self.proc1.peripherals(),
-                gpio_irq: self.proc1.gpio_irq.clone(),
-            },
-            shm: &self.shm,
-            linux: LegacyLinux {
-                uio_group: &self.linux.uio_group,
-            },
-        };
-        Ok(Sha256::digest(toml::to_string(&view)?.as_bytes()).into())
     }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]

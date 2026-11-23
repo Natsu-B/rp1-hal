@@ -12,13 +12,13 @@ const BASE: &str = include_str!("fixtures/board.dts");
 fn declaration() -> Declaration {
     toml::from_str(
         r#"
-schema=1
+schema=2
 board="rpi-cm5"
 log={sink="uart0",baudrate=115200}
 [proc0]
-pins=[22]
+gpio=[22]
 [proc1]
-pins=[27]
+gpio=[27]
 "#,
     )
     .unwrap()
