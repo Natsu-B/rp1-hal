@@ -81,22 +81,21 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
 
     let mut system = System {
         endpoint: unsafe { rp1_hal::cold::EndpointService::new() },
-        sys,
         probed: false,
         attempted: false,
     };
     // The system services keep running while proc0's items wait for their interrupts.
     proc0::run(p.TIMER_ALARM0, i2c.ok(), p.irq, &mut || {
-        let (perst, event) = (system.endpoint.poll(), system.sys.poll_services());
-        system.handle(perst, event);
+        let perst = system.endpoint.poll();
+        system.handle(perst);
     });
 
     let mut rx = REPORT.consumer(&mut core);
     let mut report = [0; proc1::Report::WORDS];
     let mut words = 0;
     loop {
-        let (word, perst, event) = idle0(&mut rx, &mut system);
-        system.handle(perst, event);
+        let (word, perst) = idle0(&mut rx, &mut system);
+        system.handle(perst);
         if let Some(word) = word
             && words < report.len()
         {
@@ -111,30 +110,17 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
 
 type Perst = Option<Result<rp1_hal::cold::Reconfigured, rp1_hal::cold::ReconfigError>>;
 
-/// proc0's system services, as in lab/shm-firmware: the PCIe endpoint across PERSTn, the SCMI
-/// clock server, and the two shm requests Linux makes through the link page.
+/// proc0's PCIe endpoint across PERSTn and the two shm requests Linux makes through the link page.
 struct System {
     endpoint: rp1_hal::cold::EndpointService,
-    sys: rp1_hal::platform::System,
     probed: bool,
     attempted: bool,
 }
 impl System {
     /// The slow part of one round: log what the polls returned and serve a shm request.
-    fn handle(&mut self, perst: Perst, event: Option<rp1_hal::scmi::Event>) {
+    fn handle(&mut self, perst: Perst) {
         if let Some(r) = perst {
             log!("p0 pcie perst {:?}\n", r).unwrap();
-        }
-        if let Some(e) = event {
-            log!(
-                "proc0 scmi p{:x} m{} {:x?} -> {} votes={:x}\n",
-                e.protocol,
-                e.message,
-                e.args,
-                e.status,
-                e.votes
-            )
-            .unwrap();
         }
         let request = link_read(link::SHM_REQUEST);
         if !self.probed && request == 2 {
@@ -178,19 +164,17 @@ fn probe_window() {
 fn idle0(
     rx: &mut rp1_rt::sync::Consumer<'_, u32, 8, Proc1, Proc0>,
     system: &mut System,
-) -> (Option<u32>, Perst, Option<rp1_hal::scmi::Event>) {
+) -> (Option<u32>, Perst) {
     loop {
         let word = rx.pop();
         let perst = system.endpoint.poll();
-        let event = system.sys.poll_services();
         let request = link_read(link::SHM_REQUEST);
         if word.is_some()
             || perst.is_some()
-            || event.is_some()
             || (!system.probed && request == 2)
             || (!system.attempted && request == 1)
         {
-            return (word, perst, event);
+            return (word, perst);
         }
     }
 }

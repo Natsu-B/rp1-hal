@@ -258,7 +258,8 @@ offset 8.. T             8 バイト境界
 | 0x44 | `ABI` | `"RL"` + 版 `u16 = 2` |
 | 0x48 | `PLAT_PCIE` | proc0 の `platform::init` が最初に 1（エンドポイント初期化中）を書く。0 は未開始。`ABI` 版 2 の読み手は解釈しない |
 | 0x50〜0x7f / 0x80〜0xaf | proc0 / proc1 のブロック | 下表 |
-| 0x4c〜0x4f、0xb0〜0xbf | 予約 0 | |
+| 0x4c | `PLAT_SCMI` | STATIC: proc0 の init が IRQ57 の有効化前に Serving を公開し、以後 IRQ57 が更新する。bits 0〜7: 0=未開始、1=Serving、2=Quarantined。bits 16〜31: Serving 中の要求数（飽和）。`ABI` 版 2 の読み手は解釈しない |
+| 0xb0〜0xbf | 予約 0 | |
 
 | ブロック内 | 語 | 内容 |
 |---|---|---|

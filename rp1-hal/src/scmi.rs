@@ -20,7 +20,8 @@
 //! clock like a fixed one at whatever the generator runs (rate changes `DENIED`, enable/disable
 //! only votes), so `clk_disable_unused` cannot stop it.
 //!
-//! The service is polled from proc0's main loop ([`Service::poll`]); no interrupt is used.
+//! Platform init starts the server on proc0's IRQ57.
+pub(crate) mod irq;
 use crate::read;
 
 pub const BASE_PROTOCOL: u8 = 0x10;
@@ -340,18 +341,6 @@ pub trait ClockHardware: Registers {
     fn fixed_state(&mut self, id: u32) -> Result<PhysicalState, Status>;
 }
 
-/// What one request did, for logging by the caller (outside the response path).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Event {
-    pub protocol: u8,
-    pub message: u8,
-    pub status: i32,
-    /// First two request words (0 if absent).
-    pub args: [u32; 2],
-    /// Linux's enable votes after the request, one bit per clock ID.
-    pub votes: u32,
-}
-
 /// Max request payload (CLOCK_RATE_SET) and response payload (status + 7 words).
 pub const MAX_ARGS: usize = 4;
 pub const MAX_RESPONSE: usize = 8;
@@ -607,18 +596,22 @@ pub fn reset_channel(t: &mut impl Transport) {
     t.barrier();
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Served {
+    NoEvent,
+    Duplicate,
+    Request,
+}
+
 /// Serves at most one pending request.
-pub fn serve<H: ClockHardware>(
-    server: &mut Server<'_, H>,
-    t: &mut impl Transport,
-) -> Option<Event> {
+fn serve<H: ClockHardware>(server: &mut Server<'_, H>, t: &mut impl Transport) -> Served {
     if !t.take_event() {
-        return None;
+        return Served::NoEvent;
     }
     t.barrier();
     if t.read(STATUS) & FREE != 0 {
         // Doorbell without a request (spurious or duplicate): nothing to answer.
-        return None;
+        return Served::Duplicate;
     }
     let length = t.read(LENGTH) as usize;
     let header = t.read(HEADER);
@@ -644,13 +637,7 @@ pub fn serve<H: ClockHardware>(
     if flags & FLAG_INTR != 0 {
         t.notify();
     }
-    Some(Event {
-        protocol: ((header >> 10) & 0xff) as u8,
-        message: header as u8,
-        status: response.status(),
-        args: [args[0], args[1]],
-        votes: server.votes(),
-    })
+    Served::Request
 }
 
 /// SCMI shmem in shared SRAM (`scmi@d7c0` in scmi_linux.dtb; `rp1_build::metadata::SCMI_OFFSET`).
@@ -666,35 +653,6 @@ const PROC_EVENTS: usize = 0x4000_8008;
 const PROC_EVENTS_CLR: usize = PROC_EVENTS + 0x3000;
 const HOST_EVENTS_SET: usize = 0x4000_800c + 0x2000;
 const CHANNEL: u32 = 1 << 0;
-
-/// Register-level transport on RP1.
-pub struct Rp1Transport {
-    _private: (),
-}
-
-impl Transport for Rp1Transport {
-    fn take_event(&mut self) -> bool {
-        if read(PROC_EVENTS) & CHANNEL == 0 {
-            return false;
-        }
-        crate::write(PROC_EVENTS_CLR, CHANNEL); // Only our channel's bit.
-        true
-    }
-    fn read(&mut self, word: usize) -> u32 {
-        assert!(word < WORDS);
-        read(SHMEM + 4 * word)
-    }
-    fn write(&mut self, word: usize, value: u32) {
-        assert!(word < WORDS);
-        unsafe { ((SHMEM + 4 * word) as *mut u32).write_volatile(value) }
-    }
-    fn barrier(&mut self) {
-        rp1_proto::barrier();
-    }
-    fn notify(&mut self) {
-        crate::write(HOST_EVENTS_SET, CHANNEL);
-    }
-}
 
 /// Physical clock state from the registers: the fixed clocks as [`crate::clocks`] checks them
 /// (read twice; any difference from the admitted tuple reads as a hardware error), and plain
@@ -736,66 +694,6 @@ impl ClockHardware for Rp1Clocks {
             id::UART_APB | id::SLOW_SYS => Err(Status::HardwareError),
             _ => Err(Status::NotFound),
         }
-    }
-}
-
-/// One SCMI channel: the server for the RP1 clock table and its transport. Generic so that
-/// the host tests run the code the firmware runs.
-pub(crate) struct Channel<T, H: 'static> {
-    server: Server<'static, H>,
-    transport: T,
-}
-
-impl<T: Transport, H: ClockHardware> Channel<T, H> {
-    /// Clears the shared memory and marks it free (Linux waits for FREE before its first
-    /// request), then serves [`RP1_CLOCKS`] with the `held` clocks reported but never changed.
-    pub(crate) fn start(mut transport: T, hw: H, held: u32) -> Self {
-        reset_channel(&mut transport);
-        Self {
-            server: Server::new(RP1_CLOCKS, hw).holding(held),
-            transport,
-        }
-    }
-
-    /// Serves at most one pending request ([`serve`]).
-    pub(crate) fn serve(&mut self) -> Option<Event> {
-        serve(&mut self.server, &mut self.transport)
-    }
-}
-
-/// The SCMI server on proc0. Created and held by the platform init ([`crate::platform`]).
-pub(crate) struct Service {
-    channel: Channel<Rp1Transport, Rp1Clocks>,
-}
-
-impl Service {
-    /// # Safety
-    /// One instance, proc0, holding clock authority; no other user of mailbox channel 0, the
-    /// shmem area or the Linux-owned clock generators on RP1.
-    pub(crate) unsafe fn new(held: u32) -> Self {
-        Self {
-            channel: Channel::start(
-                Rp1Transport { _private: () },
-                Rp1Clocks { _private: () },
-                held,
-            ),
-        }
-    }
-
-    /// Answers one pending request, if any. Call from proc0's main loop; never blocks.
-    ///
-    /// The idle check (one SYSCFG read) runs from ISRAM; the request handling is cold and
-    /// stays in shared SRAM, so a polling loop does not fetch from shared SRAM while idle.
-    #[rp1_rt::isram]
-    pub(crate) fn poll(&mut self) -> Option<Event> {
-        if read(PROC_EVENTS) & CHANNEL == 0 {
-            return None;
-        }
-        self.serve_pending()
-    }
-    #[rp1_rt::cold]
-    fn serve_pending(&mut self) -> Option<Event> {
-        self.channel.serve()
     }
 }
 
@@ -1173,8 +1071,7 @@ mod tests {
         let mut s = server();
         let header = (0x3ff << 18) | (0x14 << 10) | 6;
         let mut f = request(header, &[1], FLAG_INTR);
-        let e = serve(&mut s, &mut f).unwrap();
-        assert_eq!((e.protocol, e.message, e.status), (0x14, 6, 0));
+        assert_eq!(serve(&mut s, &mut f), Served::Request);
         assert_eq!(f.words[HEADER], header);
         assert_eq!(f.words[PAYLOAD..PAYLOAD + 3], [0, 50_000_000, 0]);
         assert_eq!(
@@ -1188,9 +1085,9 @@ mod tests {
             ]
         );
         // No event, or event on a free channel: nothing happens.
-        assert!(serve(&mut s, &mut f).is_none());
+        assert_eq!(serve(&mut s, &mut f), Served::NoEvent);
         f.event = true;
-        assert!(serve(&mut s, &mut f).is_none());
+        assert_eq!(serve(&mut s, &mut f), Served::Duplicate);
     }
 
     #[test]
@@ -1199,50 +1096,13 @@ mod tests {
         for len in [0, 3, 5, 24, u32::MAX] {
             let mut f = request(0x14 << 10, &[], 0);
             f.words[LENGTH] = len;
-            assert_eq!(serve(&mut s, &mut f).unwrap().status, -10);
+            assert_eq!(serve(&mut s, &mut f), Served::Request);
+            assert_eq!(f.words[PAYLOAD], Status::ProtocolError as u32);
             assert!(!f.log.iter().any(|&(i, _)| i == NOTIFY));
         }
         let mut f = request(0x14 << 10, &[], 0);
         reset_channel(&mut f);
         assert_eq!(f.words[STATUS], FREE);
         assert_eq!(f.words[FLAGS], 0);
-    }
-
-    /// A started channel, driven the way proc0's loop drives it (I6): the area is cleared and
-    /// free first, idle calls and a doorbell without a request answer nothing, and a request
-    /// gets the response a server built the same way gives, once.
-    #[test]
-    fn started_channel_answers_like_the_server_once_per_request() {
-        let held = 1 << id::ETH;
-        let dirty = Fake {
-            words: [0xdead_beef; WORDS],
-            event: false,
-            log: Vec::new(),
-        };
-        let mut c = Channel::start(dirty, Hw::default(), held);
-        let mut cleared = [0; WORDS];
-        cleared[STATUS] = FREE;
-        assert_eq!(c.transport.words, cleared);
-        for _ in 0..3 {
-            assert!(c.serve().is_none());
-        }
-        c.transport.event = true;
-        assert!(c.serve().is_none(), "doorbell on a free channel");
-
-        // CLOCK_CONFIG_SET enable of the held clock: reported, nothing written.
-        let header = (0x11 << 18) | (u32::from(CLOCK_PROTOCOL) << 10) | 7;
-        let args = [id::ETH, 1];
-        let mut expected = request(header, &args, FLAG_INTR);
-        let mut reference = Server::new(RP1_CLOCKS, Hw::default()).holding(held);
-        let want = serve(&mut reference, &mut expected).unwrap();
-        let asked = request(header, &args, FLAG_INTR);
-        c.transport.words = asked.words;
-        c.transport.event = true;
-        assert_eq!(c.serve(), Some(want));
-        assert_eq!(c.transport.words, expected.words);
-        assert_eq!(c.server.votes(), reference.votes());
-        assert!(c.server.hw.writes.is_empty());
-        c.transport.event = true;
-        assert!(c.serve().is_none(), "duplicate doorbell after FREE");
     }
 }

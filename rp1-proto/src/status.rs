@@ -13,6 +13,9 @@ pub const ABI_VALUE: u32 = u32::from_le_bytes([b'R', b'L', 2, 0]);
 pub const PLAT_PCIE: usize = 0x48;
 /// `PLAT_PCIE` while the platform init brings the endpoint up (0 = not started).
 pub const PLAT_PCIE_INITIALIZING: u32 = 1;
+/// SCMI state in bits 0–7 (0 not started, 1 serving, 2 quarantined), with the saturated
+/// request count in bits 16–31 while serving. RL v2 readers do not decode this word.
+pub const PLAT_SCMI: usize = 0x4c;
 /// Status block of proc0 and proc1.
 pub const BLOCKS: [usize; 2] = [0x50, 0x80];
 pub const BLOCK_LEN: usize = 0x30;

@@ -16,17 +16,20 @@
 //! 6. The SCMI channel is cleared and the server set up. Linux needs the link to write the
 //!    channel, and the link cannot come up while LTSSM enable is 0 (DesignWare
 //!    `app_ltssm_enable`, HYP on RP1), so nothing writes the channel while it is cleared.
-//!    Requests that arrive from here on wait in the mailbox until proc0's loop polls them.
+//!    Requests that arrive before IRQ57 is enabled wait in the mailbox.
 //! 7. Endpoint bring-up: PERSTn wait (up to 20 s), core alive, DBI, LTSSM enable, link.
 //! 8. SYSCFG reset released.
+//! 9. Enable SCMI on proc0 IRQ57.
 //!
-//! Init enables no interrupt line. It returns once Linux's PCIe probe has released PERSTn and
+//! Init returns once Linux's PCIe probe has released PERSTn and
 //! the link is up: about 3 s (HW 2026-11, cold boot, reboot and poweroff: the PERSTn wait
 //! ended after 3.06 s each time).
 use crate::{Error, clocks::Clocks, cold, linux_blocks, scmi};
 use core::{fmt, marker::PhantomData};
+use scmi::irq;
 
 pub use crate::cold::ColdError;
+pub use irq::{ScmiState, ScmiStats, scmi_state};
 
 /// The platform resource: one per image, issued to proc0 only. [`Token::init`] consumes it, so
 /// the bring-up runs once.
@@ -40,12 +43,16 @@ pub struct System {
     pub clocks: Clocks,
     pub pcie: Pcie,
     pub report: InitReport,
-    scmi: scmi::Service,
 }
 
 /// The PCIe endpoint init brought up. proc0 only (not `Send`).
 pub struct Pcie {
     _proc0: PhantomData<*mut ()>,
+}
+
+/// Snapshot IRQ57's counters on proc0 with interrupts masked.
+pub fn scmi_stats(_pcie: &Pcie) -> ScmiStats {
+    irq::stats()
 }
 
 /// The values init read on its way (for the log).
@@ -110,25 +117,14 @@ impl Token {
             linux: self.linux,
             sys_hz: self.sys_hz,
         };
-        let (clocks, report, scmi) = run(&mut steps, |_| log(core), |_, c| before_link(c))?;
+        let (clocks, report) = run(&mut steps, |_| log(core), |_, c| before_link(c))?;
         Ok(System {
             clocks,
             pcie: Pcie {
                 _proc0: PhantomData,
             },
             report,
-            scmi,
         })
-    }
-}
-
-impl System {
-    /// Answers one pending SCMI request, if any ([`scmi::Event`] for the log). Call it from
-    /// proc0's loop; it never blocks. The idle check runs from ISRAM.
-    #[doc(hidden)]
-    #[inline(always)]
-    pub fn poll_services(&mut self) -> Option<scmi::Event> {
-        self.scmi.poll()
     }
 }
 
@@ -152,7 +148,6 @@ impl fmt::Display for InitReport {
 
 /// The steps of init, apart from their order ([`run`]), so the host tests can check the order.
 trait Steps {
-    type Scmi;
     /// Writes the `PLAT_PCIE` status word.
     fn set_pcie_state(&mut self, word: u32);
     fn clocks(&mut self) -> Result<bool, ColdError>;
@@ -162,18 +157,19 @@ trait Steps {
     /// Returns PCIE_CONTROL as read back after LTSSM enable was dropped.
     fn quiesce(&mut self) -> Result<u32, ColdError>;
     /// Clears the SCMI channel (the first write to it) and sets up the server.
-    fn start_scmi(&mut self) -> Self::Scmi;
+    fn install_scmi(&mut self);
     /// Returns (perstn_wait_us, link_wait_us, monitor2).
     fn bring_up(&mut self) -> Result<(u32, u32, u32), ColdError>;
     fn release_syscfg(&mut self) -> Result<(), ColdError>;
+    fn enable_scmi(&mut self);
 }
 
-/// Steps 0..8 of the module documentation.
+/// Steps 0..9 of the module documentation.
 fn run<S: Steps>(
     s: &mut S,
     log: impl FnOnce(&mut S) -> Result<(), Error>,
     before_link: impl FnOnce(&mut S, &Clocks),
-) -> Result<(Clocks, InitReport, S::Scmi), InitError> {
+) -> Result<(Clocks, InitReport), InitError> {
     s.set_pcie_state(rp1_proto::status::PLAT_PCIE_INITIALIZING);
     let clocks_programmed = s.clocks().map_err(InitError::Clocks)?;
     let (clocks, linux_blocks) = s.authority().map_err(InitError::Authority)?;
@@ -196,9 +192,10 @@ fn run<S: Steps>(
     if reread & cold::LINK != 0 {
         return Err(InitError::Quiesce(ColdError::LinkUp(reread)));
     }
-    let scmi = s.start_scmi();
+    s.install_scmi();
     let (perstn_wait_us, link_wait_us, monitor2) = s.bring_up().map_err(InitError::Endpoint)?;
     s.release_syscfg().map_err(InitError::Syscfg)?;
+    s.enable_scmi();
     let report = InitReport {
         clocks_programmed,
         monitor2_at_start,
@@ -209,7 +206,7 @@ fn run<S: Steps>(
         monitor2,
         linux_blocks,
     };
-    Ok((clocks, report, scmi))
+    Ok((clocks, report))
 }
 
 /// The steps on RP1's registers.
@@ -219,7 +216,6 @@ struct Rp1 {
 }
 
 impl Steps for Rp1 {
-    type Scmi = scmi::Service;
     fn set_pcie_state(&mut self, word: u32) {
         let address = rp1_proto::LINK_START as usize + rp1_proto::status::PLAT_PCIE;
         // A plain store: proc0's init is the only writer of this word.
@@ -238,16 +234,19 @@ impl Steps for Rp1 {
     fn quiesce(&mut self) -> Result<u32, ColdError> {
         cold::quiesce()
     }
-    fn start_scmi(&mut self) -> scmi::Service {
-        // SAFETY: the one platform token, on proc0; the Linux-owned generators and mailbox
-        // channel 0 belong to this server from here on.
-        unsafe { scmi::Service::new(self.linux.held_clocks()) }
+    fn install_scmi(&mut self) {
+        // SAFETY: The proc0 token is single-use. The link is quiesced and IRQ57 is still
+        // disabled. Init has clock authority and reserves channel 0 and its shmem for SCMI.
+        unsafe { irq::install(self.linux.held_clocks()) };
     }
     fn bring_up(&mut self) -> Result<(u32, u32, u32), ColdError> {
         cold::bring_up()
     }
     fn release_syscfg(&mut self) -> Result<(), ColdError> {
         cold::release_syscfg()
+    }
+    fn enable_scmi(&mut self) {
+        irq::enable(&mut irq::Mmio)
     }
 }
 
@@ -276,6 +275,7 @@ mod tests {
         ScmiReset,
         BringUp,
         Syscfg,
+        EnableScmi,
     }
 
     /// Where a link-up is injected, relative to the quiesce.
@@ -321,7 +321,7 @@ mod tests {
             self.h1_violated |= !self.ltssm;
             self.link = true;
         }
-        fn run(&mut self) -> Result<(Clocks, InitReport, ()), InitError> {
+        fn run(&mut self) -> Result<(Clocks, InitReport), InitError> {
             run(
                 self,
                 |f| {
@@ -340,7 +340,6 @@ mod tests {
     }
 
     impl Steps for Fake {
-        type Scmi = ();
         fn set_pcie_state(&mut self, word: u32) {
             self.trace.push(Ev::PcieState(word));
         }
@@ -382,7 +381,7 @@ mod tests {
             self.trace.push(Ev::Quiesce);
             Ok(0x0000_0081)
         }
-        fn start_scmi(&mut self) {
+        fn install_scmi(&mut self) {
             self.trace.push(Ev::ScmiReset);
         }
         fn bring_up(&mut self) -> Result<(u32, u32, u32), ColdError> {
@@ -396,15 +395,17 @@ mod tests {
             self.trace.push(Ev::Syscfg);
             Ok(())
         }
+        fn enable_scmi(&mut self) {
+            self.trace.push(Ev::EnableScmi);
+        }
     }
 
     /// I1: cold start. The SCMI channel is first written after LTSSM enable read back as 0
-    /// and the link read again as down; the PCIe state goes first. The steps have no way to
-    /// write the NVIC, so no line is enabled.
+    /// and the link read again as down; IRQ57 follows SYSCFG release.
     #[test]
     fn cold_start_clears_the_channel_only_after_the_quiesce() {
         let mut f = Fake::cold();
-        let (clocks, report, ()) = f.run().unwrap();
+        let (clocks, report) = f.run().unwrap();
         assert_eq!(
             f.trace,
             [
@@ -419,6 +420,7 @@ mod tests {
                 Ev::ScmiReset,
                 Ev::BringUp,
                 Ev::Syscfg,
+                Ev::EnableScmi,
             ]
         );
         assert_eq!(clocks, CLOCKS);
@@ -519,7 +521,7 @@ mod tests {
     #[test]
     fn report_prints_the_plat_init_fields() {
         let mut f = Fake::cold();
-        let (_, report, ()) = f.run().unwrap();
+        let (_, report) = f.run().unwrap();
         assert_eq!(
             format!("{report}"),
             "warm=0 ltssm_off=1 link_before_scmi=0 perstn_wait_us=3062273 link_wait_us=8204 monitor2=0x1b0000 clocks_programmed=1"
@@ -607,7 +609,6 @@ mod tests {
     }
     /// The real quiesce, link read and channel reset on [`Regs`]; the other steps succeed.
     impl Steps for Regs {
-        type Scmi = ();
         fn set_pcie_state(&mut self, _: u32) {}
         fn clocks(&mut self) -> Result<bool, ColdError> {
             Ok(true)
@@ -627,7 +628,7 @@ mod tests {
         fn quiesce(&mut self) -> Result<u32, ColdError> {
             cold::quiesce_with(self)
         }
-        fn start_scmi(&mut self) {
+        fn install_scmi(&mut self) {
             scmi::reset_channel(self);
         }
         fn bring_up(&mut self) -> Result<(u32, u32, u32), ColdError> {
@@ -636,6 +637,7 @@ mod tests {
         fn release_syscfg(&mut self) -> Result<(), ColdError> {
             Ok(())
         }
+        fn enable_scmi(&mut self) {}
     }
     const SHMEM: core::ops::Range<usize> = scmi::SHMEM..scmi::SHMEM + 256;
     /// NVIC ISER0..7 and ISPR0..7: no line is enabled or pended.
@@ -644,7 +646,7 @@ mod tests {
 
     /// I1 / I3 on the registers: LTSSM enable that stays set after the quiesce's write fails
     /// init with no write to the SCMI area; when it clears, the area is first written after
-    /// the PCIE_CONTROL read-back and the second link read. No NVIC set-enable / set-pending.
+    /// the PCIE_CONTROL read-back and the second link read. Failed init leaves the NVIC alone.
     #[test]
     fn ltssm_read_back_guards_the_scmi_area() {
         let mut stuck = Regs::cold(cold::LTSSM_ENABLE, cold::LTSSM_ENABLE);
@@ -661,7 +663,7 @@ mod tests {
         assert!(stuck.writes_in(SHMEM).is_empty());
 
         let mut r = Regs::cold(cold::LTSSM_ENABLE, 0);
-        let (_, report, ()) = run(&mut r, |_| Ok(()), |_, _| {}).unwrap();
+        let (_, report) = run(&mut r, |_| Ok(()), |_, _| {}).unwrap();
         assert!(report.ltssm_off);
         let first = r.writes_in(SHMEM)[0];
         let reads = |address| {
@@ -674,7 +676,7 @@ mod tests {
         assert!(reads(cold::PCIE_MONITOR2).all(|i| i < first));
         assert_eq!(r.writes_in(SHMEM).len(), 65, "64 zeroes, then FREE");
         for range in NVIC_SET {
-            assert!(r.writes_in(range.clone()).is_empty() && stuck.writes_in(range).is_empty());
+            assert!(stuck.writes_in(range).is_empty());
         }
     }
 }

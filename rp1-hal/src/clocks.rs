@@ -310,7 +310,7 @@ fn decode_uart(ctrl: u32, div: u32, sel: u32) -> Option<u32> {
 pub fn uart_hz() -> Option<u32> {
     uart_hz_with(&mut read)
 }
-fn uart_hz_with(read: &mut impl FnMut(usize) -> u32) -> Option<u32> {
+pub(crate) fn uart_hz_with(read: &mut impl FnMut(usize) -> u32) -> Option<u32> {
     let mut once = || {
         decode_uart(
             read(CLK_UART_CTRL),

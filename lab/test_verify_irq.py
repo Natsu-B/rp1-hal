@@ -37,7 +37,6 @@ def uart0(nonce=NONCE):
         "IRQ_DEFAULT irq=28 count=1 masked=1 pre_count=0 pre_pending=0",
         "IRQ_INTF_ONLY core=1 pin=27 pre_pending=0 ints=1 nvic=1 post_pending=0 need_inte=0",
         "IRQ_WRAP spi0 pre_pending=0 off_stat=1 off_pending=0 on_n=1 ipsr=35 post_pending=0",
-        "proc0 scmi p14 m7 [3, 0] -> 0 votes=8",
         "IRQ_P1_GPIO27 ipsr=16 seen=1000",
         "IRQ_XCORE p0_seen_27=0 p1_seen_26=0",
         "IRQ_UNHANDLED p0=0 p1=1",
@@ -263,8 +262,7 @@ def sweep_uart0(nonce=NONCE, results=None):
     lines += [f"IRQ_SWEEP_END lines={len(v.SWEEP_TABLE)} iser={ZERO} us=731638",
               "PLAT_INIT ok=1 warm=0 ltssm_off=1 link_before_scmi=0 perstn_wait_us=1766406 "
               "link_wait_us=8204 monitor2=0x1b0000 clocks_programmed=1",
-              f"IRQ_SWEEP_BOOT boot={BOOT}",
-              "proc0 scmi p14 m7 [3, 0] -> 0 votes=8"]
+              f"IRQ_SWEEP_BOOT boot={BOOT}"]
     return "".join((f"{l} nonce={nonce}" if l.startswith("IRQ_") else l) + "\r\n" for l in lines)
 
 

@@ -86,7 +86,7 @@ fn next_tick() -> u32 {
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     // Clocks (200 MHz clk_sys), Linux's blocks, the log, the PCIe endpoint (waits for Linux's
     // probe, about 3 s after RP1 starts) and the SCMI clock server.
-    let mut sys = match rp1::platform::init(&mut core, p.platform) {
+    let sys = match rp1::platform::init(&mut core, p.platform) {
         Ok(sys) => sys,
         Err(e) => {
             let _ = log!("PLAT_INIT ok=0 {:?}\n", e);
@@ -154,18 +154,6 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         }
         if let Some(r) = endpoint.poll() {
             log!("proc0 pcie perst {:?}\n", r).unwrap();
-        }
-        // Linux's arm-scmi asks for the RP1 clocks (serial@34000 uses clk_uart via SCMI).
-        if let Some(e) = sys.poll_services() {
-            log!(
-                "proc0 scmi p{:x} m{} {:x?} -> {} votes={:x}\n",
-                e.protocol,
-                e.message,
-                e.args,
-                e.status,
-                e.votes
-            )
-            .unwrap();
         }
     }
 }

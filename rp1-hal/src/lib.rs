@@ -90,10 +90,15 @@ pub(crate) fn read(address: usize) -> u32 {
 }
 #[inline(always)]
 pub(crate) fn write(address: usize, value: u32) {
+    write_relaxed(address, value);
+    rp1_proto::barrier();
+}
+/// A volatile store for callers that order a sequence of writes themselves.
+#[inline(always)]
+pub(crate) fn write_relaxed(address: usize, value: u32) {
     unsafe {
         (address as *mut u32).write_volatile(value);
     }
-    rp1_proto::barrier();
 }
 /// Waits up to 10 ms (raw 1 MHz timer, independent of clk_sys) for `address & mask == value`.
 pub(crate) fn poll(address: usize, mask: u32, value: u32) -> Result<(), Error> {

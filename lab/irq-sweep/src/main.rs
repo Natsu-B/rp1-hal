@@ -67,7 +67,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         NONCE.store(hash(&[started, reg::now()]), Relaxed);
         sweep::run();
     });
-    let mut sys = match sys {
+    let sys = match sys {
         Ok(sys) => sys,
         Err(e) => {
             let _ = log!("PLAT_INIT ok=0 {:?}\n", e);
@@ -88,17 +88,6 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     loop {
         if let Some(r) = endpoint.poll() {
             log!("p0 pcie perst {:?}\n", r).unwrap();
-        }
-        if let Some(e) = sys.poll_services() {
-            log!(
-                "proc0 scmi p{:x} m{} {:x?} -> {} votes={:x}\n",
-                e.protocol,
-                e.message,
-                e.args,
-                e.status,
-                e.votes
-            )
-            .unwrap();
         }
     }
 }

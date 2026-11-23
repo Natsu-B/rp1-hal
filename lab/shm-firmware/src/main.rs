@@ -70,7 +70,7 @@ fn proof_reply(request: u32, success: bool) {
 
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
-    let mut sys = match rp1::platform::init(&mut core, p.platform) {
+    let sys = match rp1::platform::init(&mut core, p.platform) {
         Ok(sys) => sys,
         // Without the error: its derived Debug costs about 1 KiB of the 48 KiB image.
         Err(_) => {
@@ -127,23 +127,12 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
             #[cfg(not(feature = "i2c"))]
             proof_reply(request, false);
         }
-        let (value, perst, scmi_event) = idle0(&mut rx, &mut endpoint, &mut sys, probed, attempted);
+        let (value, perst) = idle0(&mut rx, &mut endpoint, probed, attempted);
         if let Some(v) = value {
             log!("p0 received {}\n", v).unwrap();
         }
         if let Some(r) = perst {
             log!("p0 pcie perst {:?}\n", r).unwrap();
-        }
-        if let Some(e) = scmi_event {
-            log!(
-                "proc0 scmi p{:x} m{} {:x?} -> {} votes={:x}\n",
-                e.protocol,
-                e.message,
-                e.args,
-                e.status,
-                e.votes
-            )
-            .unwrap();
         }
         if !probed && link_read(link::SHM_REQUEST) == 2 {
             probed = true;
@@ -547,23 +536,20 @@ fn serve_proc1(
 }
 type Perst = Option<Result<rp1_hal::cold::Reconfigured, rp1_hal::cold::ReconfigError>>;
 /// proc0 idle loop, from ISRAM (with the ISRAM fast paths of the polls it calls): returns as
-/// soon as anything needs the cold path (logging, SCMI request, PERST, lab request).
+/// soon as anything needs the cold path (logging, PERST, lab request).
 #[rp1_rt::isram]
 fn idle0(
     rx: &mut rp1_rt::sync::Consumer<'_, u32, 8, Proc1, Proc0>,
     endpoint: &mut rp1_hal::cold::EndpointService,
-    sys: &mut rp1_hal::platform::System,
     probed: bool,
     attempted: bool,
-) -> (Option<u32>, Perst, Option<rp1_hal::scmi::Event>) {
+) -> (Option<u32>, Perst) {
     loop {
         let value = rx.pop();
         let perst = endpoint.poll();
-        let event = sys.poll_services();
         let request = link_read(link::SHM_REQUEST);
         if value.is_some()
             || perst.is_some()
-            || event.is_some()
             || (!probed && request == 2)
             || (!attempted && request == 1)
             || {
@@ -571,7 +557,7 @@ fn idle0(
                 request != 0 && !proc1_request(request)
             }
         {
-            return (value, perst, event);
+            return (value, perst);
         }
     }
 }

@@ -12,13 +12,12 @@ rp1_rt::bind!();
 
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
-    let mut sys = rp1::platform::init(&mut core, p.platform).unwrap();
+    let sys = rp1::platform::init(&mut core, p.platform).unwrap();
     log!("PWM_BOOT PLAT_INIT ok=1 {}\n", sys.report).unwrap();
     p.proc1.launch(&mut core).unwrap();
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     loop {
         endpoint.poll();
-        sys.poll_services();
     }
 }
 
