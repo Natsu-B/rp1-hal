@@ -3,10 +3,12 @@
 //!
 //! Startup contract: each core installs its own vector table, disables all 64 NVIC
 //! lines, clears pending IRQs, sets their priority to 4, marks itself running in the link
-//! page's [`status`] words (proc0 first starts a new epoch), and enters main with PRIMASK
-//! cleared. Peripheral IRQs remain disabled until explicitly enabled. Unhandled external
-//! IRQs mask themselves and update [`interrupt::unhandled`]; system exceptions still stop
-//! in the default handler.
+//! page's [`status`] words (proc0 first starts a new epoch). Before entering main, each
+//! core sets AIRCR.PRIGROUP to 0 (all implemented priority bits select preemption
+//! priority), sets CCR.STKALIGN for 8-byte exception stack alignment, and clears
+//! BASEPRI, FAULTMASK, and finally PRIMASK. Peripheral IRQs remain disabled until
+//! explicitly enabled. Unhandled external IRQs mask themselves and update
+//! [`interrupt::unhandled`]. System exceptions stop in the default handler.
 use core::{cell::UnsafeCell, marker::PhantomData};
 pub use rp1_macros::{cold, entry, interrupt, isram, proc0, proc1, shared};
 pub use rp1_proto::SharedSafe;
