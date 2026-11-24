@@ -8,11 +8,24 @@ pub const EPOCH: usize = 0x40;
 /// `ABI_VALUE` once proc0 has initialized the words of this layout.
 pub const ABI: usize = 0x44;
 pub const ABI_VALUE: u32 = u32::from_le_bytes([b'R', b'L', 2, 0]);
-/// The platform's PCIe state, written by proc0's platform init. `ABI_VALUE` does not cover it
-/// yet: readers of this layout do not decode it.
+/// The platform's PCIe state: bits 0–7 one of the `PLAT_PCIE_*` states, bits 8–15 the
+/// `PLAT_PCIE_OFF_*` reason of `DETECTOR_OFF`, bits 16–31 PCIE_MONITOR2[31:16] when the
+/// detector saw `LOST`. proc0's platform init writes it until it arms IRQ53, IRQ53 after that.
+/// `ABI_VALUE` does not cover it yet: readers of this layout do not decode it.
 pub const PLAT_PCIE: usize = 0x48;
-/// `PLAT_PCIE` while the platform init brings the endpoint up (0 = not started).
+pub const PLAT_PCIE_NOT_STARTED: u32 = 0;
+/// The platform init brings the endpoint up.
 pub const PLAT_PCIE_INITIALIZING: u32 = 1;
+/// The link is up and the PERSTn detector is armed.
+pub const PLAT_PCIE_UP: u32 = 2;
+/// The host reset the endpoint after init: the outbound window is gone until RP1 is reloaded.
+pub const PLAT_PCIE_LOST: u32 = 3;
+/// The detector is off, so a host reset would go unseen.
+pub const PLAT_PCIE_DETECTOR_OFF: u32 = 4;
+/// `DETECTOR_OFF` reason: PCIE_INTF was set when init armed the detector.
+pub const PLAT_PCIE_OFF_ARM_FAULT: u8 = 1;
+/// `DETECTOR_OFF` reason: 16 IRQ53 entries found no interrupt source.
+pub const PLAT_PCIE_OFF_SPURIOUS_STORM: u8 = 2;
 /// SCMI state in bits 0–7 (0 not started, 1 serving, 2 quarantined), with the saturated
 /// request count in bits 16–31 while serving. RL v2 readers do not decode this word.
 pub const PLAT_SCMI: usize = 0x4c;
