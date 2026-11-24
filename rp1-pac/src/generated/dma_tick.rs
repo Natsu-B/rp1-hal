@@ -4,7 +4,7 @@
 
 use crate::Reg;
 
-/// RP1 DMA_TICK_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Two paced DMA request generators driven by the TICKS DMA tick channels. Bus=APB. Atomic aliases: XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[repr(C)]
 pub struct RegisterBlock {
@@ -15,25 +15,25 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// DMA tick 0 enable bits
+    /// DMA handshake enables for tick channel 0. Hardware clears these enables on an abort, or on a DMA finish when `finish_clear` is set.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn tick0_en(&self) -> &TICK0_EN {
         &self.tick0_en
     }
-    /// DMA tick 0 control
+    /// Pacing and termination control for tick channel 0, paced by `TICKS.DMA0`.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn tick0_ctrl(&self) -> &TICK0_CTRL {
         &self.tick0_ctrl
     }
-    /// DMA tick 1 enable bits
+    /// DMA handshake enables for tick channel 1. Hardware clears these enables on an abort, or on a DMA finish when `finish_clear` is set.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn tick1_en(&self) -> &TICK1_EN {
         &self.tick1_en
     }
-    /// DMA tick 1 control
+    /// Pacing and termination control for tick channel 1, paced by `TICKS.DMA1`.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn tick1_ctrl(&self) -> &TICK1_CTRL {
@@ -41,10 +41,10 @@ impl RegisterBlock {
     }
 }
 
-/// DMA tick 0 enable bits
+/// DMA handshake enables for tick channel 0. Hardware clears these enables on an abort, or on a DMA finish when `finish_clear` is set.
 /// Hardware access: read Plain; write Plain.
 pub type TICK0_EN = Reg<tick0_en::TICK0_EN_SPEC>;
-/// DMA tick 0 enable bits
+/// DMA handshake enables for tick channel 0. Hardware clears these enables on an abort, or on a DMA finish when `finish_clear` is set.
 /// Hardware access: read Plain; write Plain.
 pub mod tick0_en {
     pub struct TICK0_EN_SPEC;
@@ -80,7 +80,7 @@ pub mod tick0_en {
     pub type AtomicSetW = crate::AtomicSetW<TICK0_EN_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<TICK0_EN_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<TICK0_EN_SPEC>;
-    /// Enable generation of handshakes on tick0 output
+    /// Paced request enable: 0 no requests, 1 this tick channel may raise a DMA handshake.
     /// Field write behavior: Plain.
     pub mod req {
         pub type R = crate::BitReader;
@@ -89,7 +89,7 @@ pub mod tick0_en {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Generate dma_single as well as burst requests
+    /// Only used with `req=1`. 0 raises burst requests only; 1 also asserts `dma_single`.
     /// Field write behavior: Plain.
     pub mod single {
         pub type R = crate::BitReader;
@@ -119,13 +119,13 @@ pub mod tick0_en {
         }
     }
     impl AtomicSetW {
-        /// Enable generation of handshakes on tick0 output
+        /// Paced request enable: 0 no requests, 1 this tick channel may raise a DMA handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn req(&mut self) -> req::ASW<'_> {
             req::ASW::new(self)
         }
-        /// Generate dma_single as well as burst requests
+        /// Only used with `req=1`. 0 raises burst requests only; 1 also asserts `dma_single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn single(&mut self) -> single::ASW<'_> {
@@ -133,13 +133,13 @@ pub mod tick0_en {
         }
     }
     impl AtomicClearW {
-        /// Enable generation of handshakes on tick0 output
+        /// Paced request enable: 0 no requests, 1 this tick channel may raise a DMA handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn req(&mut self) -> req::ACW<'_> {
             req::ACW::new(self)
         }
-        /// Generate dma_single as well as burst requests
+        /// Only used with `req=1`. 0 raises burst requests only; 1 also asserts `dma_single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn single(&mut self) -> single::ACW<'_> {
@@ -147,13 +147,13 @@ pub mod tick0_en {
         }
     }
     impl AtomicXorW {
-        /// Enable generation of handshakes on tick0 output
+        /// Paced request enable: 0 no requests, 1 this tick channel may raise a DMA handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn req(&mut self) -> req::AXW<'_> {
             req::AXW::new(self)
         }
-        /// Generate dma_single as well as burst requests
+        /// Only used with `req=1`. 0 raises burst requests only; 1 also asserts `dma_single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn single(&mut self) -> single::AXW<'_> {
@@ -162,10 +162,10 @@ pub mod tick0_en {
     }
 }
 
-/// DMA tick 0 control
+/// Pacing and termination control for tick channel 0, paced by `TICKS.DMA0`.
 /// Hardware access: read Plain; write Plain.
 pub type TICK0_CTRL = Reg<tick0_ctrl::TICK0_CTRL_SPEC>;
-/// DMA tick 0 control
+/// Pacing and termination control for tick channel 0, paced by `TICKS.DMA0`.
 /// Hardware access: read Plain; write Plain.
 pub mod tick0_ctrl {
     pub struct TICK0_CTRL_SPEC;
@@ -201,7 +201,7 @@ pub mod tick0_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<TICK0_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<TICK0_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<TICK0_CTRL_SPEC>;
-    /// Clear enable/single when DMAC asserts dma_finish
+    /// On a `dma_finish` pulse from the DMAC: 0 keeps the request enables, 1 clears both `req` and `single`.
     /// Field write behavior: Plain.
     pub mod finish_clear {
         pub type R = crate::BitReader;
@@ -210,7 +210,7 @@ pub mod tick0_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Write 1 to SET alias to force-disable handshake
+    /// Writing 1 through the SET alias aborts the handshake; writing 0 there does nothing. An abort can race a DMAC transfer already in progress.
     /// Field write behavior: Plain.
     pub mod disable {
         pub type W<'a> = crate::BitWriter<'a, super::W, 1>;
@@ -218,7 +218,7 @@ pub mod tick0_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// Handshake state machine idle dwell in bus-clock cycles
+    /// Extra bus-clock cycles added to the idle gap of the handshake.
     /// Field write behavior: Plain.
     pub mod dwell {
         pub type R = crate::FieldReader<u32>;
@@ -227,7 +227,7 @@ pub mod tick0_ctrl {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 4, 5>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 4, 5>;
     }
-    /// Current state of dreq input
+    /// Debug view of the incoming request pulse, which lasts one cycle.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod dreq {
@@ -262,19 +262,19 @@ pub mod tick0_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Clear enable/single when DMAC asserts dma_finish
+        /// On a `dma_finish` pulse from the DMAC: 0 keeps the request enables, 1 clears both `req` and `single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn finish_clear(&mut self) -> finish_clear::ASW<'_> {
             finish_clear::ASW::new(self)
         }
-        /// Write 1 to SET alias to force-disable handshake
+        /// Writing 1 through the SET alias aborts the handshake; writing 0 there does nothing. An abort can race a DMAC transfer already in progress.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn disable(&mut self) -> disable::ASW<'_> {
             disable::ASW::new(self)
         }
-        /// Handshake state machine idle dwell in bus-clock cycles
+        /// Extra bus-clock cycles added to the idle gap of the handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dwell(&mut self) -> dwell::ASW<'_> {
@@ -282,19 +282,19 @@ pub mod tick0_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Clear enable/single when DMAC asserts dma_finish
+        /// On a `dma_finish` pulse from the DMAC: 0 keeps the request enables, 1 clears both `req` and `single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn finish_clear(&mut self) -> finish_clear::ACW<'_> {
             finish_clear::ACW::new(self)
         }
-        /// Write 1 to SET alias to force-disable handshake
+        /// Writing 1 through the SET alias aborts the handshake; writing 0 there does nothing. An abort can race a DMAC transfer already in progress.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn disable(&mut self) -> disable::ACW<'_> {
             disable::ACW::new(self)
         }
-        /// Handshake state machine idle dwell in bus-clock cycles
+        /// Extra bus-clock cycles added to the idle gap of the handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dwell(&mut self) -> dwell::ACW<'_> {
@@ -302,19 +302,19 @@ pub mod tick0_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Clear enable/single when DMAC asserts dma_finish
+        /// On a `dma_finish` pulse from the DMAC: 0 keeps the request enables, 1 clears both `req` and `single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn finish_clear(&mut self) -> finish_clear::AXW<'_> {
             finish_clear::AXW::new(self)
         }
-        /// Write 1 to SET alias to force-disable handshake
+        /// Writing 1 through the SET alias aborts the handshake; writing 0 there does nothing. An abort can race a DMAC transfer already in progress.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn disable(&mut self) -> disable::AXW<'_> {
             disable::AXW::new(self)
         }
-        /// Handshake state machine idle dwell in bus-clock cycles
+        /// Extra bus-clock cycles added to the idle gap of the handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dwell(&mut self) -> dwell::AXW<'_> {
@@ -323,10 +323,10 @@ pub mod tick0_ctrl {
     }
 }
 
-/// DMA tick 1 enable bits
+/// DMA handshake enables for tick channel 1. Hardware clears these enables on an abort, or on a DMA finish when `finish_clear` is set.
 /// Hardware access: read Plain; write Plain.
 pub type TICK1_EN = Reg<tick1_en::TICK1_EN_SPEC>;
-/// DMA tick 1 enable bits
+/// DMA handshake enables for tick channel 1. Hardware clears these enables on an abort, or on a DMA finish when `finish_clear` is set.
 /// Hardware access: read Plain; write Plain.
 pub mod tick1_en {
     pub struct TICK1_EN_SPEC;
@@ -362,7 +362,7 @@ pub mod tick1_en {
     pub type AtomicSetW = crate::AtomicSetW<TICK1_EN_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<TICK1_EN_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<TICK1_EN_SPEC>;
-    /// Enable generation of handshakes on tick1 output
+    /// Paced request enable: 0 no requests, 1 this tick channel may raise a DMA handshake.
     /// Field write behavior: Plain.
     pub mod req {
         pub type R = crate::BitReader;
@@ -371,7 +371,7 @@ pub mod tick1_en {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Generate dma_single as well as burst requests
+    /// Only used with `req=1`. 0 raises burst requests only; 1 also asserts `dma_single`.
     /// Field write behavior: Plain.
     pub mod single {
         pub type R = crate::BitReader;
@@ -401,13 +401,13 @@ pub mod tick1_en {
         }
     }
     impl AtomicSetW {
-        /// Enable generation of handshakes on tick1 output
+        /// Paced request enable: 0 no requests, 1 this tick channel may raise a DMA handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn req(&mut self) -> req::ASW<'_> {
             req::ASW::new(self)
         }
-        /// Generate dma_single as well as burst requests
+        /// Only used with `req=1`. 0 raises burst requests only; 1 also asserts `dma_single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn single(&mut self) -> single::ASW<'_> {
@@ -415,13 +415,13 @@ pub mod tick1_en {
         }
     }
     impl AtomicClearW {
-        /// Enable generation of handshakes on tick1 output
+        /// Paced request enable: 0 no requests, 1 this tick channel may raise a DMA handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn req(&mut self) -> req::ACW<'_> {
             req::ACW::new(self)
         }
-        /// Generate dma_single as well as burst requests
+        /// Only used with `req=1`. 0 raises burst requests only; 1 also asserts `dma_single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn single(&mut self) -> single::ACW<'_> {
@@ -429,13 +429,13 @@ pub mod tick1_en {
         }
     }
     impl AtomicXorW {
-        /// Enable generation of handshakes on tick1 output
+        /// Paced request enable: 0 no requests, 1 this tick channel may raise a DMA handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn req(&mut self) -> req::AXW<'_> {
             req::AXW::new(self)
         }
-        /// Generate dma_single as well as burst requests
+        /// Only used with `req=1`. 0 raises burst requests only; 1 also asserts `dma_single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn single(&mut self) -> single::AXW<'_> {
@@ -444,10 +444,10 @@ pub mod tick1_en {
     }
 }
 
-/// DMA tick 1 control
+/// Pacing and termination control for tick channel 1, paced by `TICKS.DMA1`.
 /// Hardware access: read Plain; write Plain.
 pub type TICK1_CTRL = Reg<tick1_ctrl::TICK1_CTRL_SPEC>;
-/// DMA tick 1 control
+/// Pacing and termination control for tick channel 1, paced by `TICKS.DMA1`.
 /// Hardware access: read Plain; write Plain.
 pub mod tick1_ctrl {
     pub struct TICK1_CTRL_SPEC;
@@ -483,7 +483,7 @@ pub mod tick1_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<TICK1_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<TICK1_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<TICK1_CTRL_SPEC>;
-    /// Clear enable/single when DMAC asserts dma_finish
+    /// On a `dma_finish` pulse from the DMAC: 0 keeps the request enables, 1 clears both `req` and `single`.
     /// Field write behavior: Plain.
     pub mod finish_clear {
         pub type R = crate::BitReader;
@@ -492,7 +492,7 @@ pub mod tick1_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Write 1 to SET alias to force-disable handshake
+    /// Writing 1 through the SET alias aborts the handshake; writing 0 there does nothing. An abort can race a DMAC transfer already in progress.
     /// Field write behavior: Plain.
     pub mod disable {
         pub type W<'a> = crate::BitWriter<'a, super::W, 1>;
@@ -500,7 +500,7 @@ pub mod tick1_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// Handshake state machine idle dwell in bus-clock cycles
+    /// Extra bus-clock cycles added to the idle gap of the handshake.
     /// Field write behavior: Plain.
     pub mod dwell {
         pub type R = crate::FieldReader<u32>;
@@ -509,7 +509,7 @@ pub mod tick1_ctrl {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 4, 5>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 4, 5>;
     }
-    /// Current state of dreq input
+    /// Debug view of the incoming request pulse, which lasts one cycle.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod dreq {
@@ -544,19 +544,19 @@ pub mod tick1_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Clear enable/single when DMAC asserts dma_finish
+        /// On a `dma_finish` pulse from the DMAC: 0 keeps the request enables, 1 clears both `req` and `single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn finish_clear(&mut self) -> finish_clear::ASW<'_> {
             finish_clear::ASW::new(self)
         }
-        /// Write 1 to SET alias to force-disable handshake
+        /// Writing 1 through the SET alias aborts the handshake; writing 0 there does nothing. An abort can race a DMAC transfer already in progress.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn disable(&mut self) -> disable::ASW<'_> {
             disable::ASW::new(self)
         }
-        /// Handshake state machine idle dwell in bus-clock cycles
+        /// Extra bus-clock cycles added to the idle gap of the handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dwell(&mut self) -> dwell::ASW<'_> {
@@ -564,19 +564,19 @@ pub mod tick1_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Clear enable/single when DMAC asserts dma_finish
+        /// On a `dma_finish` pulse from the DMAC: 0 keeps the request enables, 1 clears both `req` and `single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn finish_clear(&mut self) -> finish_clear::ACW<'_> {
             finish_clear::ACW::new(self)
         }
-        /// Write 1 to SET alias to force-disable handshake
+        /// Writing 1 through the SET alias aborts the handshake; writing 0 there does nothing. An abort can race a DMAC transfer already in progress.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn disable(&mut self) -> disable::ACW<'_> {
             disable::ACW::new(self)
         }
-        /// Handshake state machine idle dwell in bus-clock cycles
+        /// Extra bus-clock cycles added to the idle gap of the handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dwell(&mut self) -> dwell::ACW<'_> {
@@ -584,19 +584,19 @@ pub mod tick1_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Clear enable/single when DMAC asserts dma_finish
+        /// On a `dma_finish` pulse from the DMAC: 0 keeps the request enables, 1 clears both `req` and `single`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn finish_clear(&mut self) -> finish_clear::AXW<'_> {
             finish_clear::AXW::new(self)
         }
-        /// Write 1 to SET alias to force-disable handshake
+        /// Writing 1 through the SET alias aborts the handshake; writing 0 there does nothing. An abort can race a DMAC transfer already in progress.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn disable(&mut self) -> disable::AXW<'_> {
             disable::AXW::new(self)
         }
-        /// Handshake state machine idle dwell in bus-clock cycles
+        /// Extra bus-clock cycles added to the idle gap of the handshake.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dwell(&mut self) -> dwell::AXW<'_> {

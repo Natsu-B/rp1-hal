@@ -440,6 +440,6 @@ hardware_write = "none"
 verified_read = "static"
 verified_write = "not-applicable"
 origin = "linux"
-note = "Interrupt status after masking and forcing. [Source: Linux RP1 ADC hwmon driver.]"
+note = "Effective interrupt state: the raw status ANDed with the enable bits, then ORed with the force bits. [Source: Linux RP1 ADC hwmon driver.]"
 [register.api]
 read = "public"

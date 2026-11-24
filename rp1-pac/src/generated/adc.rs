@@ -73,7 +73,7 @@ impl RegisterBlock {
     pub const fn intf(&self) -> &INTF {
         &self.intf
     }
-    /// Interrupt status after masking and forcing. \[Source: Linux RP1 ADC hwmon driver.\]
+    /// Effective interrupt state: the raw status ANDed with the enable bits, then ORed with the force bits. \[Source: Linux RP1 ADC hwmon driver.\]
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn ints(&self) -> &INTS {
@@ -485,10 +485,10 @@ pub mod intf {
     impl crate::UnsafeWritable for INTF_SPEC {}
 }
 
-/// Interrupt status after masking and forcing. \[Source: Linux RP1 ADC hwmon driver.\]
+/// Effective interrupt state: the raw status ANDed with the enable bits, then ORed with the force bits. \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write None.
 pub type INTS = Reg<ints::INTS_SPEC>;
-/// Interrupt status after masking and forcing. \[Source: Linux RP1 ADC hwmon driver.\]
+/// Effective interrupt state: the raw status ANDed with the enable bits, then ORed with the force bits. \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write None.
 pub mod ints {
     pub struct INTS_SPEC;

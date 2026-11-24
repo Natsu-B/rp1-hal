@@ -29,7 +29,7 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// GPIO status
+    /// Per-pad status: signal values along the input and output paths, and the interrupt event detectors. Inactive flags read 0. Edge events stay set until cleared with GPIO_CTRL.IRQRESET; level events follow the current detector state.
     /// Hardware access: read Plain; write None.
     /// Array layout: 20 physical entries, 20 public entries, stride 0x8 bytes.
     #[inline(always)]
@@ -37,7 +37,7 @@ impl RegisterBlock {
         assert!(index < 20);
         &self.gpio_status[index].gpio_status
     }
-    /// GPIO control including function select and overrides
+    /// Per-pad control: function select, input filtering, interrupt event masks and signal overrides.
     /// Hardware access: read Plain; write Plain.
     /// Write API is not exposed because the verified operation semantics are insufficient.
     /// Array layout: 20 physical entries, 20 public entries, stride 0x8 bytes.
@@ -46,61 +46,61 @@ impl RegisterBlock {
         assert!(index < 20);
         &self.gpio_status[index].gpio_ctrl
     }
-    /// Raw interrupts
+    /// Raw interrupt state per pin (GPIO_STATUS.IRQTOPROC), before the per-destination enables. Read-only; clear latched events with the pin's GPIO_CTRL.IRQRESET.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn intr(&self) -> &INTR {
         &self.intr
     }
-    /// Interrupt enable for proc0
+    /// Per-pin interrupt enables for RP1 processor 0. 1 lets the pin's interrupt through.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn proc0_inte(&self) -> &PROC0_INTE {
         &self.proc0_inte
     }
-    /// Interrupt force for proc0
+    /// Per-pin interrupt force for RP1 processor 0. 1 forces the matching status bit.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn proc0_intf(&self) -> &PROC0_INTF {
         &self.proc0_intf
     }
-    /// Interrupt status after masking and forcing for proc0
+    /// Per-pin interrupt status seen by RP1 processor 0: the enabled raw interrupt combined with the force bit.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn proc0_ints(&self) -> &PROC0_INTS {
         &self.proc0_ints
     }
-    /// Interrupt enable for proc1
+    /// Per-pin interrupt enables for RP1 processor 1. 1 lets the pin's interrupt through.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn proc1_inte(&self) -> &PROC1_INTE {
         &self.proc1_inte
     }
-    /// Interrupt force for proc1
+    /// Per-pin interrupt force for RP1 processor 1. 1 forces the matching status bit.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn proc1_intf(&self) -> &PROC1_INTF {
         &self.proc1_intf
     }
-    /// Interrupt status after masking and forcing for proc1
+    /// Per-pin interrupt status seen by RP1 processor 1: the enabled raw interrupt combined with the force bit.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn proc1_ints(&self) -> &PROC1_INTS {
         &self.proc1_ints
     }
-    /// Interrupt enable for PCIe
+    /// Per-pin interrupt enables for the PCIe host. 1 lets the pin's interrupt through.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn pcie_inte(&self) -> &PCIE_INTE {
         &self.pcie_inte
     }
-    /// Interrupt force for PCIe
+    /// Per-pin interrupt force for the PCIe host. 1 forces the matching status bit.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn pcie_intf(&self) -> &PCIE_INTF {
         &self.pcie_intf
     }
-    /// Interrupt status after masking and forcing for PCIe
+    /// Per-pin interrupt status seen by the PCIe host: the enabled raw interrupt combined with the force bit. For level-triggered handling, enable MSI-X acknowledge handling so that re-asserted interrupts are not lost.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn pcie_ints(&self) -> &PCIE_INTS {
@@ -108,11 +108,11 @@ impl RegisterBlock {
     }
 }
 
-/// GPIO status
+/// Per-pad status: signal values along the input and output paths, and the interrupt event detectors. Inactive flags read 0. Edge events stay set until cleared with GPIO_CTRL.IRQRESET; level events follow the current detector state.
 /// Hardware access: read Plain; write None.
 /// Array layout: 20 physical entries, 20 public entries, stride 0x8 bytes.
 pub type GPIO_STATUS = Reg<gpio_status::GPIO_STATUS_SPEC>;
-/// GPIO status
+/// Per-pad status: signal values along the input and output paths, and the interrupt event detectors. Inactive flags read 0. Edge events stay set until cleared with GPIO_CTRL.IRQRESET; level events follow the current detector state.
 /// Hardware access: read Plain; write None.
 /// Array layout: 20 physical entries, 20 public entries, stride 0x8 bytes.
 pub mod gpio_status {
@@ -122,109 +122,109 @@ pub mod gpio_status {
     }
     impl crate::Readable for GPIO_STATUS_SPEC {}
     pub type R = crate::R<GPIO_STATUS_SPEC>;
-    /// Output signal from selected peripheral before override
+    /// Output data from the selected function, before the output override.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod outfromperi {
         pub type R = crate::BitReader;
     }
-    /// Output signal to pad after override
+    /// Output data after the output override, as sent to the pad.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod outtopad {
         pub type R = crate::BitReader;
     }
-    /// Output enable from selected peripheral before override
+    /// Output enable from the selected function, before the output enable override.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod oefromperi {
         pub type R = crate::BitReader;
     }
-    /// Output enable to pad after override
+    /// Output enable after the override, as sent to the pad. The pad's OD bit can still disable the output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod oetopad {
         pub type R = crate::BitReader;
     }
-    /// Input signal from pad goes directly to selected peripheral
+    /// 1 if the selected function takes the raw pad input directly, bypassing the filter and the input override (for example a clock input).
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod inisdirect {
         pub type R = crate::BitReader;
     }
-    /// Input signal from pad before filtering and override
+    /// Input value as received from the pad input buffer, before any processing.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod infrompad {
         pub type R = crate::BitReader;
     }
-    /// Input signal from pad after filtering before override
+    /// Input value after the filter, before the input override.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod infiltered {
         pub type R = crate::BitReader;
     }
-    /// Input signal to peripheral after filtering and override
+    /// Input value after the input override, as passed to the peripheral. Direct input paths bypass it.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod intoperi {
         pub type R = crate::BitReader;
     }
-    /// Input pin has seen falling edge
+    /// Latched when the raw input falls from 1 to 0.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod event_edge_low {
         pub type R = crate::BitReader;
     }
-    /// Input pin has seen rising edge
+    /// Latched when the raw input rises from 0 to 1.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod event_edge_high {
         pub type R = crate::BitReader;
     }
-    /// Input pin is low
+    /// Set while the raw input is low.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod event_level_low {
         pub type R = crate::BitReader;
     }
-    /// Input pin is high
+    /// Set while the raw input is high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod event_level_high {
         pub type R = crate::BitReader;
     }
-    /// Input pin has seen a filtered falling edge
+    /// Latched when the filtered input falls.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod event_f_edge_low {
         pub type R = crate::BitReader;
     }
-    /// Input pin has seen a filtered rising edge
+    /// Latched when the filtered input rises.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod event_f_edge_high {
         pub type R = crate::BitReader;
     }
-    /// Debounced input pin is low
+    /// Set once the input has stayed low for the debounce interval.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod event_db_level_low {
         pub type R = crate::BitReader;
     }
-    /// Debounced input pin is high
+    /// Set once the input has stayed high for the debounce interval.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod event_db_level_high {
         pub type R = crate::BitReader;
     }
-    /// Interrupt to processors after masking
+    /// OR of the eight event flags enabled by this pin's IRQMASK bits, before the interrupt override.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod irqcombined {
         pub type R = crate::BitReader;
     }
-    /// Interrupt to processors after mask and override
+    /// This pin's interrupt after the interrupt override, before the per-destination enables.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod irqtoproc {
@@ -306,12 +306,12 @@ pub mod gpio_status {
     }
 }
 
-/// GPIO control including function select and overrides
+/// Per-pad control: function select, input filtering, interrupt event masks and signal overrides.
 /// Hardware access: read Plain; write Plain.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 /// Array layout: 20 physical entries, 20 public entries, stride 0x8 bytes.
 pub type GPIO_CTRL = Reg<gpio_ctrl::GPIO_CTRL_SPEC>;
-/// GPIO control including function select and overrides
+/// Per-pad control: function select, input filtering, interrupt event masks and signal overrides.
 /// Hardware access: read Plain; write Plain.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 /// Array layout: 20 physical entries, 20 public entries, stride 0x8 bytes.
@@ -332,91 +332,91 @@ pub mod gpio_ctrl {
     impl crate::UnsafeAtomicXor for GPIO_CTRL_SPEC {
         const OFFSET: usize = 0x1000;
     }
-    /// Function select; 31 is NULL
+    /// Function select. 31 disconnects the pad from every function. Other values are pin-specific; for bank 0 see the pinmux matrix in this database. Values without a named function are reserved. If several pads are routed to the same peripheral input, their inputs are ORed, so normally route at most one pad to each input.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod funcsel {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Filter/debounce time constant M
+    /// Input filter/debounce setting, counted in GPIO bank ticks. The exact mapping to a time interval, and the effect of 0, are unknown.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod f_m {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Output override
+    /// Output data override, applied to the selected function's output before the pad. 0 passes it through, 1 inverts it, 2 forces 0, 3 forces 1. Whether the pad actually drives also depends on OEOVER and the pad settings.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod outover {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Output-enable override
+    /// Output enable override. 0 uses the selected function's output enable, 1 inverts it, 2 forces the output off (high impedance), 3 forces it on. The pad's OD bit in PADS can still disable the output.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod oeover {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Input override
+    /// Input override, applied to the filtered input before it reaches the peripheral. 0 passes it through, 1 inverts it, 2 forces 0, 3 forces 1. Functions with a direct input path bypass it.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod inover {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Masks edge-low interrupt into interrupt output
+    /// 1 includes the raw falling-edge event in this pin's combined interrupt; 0 leaves it out.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod irqmask_edge_low {
         pub type R = crate::BitReader;
     }
-    /// Masks edge-high interrupt into interrupt output
+    /// 1 includes the raw rising-edge event in this pin's combined interrupt; 0 leaves it out.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod irqmask_edge_high {
         pub type R = crate::BitReader;
     }
-    /// Masks level-low interrupt into interrupt output
+    /// 1 includes the raw low-level event in this pin's combined interrupt; 0 leaves it out.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod irqmask_level_low {
         pub type R = crate::BitReader;
     }
-    /// Masks level-high interrupt into interrupt output
+    /// 1 includes the raw high-level event in this pin's combined interrupt; 0 leaves it out.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod irqmask_level_high {
         pub type R = crate::BitReader;
     }
-    /// Masks filtered edge-low interrupt into interrupt output
+    /// 1 includes the filtered falling-edge event in this pin's combined interrupt; 0 leaves it out.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod irqmask_f_edge_low {
         pub type R = crate::BitReader;
     }
-    /// Masks filtered edge-high interrupt into interrupt output
+    /// 1 includes the filtered rising-edge event in this pin's combined interrupt; 0 leaves it out.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod irqmask_f_edge_high {
         pub type R = crate::BitReader;
     }
-    /// Masks debounced level-low interrupt into interrupt output
+    /// 1 includes the debounced low-level event in this pin's combined interrupt; 0 leaves it out.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod irqmask_db_level_low {
         pub type R = crate::BitReader;
     }
-    /// Masks debounced level-high interrupt into interrupt output
+    /// 1 includes the debounced high-level event in this pin's combined interrupt; 0 leaves it out.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod irqmask_db_level_high {
         pub type R = crate::BitReader;
     }
-    /// Reset interrupt edge detector; self-clearing
+    /// Write 1 to clear this pad's latched edge events; the bit then returns to 0 by itself. Writing 0 has no effect. Level events that are still active assert again.
     /// Field write behavior: WriteOneToSet.
     /// Typed write API is not exposed by register policy.
     pub mod irqreset {
         pub type R = crate::BitReader;
     }
-    /// Interrupt override
+    /// Interrupt override, applied to this pin's combined interrupt. 0 passes it through, 1 inverts it, 2 forces 0, 3 forces 1.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod irqover {
@@ -486,10 +486,10 @@ pub mod gpio_ctrl {
     }
 }
 
-/// Raw interrupts
+/// Raw interrupt state per pin (GPIO_STATUS.IRQTOPROC), before the per-destination enables. Read-only; clear latched events with the pin's GPIO_CTRL.IRQRESET.
 /// Hardware access: read Plain; write None.
 pub type INTR = Reg<intr::INTR_SPEC>;
-/// Raw interrupts
+/// Raw interrupt state per pin (GPIO_STATUS.IRQTOPROC), before the per-destination enables. Read-only; clear latched events with the pin's GPIO_CTRL.IRQRESET.
 /// Hardware access: read Plain; write None.
 pub mod intr {
     pub struct INTR_SPEC;
@@ -702,10 +702,10 @@ pub mod intr {
     }
 }
 
-/// Interrupt enable for proc0
+/// Per-pin interrupt enables for RP1 processor 0. 1 lets the pin's interrupt through.
 /// Hardware access: read Plain; write Plain.
 pub type PROC0_INTE = Reg<proc0_inte::PROC0_INTE_SPEC>;
-/// Interrupt enable for proc0
+/// Per-pin interrupt enables for RP1 processor 0. 1 lets the pin's interrupt through.
 /// Hardware access: read Plain; write Plain.
 pub mod proc0_inte {
     pub struct PROC0_INTE_SPEC;
@@ -1450,10 +1450,10 @@ pub mod proc0_inte {
     }
 }
 
-/// Interrupt force for proc0
+/// Per-pin interrupt force for RP1 processor 0. 1 forces the matching status bit.
 /// Hardware access: read Plain; write Plain.
 pub type PROC0_INTF = Reg<proc0_intf::PROC0_INTF_SPEC>;
-/// Interrupt force for proc0
+/// Per-pin interrupt force for RP1 processor 0. 1 forces the matching status bit.
 /// Hardware access: read Plain; write Plain.
 pub mod proc0_intf {
     pub struct PROC0_INTF_SPEC;
@@ -2198,10 +2198,10 @@ pub mod proc0_intf {
     }
 }
 
-/// Interrupt status after masking and forcing for proc0
+/// Per-pin interrupt status seen by RP1 processor 0: the enabled raw interrupt combined with the force bit.
 /// Hardware access: read Plain; write None.
 pub type PROC0_INTS = Reg<proc0_ints::PROC0_INTS_SPEC>;
-/// Interrupt status after masking and forcing for proc0
+/// Per-pin interrupt status seen by RP1 processor 0: the enabled raw interrupt combined with the force bit.
 /// Hardware access: read Plain; write None.
 pub mod proc0_ints {
     pub struct PROC0_INTS_SPEC;
@@ -2414,10 +2414,10 @@ pub mod proc0_ints {
     }
 }
 
-/// Interrupt enable for proc1
+/// Per-pin interrupt enables for RP1 processor 1. 1 lets the pin's interrupt through.
 /// Hardware access: read Plain; write Plain.
 pub type PROC1_INTE = Reg<proc1_inte::PROC1_INTE_SPEC>;
-/// Interrupt enable for proc1
+/// Per-pin interrupt enables for RP1 processor 1. 1 lets the pin's interrupt through.
 /// Hardware access: read Plain; write Plain.
 pub mod proc1_inte {
     pub struct PROC1_INTE_SPEC;
@@ -3162,10 +3162,10 @@ pub mod proc1_inte {
     }
 }
 
-/// Interrupt force for proc1
+/// Per-pin interrupt force for RP1 processor 1. 1 forces the matching status bit.
 /// Hardware access: read Plain; write Plain.
 pub type PROC1_INTF = Reg<proc1_intf::PROC1_INTF_SPEC>;
-/// Interrupt force for proc1
+/// Per-pin interrupt force for RP1 processor 1. 1 forces the matching status bit.
 /// Hardware access: read Plain; write Plain.
 pub mod proc1_intf {
     pub struct PROC1_INTF_SPEC;
@@ -3910,10 +3910,10 @@ pub mod proc1_intf {
     }
 }
 
-/// Interrupt status after masking and forcing for proc1
+/// Per-pin interrupt status seen by RP1 processor 1: the enabled raw interrupt combined with the force bit.
 /// Hardware access: read Plain; write None.
 pub type PROC1_INTS = Reg<proc1_ints::PROC1_INTS_SPEC>;
-/// Interrupt status after masking and forcing for proc1
+/// Per-pin interrupt status seen by RP1 processor 1: the enabled raw interrupt combined with the force bit.
 /// Hardware access: read Plain; write None.
 pub mod proc1_ints {
     pub struct PROC1_INTS_SPEC;
@@ -4126,10 +4126,10 @@ pub mod proc1_ints {
     }
 }
 
-/// Interrupt enable for PCIe
+/// Per-pin interrupt enables for the PCIe host. 1 lets the pin's interrupt through.
 /// Hardware access: read Plain; write Plain.
 pub type PCIE_INTE = Reg<pcie_inte::PCIE_INTE_SPEC>;
-/// Interrupt enable for PCIe
+/// Per-pin interrupt enables for the PCIe host. 1 lets the pin's interrupt through.
 /// Hardware access: read Plain; write Plain.
 pub mod pcie_inte {
     pub struct PCIE_INTE_SPEC;
@@ -4874,10 +4874,10 @@ pub mod pcie_inte {
     }
 }
 
-/// Interrupt force for PCIe
+/// Per-pin interrupt force for the PCIe host. 1 forces the matching status bit.
 /// Hardware access: read Plain; write Plain.
 pub type PCIE_INTF = Reg<pcie_intf::PCIE_INTF_SPEC>;
-/// Interrupt force for PCIe
+/// Per-pin interrupt force for the PCIe host. 1 forces the matching status bit.
 /// Hardware access: read Plain; write Plain.
 pub mod pcie_intf {
     pub struct PCIE_INTF_SPEC;
@@ -5622,10 +5622,10 @@ pub mod pcie_intf {
     }
 }
 
-/// Interrupt status after masking and forcing for PCIe
+/// Per-pin interrupt status seen by the PCIe host: the enabled raw interrupt combined with the force bit. For level-triggered handling, enable MSI-X acknowledge handling so that re-asserted interrupts are not lost.
 /// Hardware access: read Plain; write None.
 pub type PCIE_INTS = Reg<pcie_ints::PCIE_INTS_SPEC>;
-/// Interrupt status after masking and forcing for PCIe
+/// Per-pin interrupt status seen by the PCIe host: the enabled raw interrupt combined with the force bit. For level-triggered handling, enable MSI-X acknowledge handling so that re-asserted interrupts are not lost.
 /// Hardware access: read Plain; write None.
 pub mod pcie_ints {
     pub struct PCIE_INTS_SPEC;

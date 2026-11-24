@@ -4,7 +4,7 @@
 
 use crate::Reg;
 
-/// RP1 SYS_RIO0_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Host-side GPIO RIO block for bank 0: output latch, output enable and input sample registers. Bus=APB. Atomic aliases: XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[repr(C)]
 pub struct RegisterBlock {
@@ -15,25 +15,25 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// RIO_OUT controls GPIO output drive
+    /// Output data latch for host GPIO. A pin shows this value only when its mux selects the system RIO function, `oe` enables drive, and no pad or mux override applies. Supports the SET/CLR/XOR aliases.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn out(&self) -> &OUT {
         &self.out
     }
-    /// RIO_OE controls GPIO output-enable drive
+    /// Output enable for host GPIO. A bit only takes effect when the pad is on the system RIO function and its pad controls allow output. Supports the SET/CLR/XOR aliases.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn oe(&self) -> &OE {
         &self.oe
     }
-    /// RIO_NOSYNC_IN samples GPIO inputs directly
+    /// Raw pad input levels, read without the `clk_sys` synchronizer. An asynchronous input may change during the read.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn nosync_in(&self) -> &NOSYNC_IN {
         &self.nosync_in
     }
-    /// RIO_SYNC_IN samples GPIO inputs synchronised with clk_sys
+    /// Pad input levels after a two-stage synchronizer clocked by `clk_sys`.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn sync_in(&self) -> &SYNC_IN {
@@ -41,10 +41,10 @@ impl RegisterBlock {
     }
 }
 
-/// RIO_OUT controls GPIO output drive
+/// Output data latch for host GPIO. A pin shows this value only when its mux selects the system RIO function, `oe` enables drive, and no pad or mux override applies. Supports the SET/CLR/XOR aliases.
 /// Hardware access: read Plain; write Plain.
 pub type OUT = Reg<out::OUT_SPEC>;
-/// RIO_OUT controls GPIO output drive
+/// Output data latch for host GPIO. A pin shows this value only when its mux selects the system RIO function, `oe` enables drive, and no pad or mux override applies. Supports the SET/CLR/XOR aliases.
 /// Hardware access: read Plain; write Plain.
 pub mod out {
     pub struct OUT_SPEC;
@@ -80,7 +80,7 @@ pub mod out {
     pub type AtomicSetW = crate::AtomicSetW<OUT_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<OUT_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<OUT_SPEC>;
-    /// GPIO0
+    /// GPIO 0 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio0 {
         pub type R = crate::BitReader;
@@ -89,7 +89,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// GPIO1
+    /// GPIO 1 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio1 {
         pub type R = crate::BitReader;
@@ -98,7 +98,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// GPIO2
+    /// GPIO 2 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio2 {
         pub type R = crate::BitReader;
@@ -107,7 +107,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
     }
-    /// GPIO3
+    /// GPIO 3 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio3 {
         pub type R = crate::BitReader;
@@ -116,7 +116,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// GPIO4
+    /// GPIO 4 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio4 {
         pub type R = crate::BitReader;
@@ -125,7 +125,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// GPIO5
+    /// GPIO 5 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio5 {
         pub type R = crate::BitReader;
@@ -134,7 +134,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// GPIO6
+    /// GPIO 6 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio6 {
         pub type R = crate::BitReader;
@@ -143,7 +143,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// GPIO7
+    /// GPIO 7 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio7 {
         pub type R = crate::BitReader;
@@ -152,7 +152,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// GPIO8
+    /// GPIO 8 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio8 {
         pub type R = crate::BitReader;
@@ -161,7 +161,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 8>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 8>;
     }
-    /// GPIO9
+    /// GPIO 9 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio9 {
         pub type R = crate::BitReader;
@@ -170,7 +170,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 9>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 9>;
     }
-    /// GPIO10
+    /// GPIO 10 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio10 {
         pub type R = crate::BitReader;
@@ -179,7 +179,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 10>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 10>;
     }
-    /// GPIO11
+    /// GPIO 11 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio11 {
         pub type R = crate::BitReader;
@@ -188,7 +188,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 11>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 11>;
     }
-    /// GPIO12
+    /// GPIO 12 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio12 {
         pub type R = crate::BitReader;
@@ -197,7 +197,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 12>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 12>;
     }
-    /// GPIO13
+    /// GPIO 13 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio13 {
         pub type R = crate::BitReader;
@@ -206,7 +206,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 13>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 13>;
     }
-    /// GPIO14
+    /// GPIO 14 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio14 {
         pub type R = crate::BitReader;
@@ -215,7 +215,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 14>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 14>;
     }
-    /// GPIO15
+    /// GPIO 15 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio15 {
         pub type R = crate::BitReader;
@@ -224,7 +224,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 15>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 15>;
     }
-    /// GPIO16
+    /// GPIO 16 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio16 {
         pub type R = crate::BitReader;
@@ -233,7 +233,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 16>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 16>;
     }
-    /// GPIO17
+    /// GPIO 17 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio17 {
         pub type R = crate::BitReader;
@@ -242,7 +242,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 17>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 17>;
     }
-    /// GPIO18
+    /// GPIO 18 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio18 {
         pub type R = crate::BitReader;
@@ -251,7 +251,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 18>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 18>;
     }
-    /// GPIO19
+    /// GPIO 19 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio19 {
         pub type R = crate::BitReader;
@@ -260,7 +260,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 19>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 19>;
     }
-    /// GPIO20
+    /// GPIO 20 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio20 {
         pub type R = crate::BitReader;
@@ -269,7 +269,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 20>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 20>;
     }
-    /// GPIO21
+    /// GPIO 21 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio21 {
         pub type R = crate::BitReader;
@@ -278,7 +278,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 21>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 21>;
     }
-    /// GPIO22
+    /// GPIO 22 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio22 {
         pub type R = crate::BitReader;
@@ -287,7 +287,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 22>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 22>;
     }
-    /// GPIO23
+    /// GPIO 23 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio23 {
         pub type R = crate::BitReader;
@@ -296,7 +296,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 23>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 23>;
     }
-    /// GPIO24
+    /// GPIO 24 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio24 {
         pub type R = crate::BitReader;
@@ -305,7 +305,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 24>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 24>;
     }
-    /// GPIO25
+    /// GPIO 25 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio25 {
         pub type R = crate::BitReader;
@@ -314,7 +314,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 25>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 25>;
     }
-    /// GPIO26
+    /// GPIO 26 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio26 {
         pub type R = crate::BitReader;
@@ -323,7 +323,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 26>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 26>;
     }
-    /// GPIO27
+    /// GPIO 27 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
     /// Field write behavior: Plain.
     pub mod gpio27 {
         pub type R = crate::BitReader;
@@ -332,7 +332,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 27>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 27>;
     }
-    /// GPIO28
+    /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: Plain.
     pub mod gpio28 {
         pub type R = crate::BitReader;
@@ -341,7 +341,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 28>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 28>;
     }
-    /// GPIO29
+    /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: Plain.
     pub mod gpio29 {
         pub type R = crate::BitReader;
@@ -350,7 +350,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 29>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 29>;
     }
-    /// GPIO30
+    /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: Plain.
     pub mod gpio30 {
         pub type R = crate::BitReader;
@@ -359,7 +359,7 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 30>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 30>;
     }
-    /// GPIO31
+    /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: Plain.
     pub mod gpio31 {
         pub type R = crate::BitReader;
@@ -629,193 +629,193 @@ pub mod out {
         }
     }
     impl AtomicSetW {
-        /// GPIO0
+        /// GPIO 0 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio0(&mut self) -> gpio0::ASW<'_> {
             gpio0::ASW::new(self)
         }
-        /// GPIO1
+        /// GPIO 1 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio1(&mut self) -> gpio1::ASW<'_> {
             gpio1::ASW::new(self)
         }
-        /// GPIO2
+        /// GPIO 2 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio2(&mut self) -> gpio2::ASW<'_> {
             gpio2::ASW::new(self)
         }
-        /// GPIO3
+        /// GPIO 3 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio3(&mut self) -> gpio3::ASW<'_> {
             gpio3::ASW::new(self)
         }
-        /// GPIO4
+        /// GPIO 4 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio4(&mut self) -> gpio4::ASW<'_> {
             gpio4::ASW::new(self)
         }
-        /// GPIO5
+        /// GPIO 5 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio5(&mut self) -> gpio5::ASW<'_> {
             gpio5::ASW::new(self)
         }
-        /// GPIO6
+        /// GPIO 6 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio6(&mut self) -> gpio6::ASW<'_> {
             gpio6::ASW::new(self)
         }
-        /// GPIO7
+        /// GPIO 7 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio7(&mut self) -> gpio7::ASW<'_> {
             gpio7::ASW::new(self)
         }
-        /// GPIO8
+        /// GPIO 8 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio8(&mut self) -> gpio8::ASW<'_> {
             gpio8::ASW::new(self)
         }
-        /// GPIO9
+        /// GPIO 9 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio9(&mut self) -> gpio9::ASW<'_> {
             gpio9::ASW::new(self)
         }
-        /// GPIO10
+        /// GPIO 10 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio10(&mut self) -> gpio10::ASW<'_> {
             gpio10::ASW::new(self)
         }
-        /// GPIO11
+        /// GPIO 11 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio11(&mut self) -> gpio11::ASW<'_> {
             gpio11::ASW::new(self)
         }
-        /// GPIO12
+        /// GPIO 12 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio12(&mut self) -> gpio12::ASW<'_> {
             gpio12::ASW::new(self)
         }
-        /// GPIO13
+        /// GPIO 13 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio13(&mut self) -> gpio13::ASW<'_> {
             gpio13::ASW::new(self)
         }
-        /// GPIO14
+        /// GPIO 14 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio14(&mut self) -> gpio14::ASW<'_> {
             gpio14::ASW::new(self)
         }
-        /// GPIO15
+        /// GPIO 15 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio15(&mut self) -> gpio15::ASW<'_> {
             gpio15::ASW::new(self)
         }
-        /// GPIO16
+        /// GPIO 16 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio16(&mut self) -> gpio16::ASW<'_> {
             gpio16::ASW::new(self)
         }
-        /// GPIO17
+        /// GPIO 17 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio17(&mut self) -> gpio17::ASW<'_> {
             gpio17::ASW::new(self)
         }
-        /// GPIO18
+        /// GPIO 18 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio18(&mut self) -> gpio18::ASW<'_> {
             gpio18::ASW::new(self)
         }
-        /// GPIO19
+        /// GPIO 19 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio19(&mut self) -> gpio19::ASW<'_> {
             gpio19::ASW::new(self)
         }
-        /// GPIO20
+        /// GPIO 20 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio20(&mut self) -> gpio20::ASW<'_> {
             gpio20::ASW::new(self)
         }
-        /// GPIO21
+        /// GPIO 21 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio21(&mut self) -> gpio21::ASW<'_> {
             gpio21::ASW::new(self)
         }
-        /// GPIO22
+        /// GPIO 22 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio22(&mut self) -> gpio22::ASW<'_> {
             gpio22::ASW::new(self)
         }
-        /// GPIO23
+        /// GPIO 23 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio23(&mut self) -> gpio23::ASW<'_> {
             gpio23::ASW::new(self)
         }
-        /// GPIO24
+        /// GPIO 24 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio24(&mut self) -> gpio24::ASW<'_> {
             gpio24::ASW::new(self)
         }
-        /// GPIO25
+        /// GPIO 25 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio25(&mut self) -> gpio25::ASW<'_> {
             gpio25::ASW::new(self)
         }
-        /// GPIO26
+        /// GPIO 26 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio26(&mut self) -> gpio26::ASW<'_> {
             gpio26::ASW::new(self)
         }
-        /// GPIO27
+        /// GPIO 27 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio27(&mut self) -> gpio27::ASW<'_> {
             gpio27::ASW::new(self)
         }
-        /// GPIO28
+        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio28(&mut self) -> gpio28::ASW<'_> {
             gpio28::ASW::new(self)
         }
-        /// GPIO29
+        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio29(&mut self) -> gpio29::ASW<'_> {
             gpio29::ASW::new(self)
         }
-        /// GPIO30
+        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio30(&mut self) -> gpio30::ASW<'_> {
             gpio30::ASW::new(self)
         }
-        /// GPIO31
+        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio31(&mut self) -> gpio31::ASW<'_> {
@@ -823,193 +823,193 @@ pub mod out {
         }
     }
     impl AtomicClearW {
-        /// GPIO0
+        /// GPIO 0 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio0(&mut self) -> gpio0::ACW<'_> {
             gpio0::ACW::new(self)
         }
-        /// GPIO1
+        /// GPIO 1 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio1(&mut self) -> gpio1::ACW<'_> {
             gpio1::ACW::new(self)
         }
-        /// GPIO2
+        /// GPIO 2 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio2(&mut self) -> gpio2::ACW<'_> {
             gpio2::ACW::new(self)
         }
-        /// GPIO3
+        /// GPIO 3 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio3(&mut self) -> gpio3::ACW<'_> {
             gpio3::ACW::new(self)
         }
-        /// GPIO4
+        /// GPIO 4 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio4(&mut self) -> gpio4::ACW<'_> {
             gpio4::ACW::new(self)
         }
-        /// GPIO5
+        /// GPIO 5 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio5(&mut self) -> gpio5::ACW<'_> {
             gpio5::ACW::new(self)
         }
-        /// GPIO6
+        /// GPIO 6 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio6(&mut self) -> gpio6::ACW<'_> {
             gpio6::ACW::new(self)
         }
-        /// GPIO7
+        /// GPIO 7 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio7(&mut self) -> gpio7::ACW<'_> {
             gpio7::ACW::new(self)
         }
-        /// GPIO8
+        /// GPIO 8 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio8(&mut self) -> gpio8::ACW<'_> {
             gpio8::ACW::new(self)
         }
-        /// GPIO9
+        /// GPIO 9 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio9(&mut self) -> gpio9::ACW<'_> {
             gpio9::ACW::new(self)
         }
-        /// GPIO10
+        /// GPIO 10 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio10(&mut self) -> gpio10::ACW<'_> {
             gpio10::ACW::new(self)
         }
-        /// GPIO11
+        /// GPIO 11 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio11(&mut self) -> gpio11::ACW<'_> {
             gpio11::ACW::new(self)
         }
-        /// GPIO12
+        /// GPIO 12 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio12(&mut self) -> gpio12::ACW<'_> {
             gpio12::ACW::new(self)
         }
-        /// GPIO13
+        /// GPIO 13 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio13(&mut self) -> gpio13::ACW<'_> {
             gpio13::ACW::new(self)
         }
-        /// GPIO14
+        /// GPIO 14 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio14(&mut self) -> gpio14::ACW<'_> {
             gpio14::ACW::new(self)
         }
-        /// GPIO15
+        /// GPIO 15 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio15(&mut self) -> gpio15::ACW<'_> {
             gpio15::ACW::new(self)
         }
-        /// GPIO16
+        /// GPIO 16 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio16(&mut self) -> gpio16::ACW<'_> {
             gpio16::ACW::new(self)
         }
-        /// GPIO17
+        /// GPIO 17 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio17(&mut self) -> gpio17::ACW<'_> {
             gpio17::ACW::new(self)
         }
-        /// GPIO18
+        /// GPIO 18 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio18(&mut self) -> gpio18::ACW<'_> {
             gpio18::ACW::new(self)
         }
-        /// GPIO19
+        /// GPIO 19 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio19(&mut self) -> gpio19::ACW<'_> {
             gpio19::ACW::new(self)
         }
-        /// GPIO20
+        /// GPIO 20 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio20(&mut self) -> gpio20::ACW<'_> {
             gpio20::ACW::new(self)
         }
-        /// GPIO21
+        /// GPIO 21 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio21(&mut self) -> gpio21::ACW<'_> {
             gpio21::ACW::new(self)
         }
-        /// GPIO22
+        /// GPIO 22 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio22(&mut self) -> gpio22::ACW<'_> {
             gpio22::ACW::new(self)
         }
-        /// GPIO23
+        /// GPIO 23 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio23(&mut self) -> gpio23::ACW<'_> {
             gpio23::ACW::new(self)
         }
-        /// GPIO24
+        /// GPIO 24 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio24(&mut self) -> gpio24::ACW<'_> {
             gpio24::ACW::new(self)
         }
-        /// GPIO25
+        /// GPIO 25 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio25(&mut self) -> gpio25::ACW<'_> {
             gpio25::ACW::new(self)
         }
-        /// GPIO26
+        /// GPIO 26 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio26(&mut self) -> gpio26::ACW<'_> {
             gpio26::ACW::new(self)
         }
-        /// GPIO27
+        /// GPIO 27 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio27(&mut self) -> gpio27::ACW<'_> {
             gpio27::ACW::new(self)
         }
-        /// GPIO28
+        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio28(&mut self) -> gpio28::ACW<'_> {
             gpio28::ACW::new(self)
         }
-        /// GPIO29
+        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio29(&mut self) -> gpio29::ACW<'_> {
             gpio29::ACW::new(self)
         }
-        /// GPIO30
+        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio30(&mut self) -> gpio30::ACW<'_> {
             gpio30::ACW::new(self)
         }
-        /// GPIO31
+        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio31(&mut self) -> gpio31::ACW<'_> {
@@ -1017,193 +1017,193 @@ pub mod out {
         }
     }
     impl AtomicXorW {
-        /// GPIO0
+        /// GPIO 0 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio0(&mut self) -> gpio0::AXW<'_> {
             gpio0::AXW::new(self)
         }
-        /// GPIO1
+        /// GPIO 1 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio1(&mut self) -> gpio1::AXW<'_> {
             gpio1::AXW::new(self)
         }
-        /// GPIO2
+        /// GPIO 2 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio2(&mut self) -> gpio2::AXW<'_> {
             gpio2::AXW::new(self)
         }
-        /// GPIO3
+        /// GPIO 3 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio3(&mut self) -> gpio3::AXW<'_> {
             gpio3::AXW::new(self)
         }
-        /// GPIO4
+        /// GPIO 4 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio4(&mut self) -> gpio4::AXW<'_> {
             gpio4::AXW::new(self)
         }
-        /// GPIO5
+        /// GPIO 5 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio5(&mut self) -> gpio5::AXW<'_> {
             gpio5::AXW::new(self)
         }
-        /// GPIO6
+        /// GPIO 6 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio6(&mut self) -> gpio6::AXW<'_> {
             gpio6::AXW::new(self)
         }
-        /// GPIO7
+        /// GPIO 7 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio7(&mut self) -> gpio7::AXW<'_> {
             gpio7::AXW::new(self)
         }
-        /// GPIO8
+        /// GPIO 8 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio8(&mut self) -> gpio8::AXW<'_> {
             gpio8::AXW::new(self)
         }
-        /// GPIO9
+        /// GPIO 9 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio9(&mut self) -> gpio9::AXW<'_> {
             gpio9::AXW::new(self)
         }
-        /// GPIO10
+        /// GPIO 10 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio10(&mut self) -> gpio10::AXW<'_> {
             gpio10::AXW::new(self)
         }
-        /// GPIO11
+        /// GPIO 11 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio11(&mut self) -> gpio11::AXW<'_> {
             gpio11::AXW::new(self)
         }
-        /// GPIO12
+        /// GPIO 12 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio12(&mut self) -> gpio12::AXW<'_> {
             gpio12::AXW::new(self)
         }
-        /// GPIO13
+        /// GPIO 13 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio13(&mut self) -> gpio13::AXW<'_> {
             gpio13::AXW::new(self)
         }
-        /// GPIO14
+        /// GPIO 14 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio14(&mut self) -> gpio14::AXW<'_> {
             gpio14::AXW::new(self)
         }
-        /// GPIO15
+        /// GPIO 15 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio15(&mut self) -> gpio15::AXW<'_> {
             gpio15::AXW::new(self)
         }
-        /// GPIO16
+        /// GPIO 16 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio16(&mut self) -> gpio16::AXW<'_> {
             gpio16::AXW::new(self)
         }
-        /// GPIO17
+        /// GPIO 17 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio17(&mut self) -> gpio17::AXW<'_> {
             gpio17::AXW::new(self)
         }
-        /// GPIO18
+        /// GPIO 18 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio18(&mut self) -> gpio18::AXW<'_> {
             gpio18::AXW::new(self)
         }
-        /// GPIO19
+        /// GPIO 19 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio19(&mut self) -> gpio19::AXW<'_> {
             gpio19::AXW::new(self)
         }
-        /// GPIO20
+        /// GPIO 20 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio20(&mut self) -> gpio20::AXW<'_> {
             gpio20::AXW::new(self)
         }
-        /// GPIO21
+        /// GPIO 21 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio21(&mut self) -> gpio21::AXW<'_> {
             gpio21::AXW::new(self)
         }
-        /// GPIO22
+        /// GPIO 22 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio22(&mut self) -> gpio22::AXW<'_> {
             gpio22::AXW::new(self)
         }
-        /// GPIO23
+        /// GPIO 23 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio23(&mut self) -> gpio23::AXW<'_> {
             gpio23::AXW::new(self)
         }
-        /// GPIO24
+        /// GPIO 24 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio24(&mut self) -> gpio24::AXW<'_> {
             gpio24::AXW::new(self)
         }
-        /// GPIO25
+        /// GPIO 25 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio25(&mut self) -> gpio25::AXW<'_> {
             gpio25::AXW::new(self)
         }
-        /// GPIO26
+        /// GPIO 26 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio26(&mut self) -> gpio26::AXW<'_> {
             gpio26::AXW::new(self)
         }
-        /// GPIO27
+        /// GPIO 27 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio27(&mut self) -> gpio27::AXW<'_> {
             gpio27::AXW::new(self)
         }
-        /// GPIO28
+        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio28(&mut self) -> gpio28::AXW<'_> {
             gpio28::AXW::new(self)
         }
-        /// GPIO29
+        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio29(&mut self) -> gpio29::AXW<'_> {
             gpio29::AXW::new(self)
         }
-        /// GPIO30
+        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio30(&mut self) -> gpio30::AXW<'_> {
             gpio30::AXW::new(self)
         }
-        /// GPIO31
+        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio31(&mut self) -> gpio31::AXW<'_> {
@@ -1212,10 +1212,10 @@ pub mod out {
     }
 }
 
-/// RIO_OE controls GPIO output-enable drive
+/// Output enable for host GPIO. A bit only takes effect when the pad is on the system RIO function and its pad controls allow output. Supports the SET/CLR/XOR aliases.
 /// Hardware access: read Plain; write Plain.
 pub type OE = Reg<oe::OE_SPEC>;
-/// RIO_OE controls GPIO output-enable drive
+/// Output enable for host GPIO. A bit only takes effect when the pad is on the system RIO function and its pad controls allow output. Supports the SET/CLR/XOR aliases.
 /// Hardware access: read Plain; write Plain.
 pub mod oe {
     pub struct OE_SPEC;
@@ -1251,7 +1251,7 @@ pub mod oe {
     pub type AtomicSetW = crate::AtomicSetW<OE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<OE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<OE_SPEC>;
-    /// GPIO0
+    /// GPIO 0 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio0 {
         pub type R = crate::BitReader;
@@ -1260,7 +1260,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// GPIO1
+    /// GPIO 1 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio1 {
         pub type R = crate::BitReader;
@@ -1269,7 +1269,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// GPIO2
+    /// GPIO 2 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio2 {
         pub type R = crate::BitReader;
@@ -1278,7 +1278,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
     }
-    /// GPIO3
+    /// GPIO 3 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio3 {
         pub type R = crate::BitReader;
@@ -1287,7 +1287,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// GPIO4
+    /// GPIO 4 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio4 {
         pub type R = crate::BitReader;
@@ -1296,7 +1296,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// GPIO5
+    /// GPIO 5 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio5 {
         pub type R = crate::BitReader;
@@ -1305,7 +1305,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// GPIO6
+    /// GPIO 6 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio6 {
         pub type R = crate::BitReader;
@@ -1314,7 +1314,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// GPIO7
+    /// GPIO 7 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio7 {
         pub type R = crate::BitReader;
@@ -1323,7 +1323,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// GPIO8
+    /// GPIO 8 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio8 {
         pub type R = crate::BitReader;
@@ -1332,7 +1332,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 8>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 8>;
     }
-    /// GPIO9
+    /// GPIO 9 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio9 {
         pub type R = crate::BitReader;
@@ -1341,7 +1341,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 9>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 9>;
     }
-    /// GPIO10
+    /// GPIO 10 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio10 {
         pub type R = crate::BitReader;
@@ -1350,7 +1350,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 10>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 10>;
     }
-    /// GPIO11
+    /// GPIO 11 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio11 {
         pub type R = crate::BitReader;
@@ -1359,7 +1359,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 11>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 11>;
     }
-    /// GPIO12
+    /// GPIO 12 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio12 {
         pub type R = crate::BitReader;
@@ -1368,7 +1368,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 12>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 12>;
     }
-    /// GPIO13
+    /// GPIO 13 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio13 {
         pub type R = crate::BitReader;
@@ -1377,7 +1377,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 13>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 13>;
     }
-    /// GPIO14
+    /// GPIO 14 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio14 {
         pub type R = crate::BitReader;
@@ -1386,7 +1386,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 14>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 14>;
     }
-    /// GPIO15
+    /// GPIO 15 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio15 {
         pub type R = crate::BitReader;
@@ -1395,7 +1395,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 15>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 15>;
     }
-    /// GPIO16
+    /// GPIO 16 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio16 {
         pub type R = crate::BitReader;
@@ -1404,7 +1404,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 16>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 16>;
     }
-    /// GPIO17
+    /// GPIO 17 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio17 {
         pub type R = crate::BitReader;
@@ -1413,7 +1413,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 17>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 17>;
     }
-    /// GPIO18
+    /// GPIO 18 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio18 {
         pub type R = crate::BitReader;
@@ -1422,7 +1422,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 18>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 18>;
     }
-    /// GPIO19
+    /// GPIO 19 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio19 {
         pub type R = crate::BitReader;
@@ -1431,7 +1431,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 19>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 19>;
     }
-    /// GPIO20
+    /// GPIO 20 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio20 {
         pub type R = crate::BitReader;
@@ -1440,7 +1440,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 20>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 20>;
     }
-    /// GPIO21
+    /// GPIO 21 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio21 {
         pub type R = crate::BitReader;
@@ -1449,7 +1449,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 21>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 21>;
     }
-    /// GPIO22
+    /// GPIO 22 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio22 {
         pub type R = crate::BitReader;
@@ -1458,7 +1458,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 22>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 22>;
     }
-    /// GPIO23
+    /// GPIO 23 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio23 {
         pub type R = crate::BitReader;
@@ -1467,7 +1467,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 23>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 23>;
     }
-    /// GPIO24
+    /// GPIO 24 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio24 {
         pub type R = crate::BitReader;
@@ -1476,7 +1476,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 24>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 24>;
     }
-    /// GPIO25
+    /// GPIO 25 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio25 {
         pub type R = crate::BitReader;
@@ -1485,7 +1485,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 25>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 25>;
     }
-    /// GPIO26
+    /// GPIO 26 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio26 {
         pub type R = crate::BitReader;
@@ -1494,7 +1494,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 26>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 26>;
     }
-    /// GPIO27
+    /// GPIO 27 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
     /// Field write behavior: Plain.
     pub mod gpio27 {
         pub type R = crate::BitReader;
@@ -1503,7 +1503,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 27>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 27>;
     }
-    /// GPIO28
+    /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: Plain.
     pub mod gpio28 {
         pub type R = crate::BitReader;
@@ -1512,7 +1512,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 28>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 28>;
     }
-    /// GPIO29
+    /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: Plain.
     pub mod gpio29 {
         pub type R = crate::BitReader;
@@ -1521,7 +1521,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 29>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 29>;
     }
-    /// GPIO30
+    /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: Plain.
     pub mod gpio30 {
         pub type R = crate::BitReader;
@@ -1530,7 +1530,7 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 30>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 30>;
     }
-    /// GPIO31
+    /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: Plain.
     pub mod gpio31 {
         pub type R = crate::BitReader;
@@ -1800,193 +1800,193 @@ pub mod oe {
         }
     }
     impl AtomicSetW {
-        /// GPIO0
+        /// GPIO 0 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio0(&mut self) -> gpio0::ASW<'_> {
             gpio0::ASW::new(self)
         }
-        /// GPIO1
+        /// GPIO 1 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio1(&mut self) -> gpio1::ASW<'_> {
             gpio1::ASW::new(self)
         }
-        /// GPIO2
+        /// GPIO 2 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio2(&mut self) -> gpio2::ASW<'_> {
             gpio2::ASW::new(self)
         }
-        /// GPIO3
+        /// GPIO 3 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio3(&mut self) -> gpio3::ASW<'_> {
             gpio3::ASW::new(self)
         }
-        /// GPIO4
+        /// GPIO 4 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio4(&mut self) -> gpio4::ASW<'_> {
             gpio4::ASW::new(self)
         }
-        /// GPIO5
+        /// GPIO 5 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio5(&mut self) -> gpio5::ASW<'_> {
             gpio5::ASW::new(self)
         }
-        /// GPIO6
+        /// GPIO 6 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio6(&mut self) -> gpio6::ASW<'_> {
             gpio6::ASW::new(self)
         }
-        /// GPIO7
+        /// GPIO 7 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio7(&mut self) -> gpio7::ASW<'_> {
             gpio7::ASW::new(self)
         }
-        /// GPIO8
+        /// GPIO 8 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio8(&mut self) -> gpio8::ASW<'_> {
             gpio8::ASW::new(self)
         }
-        /// GPIO9
+        /// GPIO 9 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio9(&mut self) -> gpio9::ASW<'_> {
             gpio9::ASW::new(self)
         }
-        /// GPIO10
+        /// GPIO 10 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio10(&mut self) -> gpio10::ASW<'_> {
             gpio10::ASW::new(self)
         }
-        /// GPIO11
+        /// GPIO 11 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio11(&mut self) -> gpio11::ASW<'_> {
             gpio11::ASW::new(self)
         }
-        /// GPIO12
+        /// GPIO 12 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio12(&mut self) -> gpio12::ASW<'_> {
             gpio12::ASW::new(self)
         }
-        /// GPIO13
+        /// GPIO 13 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio13(&mut self) -> gpio13::ASW<'_> {
             gpio13::ASW::new(self)
         }
-        /// GPIO14
+        /// GPIO 14 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio14(&mut self) -> gpio14::ASW<'_> {
             gpio14::ASW::new(self)
         }
-        /// GPIO15
+        /// GPIO 15 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio15(&mut self) -> gpio15::ASW<'_> {
             gpio15::ASW::new(self)
         }
-        /// GPIO16
+        /// GPIO 16 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio16(&mut self) -> gpio16::ASW<'_> {
             gpio16::ASW::new(self)
         }
-        /// GPIO17
+        /// GPIO 17 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio17(&mut self) -> gpio17::ASW<'_> {
             gpio17::ASW::new(self)
         }
-        /// GPIO18
+        /// GPIO 18 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio18(&mut self) -> gpio18::ASW<'_> {
             gpio18::ASW::new(self)
         }
-        /// GPIO19
+        /// GPIO 19 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio19(&mut self) -> gpio19::ASW<'_> {
             gpio19::ASW::new(self)
         }
-        /// GPIO20
+        /// GPIO 20 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio20(&mut self) -> gpio20::ASW<'_> {
             gpio20::ASW::new(self)
         }
-        /// GPIO21
+        /// GPIO 21 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio21(&mut self) -> gpio21::ASW<'_> {
             gpio21::ASW::new(self)
         }
-        /// GPIO22
+        /// GPIO 22 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio22(&mut self) -> gpio22::ASW<'_> {
             gpio22::ASW::new(self)
         }
-        /// GPIO23
+        /// GPIO 23 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio23(&mut self) -> gpio23::ASW<'_> {
             gpio23::ASW::new(self)
         }
-        /// GPIO24
+        /// GPIO 24 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio24(&mut self) -> gpio24::ASW<'_> {
             gpio24::ASW::new(self)
         }
-        /// GPIO25
+        /// GPIO 25 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio25(&mut self) -> gpio25::ASW<'_> {
             gpio25::ASW::new(self)
         }
-        /// GPIO26
+        /// GPIO 26 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio26(&mut self) -> gpio26::ASW<'_> {
             gpio26::ASW::new(self)
         }
-        /// GPIO27
+        /// GPIO 27 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio27(&mut self) -> gpio27::ASW<'_> {
             gpio27::ASW::new(self)
         }
-        /// GPIO28
+        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio28(&mut self) -> gpio28::ASW<'_> {
             gpio28::ASW::new(self)
         }
-        /// GPIO29
+        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio29(&mut self) -> gpio29::ASW<'_> {
             gpio29::ASW::new(self)
         }
-        /// GPIO30
+        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio30(&mut self) -> gpio30::ASW<'_> {
             gpio30::ASW::new(self)
         }
-        /// GPIO31
+        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio31(&mut self) -> gpio31::ASW<'_> {
@@ -1994,193 +1994,193 @@ pub mod oe {
         }
     }
     impl AtomicClearW {
-        /// GPIO0
+        /// GPIO 0 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio0(&mut self) -> gpio0::ACW<'_> {
             gpio0::ACW::new(self)
         }
-        /// GPIO1
+        /// GPIO 1 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio1(&mut self) -> gpio1::ACW<'_> {
             gpio1::ACW::new(self)
         }
-        /// GPIO2
+        /// GPIO 2 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio2(&mut self) -> gpio2::ACW<'_> {
             gpio2::ACW::new(self)
         }
-        /// GPIO3
+        /// GPIO 3 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio3(&mut self) -> gpio3::ACW<'_> {
             gpio3::ACW::new(self)
         }
-        /// GPIO4
+        /// GPIO 4 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio4(&mut self) -> gpio4::ACW<'_> {
             gpio4::ACW::new(self)
         }
-        /// GPIO5
+        /// GPIO 5 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio5(&mut self) -> gpio5::ACW<'_> {
             gpio5::ACW::new(self)
         }
-        /// GPIO6
+        /// GPIO 6 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio6(&mut self) -> gpio6::ACW<'_> {
             gpio6::ACW::new(self)
         }
-        /// GPIO7
+        /// GPIO 7 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio7(&mut self) -> gpio7::ACW<'_> {
             gpio7::ACW::new(self)
         }
-        /// GPIO8
+        /// GPIO 8 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio8(&mut self) -> gpio8::ACW<'_> {
             gpio8::ACW::new(self)
         }
-        /// GPIO9
+        /// GPIO 9 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio9(&mut self) -> gpio9::ACW<'_> {
             gpio9::ACW::new(self)
         }
-        /// GPIO10
+        /// GPIO 10 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio10(&mut self) -> gpio10::ACW<'_> {
             gpio10::ACW::new(self)
         }
-        /// GPIO11
+        /// GPIO 11 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio11(&mut self) -> gpio11::ACW<'_> {
             gpio11::ACW::new(self)
         }
-        /// GPIO12
+        /// GPIO 12 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio12(&mut self) -> gpio12::ACW<'_> {
             gpio12::ACW::new(self)
         }
-        /// GPIO13
+        /// GPIO 13 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio13(&mut self) -> gpio13::ACW<'_> {
             gpio13::ACW::new(self)
         }
-        /// GPIO14
+        /// GPIO 14 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio14(&mut self) -> gpio14::ACW<'_> {
             gpio14::ACW::new(self)
         }
-        /// GPIO15
+        /// GPIO 15 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio15(&mut self) -> gpio15::ACW<'_> {
             gpio15::ACW::new(self)
         }
-        /// GPIO16
+        /// GPIO 16 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio16(&mut self) -> gpio16::ACW<'_> {
             gpio16::ACW::new(self)
         }
-        /// GPIO17
+        /// GPIO 17 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio17(&mut self) -> gpio17::ACW<'_> {
             gpio17::ACW::new(self)
         }
-        /// GPIO18
+        /// GPIO 18 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio18(&mut self) -> gpio18::ACW<'_> {
             gpio18::ACW::new(self)
         }
-        /// GPIO19
+        /// GPIO 19 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio19(&mut self) -> gpio19::ACW<'_> {
             gpio19::ACW::new(self)
         }
-        /// GPIO20
+        /// GPIO 20 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio20(&mut self) -> gpio20::ACW<'_> {
             gpio20::ACW::new(self)
         }
-        /// GPIO21
+        /// GPIO 21 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio21(&mut self) -> gpio21::ACW<'_> {
             gpio21::ACW::new(self)
         }
-        /// GPIO22
+        /// GPIO 22 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio22(&mut self) -> gpio22::ACW<'_> {
             gpio22::ACW::new(self)
         }
-        /// GPIO23
+        /// GPIO 23 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio23(&mut self) -> gpio23::ACW<'_> {
             gpio23::ACW::new(self)
         }
-        /// GPIO24
+        /// GPIO 24 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio24(&mut self) -> gpio24::ACW<'_> {
             gpio24::ACW::new(self)
         }
-        /// GPIO25
+        /// GPIO 25 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio25(&mut self) -> gpio25::ACW<'_> {
             gpio25::ACW::new(self)
         }
-        /// GPIO26
+        /// GPIO 26 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio26(&mut self) -> gpio26::ACW<'_> {
             gpio26::ACW::new(self)
         }
-        /// GPIO27
+        /// GPIO 27 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio27(&mut self) -> gpio27::ACW<'_> {
             gpio27::ACW::new(self)
         }
-        /// GPIO28
+        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio28(&mut self) -> gpio28::ACW<'_> {
             gpio28::ACW::new(self)
         }
-        /// GPIO29
+        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio29(&mut self) -> gpio29::ACW<'_> {
             gpio29::ACW::new(self)
         }
-        /// GPIO30
+        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio30(&mut self) -> gpio30::ACW<'_> {
             gpio30::ACW::new(self)
         }
-        /// GPIO31
+        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio31(&mut self) -> gpio31::ACW<'_> {
@@ -2188,193 +2188,193 @@ pub mod oe {
         }
     }
     impl AtomicXorW {
-        /// GPIO0
+        /// GPIO 0 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio0(&mut self) -> gpio0::AXW<'_> {
             gpio0::AXW::new(self)
         }
-        /// GPIO1
+        /// GPIO 1 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio1(&mut self) -> gpio1::AXW<'_> {
             gpio1::AXW::new(self)
         }
-        /// GPIO2
+        /// GPIO 2 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio2(&mut self) -> gpio2::AXW<'_> {
             gpio2::AXW::new(self)
         }
-        /// GPIO3
+        /// GPIO 3 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio3(&mut self) -> gpio3::AXW<'_> {
             gpio3::AXW::new(self)
         }
-        /// GPIO4
+        /// GPIO 4 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio4(&mut self) -> gpio4::AXW<'_> {
             gpio4::AXW::new(self)
         }
-        /// GPIO5
+        /// GPIO 5 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio5(&mut self) -> gpio5::AXW<'_> {
             gpio5::AXW::new(self)
         }
-        /// GPIO6
+        /// GPIO 6 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio6(&mut self) -> gpio6::AXW<'_> {
             gpio6::AXW::new(self)
         }
-        /// GPIO7
+        /// GPIO 7 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio7(&mut self) -> gpio7::AXW<'_> {
             gpio7::AXW::new(self)
         }
-        /// GPIO8
+        /// GPIO 8 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio8(&mut self) -> gpio8::AXW<'_> {
             gpio8::AXW::new(self)
         }
-        /// GPIO9
+        /// GPIO 9 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio9(&mut self) -> gpio9::AXW<'_> {
             gpio9::AXW::new(self)
         }
-        /// GPIO10
+        /// GPIO 10 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio10(&mut self) -> gpio10::AXW<'_> {
             gpio10::AXW::new(self)
         }
-        /// GPIO11
+        /// GPIO 11 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio11(&mut self) -> gpio11::AXW<'_> {
             gpio11::AXW::new(self)
         }
-        /// GPIO12
+        /// GPIO 12 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio12(&mut self) -> gpio12::AXW<'_> {
             gpio12::AXW::new(self)
         }
-        /// GPIO13
+        /// GPIO 13 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio13(&mut self) -> gpio13::AXW<'_> {
             gpio13::AXW::new(self)
         }
-        /// GPIO14
+        /// GPIO 14 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio14(&mut self) -> gpio14::AXW<'_> {
             gpio14::AXW::new(self)
         }
-        /// GPIO15
+        /// GPIO 15 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio15(&mut self) -> gpio15::AXW<'_> {
             gpio15::AXW::new(self)
         }
-        /// GPIO16
+        /// GPIO 16 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio16(&mut self) -> gpio16::AXW<'_> {
             gpio16::AXW::new(self)
         }
-        /// GPIO17
+        /// GPIO 17 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio17(&mut self) -> gpio17::AXW<'_> {
             gpio17::AXW::new(self)
         }
-        /// GPIO18
+        /// GPIO 18 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio18(&mut self) -> gpio18::AXW<'_> {
             gpio18::AXW::new(self)
         }
-        /// GPIO19
+        /// GPIO 19 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio19(&mut self) -> gpio19::AXW<'_> {
             gpio19::AXW::new(self)
         }
-        /// GPIO20
+        /// GPIO 20 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio20(&mut self) -> gpio20::AXW<'_> {
             gpio20::AXW::new(self)
         }
-        /// GPIO21
+        /// GPIO 21 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio21(&mut self) -> gpio21::AXW<'_> {
             gpio21::AXW::new(self)
         }
-        /// GPIO22
+        /// GPIO 22 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio22(&mut self) -> gpio22::AXW<'_> {
             gpio22::AXW::new(self)
         }
-        /// GPIO23
+        /// GPIO 23 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio23(&mut self) -> gpio23::AXW<'_> {
             gpio23::AXW::new(self)
         }
-        /// GPIO24
+        /// GPIO 24 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio24(&mut self) -> gpio24::AXW<'_> {
             gpio24::AXW::new(self)
         }
-        /// GPIO25
+        /// GPIO 25 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio25(&mut self) -> gpio25::AXW<'_> {
             gpio25::AXW::new(self)
         }
-        /// GPIO26
+        /// GPIO 26 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio26(&mut self) -> gpio26::AXW<'_> {
             gpio26::AXW::new(self)
         }
-        /// GPIO27
+        /// GPIO 27 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio27(&mut self) -> gpio27::AXW<'_> {
             gpio27::AXW::new(self)
         }
-        /// GPIO28
+        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio28(&mut self) -> gpio28::AXW<'_> {
             gpio28::AXW::new(self)
         }
-        /// GPIO29
+        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio29(&mut self) -> gpio29::AXW<'_> {
             gpio29::AXW::new(self)
         }
-        /// GPIO30
+        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio30(&mut self) -> gpio30::AXW<'_> {
             gpio30::AXW::new(self)
         }
-        /// GPIO31
+        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn gpio31(&mut self) -> gpio31::AXW<'_> {
@@ -2383,10 +2383,10 @@ pub mod oe {
     }
 }
 
-/// RIO_NOSYNC_IN samples GPIO inputs directly
+/// Raw pad input levels, read without the `clk_sys` synchronizer. An asynchronous input may change during the read.
 /// Hardware access: read Plain; write None.
 pub type NOSYNC_IN = Reg<nosync_in::NOSYNC_IN_SPEC>;
-/// RIO_NOSYNC_IN samples GPIO inputs directly
+/// Raw pad input levels, read without the `clk_sys` synchronizer. An asynchronous input may change during the read.
 /// Hardware access: read Plain; write None.
 pub mod nosync_in {
     pub struct NOSYNC_IN_SPEC;
@@ -2398,193 +2398,193 @@ pub mod nosync_in {
     impl crate::ResetValue for NOSYNC_IN_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// GPIO0
+    /// GPIO 0 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio0 {
         pub type R = crate::BitReader;
     }
-    /// GPIO1
+    /// GPIO 1 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio1 {
         pub type R = crate::BitReader;
     }
-    /// GPIO2
+    /// GPIO 2 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio2 {
         pub type R = crate::BitReader;
     }
-    /// GPIO3
+    /// GPIO 3 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio3 {
         pub type R = crate::BitReader;
     }
-    /// GPIO4
+    /// GPIO 4 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio4 {
         pub type R = crate::BitReader;
     }
-    /// GPIO5
+    /// GPIO 5 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio5 {
         pub type R = crate::BitReader;
     }
-    /// GPIO6
+    /// GPIO 6 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio6 {
         pub type R = crate::BitReader;
     }
-    /// GPIO7
+    /// GPIO 7 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio7 {
         pub type R = crate::BitReader;
     }
-    /// GPIO8
+    /// GPIO 8 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio8 {
         pub type R = crate::BitReader;
     }
-    /// GPIO9
+    /// GPIO 9 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio9 {
         pub type R = crate::BitReader;
     }
-    /// GPIO10
+    /// GPIO 10 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio10 {
         pub type R = crate::BitReader;
     }
-    /// GPIO11
+    /// GPIO 11 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio11 {
         pub type R = crate::BitReader;
     }
-    /// GPIO12
+    /// GPIO 12 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio12 {
         pub type R = crate::BitReader;
     }
-    /// GPIO13
+    /// GPIO 13 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio13 {
         pub type R = crate::BitReader;
     }
-    /// GPIO14
+    /// GPIO 14 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio14 {
         pub type R = crate::BitReader;
     }
-    /// GPIO15
+    /// GPIO 15 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio15 {
         pub type R = crate::BitReader;
     }
-    /// GPIO16
+    /// GPIO 16 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio16 {
         pub type R = crate::BitReader;
     }
-    /// GPIO17
+    /// GPIO 17 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio17 {
         pub type R = crate::BitReader;
     }
-    /// GPIO18
+    /// GPIO 18 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio18 {
         pub type R = crate::BitReader;
     }
-    /// GPIO19
+    /// GPIO 19 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio19 {
         pub type R = crate::BitReader;
     }
-    /// GPIO20
+    /// GPIO 20 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio20 {
         pub type R = crate::BitReader;
     }
-    /// GPIO21
+    /// GPIO 21 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio21 {
         pub type R = crate::BitReader;
     }
-    /// GPIO22
+    /// GPIO 22 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio22 {
         pub type R = crate::BitReader;
     }
-    /// GPIO23
+    /// GPIO 23 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio23 {
         pub type R = crate::BitReader;
     }
-    /// GPIO24
+    /// GPIO 24 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio24 {
         pub type R = crate::BitReader;
     }
-    /// GPIO25
+    /// GPIO 25 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio25 {
         pub type R = crate::BitReader;
     }
-    /// GPIO26
+    /// GPIO 26 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio26 {
         pub type R = crate::BitReader;
     }
-    /// GPIO27
+    /// GPIO 27 unsynchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio27 {
         pub type R = crate::BitReader;
     }
-    /// GPIO28
+    /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio28 {
         pub type R = crate::BitReader;
     }
-    /// GPIO29
+    /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio29 {
         pub type R = crate::BitReader;
     }
-    /// GPIO30
+    /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio30 {
         pub type R = crate::BitReader;
     }
-    /// GPIO31
+    /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio31 {
@@ -2722,10 +2722,10 @@ pub mod nosync_in {
     }
 }
 
-/// RIO_SYNC_IN samples GPIO inputs synchronised with clk_sys
+/// Pad input levels after a two-stage synchronizer clocked by `clk_sys`.
 /// Hardware access: read Plain; write None.
 pub type SYNC_IN = Reg<sync_in::SYNC_IN_SPEC>;
-/// RIO_SYNC_IN samples GPIO inputs synchronised with clk_sys
+/// Pad input levels after a two-stage synchronizer clocked by `clk_sys`.
 /// Hardware access: read Plain; write None.
 pub mod sync_in {
     pub struct SYNC_IN_SPEC;
@@ -2737,193 +2737,193 @@ pub mod sync_in {
     impl crate::ResetValue for SYNC_IN_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// GPIO0
+    /// GPIO 0 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio0 {
         pub type R = crate::BitReader;
     }
-    /// GPIO1
+    /// GPIO 1 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio1 {
         pub type R = crate::BitReader;
     }
-    /// GPIO2
+    /// GPIO 2 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio2 {
         pub type R = crate::BitReader;
     }
-    /// GPIO3
+    /// GPIO 3 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio3 {
         pub type R = crate::BitReader;
     }
-    /// GPIO4
+    /// GPIO 4 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio4 {
         pub type R = crate::BitReader;
     }
-    /// GPIO5
+    /// GPIO 5 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio5 {
         pub type R = crate::BitReader;
     }
-    /// GPIO6
+    /// GPIO 6 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio6 {
         pub type R = crate::BitReader;
     }
-    /// GPIO7
+    /// GPIO 7 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio7 {
         pub type R = crate::BitReader;
     }
-    /// GPIO8
+    /// GPIO 8 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio8 {
         pub type R = crate::BitReader;
     }
-    /// GPIO9
+    /// GPIO 9 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio9 {
         pub type R = crate::BitReader;
     }
-    /// GPIO10
+    /// GPIO 10 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio10 {
         pub type R = crate::BitReader;
     }
-    /// GPIO11
+    /// GPIO 11 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio11 {
         pub type R = crate::BitReader;
     }
-    /// GPIO12
+    /// GPIO 12 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio12 {
         pub type R = crate::BitReader;
     }
-    /// GPIO13
+    /// GPIO 13 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio13 {
         pub type R = crate::BitReader;
     }
-    /// GPIO14
+    /// GPIO 14 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio14 {
         pub type R = crate::BitReader;
     }
-    /// GPIO15
+    /// GPIO 15 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio15 {
         pub type R = crate::BitReader;
     }
-    /// GPIO16
+    /// GPIO 16 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio16 {
         pub type R = crate::BitReader;
     }
-    /// GPIO17
+    /// GPIO 17 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio17 {
         pub type R = crate::BitReader;
     }
-    /// GPIO18
+    /// GPIO 18 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio18 {
         pub type R = crate::BitReader;
     }
-    /// GPIO19
+    /// GPIO 19 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio19 {
         pub type R = crate::BitReader;
     }
-    /// GPIO20
+    /// GPIO 20 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio20 {
         pub type R = crate::BitReader;
     }
-    /// GPIO21
+    /// GPIO 21 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio21 {
         pub type R = crate::BitReader;
     }
-    /// GPIO22
+    /// GPIO 22 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio22 {
         pub type R = crate::BitReader;
     }
-    /// GPIO23
+    /// GPIO 23 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio23 {
         pub type R = crate::BitReader;
     }
-    /// GPIO24
+    /// GPIO 24 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio24 {
         pub type R = crate::BitReader;
     }
-    /// GPIO25
+    /// GPIO 25 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio25 {
         pub type R = crate::BitReader;
     }
-    /// GPIO26
+    /// GPIO 26 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio26 {
         pub type R = crate::BitReader;
     }
-    /// GPIO27
+    /// GPIO 27 synchronized input level: 0 low, 1 high.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio27 {
         pub type R = crate::BitReader;
     }
-    /// GPIO28
+    /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio28 {
         pub type R = crate::BitReader;
     }
-    /// GPIO29
+    /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio29 {
         pub type R = crate::BitReader;
     }
-    /// GPIO30
+    /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio30 {
         pub type R = crate::BitReader;
     }
-    /// GPIO31
+    /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod gpio31 {

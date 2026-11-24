@@ -4,7 +4,7 @@
 
 use crate::Reg;
 
-/// RP1 PADS_BANK0_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Pad electrical controls and input threshold selection for GPIO bank 0. Bus=APB. Atomic aliases: XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[repr(C)]
 pub struct RegisterBlock {
@@ -13,13 +13,13 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// Voltage select per bank: 0=3.3V thresholds, 1=1.8V thresholds
+    /// Selects the input threshold levels for the whole bank. Choose the 1.8 V setting only when VDDIO is nominally 1.8 V; using it with a higher supply can damage the chip. Keeping the default setting at 1.8 V may give thresholds outside specification.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn voltage_select(&self) -> &VOLTAGE_SELECT {
         &self.voltage_select
     }
-    /// Pad control register
+    /// Electrical controls for one pad; function selection is in IO_BANK. With the output not driving, PUE/PDE select the bias: 0/0 floating, 1/0 weak pull to high, 0/1 weak pull to low, 1/1 keeper that holds the last driven level.
     /// Hardware access: read Plain; write Plain.
     /// Array layout: 28 physical entries, 28 public entries, stride 0x4 bytes.
     #[inline(always)]
@@ -33,10 +33,10 @@ impl RegisterBlock {
     }
 }
 
-/// Voltage select per bank: 0=3.3V thresholds, 1=1.8V thresholds
+/// Selects the input threshold levels for the whole bank. Choose the 1.8 V setting only when VDDIO is nominally 1.8 V; using it with a higher supply can damage the chip. Keeping the default setting at 1.8 V may give thresholds outside specification.
 /// Hardware access: read Plain; write Plain.
 pub type VOLTAGE_SELECT = Reg<voltage_select::VOLTAGE_SELECT_SPEC>;
-/// Voltage select per bank: 0=3.3V thresholds, 1=1.8V thresholds
+/// Selects the input threshold levels for the whole bank. Choose the 1.8 V setting only when VDDIO is nominally 1.8 V; using it with a higher supply can damage the chip. Keeping the default setting at 1.8 V may give thresholds outside specification.
 /// Hardware access: read Plain; write Plain.
 pub mod voltage_select {
     pub struct VOLTAGE_SELECT_SPEC;
@@ -72,7 +72,7 @@ pub mod voltage_select {
     pub type AtomicSetW = crate::AtomicSetW<VOLTAGE_SELECT_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<VOLTAGE_SELECT_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<VOLTAGE_SELECT_SPEC>;
-    /// Voltage select
+    /// 0 = thresholds for 2.5 V to 3.3 V VDDIO; 1 = thresholds for 1.8 V VDDIO. Only the input thresholds change, not the supply voltage.
     /// Field write behavior: Plain.
     pub mod voltage_select {
         pub type R = crate::BitReader;
@@ -94,7 +94,7 @@ pub mod voltage_select {
         }
     }
     impl AtomicSetW {
-        /// Voltage select
+        /// 0 = thresholds for 2.5 V to 3.3 V VDDIO; 1 = thresholds for 1.8 V VDDIO. Only the input thresholds change, not the supply voltage.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn voltage_select(&mut self) -> voltage_select::ASW<'_> {
@@ -102,7 +102,7 @@ pub mod voltage_select {
         }
     }
     impl AtomicClearW {
-        /// Voltage select
+        /// 0 = thresholds for 2.5 V to 3.3 V VDDIO; 1 = thresholds for 1.8 V VDDIO. Only the input thresholds change, not the supply voltage.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn voltage_select(&mut self) -> voltage_select::ACW<'_> {
@@ -110,7 +110,7 @@ pub mod voltage_select {
         }
     }
     impl AtomicXorW {
-        /// Voltage select
+        /// 0 = thresholds for 2.5 V to 3.3 V VDDIO; 1 = thresholds for 1.8 V VDDIO. Only the input thresholds change, not the supply voltage.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn voltage_select(&mut self) -> voltage_select::AXW<'_> {
@@ -119,11 +119,11 @@ pub mod voltage_select {
     }
 }
 
-/// Pad control register
+/// Electrical controls for one pad; function selection is in IO_BANK. With the output not driving, PUE/PDE select the bias: 0/0 floating, 1/0 weak pull to high, 0/1 weak pull to low, 1/1 keeper that holds the last driven level.
 /// Hardware access: read Plain; write Plain.
 /// Array layout: 28 physical entries, 28 public entries, stride 0x4 bytes.
 pub type GPIO = Reg<gpio::GPIO_SPEC>;
-/// Pad control register
+/// Electrical controls for one pad; function selection is in IO_BANK. With the output not driving, PUE/PDE select the bias: 0/0 floating, 1/0 weak pull to high, 0/1 weak pull to low, 1/1 keeper that holds the last driven level.
 /// Hardware access: read Plain; write Plain.
 /// Array layout: 28 physical entries, 28 public entries, stride 0x4 bytes.
 pub mod gpio {
@@ -157,7 +157,7 @@ pub mod gpio {
     pub type AtomicSetW = crate::AtomicSetW<GPIO_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<GPIO_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<GPIO_SPEC>;
-    /// Slew rate control; 1=Fast, 0=Slow
+    /// Output slew rate. 0 slow (limited edge rate), 1 fast.
     /// Field write behavior: Plain.
     pub mod slewfast {
         pub type R = crate::BitReader;
@@ -166,7 +166,7 @@ pub mod gpio {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Enable Schmitt trigger
+    /// Input hysteresis (Schmitt trigger). 0 off, 1 on.
     /// Field write behavior: Plain.
     pub mod schmitt {
         pub type R = crate::BitReader;
@@ -175,7 +175,7 @@ pub mod gpio {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// Pull-down enable
+    /// Weak pull-down (to ground) enable. Setting both PDE and PUE gives a bus keeper.
     /// Field write behavior: Plain.
     pub mod pde {
         pub type R = crate::BitReader;
@@ -184,7 +184,7 @@ pub mod gpio {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
     }
-    /// Pull-up enable
+    /// Weak pull-up (to VDDIO) enable. Setting both PUE and PDE gives a bus keeper.
     /// Field write behavior: Plain.
     pub mod pue {
         pub type R = crate::BitReader;
@@ -193,7 +193,7 @@ pub mod gpio {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// Drive strength
+    /// Output drive strength: 0 = 2 mA, 1 = 4 mA, 2 = 8 mA, 3 = 12 mA.
     /// Field write behavior: Plain.
     pub mod drive {
         pub type R = crate::FieldReader<u32>;
@@ -206,7 +206,7 @@ pub mod gpio {
         pub const MA_8: u32 = 0x2;
         pub const MA_12: u32 = 0x3;
     }
-    /// Input enable
+    /// Input enable. 0 powers the input buffer down; 1 enables it. Unused pads may leave it off.
     /// Field write behavior: Plain.
     pub mod ie {
         pub type R = crate::BitReader;
@@ -215,7 +215,7 @@ pub mod gpio {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// Output disable; priority over peripheral output enable
+    /// Output disable. 1 blocks the output driver even when the selected function enables output; 0 leaves the output enable to IO_BANK.
     /// Field write behavior: Plain.
     pub mod od {
         pub type R = crate::BitReader;
@@ -285,43 +285,43 @@ pub mod gpio {
         }
     }
     impl AtomicSetW {
-        /// Slew rate control; 1=Fast, 0=Slow
+        /// Output slew rate. 0 slow (limited edge rate), 1 fast.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn slewfast(&mut self) -> slewfast::ASW<'_> {
             slewfast::ASW::new(self)
         }
-        /// Enable Schmitt trigger
+        /// Input hysteresis (Schmitt trigger). 0 off, 1 on.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn schmitt(&mut self) -> schmitt::ASW<'_> {
             schmitt::ASW::new(self)
         }
-        /// Pull-down enable
+        /// Weak pull-down (to ground) enable. Setting both PDE and PUE gives a bus keeper.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn pde(&mut self) -> pde::ASW<'_> {
             pde::ASW::new(self)
         }
-        /// Pull-up enable
+        /// Weak pull-up (to VDDIO) enable. Setting both PUE and PDE gives a bus keeper.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn pue(&mut self) -> pue::ASW<'_> {
             pue::ASW::new(self)
         }
-        /// Drive strength
+        /// Output drive strength: 0 = 2 mA, 1 = 4 mA, 2 = 8 mA, 3 = 12 mA.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn drive(&mut self) -> drive::ASW<'_> {
             drive::ASW::new(self)
         }
-        /// Input enable
+        /// Input enable. 0 powers the input buffer down; 1 enables it. Unused pads may leave it off.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ie(&mut self) -> ie::ASW<'_> {
             ie::ASW::new(self)
         }
-        /// Output disable; priority over peripheral output enable
+        /// Output disable. 1 blocks the output driver even when the selected function enables output; 0 leaves the output enable to IO_BANK.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn od(&mut self) -> od::ASW<'_> {
@@ -329,43 +329,43 @@ pub mod gpio {
         }
     }
     impl AtomicClearW {
-        /// Slew rate control; 1=Fast, 0=Slow
+        /// Output slew rate. 0 slow (limited edge rate), 1 fast.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn slewfast(&mut self) -> slewfast::ACW<'_> {
             slewfast::ACW::new(self)
         }
-        /// Enable Schmitt trigger
+        /// Input hysteresis (Schmitt trigger). 0 off, 1 on.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn schmitt(&mut self) -> schmitt::ACW<'_> {
             schmitt::ACW::new(self)
         }
-        /// Pull-down enable
+        /// Weak pull-down (to ground) enable. Setting both PDE and PUE gives a bus keeper.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn pde(&mut self) -> pde::ACW<'_> {
             pde::ACW::new(self)
         }
-        /// Pull-up enable
+        /// Weak pull-up (to VDDIO) enable. Setting both PUE and PDE gives a bus keeper.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn pue(&mut self) -> pue::ACW<'_> {
             pue::ACW::new(self)
         }
-        /// Drive strength
+        /// Output drive strength: 0 = 2 mA, 1 = 4 mA, 2 = 8 mA, 3 = 12 mA.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn drive(&mut self) -> drive::ACW<'_> {
             drive::ACW::new(self)
         }
-        /// Input enable
+        /// Input enable. 0 powers the input buffer down; 1 enables it. Unused pads may leave it off.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ie(&mut self) -> ie::ACW<'_> {
             ie::ACW::new(self)
         }
-        /// Output disable; priority over peripheral output enable
+        /// Output disable. 1 blocks the output driver even when the selected function enables output; 0 leaves the output enable to IO_BANK.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn od(&mut self) -> od::ACW<'_> {
@@ -373,43 +373,43 @@ pub mod gpio {
         }
     }
     impl AtomicXorW {
-        /// Slew rate control; 1=Fast, 0=Slow
+        /// Output slew rate. 0 slow (limited edge rate), 1 fast.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn slewfast(&mut self) -> slewfast::AXW<'_> {
             slewfast::AXW::new(self)
         }
-        /// Enable Schmitt trigger
+        /// Input hysteresis (Schmitt trigger). 0 off, 1 on.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn schmitt(&mut self) -> schmitt::AXW<'_> {
             schmitt::AXW::new(self)
         }
-        /// Pull-down enable
+        /// Weak pull-down (to ground) enable. Setting both PDE and PUE gives a bus keeper.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn pde(&mut self) -> pde::AXW<'_> {
             pde::AXW::new(self)
         }
-        /// Pull-up enable
+        /// Weak pull-up (to VDDIO) enable. Setting both PUE and PDE gives a bus keeper.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn pue(&mut self) -> pue::AXW<'_> {
             pue::AXW::new(self)
         }
-        /// Drive strength
+        /// Output drive strength: 0 = 2 mA, 1 = 4 mA, 2 = 8 mA, 3 = 12 mA.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn drive(&mut self) -> drive::AXW<'_> {
             drive::AXW::new(self)
         }
-        /// Input enable
+        /// Input enable. 0 powers the input buffer down; 1 enables it. Unused pads may leave it off.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ie(&mut self) -> ie::AXW<'_> {
             ie::AXW::new(self)
         }
-        /// Output disable; priority over peripheral output enable
+        /// Output disable. 1 blocks the output driver even when the selected function enables output; 0 leaves the output enable to IO_BANK.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn od(&mut self) -> od::AXW<'_> {

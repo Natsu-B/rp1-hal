@@ -44,7 +44,7 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// Address fields for DBI access
+    /// Chooses the internal target and address context used by following DBI accesses. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -52,7 +52,7 @@ impl RegisterBlock {
     pub const fn dbi(&self) -> &DBI {
         &self.dbi
     }
-    /// Miscellaneous control bits
+    /// Endpoint integration controls: resets, DBI write protection, link training, clock routing and memory power. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -73,19 +73,19 @@ impl RegisterBlock {
     pub fn msix_cfg_array(&self) -> &[MSIX_CFG] {
         &self.msix_cfg[..61]
     }
-    /// Raw interrupt status \[31:0\]
+    /// Raw (unmasked) source state for MSI-X vectors 0-31, one bit per vector in index order.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn intstatl(&self) -> &INTSTATL {
         &self.intstatl
     }
-    /// Raw interrupt status \[63:32\]
+    /// Raw (unmasked) source state for MSI-X vectors 32-63. No RP1 source is known for vectors 61-63.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn intstath(&self) -> &INTSTATH {
         &self.intstath
     }
-    /// Address fields for PCIe PHY_TEST access
+    /// PHY test mode controls. Which mode wins when several are set is not known. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -93,7 +93,7 @@ impl RegisterBlock {
     pub const fn phy_test(&self) -> &PHY_TEST {
         &self.phy_test
     }
-    /// PHY parameter control0
+    /// Per-lane RX equalization and TX termination trim for lanes 0-3. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -101,7 +101,7 @@ impl RegisterBlock {
     pub const fn phy_param_ctrl0(&self) -> &PHY_PARAM_CTRL0 {
         &self.phy_param_ctrl0
     }
-    /// PHY parameter control1
+    /// PCS TX swing and de-emphasis settings. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -109,7 +109,7 @@ impl RegisterBlock {
     pub const fn phy_param_ctrl1(&self) -> &PHY_PARAM_CTRL1 {
         &self.phy_param_ctrl1
     }
-    /// PHY control-register access control
+    /// Command register for indirect PHY control-register access. Set addr, stage write data if writing, issue read or write, then poll busy. Keep the PCS/PIPE reset asserted during writes, as the hardware documentation advises. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -117,7 +117,7 @@ impl RegisterBlock {
     pub const fn phy_cr_acc_ctrl(&self) -> &PHY_CR_ACC_CTRL {
         &self.phy_cr_acc_ctrl
     }
-    /// PHY control-register access read/write data
+    /// Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Whether reading has side effects is not known. The PAC models reads as FIFO access.
     /// Hardware access: read Fifo; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -125,13 +125,13 @@ impl RegisterBlock {
     pub const fn phy_cr_acc_data(&self) -> &PHY_CR_ACC_DATA {
         &self.phy_cr_acc_data
     }
-    /// New LTSSM state
+    /// Read port of the LTSSM transition FIFO. Each read pops one entry, so check that the FIFO is non-empty first. Reading an empty FIFO has unknown results. The PAC currently models this as a plain read.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn ltssm_state_new(&self) -> &LTSSM_STATE_NEW {
         &self.ltssm_state_new
     }
-    /// LTSSM state filter
+    /// LTSSM states to drop from the transition FIFO, one entry per register. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -145,7 +145,7 @@ impl RegisterBlock {
     pub fn ltssm_state_filter_array(&self) -> &[LTSSM_STATE_FILTER] {
         &self.ltssm_state_filter[..4]
     }
-    /// Per-master AXI lookup / TLP and VDM traffic classes
+    /// Table that maps each AXI master to the traffic classes of its outgoing packets. Which master uses which entry is not known. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -159,7 +159,7 @@ impl RegisterBlock {
     pub fn axi_lookup_array(&self) -> &[AXI_LOOKUP] {
         &self.axi_lookup[..16]
     }
-    /// VDM config register 0
+    /// 32-bit payload for the configuration message. Load it before setting vdm_config_reg1.req.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -167,7 +167,7 @@ impl RegisterBlock {
     pub const fn vdm_config_reg0(&self) -> &VDM_CONFIG_REG0 {
         &self.vdm_config_reg0
     }
-    /// VDM config register 1
+    /// Send control for the configuration message staged in vdm_config_reg0. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -175,7 +175,7 @@ impl RegisterBlock {
     pub const fn vdm_config_reg1(&self) -> &VDM_CONFIG_REG1 {
         &self.vdm_config_reg1
     }
-    /// VDM panic register
+    /// 24-bit operand of the panic message, held in bits 31:8. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -183,7 +183,7 @@ impl RegisterBlock {
     pub const fn vdm_panic_reg(&self) -> &VDM_PANIC_REG {
         &self.vdm_panic_reg
     }
-    /// VDM test requesters
+    /// Four test requesters, each with its own traffic class and panic trigger bit. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -191,7 +191,7 @@ impl RegisterBlock {
     pub const fn vdm_test(&self) -> &VDM_TEST {
         &self.vdm_test
     }
-    /// Vendor-defined message header
+    /// TLP header fields used when generating vendor-defined messages. PAC writes are restricted to sequenced state-machine code.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -199,7 +199,7 @@ impl RegisterBlock {
     pub const fn vdm_header(&self) -> &VDM_HEADER {
         &self.vdm_header
     }
-    /// Power-management control
+    /// Inputs and requests to the endpoint power-management state machine. The PAC only allows sequenced writes.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -207,31 +207,31 @@ impl RegisterBlock {
     pub const fn pm_control(&self) -> &PM_CONTROL {
         &self.pm_control
     }
-    /// Power-management status
+    /// Status from the link power-management controller, including a block on new requests.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn pm_status(&self) -> &PM_STATUS {
         &self.pm_status
     }
-    /// Internal signals for debug
+    /// Low word of the controller's internal debug bus.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn monitor0(&self) -> &MONITOR0 {
         &self.monitor0
     }
-    /// Internal signals for debug
+    /// High word of the controller's internal debug bus.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn monitor1(&self) -> &MONITOR1 {
         &self.monitor1
     }
-    /// Internal signals for debug
+    /// Synchronized sideband signals and extra debug bits from the controller.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn monitor2(&self) -> &MONITOR2 {
         &self.monitor2
     }
-    /// Raw interrupts
+    /// Raw interrupt sources, before the enable mask.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -239,7 +239,7 @@ impl RegisterBlock {
     pub const fn intr(&self) -> &INTR {
         &self.intr
     }
-    /// Interrupt enable
+    /// Interrupt enable, one bit per source: 1 lets the source reach the IRQ output, 0 masks it.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -247,7 +247,7 @@ impl RegisterBlock {
     pub const fn inte(&self) -> &INTE {
         &self.inte
     }
-    /// Interrupt force
+    /// Interrupt force, one bit per source: 1 asserts the source by software, 0 removes the force.
     /// Hardware access: read Plain; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -255,7 +255,7 @@ impl RegisterBlock {
     pub const fn intf(&self) -> &INTF {
         &self.intf
     }
-    /// Interrupt status after masking and forcing
+    /// Effective interrupt state seen by the IRQ output: (INTR & INTE) | INTF.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn ints(&self) -> &INTS {
@@ -263,12 +263,12 @@ impl RegisterBlock {
     }
 }
 
-/// Address fields for DBI access
+/// Chooses the internal target and address context used by following DBI accesses. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type DBI = Reg<dbi::DBI_SPEC>;
-/// Address fields for DBI access
+/// Chooses the internal target and address context used by following DBI accesses. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -279,7 +279,7 @@ pub mod dbi {
     }
     impl crate::Readable for DBI_SPEC {}
     pub type R = crate::R<DBI_SPEC>;
-    /// b0: cs2, b1: cdm/elbi select
+    /// DBI target: 0 normal/misc window, 1 shadow window, 2 ELBI, 3 iATU/DMA. Bit 0 drives CS2; bit 1 selects between the CDM and ELBI paths.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod asel {
@@ -289,13 +289,13 @@ pub mod dbi {
         pub const ELBI: u32 = 0x2;
         pub const IATU_DMA: u32 = 0x3;
     }
-    /// CDM access function number
+    /// PCIe function number for CDM accesses. Which functions exist is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod func_num {
         pub type R = crate::FieldReader<u32>;
     }
-    /// iATU access region number and direction
+    /// Translation region and direction (inbound or outbound) for iATU accesses. How these are packed into the field is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod atu_region {
@@ -317,12 +317,12 @@ pub mod dbi {
     }
 }
 
-/// Miscellaneous control bits
+/// Endpoint integration controls: resets, DBI write protection, link training, clock routing and memory power. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type CONTROL = Reg<control::CONTROL_SPEC>;
-/// Miscellaneous control bits
+/// Endpoint integration controls: resets, DBI write protection, link training, clock routing and memory power. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -333,49 +333,49 @@ pub mod control {
     }
     impl crate::Readable for CONTROL_SPEC {}
     pub type R = crate::R<CONTROL_SPEC>;
-    /// Defer upstream PCIe configuration requests; complete them with retry status
+    /// 1 answers incoming PCIe configuration requests with retry status, postponing normal handling. 0 handles them normally.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod app_req_retry_en {
         pub type R = crate::BitReader;
     }
-    /// DBI read-only write disable
+    /// 1 prevents writes to the DBI override bit MISC_CONTROL_1.DBI_RO_WR_EN. 0 lifts the block.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod app_dbi_ro_wr_disable {
         pub type R = crate::BitReader;
     }
-    /// Enable link training / establishment
+    /// 1 allows the endpoint to train and bring up the link. 0 holds training off.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod app_ltssm_enable {
         pub type R = crate::BitReader;
     }
-    /// Enable link training/establishment following hot reset request; self-clearing
+    /// Write 1 to allow link training again after a hot reset request. Self-clearing.
     /// Field write behavior: WriteOneToSet.
     /// Typed write API is not exposed by register policy.
     pub mod set_hot_rst_app_ltssm_enable {
         pub type R = crate::BitReader;
     }
-    /// Select PCIe clock to send to frequency counter
+    /// Clock routed to the frequency counter; 0 disconnects it. Nominal rates by code (MHz): 1 variable, 2 125, 3 125 or 250, 4 100, 5 125, 6 and 7 250. The source names, and what picks 125 or 250 for code 3, are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod clk2fc_sel {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Gate CPERSTN source
+    /// 1 disables the CPERSTN source. How this interacts with cperstn_assert is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod cperstn_disable {
         pub type R = crate::BitReader;
     }
-    /// Assert CPERSTN
+    /// 1 asks for CPERSTN to be asserted by software, subject to the reset gating. Precedence against other sources is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod cperstn_assert {
         pub type R = crate::BitReader;
     }
-    /// Power down all PCIe memories
+    /// 1 powers down the PCIe memory arrays. Content retention and the wake-up sequence are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod mem_pd {
@@ -447,40 +447,40 @@ pub mod msix_cfg {
     }
     pub type AtomicSetW = crate::AtomicSetW<MSIX_CFG_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<MSIX_CFG_SPEC>;
-    /// Interrupt enable
+    /// 1 allows this vector to generate MSI-X messages; 0 disables it. Messages are also subject to the PCIe MSI-X capability settings.
     /// Field write behavior: Plain.
     pub mod enable {
         pub type R = crate::BitReader;
         pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 0>;
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
     }
-    /// ORed with interrupt source for test purposes
+    /// 1 ORs an asserted level into the source; 0 uses only the external source. If the vector is enabled, the rising edge can send a message.
     /// Field write behavior: Plain.
     pub mod test {
         pub type R = crate::BitReader;
         pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 1>;
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
     }
-    /// Interrupt acknowledge; write 1 to clear automatic interrupt mask; self-clearing
+    /// With iack_en=1, write 1 to release the auto-mask; hardware clears the bit. If the source is still high, another MSI-X write may follow.
     /// Field write behavior: SelfClearing.
     /// Typed write API is not exposed because write behavior is not hardware/official verified.
     pub mod iack {
         pub type R = crate::BitReader;
     }
-    /// Enable interrupt acknowledge functionality
+    /// 0: plain rising-edge signalling. 1: the vector is masked automatically when a message is sent and stays masked until iack is written. Use 1 for level sources that can stay high while being serviced.
     /// Field write behavior: Plain.
     pub mod iack_en {
         pub type R = crate::BitReader;
         pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 3>;
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
     }
-    /// PCIe traffic class
+    /// Traffic class (0-7) of the MSI-X write TLP.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod tc {
         pub type R = crate::FieldReader<u32>;
     }
-    /// PCIe function
+    /// PCIe function that owns this vector. Which function numbers exist is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod func {
@@ -513,19 +513,19 @@ pub mod msix_cfg {
         }
     }
     impl AtomicSetW {
-        /// Interrupt enable
+        /// 1 allows this vector to generate MSI-X messages; 0 disables it. Messages are also subject to the PCIe MSI-X capability settings.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ASW<'_> {
             enable::ASW::new(self)
         }
-        /// ORed with interrupt source for test purposes
+        /// 1 ORs an asserted level into the source; 0 uses only the external source. If the vector is enabled, the rising edge can send a message.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn test(&mut self) -> test::ASW<'_> {
             test::ASW::new(self)
         }
-        /// Enable interrupt acknowledge functionality
+        /// 0: plain rising-edge signalling. 1: the vector is masked automatically when a message is sent and stays masked until iack is written. Use 1 for level sources that can stay high while being serviced.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn iack_en(&mut self) -> iack_en::ASW<'_> {
@@ -533,19 +533,19 @@ pub mod msix_cfg {
         }
     }
     impl AtomicClearW {
-        /// Interrupt enable
+        /// 1 allows this vector to generate MSI-X messages; 0 disables it. Messages are also subject to the PCIe MSI-X capability settings.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ACW<'_> {
             enable::ACW::new(self)
         }
-        /// ORed with interrupt source for test purposes
+        /// 1 ORs an asserted level into the source; 0 uses only the external source. If the vector is enabled, the rising edge can send a message.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn test(&mut self) -> test::ACW<'_> {
             test::ACW::new(self)
         }
-        /// Enable interrupt acknowledge functionality
+        /// 0: plain rising-edge signalling. 1: the vector is masked automatically when a message is sent and stays masked until iack is written. Use 1 for level sources that can stay high while being serviced.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn iack_en(&mut self) -> iack_en::ACW<'_> {
@@ -554,10 +554,10 @@ pub mod msix_cfg {
     }
 }
 
-/// Raw interrupt status \[31:0\]
+/// Raw (unmasked) source state for MSI-X vectors 0-31, one bit per vector in index order.
 /// Hardware access: read Plain; write None.
 pub type INTSTATL = Reg<intstatl::INTSTATL_SPEC>;
-/// Raw interrupt status \[31:0\]
+/// Raw (unmasked) source state for MSI-X vectors 0-31, one bit per vector in index order.
 /// Hardware access: read Plain; write None.
 pub mod intstatl {
     pub struct INTSTATL_SPEC;
@@ -569,193 +569,193 @@ pub mod intstatl {
     impl crate::ResetValue for INTSTATL_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// MSIx raw interrupt status vector 0
+    /// Current input level of MSI-X vector 0, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector0 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 1
+    /// Current input level of MSI-X vector 1, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector1 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 2
+    /// Current input level of MSI-X vector 2, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector2 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 3
+    /// Current input level of MSI-X vector 3, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector3 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 4
+    /// Current input level of MSI-X vector 4, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector4 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 5
+    /// Current input level of MSI-X vector 5, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector5 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 6
+    /// Current input level of MSI-X vector 6, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector6 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 7
+    /// Current input level of MSI-X vector 7, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector7 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 8
+    /// Current input level of MSI-X vector 8, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector8 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 9
+    /// Current input level of MSI-X vector 9, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector9 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 10
+    /// Current input level of MSI-X vector 10, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector10 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 11
+    /// Current input level of MSI-X vector 11, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector11 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 12
+    /// Current input level of MSI-X vector 12, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector12 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 13
+    /// Current input level of MSI-X vector 13, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector13 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 14
+    /// Current input level of MSI-X vector 14, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector14 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 15
+    /// Current input level of MSI-X vector 15, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector15 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 16
+    /// Current input level of MSI-X vector 16, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector16 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 17
+    /// Current input level of MSI-X vector 17, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector17 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 18
+    /// Current input level of MSI-X vector 18, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector18 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 19
+    /// Current input level of MSI-X vector 19, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector19 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 20
+    /// Current input level of MSI-X vector 20, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector20 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 21
+    /// Current input level of MSI-X vector 21, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector21 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 22
+    /// Current input level of MSI-X vector 22, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector22 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 23
+    /// Current input level of MSI-X vector 23, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector23 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 24
+    /// Current input level of MSI-X vector 24, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector24 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 25
+    /// Current input level of MSI-X vector 25, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector25 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 26
+    /// Current input level of MSI-X vector 26, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector26 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 27
+    /// Current input level of MSI-X vector 27, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector27 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 28
+    /// Current input level of MSI-X vector 28, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector28 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 29
+    /// Current input level of MSI-X vector 29, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector29 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 30
+    /// Current input level of MSI-X vector 30, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector30 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 31
+    /// Current input level of MSI-X vector 31, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector31 {
@@ -893,10 +893,10 @@ pub mod intstatl {
     }
 }
 
-/// Raw interrupt status \[63:32\]
+/// Raw (unmasked) source state for MSI-X vectors 32-63. No RP1 source is known for vectors 61-63.
 /// Hardware access: read Plain; write None.
 pub type INTSTATH = Reg<intstath::INTSTATH_SPEC>;
-/// Raw interrupt status \[63:32\]
+/// Raw (unmasked) source state for MSI-X vectors 32-63. No RP1 source is known for vectors 61-63.
 /// Hardware access: read Plain; write None.
 pub mod intstath {
     pub struct INTSTATH_SPEC;
@@ -908,193 +908,193 @@ pub mod intstath {
     impl crate::ResetValue for INTSTATH_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// MSIx raw interrupt status vector 32
+    /// Current input level of MSI-X vector 32, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector32 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 33
+    /// Current input level of MSI-X vector 33, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector33 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 34
+    /// Current input level of MSI-X vector 34, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector34 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 35
+    /// Current input level of MSI-X vector 35, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector35 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 36
+    /// Current input level of MSI-X vector 36, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector36 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 37
+    /// Current input level of MSI-X vector 37, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector37 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 38
+    /// Current input level of MSI-X vector 38, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector38 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 39
+    /// Current input level of MSI-X vector 39, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector39 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 40
+    /// Current input level of MSI-X vector 40, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector40 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 41
+    /// Current input level of MSI-X vector 41, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector41 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 42
+    /// Current input level of MSI-X vector 42, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector42 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 43
+    /// Current input level of MSI-X vector 43, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector43 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 44
+    /// Current input level of MSI-X vector 44, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector44 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 45
+    /// Current input level of MSI-X vector 45, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector45 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 46
+    /// Current input level of MSI-X vector 46, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector46 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 47
+    /// Current input level of MSI-X vector 47, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector47 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 48
+    /// Current input level of MSI-X vector 48, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector48 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 49
+    /// Current input level of MSI-X vector 49, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector49 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 50
+    /// Current input level of MSI-X vector 50, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector50 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 51
+    /// Current input level of MSI-X vector 51, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector51 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 52
+    /// Current input level of MSI-X vector 52, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector52 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 53
+    /// Current input level of MSI-X vector 53, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector53 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 54
+    /// Current input level of MSI-X vector 54, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector54 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 55
+    /// Current input level of MSI-X vector 55, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector55 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 56
+    /// Current input level of MSI-X vector 56, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector56 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 57
+    /// Current input level of MSI-X vector 57, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector57 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 58
+    /// Current input level of MSI-X vector 58, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector58 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 59
+    /// Current input level of MSI-X vector 59, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector59 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 60
+    /// Current input level of MSI-X vector 60, seen before the MSI-X enable and auto-mask. Read-only.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector60 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 61
+    /// Slot for vector 61 in the 64-entry layout. No source is known to be connected; its behaviour is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector61 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 62
+    /// Slot for vector 62 in the 64-entry layout. No source is known to be connected; its behaviour is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector62 {
         pub type R = crate::BitReader;
     }
-    /// MSIx raw interrupt status vector 63
+    /// Slot for vector 63 in the 64-entry layout. No source is known to be connected; its behaviour is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod vector63 {
@@ -1232,12 +1232,12 @@ pub mod intstath {
     }
 }
 
-/// Address fields for PCIe PHY_TEST access
+/// PHY test mode controls. Which mode wins when several are set is not known. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type PHY_TEST = Reg<phy_test::PHY_TEST_SPEC>;
-/// Address fields for PCIe PHY_TEST access
+/// PHY test mode controls. Which mode wins when several are set is not known. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1248,19 +1248,19 @@ pub mod phy_test {
     }
     impl crate::Readable for PHY_TEST_SPEC {}
     pub type R = crate::R<PHY_TEST_SPEC>;
-    /// PHY IDDQ power-down control
+    /// 1 powers down the PHY for IDDQ testing.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod powerdown {
         pub type R = crate::BitReader;
     }
-    /// All circuits power-down but leave reference clocks active
+    /// 1 powers down the PHY circuits but keeps the reference clock running.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod bypass {
         pub type R = crate::BitReader;
     }
-    /// All circuits activator
+    /// 1 turns on the PHY burn-in circuits. Exact scope and sequencing are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod burnin {
@@ -1282,12 +1282,12 @@ pub mod phy_test {
     }
 }
 
-/// PHY parameter control0
+/// Per-lane RX equalization and TX termination trim for lanes 0-3. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type PHY_PARAM_CTRL0 = Reg<phy_param_ctrl0::PHY_PARAM_CTRL0_SPEC>;
-/// PHY parameter control0
+/// Per-lane RX equalization and TX termination trim for lanes 0-3. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1298,49 +1298,49 @@ pub mod phy_param_ctrl0 {
     }
     impl crate::Readable for PHY_PARAM_CTRL0_SPEC {}
     pub type R = crate::R<PHY_PARAM_CTRL0_SPEC>;
-    /// RX0 equalizer
+    /// RX equalizer setting for lane 0. Its response curve and units are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod phy_rx0_eq {
         pub type R = crate::FieldReader<u32>;
     }
-    /// TX0 termination offset
+    /// TX termination trim for lane 0. Units and code mapping are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod phy_tx0_term_offset {
         pub type R = crate::FieldReader<u32>;
     }
-    /// RX1 equalizer
+    /// RX equalizer setting for lane 1. Its response curve and units are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod phy_rx1_eq {
         pub type R = crate::FieldReader<u32>;
     }
-    /// TX1 termination offset
+    /// TX termination trim for lane 1. Units and code mapping are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod phy_tx1_term_offset {
         pub type R = crate::FieldReader<u32>;
     }
-    /// RX2 equalizer
+    /// RX equalizer setting for lane 2. Its response curve and units are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod phy_rx2_eq {
         pub type R = crate::FieldReader<u32>;
     }
-    /// TX2 termination offset
+    /// TX termination trim for lane 2. Units and code mapping are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod phy_tx2_term_offset {
         pub type R = crate::FieldReader<u32>;
     }
-    /// RX3 equalizer
+    /// RX equalizer setting for lane 3. Its response curve and units are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod phy_rx3_eq {
         pub type R = crate::FieldReader<u32>;
     }
-    /// TX3 termination offset
+    /// TX termination trim for lane 3. Units and code mapping are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod phy_tx3_term_offset {
@@ -1382,12 +1382,12 @@ pub mod phy_param_ctrl0 {
     }
 }
 
-/// PHY parameter control1
+/// PCS TX swing and de-emphasis settings. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type PHY_PARAM_CTRL1 = Reg<phy_param_ctrl1::PHY_PARAM_CTRL1_SPEC>;
-/// PHY parameter control1
+/// PCS TX swing and de-emphasis settings. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1398,31 +1398,31 @@ pub mod phy_param_ctrl1 {
     }
     impl crate::Readable for PHY_PARAM_CTRL1_SPEC {}
     pub type R = crate::R<PHY_PARAM_CTRL1_SPEC>;
-    /// Gen2 TX deemphasis at 3.5 dB
+    /// De-emphasis setting applied for the Gen2 3.5 dB preset. Code-to-level mapping is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod pcs_tx_deemph_gen2_3p5db {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Gen2 TX deemphasis at 6.0 dB
+    /// De-emphasis setting applied for the Gen2 6 dB preset. Code-to-level mapping is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod pcs_tx_deemph_gen2_6db {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Gen1 TX deemphasis
+    /// De-emphasis setting named for Gen1. The source table gives it the same Gen2 6 dB description as another field, so its real use and response are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod pcs_tx_deemph_gen1 {
         pub type R = crate::FieldReader<u32>;
     }
-    /// TX amplitude - full swing mode
+    /// TX amplitude setting for full swing. Units and code mapping are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod pcs_tx_swing_full {
         pub type R = crate::FieldReader<u32>;
     }
-    /// TX amplitude - low swing mode
+    /// TX amplitude setting for low (reduced) swing. Units and code mapping are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod pcs_tx_swing_low {
@@ -1452,12 +1452,12 @@ pub mod phy_param_ctrl1 {
     }
 }
 
-/// PHY control-register access control
+/// Command register for indirect PHY control-register access. Set addr, stage write data if writing, issue read or write, then poll busy. Keep the PCS/PIPE reset asserted during writes, as the hardware documentation advises. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type PHY_CR_ACC_CTRL = Reg<phy_cr_acc_ctrl::PHY_CR_ACC_CTRL_SPEC>;
-/// PHY control-register access control
+/// Command register for indirect PHY control-register access. Set addr, stage write data if writing, issue read or write, then poll busy. Keep the PCS/PIPE reset asserted during writes, as the hardware documentation advises. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1468,31 +1468,31 @@ pub mod phy_cr_acc_ctrl {
     }
     impl crate::Readable for PHY_CR_ACC_CTRL_SPEC {}
     pub type R = crate::R<PHY_CR_ACC_CTRL_SPEC>;
-    /// PHY control register address
+    /// 16-bit PHY register address for the next indirect access. Whether it counts bytes or words is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod addr {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Register write command; self-clearing
+    /// Write 1 to write phy_cr_acc_data.wdata to the PHY register at addr. Self-clearing.
     /// Field write behavior: WriteOneToSet.
     /// Typed write API is not exposed by register policy.
     pub mod write {
         pub type R = crate::BitReader;
     }
-    /// Register read command; self-clearing
+    /// Write 1 to read the addressed PHY register into phy_cr_acc_data.rdata. Self-clearing.
     /// Field write behavior: WriteOneToSet.
     /// Typed write API is not exposed by register policy.
     pub mod read {
         pub type R = crate::BitReader;
     }
-    /// PHY CR interface busy
+    /// 1 while an indirect PHY access is in progress; 0 when idle.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod busy {
         pub type R = crate::BitReader;
     }
-    /// Gate into PHY PCS/PIPE reset; advisable during PHY control-register writes
+    /// 1 asserts the PCS/PIPE reset; use it while writing PHY control registers. Interaction with other reset sources is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod phy_pipe_rst {
@@ -1522,12 +1522,12 @@ pub mod phy_cr_acc_ctrl {
     }
 }
 
-/// PHY control-register access read/write data
+/// Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Whether reading has side effects is not known. The PAC models reads as FIFO access.
 /// Hardware access: read Fifo; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type PHY_CR_ACC_DATA = Reg<phy_cr_acc_data::PHY_CR_ACC_DATA_SPEC>;
-/// PHY control-register access read/write data
+/// Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Whether reading has side effects is not known. The PAC models reads as FIFO access.
 /// Hardware access: read Fifo; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1538,13 +1538,13 @@ pub mod phy_cr_acc_data {
     }
     impl crate::Readable for PHY_CR_ACC_DATA_SPEC {}
     pub type R = crate::R<PHY_CR_ACC_DATA_SPEC>;
-    /// PHY register write data
+    /// 16-bit data for the next indirect write. Set it before triggering phy_cr_acc_ctrl.write.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod wdata {
         pub type R = crate::FieldReader<u32>;
     }
-    /// PHY register read data
+    /// 16-bit data returned by the last indirect read. Check busy is 0 before using it.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod rdata {
@@ -1562,10 +1562,10 @@ pub mod phy_cr_acc_data {
     }
 }
 
-/// New LTSSM state
+/// Read port of the LTSSM transition FIFO. Each read pops one entry, so check that the FIFO is non-empty first. Reading an empty FIFO has unknown results. The PAC currently models this as a plain read.
 /// Hardware access: read Plain; write None.
 pub type LTSSM_STATE_NEW = Reg<ltssm_state_new::LTSSM_STATE_NEW_SPEC>;
-/// New LTSSM state
+/// Read port of the LTSSM transition FIFO. Each read pops one entry, so check that the FIFO is non-empty first. Reading an empty FIFO has unknown results. The PAC currently models this as a plain read.
 /// Hardware access: read Plain; write None.
 pub mod ltssm_state_new {
     pub struct LTSSM_STATE_NEW_SPEC;
@@ -1574,7 +1574,7 @@ pub mod ltssm_state_new {
     }
     impl crate::Readable for LTSSM_STATE_NEW_SPEC {}
     pub type R = crate::R<LTSSM_STATE_NEW_SPEC>;
-    /// New LTSSM state; FIFO-style read side effect per RP1 table type RF
+    /// LTSSM state entered by the logged transition. The numeric state encoding is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod state {
@@ -1588,13 +1588,13 @@ pub mod ltssm_state_new {
     }
 }
 
-/// LTSSM state filter
+/// LTSSM states to drop from the transition FIFO, one entry per register. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x4 bytes.
 pub type LTSSM_STATE_FILTER = Reg<ltssm_state_filter::LTSSM_STATE_FILTER_SPEC>;
-/// LTSSM state filter
+/// LTSSM states to drop from the transition FIFO, one entry per register. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1609,7 +1609,7 @@ pub mod ltssm_state_filter {
     impl crate::ResetValue for LTSSM_STATE_FILTER_SPEC {
         const RESET_VALUE: u32 = 0x3f;
     }
-    /// Filter out state changes to this LTSSM state
+    /// 6-bit LTSSM state code; transitions into this state are not logged in the FIFO. The state code map, and whether the reset value 0x3f means "no filter", are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod val {
@@ -1623,13 +1623,13 @@ pub mod ltssm_state_filter {
     }
 }
 
-/// Per-master AXI lookup / TLP and VDM traffic classes
+/// Table that maps each AXI master to the traffic classes of its outgoing packets. Which master uses which entry is not known. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 /// Array layout: 16 physical entries, 16 public entries, stride 0x4 bytes.
 pub type AXI_LOOKUP = Reg<axi_lookup::AXI_LOOKUP_SPEC>;
-/// Per-master AXI lookup / TLP and VDM traffic classes
+/// Table that maps each AXI master to the traffic classes of its outgoing packets. Which master uses which entry is not known. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1644,13 +1644,13 @@ pub mod axi_lookup {
     impl crate::ResetValue for AXI_LOOKUP_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// TLP traffic class
+    /// Traffic class (0-7) for ordinary TLPs issued by this entry's master.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod tlp_tc {
         pub type R = crate::FieldReader<u32>;
     }
-    /// VDM traffic class
+    /// Traffic class (0-7) for vendor-defined messages issued by this entry's master.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod vdm_tc {
@@ -1668,12 +1668,12 @@ pub mod axi_lookup {
     }
 }
 
-/// VDM config register 0
+/// 32-bit payload for the configuration message. Load it before setting vdm_config_reg1.req.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type VDM_CONFIG_REG0 = Reg<vdm_config_reg0::VDM_CONFIG_REG0_SPEC>;
-/// VDM config register 0
+/// 32-bit payload for the configuration message. Load it before setting vdm_config_reg1.req.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1687,7 +1687,7 @@ pub mod vdm_config_reg0 {
     impl crate::ResetValue for VDM_CONFIG_REG0_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// Message payload
+    /// Configuration message payload, all 32 bits.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod payload {
@@ -1701,12 +1701,12 @@ pub mod vdm_config_reg0 {
     }
 }
 
-/// VDM config register 1
+/// Send control for the configuration message staged in vdm_config_reg0. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type VDM_CONFIG_REG1 = Reg<vdm_config_reg1::VDM_CONFIG_REG1_SPEC>;
-/// VDM config register 1
+/// Send control for the configuration message staged in vdm_config_reg0. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1717,7 +1717,7 @@ pub mod vdm_config_reg1 {
     }
     impl crate::Readable for VDM_CONFIG_REG1_SPEC {}
     pub type R = crate::R<VDM_CONFIG_REG1_SPEC>;
-    /// Message request; write 1 to generate config message; self-clearing
+    /// Write 1 to send the message using the staged payload. Self-clearing.
     /// Field write behavior: WriteOneToSet.
     /// Typed write API is not exposed by register policy.
     pub mod req {
@@ -1731,12 +1731,12 @@ pub mod vdm_config_reg1 {
     }
 }
 
-/// VDM panic register
+/// 24-bit operand of the panic message, held in bits 31:8. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type VDM_PANIC_REG = Reg<vdm_panic_reg::VDM_PANIC_REG_SPEC>;
-/// VDM panic register
+/// 24-bit operand of the panic message, held in bits 31:8. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1747,7 +1747,7 @@ pub mod vdm_panic_reg {
     }
     impl crate::Readable for VDM_PANIC_REG_SPEC {}
     pub type R = crate::R<VDM_PANIC_REG_SPEC>;
-    /// Message payload \[31:8\]
+    /// Upper three bytes of the panic message payload. Where the remaining byte comes from is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod payload {
@@ -1761,12 +1761,12 @@ pub mod vdm_panic_reg {
     }
 }
 
-/// VDM test requesters
+/// Four test requesters, each with its own traffic class and panic trigger bit. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type VDM_TEST = Reg<vdm_test::VDM_TEST_SPEC>;
-/// VDM test requesters
+/// Four test requesters, each with its own traffic class and panic trigger bit. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1777,49 +1777,49 @@ pub mod vdm_test {
     }
     impl crate::Readable for VDM_TEST_SPEC {}
     pub type R = crate::R<VDM_TEST_SPEC>;
-    /// Requester 0 traffic class
+    /// Traffic class (0-7) of the test VDM from requester 0.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod req0_tc {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Requester 0 panic bit
+    /// Any change of this bit (0 to 1 or 1 to 0) sends a test VDM from requester 0.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod req0_panic {
         pub type R = crate::BitReader;
     }
-    /// Requester 1 traffic class
+    /// Traffic class (0-7) of the test VDM from requester 1.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod req1_tc {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Requester 1 panic bit
+    /// Any change of this bit (0 to 1 or 1 to 0) sends a test VDM from requester 1.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod req1_panic {
         pub type R = crate::BitReader;
     }
-    /// Requester 2 traffic class
+    /// Traffic class (0-7) of the test VDM from requester 2.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod req2_tc {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Requester 2 panic bit
+    /// Any change of this bit (0 to 1 or 1 to 0) sends a test VDM from requester 2.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod req2_panic {
         pub type R = crate::BitReader;
     }
-    /// Requester 3 traffic class
+    /// Traffic class (0-7) of the test VDM from requester 3.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod req3_tc {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Requester 3 panic bit
+    /// Any change of this bit (0 to 1 or 1 to 0) sends a test VDM from requester 3.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod req3_panic {
@@ -1861,12 +1861,12 @@ pub mod vdm_test {
     }
 }
 
-/// Vendor-defined message header
+/// TLP header fields used when generating vendor-defined messages. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type VDM_HEADER = Reg<vdm_header::VDM_HEADER_SPEC>;
-/// Vendor-defined message header
+/// TLP header fields used when generating vendor-defined messages. PAC writes are restricted to sequenced state-machine code.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1877,49 +1877,49 @@ pub mod vdm_header {
     }
     impl crate::Readable for VDM_HEADER_SPEC {}
     pub type R = crate::R<VDM_HEADER_SPEC>;
-    /// Message type; fmt hardwired to 3'b001, default Msg
+    /// 5-bit TLP Type field. Fmt is fixed at 0b001; the reset value 0x10 is a message (Msg). Other supported types are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod type_ {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Traffic class
+    /// 3-bit traffic class of the message TLP.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod tc {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Error poisoned
+    /// EP (poisoned) bit of the message; 1 marks the data as poisoned.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod ep {
         pub type R = crate::BitReader;
     }
-    /// TLP digest
+    /// TD bit; 1 means a TLP digest is present.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod td {
         pub type R = crate::BitReader;
     }
-    /// Attribute
+    /// 2-bit TLP Attr field. Which combinations are supported is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod attr {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Function number
+    /// Function number placed in the message. Which values are valid is not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod func_num {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Tag
+    /// 8-bit tag of the message.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod tag {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Vendor-defined message code
+    /// 8-bit message code; resets to 0x7f. Other supported codes are not known.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod code {
@@ -1961,12 +1961,12 @@ pub mod vdm_header {
     }
 }
 
-/// Power-management control
+/// Inputs and requests to the endpoint power-management state machine. The PAC only allows sequenced writes.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type PM_CONTROL = Reg<pm_control::PM_CONTROL_SPEC>;
-/// Power-management control
+/// Inputs and requests to the endpoint power-management state machine. The PAC only allows sequenced writes.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1977,43 +1977,43 @@ pub mod pm_control {
     }
     impl crate::Readable for PM_CONTROL_SPEC {}
     pub type R = crate::R<PM_CONTROL_SPEC>;
-    /// Enable clock PM feature
+    /// 1 enables clock power management; 0 keeps it off.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod app_clk_pm_en {
         pub type R = crate::BitReader;
     }
-    /// Application has transfers pending
+    /// 1 tells the controller transfers are pending, which blocks ASPM L1 entry. A PM-initiated L1 entry can still happen, but the link leaves L1 straight away.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod app_xfer_pending {
         pub type R = crate::BitReader;
     }
-    /// Request L1 exit
+    /// 1 requests exit from L1; 0 makes no request.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod app_req_exit_l1 {
         pub type R = crate::BitReader;
     }
-    /// Ready to enter L2/L3 state
+    /// 1 tells the controller the application is ready to enter L2/L3; 0 means not ready.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod app_ready_entr_l23 {
         pub type R = crate::BitReader;
     }
-    /// Request L1-ASPM entry; self-clearing
+    /// Write 1 to request entry to ASPM L1. Cleared once the request is taken.
     /// Field write behavior: WriteOneToSet.
     /// Typed write API is not exposed by register policy.
     pub mod app_req_entr_l1 {
         pub type R = crate::BitReader;
     }
-    /// Request L1/L2 PM exit; self-clearing PME support must be enabled
+    /// Write 1 to send a PME message to wake from L1/L2; PME support must be enabled. Self-clearing.
     /// Field write behavior: WriteOneToSet.
     /// Typed write API is not exposed by register policy.
     pub mod apps_pm_xmt_pme {
         pub type R = crate::BitReader;
     }
-    /// Reference clock required; set if refclk can be removed
+    /// Active-low reference clock request: 0 means REFCLK is needed, 1 allows it to be removed.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod app_clk_req_n {
@@ -2051,10 +2051,10 @@ pub mod pm_control {
     }
 }
 
-/// Power-management status
+/// Status from the link power-management controller, including a block on new requests.
 /// Hardware access: read Plain; write None.
 pub type PM_STATUS = Reg<pm_status::PM_STATUS_SPEC>;
-/// Power-management status
+/// Status from the link power-management controller, including a block on new requests.
 /// Hardware access: read Plain; write None.
 pub mod pm_status {
     pub struct PM_STATUS_SPEC;
@@ -2063,61 +2063,61 @@ pub mod pm_status {
     }
     impl crate::Readable for PM_STATUS_SPEC {}
     pub type R = crate::R<PM_STATUS_SPEC>;
-    /// PM in L0s state
+    /// 1 when the link is in L0s.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod pm_linkst_in_l0s {
         pub type R = crate::BitReader;
     }
-    /// L1 entry process is in progress
+    /// 1 while entry to L1 is in progress.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod pm_l1_entry_started {
         pub type R = crate::BitReader;
     }
-    /// PM in L1 state
+    /// 1 when the link is in L1.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod pm_linkst_in_l1 {
         pub type R = crate::BitReader;
     }
-    /// PM in L2 state
+    /// 1 when the link is in L2.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod pm_linkst_in_l2 {
         pub type R = crate::BitReader;
     }
-    /// PM exiting L2 state
+    /// 1 when the link is leaving L2.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod pm_linkst_l2_exit {
         pub type R = crate::BitReader;
     }
-    /// Current D-state
+    /// D-state of the PCI function. The code mapping is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod pm_dstate {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Current state of PM slave controller
+    /// Current state of the PM slave state machine. State values are not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod pm_slave_state {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Current state of PM master controller
+    /// Current state of the PM master state machine. State values are not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod pm_master_state {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Current link state for debug
+    /// Debug state code: 0 L0, 1 L0s, 2 L1, 3 L2/L3 ready with aux power, 4 L2/L3 ready without aux power. Codes 5-7 are not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod pm_current_state {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Application must stop generating new outgoing requests due to PM state
+    /// 1 while new outgoing request TLPs are held off for a power-management transition.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod pm_xtlh_block_tlp {
@@ -2167,10 +2167,10 @@ pub mod pm_status {
     }
 }
 
-/// Internal signals for debug
+/// Low word of the controller's internal debug bus.
 /// Hardware access: read Plain; write None.
 pub type MONITOR0 = Reg<monitor0::MONITOR0_SPEC>;
-/// Internal signals for debug
+/// Low word of the controller's internal debug bus.
 /// Hardware access: read Plain; write None.
 pub mod monitor0 {
     pub struct MONITOR0_SPEC;
@@ -2182,7 +2182,7 @@ pub mod monitor0 {
     impl crate::ResetValue for MONITOR0_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// cxpl_debug_info\[31:0\]
+    /// CXPL debug bits 0-31. Meaning of individual bits is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod cxpl_debug_info_l {
@@ -2196,10 +2196,10 @@ pub mod monitor0 {
     }
 }
 
-/// Internal signals for debug
+/// High word of the controller's internal debug bus.
 /// Hardware access: read Plain; write None.
 pub type MONITOR1 = Reg<monitor1::MONITOR1_SPEC>;
-/// Internal signals for debug
+/// High word of the controller's internal debug bus.
 /// Hardware access: read Plain; write None.
 pub mod monitor1 {
     pub struct MONITOR1_SPEC;
@@ -2211,7 +2211,7 @@ pub mod monitor1 {
     impl crate::ResetValue for MONITOR1_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// cxpl_debug_info\[63:32\]
+    /// CXPL debug bits 32-63. Meaning of individual bits is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod cxpl_debug_info_h {
@@ -2225,10 +2225,10 @@ pub mod monitor1 {
     }
 }
 
-/// Internal signals for debug
+/// Synchronized sideband signals and extra debug bits from the controller.
 /// Hardware access: read Plain; write None.
 pub type MONITOR2 = Reg<monitor2::MONITOR2_SPEC>;
-/// Internal signals for debug
+/// Synchronized sideband signals and extra debug bits from the controller.
 /// Hardware access: read Plain; write None.
 pub mod monitor2 {
     pub struct MONITOR2_SPEC;
@@ -2240,55 +2240,55 @@ pub mod monitor2 {
     impl crate::ResetValue for MONITOR2_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// cxpl_debug_info_ei\[15:0\]
+    /// 16 additional CXPL debug bits. Meaning of individual bits is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod cxpl_debug_info_ei {
         pub type R = crate::FieldReader<u32>;
     }
-    /// State of core_alive signal, synchronised
+    /// Synchronized copy of the endpoint core activity signal.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod core_alive {
         pub type R = crate::BitReader;
     }
-    /// State of PCIe PERSTN signal, synchronised
+    /// Synchronized copy of the active-low PCIe reset; 0 means reset is asserted.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod perstn {
         pub type R = crate::BitReader;
     }
-    /// State of link_reset_req signal, synchronised
+    /// Synchronized copy of the controller's link reset request.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod link_reset_req {
         pub type R = crate::BitReader;
     }
-    /// PHY link up
+    /// 1 when the link is up at the physical layer.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod smlh_link_up {
         pub type R = crate::BitReader;
     }
-    /// Data link layer up
+    /// 1 when the link is up at the data link layer.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod rdlh_link_up {
         pub type R = crate::BitReader;
     }
-    /// brdg_slv_xfer_pending
+    /// 1 while a transfer is in flight on the bridge slave path. The exact point where it counts as complete is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod brdg_slv_xfer_pending {
         pub type R = crate::BitReader;
     }
-    /// brdg_dbi_xfer_pending
+    /// 1 while a DBI transfer through the bridge is outstanding. The exact point where it counts as complete is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod brdg_dbi_xfer_pending {
         pub type R = crate::BitReader;
     }
-    /// radm_xfer_pending
+    /// 1 while RADM has a transfer outstanding. The exact point where it counts as complete is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod radm_xfer_pending {
@@ -2334,12 +2334,12 @@ pub mod monitor2 {
     }
 }
 
-/// Raw interrupts
+/// Raw interrupt sources, before the enable mask.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type INTR = Reg<intr::INTR_SPEC>;
-/// Raw interrupts
+/// Raw interrupt sources, before the enable mask.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -2353,43 +2353,43 @@ pub mod intr {
     impl crate::ResetValue for INTR_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// Core alive
+    /// 1 when the endpoint core activity event source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod core_alive {
         pub type R = crate::BitReader;
     }
-    /// PCIe PERSTN
+    /// 1 when the PCIe reset (PERST#) event source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod perstn {
         pub type R = crate::BitReader;
     }
-    /// Link reset request
+    /// 1 when the link reset request event source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod link_reset_req {
         pub type R = crate::BitReader;
     }
-    /// LTSSM state FIFO not empty
+    /// 1 while the LTSSM transition FIFO holds an entry source is active. Read-only level; it cannot be cleared here.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ltssm_state_fifo_not_empty {
         pub type R = crate::BitReader;
     }
-    /// RADM PM turnoff
+    /// 1 when the PM turn-off message received by RADM source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod radm_pm_turnoff {
         pub type R = crate::BitReader;
     }
-    /// PHY link up
+    /// 1 when the physical layer link-up event source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod smlh_link_up {
         pub type R = crate::BitReader;
     }
-    /// Data link layer up
+    /// 1 when the data link layer link-up event source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod rdlh_link_up {
@@ -2427,12 +2427,12 @@ pub mod intr {
     }
 }
 
-/// Interrupt enable
+/// Interrupt enable, one bit per source: 1 lets the source reach the IRQ output, 0 masks it.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type INTE = Reg<inte::INTE_SPEC>;
-/// Interrupt enable
+/// Interrupt enable, one bit per source: 1 lets the source reach the IRQ output, 0 masks it.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -2446,43 +2446,43 @@ pub mod inte {
     impl crate::ResetValue for INTE_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// Core alive
+    /// Enable for the endpoint core activity event source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod core_alive {
         pub type R = crate::BitReader;
     }
-    /// PCIe PERSTN
+    /// Enable for the PCIe reset (PERST#) event source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod perstn {
         pub type R = crate::BitReader;
     }
-    /// Link reset request
+    /// Enable for the link reset request event source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod link_reset_req {
         pub type R = crate::BitReader;
     }
-    /// LTSSM state FIFO not empty
+    /// Enable for the LTSSM transition FIFO holds an entry source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod ltssm_state_fifo_not_empty {
         pub type R = crate::BitReader;
     }
-    /// RADM PM turnoff
+    /// Enable for the PM turn-off message received by RADM source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod radm_pm_turnoff {
         pub type R = crate::BitReader;
     }
-    /// PHY link up
+    /// Enable for the physical layer link-up event source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod smlh_link_up {
         pub type R = crate::BitReader;
     }
-    /// Data link layer up
+    /// Enable for the data link layer link-up event source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod rdlh_link_up {
@@ -2520,12 +2520,12 @@ pub mod inte {
     }
 }
 
-/// Interrupt force
+/// Interrupt force, one bit per source: 1 asserts the source by software, 0 removes the force.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type INTF = Reg<intf::INTF_SPEC>;
-/// Interrupt force
+/// Interrupt force, one bit per source: 1 asserts the source by software, 0 removes the force.
 /// Hardware access: read Plain; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -2539,43 +2539,43 @@ pub mod intf {
     impl crate::ResetValue for INTF_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// Core alive
+    /// Force for the endpoint core activity event source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod core_alive {
         pub type R = crate::BitReader;
     }
-    /// PCIe PERSTN
+    /// Force for the PCIe reset (PERST#) event source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod perstn {
         pub type R = crate::BitReader;
     }
-    /// Link reset request
+    /// Force for the link reset request event source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod link_reset_req {
         pub type R = crate::BitReader;
     }
-    /// LTSSM state FIFO not empty
+    /// Force for the LTSSM transition FIFO holds an entry source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod ltssm_state_fifo_not_empty {
         pub type R = crate::BitReader;
     }
-    /// RADM PM turnoff
+    /// Force for the PM turn-off message received by RADM source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod radm_pm_turnoff {
         pub type R = crate::BitReader;
     }
-    /// PHY link up
+    /// Force for the physical layer link-up event source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod smlh_link_up {
         pub type R = crate::BitReader;
     }
-    /// Data link layer up
+    /// Force for the data link layer link-up event source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod rdlh_link_up {
@@ -2613,10 +2613,10 @@ pub mod intf {
     }
 }
 
-/// Interrupt status after masking and forcing
+/// Effective interrupt state seen by the IRQ output: (INTR & INTE) | INTF.
 /// Hardware access: read Plain; write None.
 pub type INTS = Reg<ints::INTS_SPEC>;
-/// Interrupt status after masking and forcing
+/// Effective interrupt state seen by the IRQ output: (INTR & INTE) | INTF.
 /// Hardware access: read Plain; write None.
 pub mod ints {
     pub struct INTS_SPEC;
@@ -2628,43 +2628,43 @@ pub mod ints {
     impl crate::ResetValue for INTS_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// Core alive
+    /// 1 when the endpoint core activity event source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod core_alive {
         pub type R = crate::BitReader;
     }
-    /// PCIe PERSTN
+    /// 1 when the PCIe reset (PERST#) event source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod perstn {
         pub type R = crate::BitReader;
     }
-    /// Link reset request
+    /// 1 when the link reset request event source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod link_reset_req {
         pub type R = crate::BitReader;
     }
-    /// LTSSM state FIFO not empty
+    /// 1 when the LTSSM transition FIFO holds an entry source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ltssm_state_fifo_not_empty {
         pub type R = crate::BitReader;
     }
-    /// RADM PM turnoff
+    /// 1 when the PM turn-off message received by RADM source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod radm_pm_turnoff {
         pub type R = crate::BitReader;
     }
-    /// PHY link up
+    /// 1 when the physical layer link-up event source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod smlh_link_up {
         pub type R = crate::BitReader;
     }
-    /// Data link layer up
+    /// 1 when the data link layer link-up event source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod rdlh_link_up {

@@ -8,7 +8,7 @@ size = 0x1000
 ownership = "singleton"
 default_origin = "official"
 legacy_svd_name = "VIDEO_OUT_CFG_RW"
-note = "RP1 VIDEO_OUT_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access."
+note = "Integration registers for the video output path. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000."
 
 [peripheral.atomic_view]
 kind = "rp1-native"

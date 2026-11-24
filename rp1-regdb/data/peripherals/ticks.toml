@@ -29,7 +29,7 @@ verified_read = "official"
 verified_write = "official"
 origin = "official"
 reset_value = 0x0
-note = "Controls the tick generator"
+note = "Start/stop control and running status for the timer tick generator."
 [register.api]
 read = "public"
 modify = "public"
@@ -50,7 +50,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Start/stop tick generation"
+note = "Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state."
 [[register.field]]
 id = "running"
 name = "RUNNING"
@@ -61,7 +61,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Tick generator is running"
+note = "Generator state: 0 stopped, 1 running."
 
 [[register]]
 id = "timer_cycles"
@@ -77,7 +77,7 @@ verified_write = "official"
 origin = "official"
 reset_value = 0x0
 boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
-note = "Total number of clk_tick cycles before next tick"
+note = "Tick period of the timer tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs."
 [register.api]
 read = "public"
 modify = "public"
@@ -98,7 +98,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Total clk_tick cycles before next tick"
+note = "Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown."
 
 [[register]]
 id = "timer_count"
@@ -112,7 +112,7 @@ hardware_write = "none"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Countdown timer before next tick"
+note = "Current countdown to the next timer tick. Reading it does not disturb the programmed period."
 [register.api]
 read = "public"
 [[register.field]]
@@ -125,7 +125,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Remaining clk_tick cycles before next tick"
+note = "Input-clock cycles left until the next tick. The value while stopped is unknown."
 
 [[register]]
 id = "watchdog_ctrl"
@@ -140,7 +140,7 @@ verified_read = "official"
 verified_write = "official"
 origin = "official"
 reset_value = 0x0
-note = "Controls the tick generator"
+note = "Start/stop control and running status for the watchdog tick generator."
 [register.api]
 read = "public"
 modify = "public"
@@ -161,7 +161,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Start/stop tick generation"
+note = "Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state."
 [[register.field]]
 id = "running"
 name = "RUNNING"
@@ -172,7 +172,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Tick generator is running"
+note = "Generator state: 0 stopped, 1 running."
 
 [[register]]
 id = "watchdog_cycles"
@@ -188,7 +188,7 @@ verified_write = "official"
 origin = "official"
 reset_value = 0x0
 boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
-note = "Total number of clk_tick cycles before next tick"
+note = "Tick period of the watchdog tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs."
 [register.api]
 read = "public"
 modify = "public"
@@ -209,7 +209,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Total clk_tick cycles before next tick"
+note = "Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown."
 
 [[register]]
 id = "watchdog_count"
@@ -223,7 +223,7 @@ hardware_write = "none"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Countdown timer before next tick"
+note = "Current countdown to the next watchdog tick. Reading it does not disturb the programmed period."
 [register.api]
 read = "public"
 [[register.field]]
@@ -236,7 +236,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Remaining clk_tick cycles before next tick"
+note = "Input-clock cycles left until the next tick. The value while stopped is unknown."
 
 [[register]]
 id = "proc_ctrl"
@@ -251,7 +251,7 @@ verified_read = "official"
 verified_write = "official"
 origin = "official"
 reset_value = 0x0
-note = "Controls the tick generator"
+note = "Start/stop control and running status for the processor tick generator."
 [register.api]
 read = "public"
 modify = "public"
@@ -272,7 +272,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Start/stop tick generation"
+note = "Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state."
 [[register.field]]
 id = "running"
 name = "RUNNING"
@@ -283,7 +283,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Tick generator is running"
+note = "Generator state: 0 stopped, 1 running."
 
 [[register]]
 id = "proc_cycles"
@@ -299,7 +299,7 @@ verified_write = "official"
 origin = "official"
 reset_value = 0x0
 boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
-note = "Total number of clk_tick cycles before next tick"
+note = "Tick period of the processor tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs."
 [register.api]
 read = "public"
 modify = "public"
@@ -320,7 +320,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Total clk_tick cycles before next tick"
+note = "Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown."
 
 [[register]]
 id = "proc_count"
@@ -334,7 +334,7 @@ hardware_write = "none"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Countdown timer before next tick"
+note = "Current countdown to the next processor tick. Reading it does not disturb the programmed period."
 [register.api]
 read = "public"
 [[register.field]]
@@ -347,7 +347,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Remaining clk_tick cycles before next tick"
+note = "Input-clock cycles left until the next tick. The value while stopped is unknown."
 
 [[register]]
 id = "dma0_ctrl"
@@ -362,7 +362,7 @@ verified_read = "official"
 verified_write = "official"
 origin = "official"
 reset_value = 0x0
-note = "Controls the tick generator"
+note = "Start/stop control and running status for the DMA channel 0 tick generator."
 [register.api]
 read = "public"
 modify = "public"
@@ -383,7 +383,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Start/stop tick generation"
+note = "Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state."
 [[register.field]]
 id = "running"
 name = "RUNNING"
@@ -394,7 +394,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Tick generator is running"
+note = "Generator state: 0 stopped, 1 running."
 
 [[register]]
 id = "dma0_cycles"
@@ -410,7 +410,7 @@ verified_write = "official"
 origin = "official"
 reset_value = 0x0
 boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
-note = "Total number of clk_tick cycles before next tick"
+note = "Tick period of the DMA channel 0 tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs."
 [register.api]
 read = "public"
 modify = "public"
@@ -431,7 +431,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Total clk_tick cycles before next tick"
+note = "Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown."
 
 [[register]]
 id = "dma0_count"
@@ -445,7 +445,7 @@ hardware_write = "none"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Countdown timer before next tick"
+note = "Current countdown to the next DMA channel 0 tick. Reading it does not disturb the programmed period."
 [register.api]
 read = "public"
 [[register.field]]
@@ -458,7 +458,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Remaining clk_tick cycles before next tick"
+note = "Input-clock cycles left until the next tick. The value while stopped is unknown."
 
 [[register]]
 id = "dma1_ctrl"
@@ -473,7 +473,7 @@ verified_read = "official"
 verified_write = "official"
 origin = "official"
 reset_value = 0x0
-note = "Controls the tick generator"
+note = "Start/stop control and running status for the DMA channel 1 tick generator."
 [register.api]
 read = "public"
 modify = "public"
@@ -494,7 +494,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Start/stop tick generation"
+note = "Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state."
 [[register.field]]
 id = "running"
 name = "RUNNING"
@@ -505,7 +505,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Tick generator is running"
+note = "Generator state: 0 stopped, 1 running."
 
 [[register]]
 id = "dma1_cycles"
@@ -521,7 +521,7 @@ verified_write = "official"
 origin = "official"
 reset_value = 0x0
 boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
-note = "Total number of clk_tick cycles before next tick"
+note = "Tick period of the DMA channel 1 tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs."
 [register.api]
 read = "public"
 modify = "public"
@@ -542,7 +542,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Total clk_tick cycles before next tick"
+note = "Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown."
 
 [[register]]
 id = "dma1_count"
@@ -556,7 +556,7 @@ hardware_write = "none"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Countdown timer before next tick"
+note = "Current countdown to the next DMA channel 1 tick. Reading it does not disturb the programmed period."
 [register.api]
 read = "public"
 [[register.field]]
@@ -569,7 +569,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Remaining clk_tick cycles before next tick"
+note = "Input-clock cycles left until the next tick. The value while stopped is unknown."
 
 [[register]]
 id = "io_bank0_ctrl"
@@ -584,7 +584,7 @@ verified_read = "official"
 verified_write = "official"
 origin = "official"
 reset_value = 0x0
-note = "Controls the tick generator"
+note = "Start/stop control and running status for the GPIO bank 0 filter/debounce tick generator."
 [register.api]
 read = "public"
 modify = "public"
@@ -605,7 +605,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Start/stop tick generation"
+note = "Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state."
 [[register.field]]
 id = "running"
 name = "RUNNING"
@@ -616,7 +616,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Tick generator is running"
+note = "Generator state: 0 stopped, 1 running."
 
 [[register]]
 id = "io_bank0_cycles"
@@ -632,7 +632,7 @@ verified_write = "official"
 origin = "official"
 reset_value = 0x0
 boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
-note = "Total number of clk_tick cycles before next tick"
+note = "Tick period of the GPIO bank 0 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs."
 [register.api]
 read = "public"
 modify = "public"
@@ -653,7 +653,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Total clk_tick cycles before next tick"
+note = "Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown."
 
 [[register]]
 id = "io_bank0_count"
@@ -667,7 +667,7 @@ hardware_write = "none"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Countdown timer before next tick"
+note = "Current countdown to the next GPIO bank 0 filter/debounce tick. Reading it does not disturb the programmed period."
 [register.api]
 read = "public"
 [[register.field]]
@@ -680,7 +680,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Remaining clk_tick cycles before next tick"
+note = "Input-clock cycles left until the next tick. The value while stopped is unknown."
 
 [[register]]
 id = "io_bank1_ctrl"
@@ -695,7 +695,7 @@ verified_read = "official"
 verified_write = "official"
 origin = "official"
 reset_value = 0x0
-note = "Controls the tick generator"
+note = "Start/stop control and running status for the GPIO bank 1 filter/debounce tick generator."
 [register.api]
 read = "public"
 modify = "public"
@@ -716,7 +716,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Start/stop tick generation"
+note = "Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state."
 [[register.field]]
 id = "running"
 name = "RUNNING"
@@ -727,7 +727,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Tick generator is running"
+note = "Generator state: 0 stopped, 1 running."
 
 [[register]]
 id = "io_bank1_cycles"
@@ -743,7 +743,7 @@ verified_write = "official"
 origin = "official"
 reset_value = 0x0
 boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
-note = "Total number of clk_tick cycles before next tick"
+note = "Tick period of the GPIO bank 1 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs."
 [register.api]
 read = "public"
 modify = "public"
@@ -764,7 +764,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Total clk_tick cycles before next tick"
+note = "Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown."
 
 [[register]]
 id = "io_bank1_count"
@@ -778,7 +778,7 @@ hardware_write = "none"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Countdown timer before next tick"
+note = "Current countdown to the next GPIO bank 1 filter/debounce tick. Reading it does not disturb the programmed period."
 [register.api]
 read = "public"
 [[register.field]]
@@ -791,7 +791,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Remaining clk_tick cycles before next tick"
+note = "Input-clock cycles left until the next tick. The value while stopped is unknown."
 
 [[register]]
 id = "io_bank2_ctrl"
@@ -806,7 +806,7 @@ verified_read = "official"
 verified_write = "official"
 origin = "official"
 reset_value = 0x0
-note = "Controls the tick generator"
+note = "Start/stop control and running status for the GPIO bank 2 filter/debounce tick generator."
 [register.api]
 read = "public"
 modify = "public"
@@ -827,7 +827,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Start/stop tick generation"
+note = "Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state."
 [[register.field]]
 id = "running"
 name = "RUNNING"
@@ -838,7 +838,7 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Tick generator is running"
+note = "Generator state: 0 stopped, 1 running."
 
 [[register]]
 id = "io_bank2_cycles"
@@ -854,7 +854,7 @@ verified_write = "official"
 origin = "official"
 reset_value = 0x0
 boot_rom_initialization = { value = 0x32, verification = "hardware", result = "confirmed", class = "scoped-behavior", scope = "Boot ROM TICKS group initialization" }
-note = "Total number of clk_tick cycles before next tick"
+note = "Tick period of the GPIO bank 2 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs."
 [register.api]
 read = "public"
 modify = "public"
@@ -875,7 +875,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Total clk_tick cycles before next tick"
+note = "Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown."
 
 [[register]]
 id = "io_bank2_count"
@@ -889,7 +889,7 @@ hardware_write = "none"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Countdown timer before next tick"
+note = "Current countdown to the next GPIO bank 2 filter/debounce tick. Reading it does not disturb the programmed period."
 [register.api]
 read = "public"
 [[register.field]]
@@ -902,4 +902,4 @@ write_behavior = "read-only"
 verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
-note = "Remaining clk_tick cycles before next tick"
+note = "Input-clock cycles left until the next tick. The value while stopped is unknown."

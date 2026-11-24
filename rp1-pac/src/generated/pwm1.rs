@@ -4,7 +4,7 @@
 
 use crate::Reg;
 
-/// RP1 PWM1_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// PWM block with four waveform channels. Waveforms run on `clk_pwm`; the register bus runs on `clk_sys`. Bus=APB. Atomic aliases: XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[repr(C)]
 pub struct RegisterBlock {
@@ -36,13 +36,13 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// Global control bits
+    /// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn global_ctrl(&self) -> &GLOBAL_CTRL {
         &self.global_ctrl
     }
-    /// FIFO thresholding and status
+    /// FIFO level, flush and DMA request control. The registers are in the `clk_sys` domain; FIFO consumption and flush completion happen in `clk_pwm`.
     /// Hardware access: read Fifo; write Fifo.
     /// FIFO/data port; only dedicated FIFO operations are generated.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -50,133 +50,133 @@ impl RegisterBlock {
     pub const fn fifo_ctrl(&self) -> &FIFO_CTRL {
         &self.fifo_ctrl
     }
-    /// Common counter range
+    /// Shared counter limit for channels with `bind=1`. Applied by `global_ctrl.set_update`.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn common_range(&self) -> &COMMON_RANGE {
         &self.common_range
     }
-    /// Common counter compare
+    /// Shared duty value for bound channels that take duty from a register.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn common_duty(&self) -> &COMMON_DUTY {
         &self.common_duty
     }
-    /// Channel 0 control register
+    /// Waveform setup for channel 0. Changes take effect after a `global_ctrl.set_update` write.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan0_ctrl(&self) -> &CHAN0_CTRL {
         &self.chan0_ctrl
     }
-    /// Channel 0 counter range
+    /// Channel 0's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan0_range(&self) -> &CHAN0_RANGE {
         &self.chan0_range
     }
-    /// Channel 0 counter phase offset
+    /// Starting counter offset for channel 0, applied by `global_ctrl.set_update`.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan0_phase(&self) -> &CHAN0_PHASE {
         &self.chan0_phase
     }
-    /// Channel 0 counter compare
+    /// Channel 0's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan0_duty(&self) -> &CHAN0_DUTY {
         &self.chan0_duty
     }
-    /// Channel 1 control register
+    /// Waveform setup for channel 1. Changes take effect after a `global_ctrl.set_update` write.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan1_ctrl(&self) -> &CHAN1_CTRL {
         &self.chan1_ctrl
     }
-    /// Channel 1 counter range
+    /// Channel 1's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan1_range(&self) -> &CHAN1_RANGE {
         &self.chan1_range
     }
-    /// Channel 1 counter phase offset
+    /// Starting counter offset for channel 1, applied by `global_ctrl.set_update`.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan1_phase(&self) -> &CHAN1_PHASE {
         &self.chan1_phase
     }
-    /// Channel 1 counter compare
+    /// Channel 1's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan1_duty(&self) -> &CHAN1_DUTY {
         &self.chan1_duty
     }
-    /// Channel 2 control register
+    /// Waveform setup for channel 2. Changes take effect after a `global_ctrl.set_update` write.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan2_ctrl(&self) -> &CHAN2_CTRL {
         &self.chan2_ctrl
     }
-    /// Channel 2 counter range
+    /// Channel 2's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan2_range(&self) -> &CHAN2_RANGE {
         &self.chan2_range
     }
-    /// Channel 2 counter phase offset
+    /// Starting counter offset for channel 2, applied by `global_ctrl.set_update`.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan2_phase(&self) -> &CHAN2_PHASE {
         &self.chan2_phase
     }
-    /// Channel 2 counter compare
+    /// Channel 2's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan2_duty(&self) -> &CHAN2_DUTY {
         &self.chan2_duty
     }
-    /// Channel 3 control register
+    /// Waveform setup for channel 3. Changes take effect after a `global_ctrl.set_update` write.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan3_ctrl(&self) -> &CHAN3_CTRL {
         &self.chan3_ctrl
     }
-    /// Channel 3 counter range
+    /// Channel 3's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan3_range(&self) -> &CHAN3_RANGE {
         &self.chan3_range
     }
-    /// Channel 3 counter phase offset
+    /// Starting counter offset for channel 3, applied by `global_ctrl.set_update`.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan3_phase(&self) -> &CHAN3_PHASE {
         &self.chan3_phase
     }
-    /// Channel 3 counter compare
+    /// Channel 3's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn chan3_duty(&self) -> &CHAN3_DUTY {
         &self.chan3_duty
     }
-    /// Raw interrupts
+    /// Raw interrupt status, before the enable mask.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn intr(&self) -> &INTR {
         &self.intr
     }
-    /// Interrupt enable
+    /// Interrupt enable mask, one bit per source: 0 masks the source, 1 passes it to the IRQ output.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn inte(&self) -> &INTE {
         &self.inte
     }
-    /// Interrupt force
+    /// Interrupt force bits, one per source: 1 asserts the interrupt from software, 0 removes the force.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn intf(&self) -> &INTF {
         &self.intf
     }
-    /// Interrupt status after masking and forcing
+    /// Masked interrupt status: (INTR & INTE) | INTF.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn ints(&self) -> &INTS {
@@ -184,10 +184,10 @@ impl RegisterBlock {
     }
 }
 
-/// Global control bits
+/// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine.
 /// Hardware access: read Plain; write Plain.
 pub type GLOBAL_CTRL = Reg<global_ctrl::GLOBAL_CTRL_SPEC>;
-/// Global control bits
+/// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine.
 /// Hardware access: read Plain; write Plain.
 pub mod global_ctrl {
     pub struct GLOBAL_CTRL_SPEC;
@@ -223,7 +223,7 @@ pub mod global_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<GLOBAL_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<GLOBAL_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<GLOBAL_CTRL_SPEC>;
-    /// Enable channel 0
+    /// Channel 0 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
     /// Field write behavior: Plain.
     pub mod chan0_en {
         pub type R = crate::BitReader;
@@ -232,7 +232,7 @@ pub mod global_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Enable channel 1
+    /// Channel 1 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
     /// Field write behavior: Plain.
     pub mod chan1_en {
         pub type R = crate::BitReader;
@@ -241,7 +241,7 @@ pub mod global_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// Enable channel 2
+    /// Channel 2 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
     /// Field write behavior: Plain.
     pub mod chan2_en {
         pub type R = crate::BitReader;
@@ -250,7 +250,7 @@ pub mod global_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
     }
-    /// Enable channel 3
+    /// Channel 3 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
     /// Field write behavior: Plain.
     pub mod chan3_en {
         pub type R = crate::BitReader;
@@ -259,7 +259,7 @@ pub mod global_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// Trigger settings update; self-clearing
+    /// Write 1 to apply the staged enables, channel control and phase, and `common_range`. Hardware clears the bit. Local range and duty writes do not need it; they apply at the channel's rollover.
     /// Field write behavior: Plain.
     pub mod set_update {
         pub type R = crate::BitReader;
@@ -313,31 +313,31 @@ pub mod global_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Enable channel 0
+        /// Channel 0 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_en(&mut self) -> chan0_en::ASW<'_> {
             chan0_en::ASW::new(self)
         }
-        /// Enable channel 1
+        /// Channel 1 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_en(&mut self) -> chan1_en::ASW<'_> {
             chan1_en::ASW::new(self)
         }
-        /// Enable channel 2
+        /// Channel 2 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_en(&mut self) -> chan2_en::ASW<'_> {
             chan2_en::ASW::new(self)
         }
-        /// Enable channel 3
+        /// Channel 3 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_en(&mut self) -> chan3_en::ASW<'_> {
             chan3_en::ASW::new(self)
         }
-        /// Trigger settings update; self-clearing
+        /// Write 1 to apply the staged enables, channel control and phase, and `common_range`. Hardware clears the bit. Local range and duty writes do not need it; they apply at the channel's rollover.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn set_update(&mut self) -> set_update::ASW<'_> {
@@ -345,31 +345,31 @@ pub mod global_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Enable channel 0
+        /// Channel 0 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_en(&mut self) -> chan0_en::ACW<'_> {
             chan0_en::ACW::new(self)
         }
-        /// Enable channel 1
+        /// Channel 1 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_en(&mut self) -> chan1_en::ACW<'_> {
             chan1_en::ACW::new(self)
         }
-        /// Enable channel 2
+        /// Channel 2 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_en(&mut self) -> chan2_en::ACW<'_> {
             chan2_en::ACW::new(self)
         }
-        /// Enable channel 3
+        /// Channel 3 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_en(&mut self) -> chan3_en::ACW<'_> {
             chan3_en::ACW::new(self)
         }
-        /// Trigger settings update; self-clearing
+        /// Write 1 to apply the staged enables, channel control and phase, and `common_range`. Hardware clears the bit. Local range and duty writes do not need it; they apply at the channel's rollover.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn set_update(&mut self) -> set_update::ACW<'_> {
@@ -377,31 +377,31 @@ pub mod global_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Enable channel 0
+        /// Channel 0 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_en(&mut self) -> chan0_en::AXW<'_> {
             chan0_en::AXW::new(self)
         }
-        /// Enable channel 1
+        /// Channel 1 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_en(&mut self) -> chan1_en::AXW<'_> {
             chan1_en::AXW::new(self)
         }
-        /// Enable channel 2
+        /// Channel 2 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_en(&mut self) -> chan2_en::AXW<'_> {
             chan2_en::AXW::new(self)
         }
-        /// Enable channel 3
+        /// Channel 3 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_en(&mut self) -> chan3_en::AXW<'_> {
             chan3_en::AXW::new(self)
         }
-        /// Trigger settings update; self-clearing
+        /// Write 1 to apply the staged enables, channel control and phase, and `common_range`. Hardware clears the bit. Local range and duty writes do not need it; they apply at the channel's rollover.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn set_update(&mut self) -> set_update::AXW<'_> {
@@ -410,12 +410,12 @@ pub mod global_ctrl {
     }
 }
 
-/// FIFO thresholding and status
+/// FIFO level, flush and DMA request control. The registers are in the `clk_sys` domain; FIFO consumption and flush completion happen in `clk_pwm`.
 /// Hardware access: read Fifo; write Fifo.
 /// FIFO/data port; only dedicated FIFO operations are generated.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type FIFO_CTRL = Reg<fifo_ctrl::FIFO_CTRL_SPEC>;
-/// FIFO thresholding and status
+/// FIFO level, flush and DMA request control. The registers are in the `clk_sys` domain; FIFO consumption and flush completion happen in `clk_pwm`.
 /// Hardware access: read Fifo; write Fifo.
 /// FIFO/data port; only dedicated FIFO operations are generated.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -426,37 +426,37 @@ pub mod fifo_ctrl {
     }
     impl crate::Readable for FIFO_CTRL_SPEC {}
     pub type R = crate::R<FIFO_CTRL_SPEC>;
-    /// Number of available words in FIFO
+    /// Number of words in the FIFO. How it counts when several channels are packed into one entry is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod level {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Assert to flush FIFO
+    /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. Whether this bit clears itself is unknown.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod flush {
         pub type R = crate::BitReader;
     }
-    /// FIFO flush completed in PWM clock domain
+    /// 1 when the PWM clock domain has finished the flush.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod flush_done {
         pub type R = crate::BitReader;
     }
-    /// DREQ threshold
+    /// A DMA request is raised while `level` is at or below this value. Same units as `level`.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod threshold {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Delay in bus cycles before successive DREQs
+    /// Minimum gap between DMA requests in bus cycles, giving in-flight writes time to reach the FIFO.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod dwell_time {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Generate DMA request signals
+    /// 1 enables the DMA request output. 0 masks it, but the `dreq_active` interrupt source still works.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod dreq_en {
@@ -490,10 +490,10 @@ pub mod fifo_ctrl {
     }
 }
 
-/// Common counter range
+/// Shared counter limit for channels with `bind=1`. Applied by `global_ctrl.set_update`.
 /// Hardware access: read Plain; write Plain.
 pub type COMMON_RANGE = Reg<common_range::COMMON_RANGE_SPEC>;
-/// Common counter range
+/// Shared counter limit for channels with `bind=1`. Applied by `global_ctrl.set_update`.
 /// Hardware access: read Plain; write Plain.
 pub mod common_range {
     pub struct COMMON_RANGE_SPEC;
@@ -529,7 +529,7 @@ pub mod common_range {
     pub type AtomicSetW = crate::AtomicSetW<COMMON_RANGE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<COMMON_RANGE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<COMMON_RANGE_SPEC>;
-    /// Counter range
+    /// Shared counter limit in PWM clock counts; replaces the local range for bound channels.
     /// Field write behavior: Plain.
     pub mod range {
         pub type R = crate::FieldReader<u32>;
@@ -551,7 +551,7 @@ pub mod common_range {
         }
     }
     impl AtomicSetW {
-        /// Counter range
+        /// Shared counter limit in PWM clock counts; replaces the local range for bound channels.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::ASW<'_> {
@@ -559,7 +559,7 @@ pub mod common_range {
         }
     }
     impl AtomicClearW {
-        /// Counter range
+        /// Shared counter limit in PWM clock counts; replaces the local range for bound channels.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::ACW<'_> {
@@ -567,7 +567,7 @@ pub mod common_range {
         }
     }
     impl AtomicXorW {
-        /// Counter range
+        /// Shared counter limit in PWM clock counts; replaces the local range for bound channels.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::AXW<'_> {
@@ -576,10 +576,10 @@ pub mod common_range {
     }
 }
 
-/// Common counter compare
+/// Shared duty value for bound channels that take duty from a register.
 /// Hardware access: read Plain; write Plain.
 pub type COMMON_DUTY = Reg<common_duty::COMMON_DUTY_SPEC>;
-/// Common counter compare
+/// Shared duty value for bound channels that take duty from a register.
 /// Hardware access: read Plain; write Plain.
 pub mod common_duty {
     pub struct COMMON_DUTY_SPEC;
@@ -615,7 +615,7 @@ pub mod common_duty {
     pub type AtomicSetW = crate::AtomicSetW<COMMON_DUTY_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<COMMON_DUTY_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<COMMON_DUTY_SPEC>;
-    /// Counter compare
+    /// Shared value whose meaning follows `mode`: compare value, pulse position, density numerator or serial word. Used when `bind=1` and `usefifo=0`.
     /// Field write behavior: Plain.
     pub mod duty {
         pub type R = crate::FieldReader<u32>;
@@ -637,7 +637,7 @@ pub mod common_duty {
         }
     }
     impl AtomicSetW {
-        /// Counter compare
+        /// Shared value whose meaning follows `mode`: compare value, pulse position, density numerator or serial word. Used when `bind=1` and `usefifo=0`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::ASW<'_> {
@@ -645,7 +645,7 @@ pub mod common_duty {
         }
     }
     impl AtomicClearW {
-        /// Counter compare
+        /// Shared value whose meaning follows `mode`: compare value, pulse position, density numerator or serial word. Used when `bind=1` and `usefifo=0`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::ACW<'_> {
@@ -653,7 +653,7 @@ pub mod common_duty {
         }
     }
     impl AtomicXorW {
-        /// Counter compare
+        /// Shared value whose meaning follows `mode`: compare value, pulse position, density numerator or serial word. Used when `bind=1` and `usefifo=0`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::AXW<'_> {
@@ -662,12 +662,12 @@ pub mod common_duty {
     }
 }
 
-/// 32-bit interface to 128-bit backed duty-cycle FIFO
+/// Write-only FIFO input. Each 32-bit write fills one of up to four lanes of a 128-bit entry, rotating through the channels that use the FIFO. One packed entry holds one word per participating channel.
 /// Hardware access: read None; write Fifo.
 /// FIFO/data port; only dedicated FIFO operations are generated.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type DUTY_FIFO = Reg<duty_fifo::DUTY_FIFO_SPEC>;
-/// 32-bit interface to 128-bit backed duty-cycle FIFO
+/// Write-only FIFO input. Each 32-bit write fills one of up to four lanes of a 128-bit entry, rotating through the channels that use the FIFO. One packed entry holds one word per participating channel.
 /// Hardware access: read None; write Fifo.
 /// FIFO/data port; only dedicated FIFO operations are generated.
 /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -679,16 +679,16 @@ pub mod duty_fifo {
     impl crate::ResetValue for DUTY_FIFO_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// Duty FIFO write data
+    /// One 32-bit duty sample. The channel it goes to follows the lane rotation.
     /// Field write behavior: Plain.
     /// Typed write API is not exposed by register policy.
     pub mod value {}
 }
 
-/// Channel 0 control register
+/// Waveform setup for channel 0. Changes take effect after a `global_ctrl.set_update` write.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN0_CTRL = Reg<chan0_ctrl::CHAN0_CTRL_SPEC>;
-/// Channel 0 control register
+/// Waveform setup for channel 0. Changes take effect after a `global_ctrl.set_update` write.
 /// Hardware access: read Plain; write Plain.
 pub mod chan0_ctrl {
     pub struct CHAN0_CTRL_SPEC;
@@ -721,7 +721,7 @@ pub mod chan0_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<CHAN0_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN0_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN0_CTRL_SPEC>;
-    /// PWM generation mode
+    /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
     /// Field write behavior: Plain.
     pub mod mode {
         pub type R = crate::FieldReader<u32>;
@@ -730,7 +730,7 @@ pub mod chan0_ctrl {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 0, 3>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 0, 3>;
     }
-    /// Invert output bit
+    /// 1 inverts the output after mode processing; 0 leaves it unchanged.
     /// Field write behavior: Plain.
     pub mod invert {
         pub type R = crate::BitReader;
@@ -739,7 +739,7 @@ pub mod chan0_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// Bind channel to common range/duty/fifo
+    /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
     /// Field write behavior: Plain.
     pub mod bind {
         pub type R = crate::BitReader;
@@ -748,7 +748,7 @@ pub mod chan0_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// Use duty FIFO
+    /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
     /// Field write behavior: Plain.
     pub mod usefifo {
         pub type R = crate::BitReader;
@@ -757,7 +757,7 @@ pub mod chan0_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// Use sigma-delta noise shaping modulator
+    /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
     /// Field write behavior: Plain.
     pub mod sdm {
         pub type R = crate::BitReader;
@@ -766,7 +766,7 @@ pub mod chan0_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// Add 1-bit LSB dither in SDM mode
+    /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
     /// Field write behavior: Plain.
     pub mod dither {
         pub type R = crate::BitReader;
@@ -775,7 +775,7 @@ pub mod chan0_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// Counter overflow events generate FIFO pop events
+    /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
     /// Field write behavior: Plain.
     pub mod fifo_pop_mask {
         pub type R = crate::BitReader;
@@ -784,7 +784,7 @@ pub mod chan0_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 8>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 8>;
     }
-    /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+    /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
     /// Field write behavior: Plain.
     pub mod sdm_bitwidth {
         pub type R = crate::FieldReader<u32>;
@@ -793,7 +793,7 @@ pub mod chan0_ctrl {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 12, 4>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 12, 4>;
     }
-    /// Unsigned offset added to output PWM code
+    /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
     /// Field write behavior: Plain.
     pub mod sdm_bias {
         pub type R = crate::FieldReader<u32>;
@@ -879,55 +879,55 @@ pub mod chan0_ctrl {
         }
     }
     impl AtomicSetW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::ASW<'_> {
             mode::ASW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::ASW<'_> {
             invert::ASW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::ASW<'_> {
             bind::ASW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::ASW<'_> {
             usefifo::ASW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::ASW<'_> {
             sdm::ASW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::ASW<'_> {
             dither::ASW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::ASW<'_> {
             fifo_pop_mask::ASW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::ASW<'_> {
             sdm_bitwidth::ASW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::ASW<'_> {
@@ -935,55 +935,55 @@ pub mod chan0_ctrl {
         }
     }
     impl AtomicClearW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::ACW<'_> {
             mode::ACW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::ACW<'_> {
             invert::ACW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::ACW<'_> {
             bind::ACW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::ACW<'_> {
             usefifo::ACW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::ACW<'_> {
             sdm::ACW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::ACW<'_> {
             dither::ACW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::ACW<'_> {
             fifo_pop_mask::ACW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::ACW<'_> {
             sdm_bitwidth::ACW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::ACW<'_> {
@@ -991,55 +991,55 @@ pub mod chan0_ctrl {
         }
     }
     impl AtomicXorW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::AXW<'_> {
             mode::AXW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::AXW<'_> {
             invert::AXW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::AXW<'_> {
             bind::AXW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::AXW<'_> {
             usefifo::AXW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::AXW<'_> {
             sdm::AXW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::AXW<'_> {
             dither::AXW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::AXW<'_> {
             fifo_pop_mask::AXW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::AXW<'_> {
             sdm_bitwidth::AXW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::AXW<'_> {
@@ -1048,10 +1048,10 @@ pub mod chan0_ctrl {
     }
 }
 
-/// Channel 0 counter range
+/// Channel 0's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN0_RANGE = Reg<chan0_range::CHAN0_RANGE_SPEC>;
-/// Channel 0 counter range
+/// Channel 0's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub mod chan0_range {
     pub struct CHAN0_RANGE_SPEC;
@@ -1087,7 +1087,7 @@ pub mod chan0_range {
     pub type AtomicSetW = crate::AtomicSetW<CHAN0_RANGE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN0_RANGE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN0_RANGE_SPEC>;
-    /// Counter range
+    /// Counter limit in PWM clock counts.
     /// Field write behavior: Plain.
     pub mod range {
         pub type R = crate::FieldReader<u32>;
@@ -1109,7 +1109,7 @@ pub mod chan0_range {
         }
     }
     impl AtomicSetW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::ASW<'_> {
@@ -1117,7 +1117,7 @@ pub mod chan0_range {
         }
     }
     impl AtomicClearW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::ACW<'_> {
@@ -1125,7 +1125,7 @@ pub mod chan0_range {
         }
     }
     impl AtomicXorW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::AXW<'_> {
@@ -1134,10 +1134,10 @@ pub mod chan0_range {
     }
 }
 
-/// Channel 0 counter phase offset
+/// Starting counter offset for channel 0, applied by `global_ctrl.set_update`.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN0_PHASE = Reg<chan0_phase::CHAN0_PHASE_SPEC>;
-/// Channel 0 counter phase offset
+/// Starting counter offset for channel 0, applied by `global_ctrl.set_update`.
 /// Hardware access: read Plain; write Plain.
 pub mod chan0_phase {
     pub struct CHAN0_PHASE_SPEC;
@@ -1173,7 +1173,7 @@ pub mod chan0_phase {
     pub type AtomicSetW = crate::AtomicSetW<CHAN0_PHASE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN0_PHASE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN0_PHASE_SPEC>;
-    /// Counter phase offset
+    /// Counter preload in PWM clock counts. Keep it within the effective range.
     /// Field write behavior: Plain.
     pub mod phase {
         pub type R = crate::FieldReader<u32>;
@@ -1195,7 +1195,7 @@ pub mod chan0_phase {
         }
     }
     impl AtomicSetW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::ASW<'_> {
@@ -1203,7 +1203,7 @@ pub mod chan0_phase {
         }
     }
     impl AtomicClearW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::ACW<'_> {
@@ -1211,7 +1211,7 @@ pub mod chan0_phase {
         }
     }
     impl AtomicXorW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::AXW<'_> {
@@ -1220,10 +1220,10 @@ pub mod chan0_phase {
     }
 }
 
-/// Channel 0 counter compare
+/// Channel 0's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN0_DUTY = Reg<chan0_duty::CHAN0_DUTY_SPEC>;
-/// Channel 0 counter compare
+/// Channel 0's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub mod chan0_duty {
     pub struct CHAN0_DUTY_SPEC;
@@ -1259,7 +1259,7 @@ pub mod chan0_duty {
     pub type AtomicSetW = crate::AtomicSetW<CHAN0_DUTY_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN0_DUTY_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN0_DUTY_SPEC>;
-    /// Counter compare
+    /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
     /// Field write behavior: Plain.
     pub mod duty {
         pub type R = crate::FieldReader<u32>;
@@ -1281,7 +1281,7 @@ pub mod chan0_duty {
         }
     }
     impl AtomicSetW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::ASW<'_> {
@@ -1289,7 +1289,7 @@ pub mod chan0_duty {
         }
     }
     impl AtomicClearW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::ACW<'_> {
@@ -1297,7 +1297,7 @@ pub mod chan0_duty {
         }
     }
     impl AtomicXorW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::AXW<'_> {
@@ -1306,10 +1306,10 @@ pub mod chan0_duty {
     }
 }
 
-/// Channel 1 control register
+/// Waveform setup for channel 1. Changes take effect after a `global_ctrl.set_update` write.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN1_CTRL = Reg<chan1_ctrl::CHAN1_CTRL_SPEC>;
-/// Channel 1 control register
+/// Waveform setup for channel 1. Changes take effect after a `global_ctrl.set_update` write.
 /// Hardware access: read Plain; write Plain.
 pub mod chan1_ctrl {
     pub struct CHAN1_CTRL_SPEC;
@@ -1342,7 +1342,7 @@ pub mod chan1_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<CHAN1_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN1_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN1_CTRL_SPEC>;
-    /// PWM generation mode
+    /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
     /// Field write behavior: Plain.
     pub mod mode {
         pub type R = crate::FieldReader<u32>;
@@ -1351,7 +1351,7 @@ pub mod chan1_ctrl {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 0, 3>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 0, 3>;
     }
-    /// Invert output bit
+    /// 1 inverts the output after mode processing; 0 leaves it unchanged.
     /// Field write behavior: Plain.
     pub mod invert {
         pub type R = crate::BitReader;
@@ -1360,7 +1360,7 @@ pub mod chan1_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// Bind channel to common range/duty/fifo
+    /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
     /// Field write behavior: Plain.
     pub mod bind {
         pub type R = crate::BitReader;
@@ -1369,7 +1369,7 @@ pub mod chan1_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// Use duty FIFO
+    /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
     /// Field write behavior: Plain.
     pub mod usefifo {
         pub type R = crate::BitReader;
@@ -1378,7 +1378,7 @@ pub mod chan1_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// Use sigma-delta noise shaping modulator
+    /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
     /// Field write behavior: Plain.
     pub mod sdm {
         pub type R = crate::BitReader;
@@ -1387,7 +1387,7 @@ pub mod chan1_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// Add 1-bit LSB dither in SDM mode
+    /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
     /// Field write behavior: Plain.
     pub mod dither {
         pub type R = crate::BitReader;
@@ -1396,7 +1396,7 @@ pub mod chan1_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// Counter overflow events generate FIFO pop events
+    /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
     /// Field write behavior: Plain.
     pub mod fifo_pop_mask {
         pub type R = crate::BitReader;
@@ -1405,7 +1405,7 @@ pub mod chan1_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 8>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 8>;
     }
-    /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+    /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
     /// Field write behavior: Plain.
     pub mod sdm_bitwidth {
         pub type R = crate::FieldReader<u32>;
@@ -1414,7 +1414,7 @@ pub mod chan1_ctrl {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 12, 4>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 12, 4>;
     }
-    /// Unsigned offset added to output PWM code
+    /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
     /// Field write behavior: Plain.
     pub mod sdm_bias {
         pub type R = crate::FieldReader<u32>;
@@ -1500,55 +1500,55 @@ pub mod chan1_ctrl {
         }
     }
     impl AtomicSetW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::ASW<'_> {
             mode::ASW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::ASW<'_> {
             invert::ASW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::ASW<'_> {
             bind::ASW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::ASW<'_> {
             usefifo::ASW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::ASW<'_> {
             sdm::ASW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::ASW<'_> {
             dither::ASW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::ASW<'_> {
             fifo_pop_mask::ASW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::ASW<'_> {
             sdm_bitwidth::ASW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::ASW<'_> {
@@ -1556,55 +1556,55 @@ pub mod chan1_ctrl {
         }
     }
     impl AtomicClearW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::ACW<'_> {
             mode::ACW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::ACW<'_> {
             invert::ACW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::ACW<'_> {
             bind::ACW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::ACW<'_> {
             usefifo::ACW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::ACW<'_> {
             sdm::ACW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::ACW<'_> {
             dither::ACW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::ACW<'_> {
             fifo_pop_mask::ACW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::ACW<'_> {
             sdm_bitwidth::ACW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::ACW<'_> {
@@ -1612,55 +1612,55 @@ pub mod chan1_ctrl {
         }
     }
     impl AtomicXorW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::AXW<'_> {
             mode::AXW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::AXW<'_> {
             invert::AXW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::AXW<'_> {
             bind::AXW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::AXW<'_> {
             usefifo::AXW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::AXW<'_> {
             sdm::AXW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::AXW<'_> {
             dither::AXW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::AXW<'_> {
             fifo_pop_mask::AXW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::AXW<'_> {
             sdm_bitwidth::AXW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::AXW<'_> {
@@ -1669,10 +1669,10 @@ pub mod chan1_ctrl {
     }
 }
 
-/// Channel 1 counter range
+/// Channel 1's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN1_RANGE = Reg<chan1_range::CHAN1_RANGE_SPEC>;
-/// Channel 1 counter range
+/// Channel 1's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub mod chan1_range {
     pub struct CHAN1_RANGE_SPEC;
@@ -1708,7 +1708,7 @@ pub mod chan1_range {
     pub type AtomicSetW = crate::AtomicSetW<CHAN1_RANGE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN1_RANGE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN1_RANGE_SPEC>;
-    /// Counter range
+    /// Counter limit in PWM clock counts.
     /// Field write behavior: Plain.
     pub mod range {
         pub type R = crate::FieldReader<u32>;
@@ -1730,7 +1730,7 @@ pub mod chan1_range {
         }
     }
     impl AtomicSetW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::ASW<'_> {
@@ -1738,7 +1738,7 @@ pub mod chan1_range {
         }
     }
     impl AtomicClearW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::ACW<'_> {
@@ -1746,7 +1746,7 @@ pub mod chan1_range {
         }
     }
     impl AtomicXorW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::AXW<'_> {
@@ -1755,10 +1755,10 @@ pub mod chan1_range {
     }
 }
 
-/// Channel 1 counter phase offset
+/// Starting counter offset for channel 1, applied by `global_ctrl.set_update`.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN1_PHASE = Reg<chan1_phase::CHAN1_PHASE_SPEC>;
-/// Channel 1 counter phase offset
+/// Starting counter offset for channel 1, applied by `global_ctrl.set_update`.
 /// Hardware access: read Plain; write Plain.
 pub mod chan1_phase {
     pub struct CHAN1_PHASE_SPEC;
@@ -1794,7 +1794,7 @@ pub mod chan1_phase {
     pub type AtomicSetW = crate::AtomicSetW<CHAN1_PHASE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN1_PHASE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN1_PHASE_SPEC>;
-    /// Counter phase offset
+    /// Counter preload in PWM clock counts. Keep it within the effective range.
     /// Field write behavior: Plain.
     pub mod phase {
         pub type R = crate::FieldReader<u32>;
@@ -1816,7 +1816,7 @@ pub mod chan1_phase {
         }
     }
     impl AtomicSetW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::ASW<'_> {
@@ -1824,7 +1824,7 @@ pub mod chan1_phase {
         }
     }
     impl AtomicClearW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::ACW<'_> {
@@ -1832,7 +1832,7 @@ pub mod chan1_phase {
         }
     }
     impl AtomicXorW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::AXW<'_> {
@@ -1841,10 +1841,10 @@ pub mod chan1_phase {
     }
 }
 
-/// Channel 1 counter compare
+/// Channel 1's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN1_DUTY = Reg<chan1_duty::CHAN1_DUTY_SPEC>;
-/// Channel 1 counter compare
+/// Channel 1's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub mod chan1_duty {
     pub struct CHAN1_DUTY_SPEC;
@@ -1880,7 +1880,7 @@ pub mod chan1_duty {
     pub type AtomicSetW = crate::AtomicSetW<CHAN1_DUTY_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN1_DUTY_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN1_DUTY_SPEC>;
-    /// Counter compare
+    /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
     /// Field write behavior: Plain.
     pub mod duty {
         pub type R = crate::FieldReader<u32>;
@@ -1902,7 +1902,7 @@ pub mod chan1_duty {
         }
     }
     impl AtomicSetW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::ASW<'_> {
@@ -1910,7 +1910,7 @@ pub mod chan1_duty {
         }
     }
     impl AtomicClearW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::ACW<'_> {
@@ -1918,7 +1918,7 @@ pub mod chan1_duty {
         }
     }
     impl AtomicXorW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::AXW<'_> {
@@ -1927,10 +1927,10 @@ pub mod chan1_duty {
     }
 }
 
-/// Channel 2 control register
+/// Waveform setup for channel 2. Changes take effect after a `global_ctrl.set_update` write.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN2_CTRL = Reg<chan2_ctrl::CHAN2_CTRL_SPEC>;
-/// Channel 2 control register
+/// Waveform setup for channel 2. Changes take effect after a `global_ctrl.set_update` write.
 /// Hardware access: read Plain; write Plain.
 pub mod chan2_ctrl {
     pub struct CHAN2_CTRL_SPEC;
@@ -1963,7 +1963,7 @@ pub mod chan2_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<CHAN2_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN2_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN2_CTRL_SPEC>;
-    /// PWM generation mode
+    /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
     /// Field write behavior: Plain.
     pub mod mode {
         pub type R = crate::FieldReader<u32>;
@@ -1972,7 +1972,7 @@ pub mod chan2_ctrl {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 0, 3>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 0, 3>;
     }
-    /// Invert output bit
+    /// 1 inverts the output after mode processing; 0 leaves it unchanged.
     /// Field write behavior: Plain.
     pub mod invert {
         pub type R = crate::BitReader;
@@ -1981,7 +1981,7 @@ pub mod chan2_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// Bind channel to common range/duty/fifo
+    /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
     /// Field write behavior: Plain.
     pub mod bind {
         pub type R = crate::BitReader;
@@ -1990,7 +1990,7 @@ pub mod chan2_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// Use duty FIFO
+    /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
     /// Field write behavior: Plain.
     pub mod usefifo {
         pub type R = crate::BitReader;
@@ -1999,7 +1999,7 @@ pub mod chan2_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// Use sigma-delta noise shaping modulator
+    /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
     /// Field write behavior: Plain.
     pub mod sdm {
         pub type R = crate::BitReader;
@@ -2008,7 +2008,7 @@ pub mod chan2_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// Add 1-bit LSB dither in SDM mode
+    /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
     /// Field write behavior: Plain.
     pub mod dither {
         pub type R = crate::BitReader;
@@ -2017,7 +2017,7 @@ pub mod chan2_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// Counter overflow events generate FIFO pop events
+    /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
     /// Field write behavior: Plain.
     pub mod fifo_pop_mask {
         pub type R = crate::BitReader;
@@ -2026,7 +2026,7 @@ pub mod chan2_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 8>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 8>;
     }
-    /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+    /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
     /// Field write behavior: Plain.
     pub mod sdm_bitwidth {
         pub type R = crate::FieldReader<u32>;
@@ -2035,7 +2035,7 @@ pub mod chan2_ctrl {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 12, 4>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 12, 4>;
     }
-    /// Unsigned offset added to output PWM code
+    /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
     /// Field write behavior: Plain.
     pub mod sdm_bias {
         pub type R = crate::FieldReader<u32>;
@@ -2121,55 +2121,55 @@ pub mod chan2_ctrl {
         }
     }
     impl AtomicSetW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::ASW<'_> {
             mode::ASW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::ASW<'_> {
             invert::ASW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::ASW<'_> {
             bind::ASW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::ASW<'_> {
             usefifo::ASW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::ASW<'_> {
             sdm::ASW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::ASW<'_> {
             dither::ASW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::ASW<'_> {
             fifo_pop_mask::ASW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::ASW<'_> {
             sdm_bitwidth::ASW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::ASW<'_> {
@@ -2177,55 +2177,55 @@ pub mod chan2_ctrl {
         }
     }
     impl AtomicClearW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::ACW<'_> {
             mode::ACW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::ACW<'_> {
             invert::ACW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::ACW<'_> {
             bind::ACW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::ACW<'_> {
             usefifo::ACW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::ACW<'_> {
             sdm::ACW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::ACW<'_> {
             dither::ACW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::ACW<'_> {
             fifo_pop_mask::ACW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::ACW<'_> {
             sdm_bitwidth::ACW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::ACW<'_> {
@@ -2233,55 +2233,55 @@ pub mod chan2_ctrl {
         }
     }
     impl AtomicXorW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::AXW<'_> {
             mode::AXW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::AXW<'_> {
             invert::AXW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::AXW<'_> {
             bind::AXW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::AXW<'_> {
             usefifo::AXW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::AXW<'_> {
             sdm::AXW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::AXW<'_> {
             dither::AXW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::AXW<'_> {
             fifo_pop_mask::AXW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::AXW<'_> {
             sdm_bitwidth::AXW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::AXW<'_> {
@@ -2290,10 +2290,10 @@ pub mod chan2_ctrl {
     }
 }
 
-/// Channel 2 counter range
+/// Channel 2's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN2_RANGE = Reg<chan2_range::CHAN2_RANGE_SPEC>;
-/// Channel 2 counter range
+/// Channel 2's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub mod chan2_range {
     pub struct CHAN2_RANGE_SPEC;
@@ -2329,7 +2329,7 @@ pub mod chan2_range {
     pub type AtomicSetW = crate::AtomicSetW<CHAN2_RANGE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN2_RANGE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN2_RANGE_SPEC>;
-    /// Counter range
+    /// Counter limit in PWM clock counts.
     /// Field write behavior: Plain.
     pub mod range {
         pub type R = crate::FieldReader<u32>;
@@ -2351,7 +2351,7 @@ pub mod chan2_range {
         }
     }
     impl AtomicSetW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::ASW<'_> {
@@ -2359,7 +2359,7 @@ pub mod chan2_range {
         }
     }
     impl AtomicClearW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::ACW<'_> {
@@ -2367,7 +2367,7 @@ pub mod chan2_range {
         }
     }
     impl AtomicXorW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::AXW<'_> {
@@ -2376,10 +2376,10 @@ pub mod chan2_range {
     }
 }
 
-/// Channel 2 counter phase offset
+/// Starting counter offset for channel 2, applied by `global_ctrl.set_update`.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN2_PHASE = Reg<chan2_phase::CHAN2_PHASE_SPEC>;
-/// Channel 2 counter phase offset
+/// Starting counter offset for channel 2, applied by `global_ctrl.set_update`.
 /// Hardware access: read Plain; write Plain.
 pub mod chan2_phase {
     pub struct CHAN2_PHASE_SPEC;
@@ -2415,7 +2415,7 @@ pub mod chan2_phase {
     pub type AtomicSetW = crate::AtomicSetW<CHAN2_PHASE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN2_PHASE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN2_PHASE_SPEC>;
-    /// Counter phase offset
+    /// Counter preload in PWM clock counts. Keep it within the effective range.
     /// Field write behavior: Plain.
     pub mod phase {
         pub type R = crate::FieldReader<u32>;
@@ -2437,7 +2437,7 @@ pub mod chan2_phase {
         }
     }
     impl AtomicSetW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::ASW<'_> {
@@ -2445,7 +2445,7 @@ pub mod chan2_phase {
         }
     }
     impl AtomicClearW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::ACW<'_> {
@@ -2453,7 +2453,7 @@ pub mod chan2_phase {
         }
     }
     impl AtomicXorW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::AXW<'_> {
@@ -2462,10 +2462,10 @@ pub mod chan2_phase {
     }
 }
 
-/// Channel 2 counter compare
+/// Channel 2's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN2_DUTY = Reg<chan2_duty::CHAN2_DUTY_SPEC>;
-/// Channel 2 counter compare
+/// Channel 2's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub mod chan2_duty {
     pub struct CHAN2_DUTY_SPEC;
@@ -2501,7 +2501,7 @@ pub mod chan2_duty {
     pub type AtomicSetW = crate::AtomicSetW<CHAN2_DUTY_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN2_DUTY_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN2_DUTY_SPEC>;
-    /// Counter compare
+    /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
     /// Field write behavior: Plain.
     pub mod duty {
         pub type R = crate::FieldReader<u32>;
@@ -2523,7 +2523,7 @@ pub mod chan2_duty {
         }
     }
     impl AtomicSetW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::ASW<'_> {
@@ -2531,7 +2531,7 @@ pub mod chan2_duty {
         }
     }
     impl AtomicClearW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::ACW<'_> {
@@ -2539,7 +2539,7 @@ pub mod chan2_duty {
         }
     }
     impl AtomicXorW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::AXW<'_> {
@@ -2548,10 +2548,10 @@ pub mod chan2_duty {
     }
 }
 
-/// Channel 3 control register
+/// Waveform setup for channel 3. Changes take effect after a `global_ctrl.set_update` write.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN3_CTRL = Reg<chan3_ctrl::CHAN3_CTRL_SPEC>;
-/// Channel 3 control register
+/// Waveform setup for channel 3. Changes take effect after a `global_ctrl.set_update` write.
 /// Hardware access: read Plain; write Plain.
 pub mod chan3_ctrl {
     pub struct CHAN3_CTRL_SPEC;
@@ -2584,7 +2584,7 @@ pub mod chan3_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<CHAN3_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN3_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN3_CTRL_SPEC>;
-    /// PWM generation mode
+    /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
     /// Field write behavior: Plain.
     pub mod mode {
         pub type R = crate::FieldReader<u32>;
@@ -2593,7 +2593,7 @@ pub mod chan3_ctrl {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 0, 3>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 0, 3>;
     }
-    /// Invert output bit
+    /// 1 inverts the output after mode processing; 0 leaves it unchanged.
     /// Field write behavior: Plain.
     pub mod invert {
         pub type R = crate::BitReader;
@@ -2602,7 +2602,7 @@ pub mod chan3_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// Bind channel to common range/duty/fifo
+    /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
     /// Field write behavior: Plain.
     pub mod bind {
         pub type R = crate::BitReader;
@@ -2611,7 +2611,7 @@ pub mod chan3_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// Use duty FIFO
+    /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
     /// Field write behavior: Plain.
     pub mod usefifo {
         pub type R = crate::BitReader;
@@ -2620,7 +2620,7 @@ pub mod chan3_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// Use sigma-delta noise shaping modulator
+    /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
     /// Field write behavior: Plain.
     pub mod sdm {
         pub type R = crate::BitReader;
@@ -2629,7 +2629,7 @@ pub mod chan3_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// Add 1-bit LSB dither in SDM mode
+    /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
     /// Field write behavior: Plain.
     pub mod dither {
         pub type R = crate::BitReader;
@@ -2638,7 +2638,7 @@ pub mod chan3_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// Counter overflow events generate FIFO pop events
+    /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
     /// Field write behavior: Plain.
     pub mod fifo_pop_mask {
         pub type R = crate::BitReader;
@@ -2647,7 +2647,7 @@ pub mod chan3_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 8>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 8>;
     }
-    /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+    /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
     /// Field write behavior: Plain.
     pub mod sdm_bitwidth {
         pub type R = crate::FieldReader<u32>;
@@ -2656,7 +2656,7 @@ pub mod chan3_ctrl {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 12, 4>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 12, 4>;
     }
-    /// Unsigned offset added to output PWM code
+    /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
     /// Field write behavior: Plain.
     pub mod sdm_bias {
         pub type R = crate::FieldReader<u32>;
@@ -2742,55 +2742,55 @@ pub mod chan3_ctrl {
         }
     }
     impl AtomicSetW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::ASW<'_> {
             mode::ASW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::ASW<'_> {
             invert::ASW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::ASW<'_> {
             bind::ASW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::ASW<'_> {
             usefifo::ASW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::ASW<'_> {
             sdm::ASW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::ASW<'_> {
             dither::ASW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::ASW<'_> {
             fifo_pop_mask::ASW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::ASW<'_> {
             sdm_bitwidth::ASW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::ASW<'_> {
@@ -2798,55 +2798,55 @@ pub mod chan3_ctrl {
         }
     }
     impl AtomicClearW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::ACW<'_> {
             mode::ACW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::ACW<'_> {
             invert::ACW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::ACW<'_> {
             bind::ACW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::ACW<'_> {
             usefifo::ACW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::ACW<'_> {
             sdm::ACW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::ACW<'_> {
             dither::ACW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::ACW<'_> {
             fifo_pop_mask::ACW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::ACW<'_> {
             sdm_bitwidth::ACW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::ACW<'_> {
@@ -2854,55 +2854,55 @@ pub mod chan3_ctrl {
         }
     }
     impl AtomicXorW {
-        /// PWM generation mode
+        /// Waveform mode. 0: output 0 (before inversion). 1: trailing-edge PWM, counter counts up. 2: centre-aligned pulse, counter counts down then up. 3: pulse density, high for DUTY/RANGE of the steps; each step adds DUTY to an accumulator, and when the sum reaches RANGE a 1 is output and RANGE is subtracted. 4: serial output starting at bit 31. 5: one high slot when COUNT equals DUTY. 6: leading-edge PWM, counter counts down. 7: serial output starting at bit 0. Modes 1, 2 and 6 output high while COUNT < DUTY. Serial modes wrap the bit index modulo 32.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mode(&mut self) -> mode::AXW<'_> {
             mode::AXW::new(self)
         }
-        /// Invert output bit
+        /// 1 inverts the output after mode processing; 0 leaves it unchanged.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn invert(&mut self) -> invert::AXW<'_> {
             invert::AXW::new(self)
         }
-        /// Bind channel to common range/duty/fifo
+        /// 0 uses this channel's own range and duty registers. 1 uses `common_range`, with duty from `common_duty` or the FIFO.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn bind(&mut self) -> bind::AXW<'_> {
             bind::AXW::new(self)
         }
-        /// Use duty FIFO
+        /// 0 takes duty from a register; 1 takes duty from the FIFO. Needs `bind=1`; using the FIFO without bind gives unpredictable results.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn usefifo(&mut self) -> usefifo::AXW<'_> {
             usefifo::AXW::new(self)
         }
-        /// Use sigma-delta noise shaping modulator
+        /// 1 enables second-order sigma-delta noise shaping: the duty value is treated as signed 16-bit and quantized to `sdm_bitwidth`+1 bits, advancing on the channel's duty strobe. 0 bypasses shaping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm(&mut self) -> sdm::AXW<'_> {
             sdm::AXW::new(self)
         }
-        /// Add 1-bit LSB dither in SDM mode
+        /// 1 adds a one-LSB dither into the sigma-delta loop to break up idle tones; 0 turns it off. Only has an effect when `sdm=1`.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dither(&mut self) -> dither::AXW<'_> {
             dither::AXW::new(self)
         }
-        /// Counter overflow events generate FIFO pop events
+        /// 1 lets this channel's rollover contribute to the shared FIFO pop (an OR across bound channels). 0 keeps its rollover from popping.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_pop_mask(&mut self) -> fifo_pop_mask::AXW<'_> {
             fifo_pop_mask::AXW::new(self)
         }
-        /// Quantise 16-bit input to sdm_bitwidth+1-bit output
+        /// Sigma-delta output precision minus one: values 0-15 give 1-16 bits.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bitwidth(&mut self) -> sdm_bitwidth::AXW<'_> {
             sdm_bitwidth::AXW::new(self)
         }
-        /// Unsigned offset added to output PWM code
+        /// Unsigned offset added to the quantized PWM code, for example to move a signed source into an unsigned range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sdm_bias(&mut self) -> sdm_bias::AXW<'_> {
@@ -2911,10 +2911,10 @@ pub mod chan3_ctrl {
     }
 }
 
-/// Channel 3 counter range
+/// Channel 3's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN3_RANGE = Reg<chan3_range::CHAN3_RANGE_SPEC>;
-/// Channel 3 counter range
+/// Channel 3's own counter limit, used when `bind=0`. A write takes effect at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub mod chan3_range {
     pub struct CHAN3_RANGE_SPEC;
@@ -2950,7 +2950,7 @@ pub mod chan3_range {
     pub type AtomicSetW = crate::AtomicSetW<CHAN3_RANGE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN3_RANGE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN3_RANGE_SPEC>;
-    /// Counter range
+    /// Counter limit in PWM clock counts.
     /// Field write behavior: Plain.
     pub mod range {
         pub type R = crate::FieldReader<u32>;
@@ -2972,7 +2972,7 @@ pub mod chan3_range {
         }
     }
     impl AtomicSetW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::ASW<'_> {
@@ -2980,7 +2980,7 @@ pub mod chan3_range {
         }
     }
     impl AtomicClearW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::ACW<'_> {
@@ -2988,7 +2988,7 @@ pub mod chan3_range {
         }
     }
     impl AtomicXorW {
-        /// Counter range
+        /// Counter limit in PWM clock counts.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn range(&mut self) -> range::AXW<'_> {
@@ -2997,10 +2997,10 @@ pub mod chan3_range {
     }
 }
 
-/// Channel 3 counter phase offset
+/// Starting counter offset for channel 3, applied by `global_ctrl.set_update`.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN3_PHASE = Reg<chan3_phase::CHAN3_PHASE_SPEC>;
-/// Channel 3 counter phase offset
+/// Starting counter offset for channel 3, applied by `global_ctrl.set_update`.
 /// Hardware access: read Plain; write Plain.
 pub mod chan3_phase {
     pub struct CHAN3_PHASE_SPEC;
@@ -3036,7 +3036,7 @@ pub mod chan3_phase {
     pub type AtomicSetW = crate::AtomicSetW<CHAN3_PHASE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN3_PHASE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN3_PHASE_SPEC>;
-    /// Counter phase offset
+    /// Counter preload in PWM clock counts. Keep it within the effective range.
     /// Field write behavior: Plain.
     pub mod phase {
         pub type R = crate::FieldReader<u32>;
@@ -3058,7 +3058,7 @@ pub mod chan3_phase {
         }
     }
     impl AtomicSetW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::ASW<'_> {
@@ -3066,7 +3066,7 @@ pub mod chan3_phase {
         }
     }
     impl AtomicClearW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::ACW<'_> {
@@ -3074,7 +3074,7 @@ pub mod chan3_phase {
         }
     }
     impl AtomicXorW {
-        /// Counter phase offset
+        /// Counter preload in PWM clock counts. Keep it within the effective range.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn phase(&mut self) -> phase::AXW<'_> {
@@ -3083,10 +3083,10 @@ pub mod chan3_phase {
     }
 }
 
-/// Channel 3 counter compare
+/// Channel 3's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub type CHAN3_DUTY = Reg<chan3_duty::CHAN3_DUTY_SPEC>;
-/// Channel 3 counter compare
+/// Channel 3's own duty value, used when `bind=0` and `usefifo=0`. A new value is latched at the next rollover.
 /// Hardware access: read Plain; write Plain.
 pub mod chan3_duty {
     pub struct CHAN3_DUTY_SPEC;
@@ -3122,7 +3122,7 @@ pub mod chan3_duty {
     pub type AtomicSetW = crate::AtomicSetW<CHAN3_DUTY_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CHAN3_DUTY_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CHAN3_DUTY_SPEC>;
-    /// Counter compare
+    /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
     /// Field write behavior: Plain.
     pub mod duty {
         pub type R = crate::FieldReader<u32>;
@@ -3144,7 +3144,7 @@ pub mod chan3_duty {
         }
     }
     impl AtomicSetW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::ASW<'_> {
@@ -3152,7 +3152,7 @@ pub mod chan3_duty {
         }
     }
     impl AtomicClearW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::ACW<'_> {
@@ -3160,7 +3160,7 @@ pub mod chan3_duty {
         }
     }
     impl AtomicXorW {
-        /// Counter compare
+        /// Meaning depends on `mode`: compare value, density numerator, pulse position or serial data word.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn duty(&mut self) -> duty::AXW<'_> {
@@ -3169,10 +3169,10 @@ pub mod chan3_duty {
     }
 }
 
-/// Raw interrupts
+/// Raw interrupt status, before the enable mask.
 /// Hardware access: read Plain; write Plain.
 pub type INTR = Reg<intr::INTR_SPEC>;
-/// Raw interrupts
+/// Raw interrupt status, before the enable mask.
 /// Hardware access: read Plain; write Plain.
 pub mod intr {
     pub struct INTR_SPEC;
@@ -3208,7 +3208,7 @@ pub mod intr {
     pub type AtomicSetW = crate::AtomicSetW<INTR_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<INTR_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<INTR_SPEC>;
-    /// fifo underflow
+    /// Raw FIFO underflow (read while empty) flag. Clear it by writing 1; writing 0 leaves it pending.
     /// Field write behavior: Plain.
     pub mod fifo_underflow {
         pub type R = crate::BitReader;
@@ -3217,7 +3217,7 @@ pub mod intr {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// fifo overflow
+    /// Raw FIFO overflow (write while full) flag. Clear it by writing 1; writing 0 leaves it pending.
     /// Field write behavior: Plain.
     pub mod fifo_overflow {
         pub type R = crate::BitReader;
@@ -3226,7 +3226,7 @@ pub mod intr {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// fifo empty
+    /// Raw FIFO empty state. Follows the source; it is not cleared by writing.
     /// Field write behavior: Plain.
     pub mod fifo_empty {
         pub type R = crate::BitReader;
@@ -3235,7 +3235,7 @@ pub mod intr {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
     }
-    /// fifo full
+    /// Raw FIFO full state. Follows the source; it is not cleared by writing.
     /// Field write behavior: Plain.
     pub mod fifo_full {
         pub type R = crate::BitReader;
@@ -3244,7 +3244,7 @@ pub mod intr {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// dreq active
+    /// Raw DMA request active state. Follows the source; it is not cleared by writing.
     /// Field write behavior: Plain.
     pub mod dreq_active {
         pub type R = crate::BitReader;
@@ -3253,7 +3253,7 @@ pub mod intr {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// chan0 reload
+    /// Raw channel 0 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
     /// Field write behavior: Plain.
     pub mod chan0_reload {
         pub type R = crate::BitReader;
@@ -3262,7 +3262,7 @@ pub mod intr {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// chan1 reload
+    /// Raw channel 1 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
     /// Field write behavior: Plain.
     pub mod chan1_reload {
         pub type R = crate::BitReader;
@@ -3271,7 +3271,7 @@ pub mod intr {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// chan2 reload
+    /// Raw channel 2 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
     /// Field write behavior: Plain.
     pub mod chan2_reload {
         pub type R = crate::BitReader;
@@ -3280,7 +3280,7 @@ pub mod intr {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// chan3 reload
+    /// Raw channel 3 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
     /// Field write behavior: Plain.
     pub mod chan3_reload {
         pub type R = crate::BitReader;
@@ -3366,55 +3366,55 @@ pub mod intr {
         }
     }
     impl AtomicSetW {
-        /// fifo underflow
+        /// Raw FIFO underflow (read while empty) flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_underflow(&mut self) -> fifo_underflow::ASW<'_> {
             fifo_underflow::ASW::new(self)
         }
-        /// fifo overflow
+        /// Raw FIFO overflow (write while full) flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_overflow(&mut self) -> fifo_overflow::ASW<'_> {
             fifo_overflow::ASW::new(self)
         }
-        /// fifo empty
+        /// Raw FIFO empty state. Follows the source; it is not cleared by writing.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_empty(&mut self) -> fifo_empty::ASW<'_> {
             fifo_empty::ASW::new(self)
         }
-        /// fifo full
+        /// Raw FIFO full state. Follows the source; it is not cleared by writing.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_full(&mut self) -> fifo_full::ASW<'_> {
             fifo_full::ASW::new(self)
         }
-        /// dreq active
+        /// Raw DMA request active state. Follows the source; it is not cleared by writing.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dreq_active(&mut self) -> dreq_active::ASW<'_> {
             dreq_active::ASW::new(self)
         }
-        /// chan0 reload
+        /// Raw channel 0 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_reload(&mut self) -> chan0_reload::ASW<'_> {
             chan0_reload::ASW::new(self)
         }
-        /// chan1 reload
+        /// Raw channel 1 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_reload(&mut self) -> chan1_reload::ASW<'_> {
             chan1_reload::ASW::new(self)
         }
-        /// chan2 reload
+        /// Raw channel 2 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_reload(&mut self) -> chan2_reload::ASW<'_> {
             chan2_reload::ASW::new(self)
         }
-        /// chan3 reload
+        /// Raw channel 3 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_reload(&mut self) -> chan3_reload::ASW<'_> {
@@ -3422,55 +3422,55 @@ pub mod intr {
         }
     }
     impl AtomicClearW {
-        /// fifo underflow
+        /// Raw FIFO underflow (read while empty) flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_underflow(&mut self) -> fifo_underflow::ACW<'_> {
             fifo_underflow::ACW::new(self)
         }
-        /// fifo overflow
+        /// Raw FIFO overflow (write while full) flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_overflow(&mut self) -> fifo_overflow::ACW<'_> {
             fifo_overflow::ACW::new(self)
         }
-        /// fifo empty
+        /// Raw FIFO empty state. Follows the source; it is not cleared by writing.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_empty(&mut self) -> fifo_empty::ACW<'_> {
             fifo_empty::ACW::new(self)
         }
-        /// fifo full
+        /// Raw FIFO full state. Follows the source; it is not cleared by writing.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_full(&mut self) -> fifo_full::ACW<'_> {
             fifo_full::ACW::new(self)
         }
-        /// dreq active
+        /// Raw DMA request active state. Follows the source; it is not cleared by writing.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dreq_active(&mut self) -> dreq_active::ACW<'_> {
             dreq_active::ACW::new(self)
         }
-        /// chan0 reload
+        /// Raw channel 0 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_reload(&mut self) -> chan0_reload::ACW<'_> {
             chan0_reload::ACW::new(self)
         }
-        /// chan1 reload
+        /// Raw channel 1 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_reload(&mut self) -> chan1_reload::ACW<'_> {
             chan1_reload::ACW::new(self)
         }
-        /// chan2 reload
+        /// Raw channel 2 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_reload(&mut self) -> chan2_reload::ACW<'_> {
             chan2_reload::ACW::new(self)
         }
-        /// chan3 reload
+        /// Raw channel 3 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_reload(&mut self) -> chan3_reload::ACW<'_> {
@@ -3478,55 +3478,55 @@ pub mod intr {
         }
     }
     impl AtomicXorW {
-        /// fifo underflow
+        /// Raw FIFO underflow (read while empty) flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_underflow(&mut self) -> fifo_underflow::AXW<'_> {
             fifo_underflow::AXW::new(self)
         }
-        /// fifo overflow
+        /// Raw FIFO overflow (write while full) flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_overflow(&mut self) -> fifo_overflow::AXW<'_> {
             fifo_overflow::AXW::new(self)
         }
-        /// fifo empty
+        /// Raw FIFO empty state. Follows the source; it is not cleared by writing.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_empty(&mut self) -> fifo_empty::AXW<'_> {
             fifo_empty::AXW::new(self)
         }
-        /// fifo full
+        /// Raw FIFO full state. Follows the source; it is not cleared by writing.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_full(&mut self) -> fifo_full::AXW<'_> {
             fifo_full::AXW::new(self)
         }
-        /// dreq active
+        /// Raw DMA request active state. Follows the source; it is not cleared by writing.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dreq_active(&mut self) -> dreq_active::AXW<'_> {
             dreq_active::AXW::new(self)
         }
-        /// chan0 reload
+        /// Raw channel 0 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_reload(&mut self) -> chan0_reload::AXW<'_> {
             chan0_reload::AXW::new(self)
         }
-        /// chan1 reload
+        /// Raw channel 1 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_reload(&mut self) -> chan1_reload::AXW<'_> {
             chan1_reload::AXW::new(self)
         }
-        /// chan2 reload
+        /// Raw channel 2 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_reload(&mut self) -> chan2_reload::AXW<'_> {
             chan2_reload::AXW::new(self)
         }
-        /// chan3 reload
+        /// Raw channel 3 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_reload(&mut self) -> chan3_reload::AXW<'_> {
@@ -3535,10 +3535,10 @@ pub mod intr {
     }
 }
 
-/// Interrupt enable
+/// Interrupt enable mask, one bit per source: 0 masks the source, 1 passes it to the IRQ output.
 /// Hardware access: read Plain; write Plain.
 pub type INTE = Reg<inte::INTE_SPEC>;
-/// Interrupt enable
+/// Interrupt enable mask, one bit per source: 0 masks the source, 1 passes it to the IRQ output.
 /// Hardware access: read Plain; write Plain.
 pub mod inte {
     pub struct INTE_SPEC;
@@ -3574,7 +3574,7 @@ pub mod inte {
     pub type AtomicSetW = crate::AtomicSetW<INTE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<INTE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<INTE_SPEC>;
-    /// fifo underflow
+    /// Enable for the FIFO underflow (read while empty) interrupt: 0 masked, 1 routed to the IRQ output.
     /// Field write behavior: Plain.
     pub mod fifo_underflow {
         pub type R = crate::BitReader;
@@ -3583,7 +3583,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// fifo overflow
+    /// Enable for the FIFO overflow (write while full) interrupt: 0 masked, 1 routed to the IRQ output.
     /// Field write behavior: Plain.
     pub mod fifo_overflow {
         pub type R = crate::BitReader;
@@ -3592,7 +3592,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// fifo empty
+    /// Enable for the FIFO empty interrupt: 0 masked, 1 routed to the IRQ output.
     /// Field write behavior: Plain.
     pub mod fifo_empty {
         pub type R = crate::BitReader;
@@ -3601,7 +3601,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
     }
-    /// fifo full
+    /// Enable for the FIFO full interrupt: 0 masked, 1 routed to the IRQ output.
     /// Field write behavior: Plain.
     pub mod fifo_full {
         pub type R = crate::BitReader;
@@ -3610,7 +3610,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// dreq active
+    /// Enable for the DMA request active interrupt: 0 masked, 1 routed to the IRQ output.
     /// Field write behavior: Plain.
     pub mod dreq_active {
         pub type R = crate::BitReader;
@@ -3619,7 +3619,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// chan0 reload
+    /// Enable for the channel 0 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
     /// Field write behavior: Plain.
     pub mod chan0_reload {
         pub type R = crate::BitReader;
@@ -3628,7 +3628,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// chan1 reload
+    /// Enable for the channel 1 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
     /// Field write behavior: Plain.
     pub mod chan1_reload {
         pub type R = crate::BitReader;
@@ -3637,7 +3637,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// chan2 reload
+    /// Enable for the channel 2 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
     /// Field write behavior: Plain.
     pub mod chan2_reload {
         pub type R = crate::BitReader;
@@ -3646,7 +3646,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// chan3 reload
+    /// Enable for the channel 3 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
     /// Field write behavior: Plain.
     pub mod chan3_reload {
         pub type R = crate::BitReader;
@@ -3732,55 +3732,55 @@ pub mod inte {
         }
     }
     impl AtomicSetW {
-        /// fifo underflow
+        /// Enable for the FIFO underflow (read while empty) interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_underflow(&mut self) -> fifo_underflow::ASW<'_> {
             fifo_underflow::ASW::new(self)
         }
-        /// fifo overflow
+        /// Enable for the FIFO overflow (write while full) interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_overflow(&mut self) -> fifo_overflow::ASW<'_> {
             fifo_overflow::ASW::new(self)
         }
-        /// fifo empty
+        /// Enable for the FIFO empty interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_empty(&mut self) -> fifo_empty::ASW<'_> {
             fifo_empty::ASW::new(self)
         }
-        /// fifo full
+        /// Enable for the FIFO full interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_full(&mut self) -> fifo_full::ASW<'_> {
             fifo_full::ASW::new(self)
         }
-        /// dreq active
+        /// Enable for the DMA request active interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dreq_active(&mut self) -> dreq_active::ASW<'_> {
             dreq_active::ASW::new(self)
         }
-        /// chan0 reload
+        /// Enable for the channel 0 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_reload(&mut self) -> chan0_reload::ASW<'_> {
             chan0_reload::ASW::new(self)
         }
-        /// chan1 reload
+        /// Enable for the channel 1 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_reload(&mut self) -> chan1_reload::ASW<'_> {
             chan1_reload::ASW::new(self)
         }
-        /// chan2 reload
+        /// Enable for the channel 2 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_reload(&mut self) -> chan2_reload::ASW<'_> {
             chan2_reload::ASW::new(self)
         }
-        /// chan3 reload
+        /// Enable for the channel 3 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_reload(&mut self) -> chan3_reload::ASW<'_> {
@@ -3788,55 +3788,55 @@ pub mod inte {
         }
     }
     impl AtomicClearW {
-        /// fifo underflow
+        /// Enable for the FIFO underflow (read while empty) interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_underflow(&mut self) -> fifo_underflow::ACW<'_> {
             fifo_underflow::ACW::new(self)
         }
-        /// fifo overflow
+        /// Enable for the FIFO overflow (write while full) interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_overflow(&mut self) -> fifo_overflow::ACW<'_> {
             fifo_overflow::ACW::new(self)
         }
-        /// fifo empty
+        /// Enable for the FIFO empty interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_empty(&mut self) -> fifo_empty::ACW<'_> {
             fifo_empty::ACW::new(self)
         }
-        /// fifo full
+        /// Enable for the FIFO full interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_full(&mut self) -> fifo_full::ACW<'_> {
             fifo_full::ACW::new(self)
         }
-        /// dreq active
+        /// Enable for the DMA request active interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dreq_active(&mut self) -> dreq_active::ACW<'_> {
             dreq_active::ACW::new(self)
         }
-        /// chan0 reload
+        /// Enable for the channel 0 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_reload(&mut self) -> chan0_reload::ACW<'_> {
             chan0_reload::ACW::new(self)
         }
-        /// chan1 reload
+        /// Enable for the channel 1 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_reload(&mut self) -> chan1_reload::ACW<'_> {
             chan1_reload::ACW::new(self)
         }
-        /// chan2 reload
+        /// Enable for the channel 2 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_reload(&mut self) -> chan2_reload::ACW<'_> {
             chan2_reload::ACW::new(self)
         }
-        /// chan3 reload
+        /// Enable for the channel 3 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_reload(&mut self) -> chan3_reload::ACW<'_> {
@@ -3844,55 +3844,55 @@ pub mod inte {
         }
     }
     impl AtomicXorW {
-        /// fifo underflow
+        /// Enable for the FIFO underflow (read while empty) interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_underflow(&mut self) -> fifo_underflow::AXW<'_> {
             fifo_underflow::AXW::new(self)
         }
-        /// fifo overflow
+        /// Enable for the FIFO overflow (write while full) interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_overflow(&mut self) -> fifo_overflow::AXW<'_> {
             fifo_overflow::AXW::new(self)
         }
-        /// fifo empty
+        /// Enable for the FIFO empty interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_empty(&mut self) -> fifo_empty::AXW<'_> {
             fifo_empty::AXW::new(self)
         }
-        /// fifo full
+        /// Enable for the FIFO full interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_full(&mut self) -> fifo_full::AXW<'_> {
             fifo_full::AXW::new(self)
         }
-        /// dreq active
+        /// Enable for the DMA request active interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dreq_active(&mut self) -> dreq_active::AXW<'_> {
             dreq_active::AXW::new(self)
         }
-        /// chan0 reload
+        /// Enable for the channel 0 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_reload(&mut self) -> chan0_reload::AXW<'_> {
             chan0_reload::AXW::new(self)
         }
-        /// chan1 reload
+        /// Enable for the channel 1 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_reload(&mut self) -> chan1_reload::AXW<'_> {
             chan1_reload::AXW::new(self)
         }
-        /// chan2 reload
+        /// Enable for the channel 2 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_reload(&mut self) -> chan2_reload::AXW<'_> {
             chan2_reload::AXW::new(self)
         }
-        /// chan3 reload
+        /// Enable for the channel 3 counter reload interrupt: 0 masked, 1 routed to the IRQ output.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_reload(&mut self) -> chan3_reload::AXW<'_> {
@@ -3901,10 +3901,10 @@ pub mod inte {
     }
 }
 
-/// Interrupt force
+/// Interrupt force bits, one per source: 1 asserts the interrupt from software, 0 removes the force.
 /// Hardware access: read Plain; write Plain.
 pub type INTF = Reg<intf::INTF_SPEC>;
-/// Interrupt force
+/// Interrupt force bits, one per source: 1 asserts the interrupt from software, 0 removes the force.
 /// Hardware access: read Plain; write Plain.
 pub mod intf {
     pub struct INTF_SPEC;
@@ -3940,7 +3940,7 @@ pub mod intf {
     pub type AtomicSetW = crate::AtomicSetW<INTF_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<INTF_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<INTF_SPEC>;
-    /// fifo underflow
+    /// Force the FIFO underflow (read while empty) interrupt: 1 asserts it, 0 releases the force.
     /// Field write behavior: Plain.
     pub mod fifo_underflow {
         pub type R = crate::BitReader;
@@ -3949,7 +3949,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// fifo overflow
+    /// Force the FIFO overflow (write while full) interrupt: 1 asserts it, 0 releases the force.
     /// Field write behavior: Plain.
     pub mod fifo_overflow {
         pub type R = crate::BitReader;
@@ -3958,7 +3958,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// fifo empty
+    /// Force the FIFO empty interrupt: 1 asserts it, 0 releases the force.
     /// Field write behavior: Plain.
     pub mod fifo_empty {
         pub type R = crate::BitReader;
@@ -3967,7 +3967,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
     }
-    /// fifo full
+    /// Force the FIFO full interrupt: 1 asserts it, 0 releases the force.
     /// Field write behavior: Plain.
     pub mod fifo_full {
         pub type R = crate::BitReader;
@@ -3976,7 +3976,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// dreq active
+    /// Force the DMA request active interrupt: 1 asserts it, 0 releases the force.
     /// Field write behavior: Plain.
     pub mod dreq_active {
         pub type R = crate::BitReader;
@@ -3985,7 +3985,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// chan0 reload
+    /// Force the channel 0 counter reload interrupt: 1 asserts it, 0 releases the force.
     /// Field write behavior: Plain.
     pub mod chan0_reload {
         pub type R = crate::BitReader;
@@ -3994,7 +3994,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// chan1 reload
+    /// Force the channel 1 counter reload interrupt: 1 asserts it, 0 releases the force.
     /// Field write behavior: Plain.
     pub mod chan1_reload {
         pub type R = crate::BitReader;
@@ -4003,7 +4003,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// chan2 reload
+    /// Force the channel 2 counter reload interrupt: 1 asserts it, 0 releases the force.
     /// Field write behavior: Plain.
     pub mod chan2_reload {
         pub type R = crate::BitReader;
@@ -4012,7 +4012,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// chan3 reload
+    /// Force the channel 3 counter reload interrupt: 1 asserts it, 0 releases the force.
     /// Field write behavior: Plain.
     pub mod chan3_reload {
         pub type R = crate::BitReader;
@@ -4098,55 +4098,55 @@ pub mod intf {
         }
     }
     impl AtomicSetW {
-        /// fifo underflow
+        /// Force the FIFO underflow (read while empty) interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_underflow(&mut self) -> fifo_underflow::ASW<'_> {
             fifo_underflow::ASW::new(self)
         }
-        /// fifo overflow
+        /// Force the FIFO overflow (write while full) interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_overflow(&mut self) -> fifo_overflow::ASW<'_> {
             fifo_overflow::ASW::new(self)
         }
-        /// fifo empty
+        /// Force the FIFO empty interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_empty(&mut self) -> fifo_empty::ASW<'_> {
             fifo_empty::ASW::new(self)
         }
-        /// fifo full
+        /// Force the FIFO full interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_full(&mut self) -> fifo_full::ASW<'_> {
             fifo_full::ASW::new(self)
         }
-        /// dreq active
+        /// Force the DMA request active interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dreq_active(&mut self) -> dreq_active::ASW<'_> {
             dreq_active::ASW::new(self)
         }
-        /// chan0 reload
+        /// Force the channel 0 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_reload(&mut self) -> chan0_reload::ASW<'_> {
             chan0_reload::ASW::new(self)
         }
-        /// chan1 reload
+        /// Force the channel 1 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_reload(&mut self) -> chan1_reload::ASW<'_> {
             chan1_reload::ASW::new(self)
         }
-        /// chan2 reload
+        /// Force the channel 2 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_reload(&mut self) -> chan2_reload::ASW<'_> {
             chan2_reload::ASW::new(self)
         }
-        /// chan3 reload
+        /// Force the channel 3 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_reload(&mut self) -> chan3_reload::ASW<'_> {
@@ -4154,55 +4154,55 @@ pub mod intf {
         }
     }
     impl AtomicClearW {
-        /// fifo underflow
+        /// Force the FIFO underflow (read while empty) interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_underflow(&mut self) -> fifo_underflow::ACW<'_> {
             fifo_underflow::ACW::new(self)
         }
-        /// fifo overflow
+        /// Force the FIFO overflow (write while full) interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_overflow(&mut self) -> fifo_overflow::ACW<'_> {
             fifo_overflow::ACW::new(self)
         }
-        /// fifo empty
+        /// Force the FIFO empty interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_empty(&mut self) -> fifo_empty::ACW<'_> {
             fifo_empty::ACW::new(self)
         }
-        /// fifo full
+        /// Force the FIFO full interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_full(&mut self) -> fifo_full::ACW<'_> {
             fifo_full::ACW::new(self)
         }
-        /// dreq active
+        /// Force the DMA request active interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dreq_active(&mut self) -> dreq_active::ACW<'_> {
             dreq_active::ACW::new(self)
         }
-        /// chan0 reload
+        /// Force the channel 0 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_reload(&mut self) -> chan0_reload::ACW<'_> {
             chan0_reload::ACW::new(self)
         }
-        /// chan1 reload
+        /// Force the channel 1 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_reload(&mut self) -> chan1_reload::ACW<'_> {
             chan1_reload::ACW::new(self)
         }
-        /// chan2 reload
+        /// Force the channel 2 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_reload(&mut self) -> chan2_reload::ACW<'_> {
             chan2_reload::ACW::new(self)
         }
-        /// chan3 reload
+        /// Force the channel 3 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_reload(&mut self) -> chan3_reload::ACW<'_> {
@@ -4210,55 +4210,55 @@ pub mod intf {
         }
     }
     impl AtomicXorW {
-        /// fifo underflow
+        /// Force the FIFO underflow (read while empty) interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_underflow(&mut self) -> fifo_underflow::AXW<'_> {
             fifo_underflow::AXW::new(self)
         }
-        /// fifo overflow
+        /// Force the FIFO overflow (write while full) interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_overflow(&mut self) -> fifo_overflow::AXW<'_> {
             fifo_overflow::AXW::new(self)
         }
-        /// fifo empty
+        /// Force the FIFO empty interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_empty(&mut self) -> fifo_empty::AXW<'_> {
             fifo_empty::AXW::new(self)
         }
-        /// fifo full
+        /// Force the FIFO full interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn fifo_full(&mut self) -> fifo_full::AXW<'_> {
             fifo_full::AXW::new(self)
         }
-        /// dreq active
+        /// Force the DMA request active interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dreq_active(&mut self) -> dreq_active::AXW<'_> {
             dreq_active::AXW::new(self)
         }
-        /// chan0 reload
+        /// Force the channel 0 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan0_reload(&mut self) -> chan0_reload::AXW<'_> {
             chan0_reload::AXW::new(self)
         }
-        /// chan1 reload
+        /// Force the channel 1 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan1_reload(&mut self) -> chan1_reload::AXW<'_> {
             chan1_reload::AXW::new(self)
         }
-        /// chan2 reload
+        /// Force the channel 2 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan2_reload(&mut self) -> chan2_reload::AXW<'_> {
             chan2_reload::AXW::new(self)
         }
-        /// chan3 reload
+        /// Force the channel 3 counter reload interrupt: 1 asserts it, 0 releases the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn chan3_reload(&mut self) -> chan3_reload::AXW<'_> {
@@ -4267,10 +4267,10 @@ pub mod intf {
     }
 }
 
-/// Interrupt status after masking and forcing
+/// Masked interrupt status: (INTR & INTE) | INTF.
 /// Hardware access: read Plain; write None.
 pub type INTS = Reg<ints::INTS_SPEC>;
-/// Interrupt status after masking and forcing
+/// Masked interrupt status: (INTR & INTE) | INTF.
 /// Hardware access: read Plain; write None.
 pub mod ints {
     pub struct INTS_SPEC;
@@ -4282,55 +4282,55 @@ pub mod ints {
     impl crate::ResetValue for INTS_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// fifo underflow
+    /// 1 when the FIFO underflow (read while empty) interrupt is active after masking and forcing.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod fifo_underflow {
         pub type R = crate::BitReader;
     }
-    /// fifo overflow
+    /// 1 when the FIFO overflow (write while full) interrupt is active after masking and forcing.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod fifo_overflow {
         pub type R = crate::BitReader;
     }
-    /// fifo empty
+    /// 1 when the FIFO empty interrupt is active after masking and forcing.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod fifo_empty {
         pub type R = crate::BitReader;
     }
-    /// fifo full
+    /// 1 when the FIFO full interrupt is active after masking and forcing.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod fifo_full {
         pub type R = crate::BitReader;
     }
-    /// dreq active
+    /// 1 when the DMA request active interrupt is active after masking and forcing.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod dreq_active {
         pub type R = crate::BitReader;
     }
-    /// chan0 reload
+    /// 1 when the channel 0 counter reload interrupt is active after masking and forcing.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod chan0_reload {
         pub type R = crate::BitReader;
     }
-    /// chan1 reload
+    /// 1 when the channel 1 counter reload interrupt is active after masking and forcing.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod chan1_reload {
         pub type R = crate::BitReader;
     }
-    /// chan2 reload
+    /// 1 when the channel 2 counter reload interrupt is active after masking and forcing.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod chan2_reload {
         pub type R = crate::BitReader;
     }
-    /// chan3 reload
+    /// 1 when the channel 3 counter reload interrupt is active after masking and forcing.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod chan3_reload {

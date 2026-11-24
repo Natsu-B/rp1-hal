@@ -15,25 +15,25 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// RIO_OUT controls GPIO output drive
+    /// Output data latch for host GPIO. A pin shows this value only when its mux selects the system RIO function, `oe` enables drive, and no pad or mux override applies. Supports the SET/CLR/XOR aliases.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn out(&self) -> &OUT {
         &self.out
     }
-    /// RIO_OE controls GPIO output-enable drive
+    /// Output enable for host GPIO. A bit only takes effect when the pad is on the system RIO function and its pad controls allow output. Supports the SET/CLR/XOR aliases.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn oe(&self) -> &OE {
         &self.oe
     }
-    /// RIO_NOSYNC_IN samples GPIO inputs directly
+    /// Raw pad input levels, read without the `clk_sys` synchronizer. An asynchronous input may change during the read.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn nosync_in(&self) -> &NOSYNC_IN {
         &self.nosync_in
     }
-    /// RIO_SYNC_IN samples GPIO inputs synchronised with clk_sys
+    /// Pad input levels after a two-stage synchronizer clocked by `clk_sys`.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn sync_in(&self) -> &SYNC_IN {
@@ -41,10 +41,10 @@ impl RegisterBlock {
     }
 }
 
-/// RIO_OUT controls GPIO output drive
+/// Output data latch for host GPIO. A pin shows this value only when its mux selects the system RIO function, `oe` enables drive, and no pad or mux override applies. Supports the SET/CLR/XOR aliases.
 /// Hardware access: read Plain; write Plain.
 pub type OUT = Reg<out::OUT_SPEC>;
-/// RIO_OUT controls GPIO output drive
+/// Output data latch for host GPIO. A pin shows this value only when its mux selects the system RIO function, `oe` enables drive, and no pad or mux override applies. Supports the SET/CLR/XOR aliases.
 /// Hardware access: read Plain; write Plain.
 pub mod out {
     pub struct OUT_SPEC;
@@ -789,10 +789,10 @@ pub mod out {
     }
 }
 
-/// RIO_OE controls GPIO output-enable drive
+/// Output enable for host GPIO. A bit only takes effect when the pad is on the system RIO function and its pad controls allow output. Supports the SET/CLR/XOR aliases.
 /// Hardware access: read Plain; write Plain.
 pub type OE = Reg<oe::OE_SPEC>;
-/// RIO_OE controls GPIO output-enable drive
+/// Output enable for host GPIO. A bit only takes effect when the pad is on the system RIO function and its pad controls allow output. Supports the SET/CLR/XOR aliases.
 /// Hardware access: read Plain; write Plain.
 pub mod oe {
     pub struct OE_SPEC;
@@ -1537,10 +1537,10 @@ pub mod oe {
     }
 }
 
-/// RIO_NOSYNC_IN samples GPIO inputs directly
+/// Raw pad input levels, read without the `clk_sys` synchronizer. An asynchronous input may change during the read.
 /// Hardware access: read Plain; write None.
 pub type NOSYNC_IN = Reg<nosync_in::NOSYNC_IN_SPEC>;
-/// RIO_NOSYNC_IN samples GPIO inputs directly
+/// Raw pad input levels, read without the `clk_sys` synchronizer. An asynchronous input may change during the read.
 /// Hardware access: read Plain; write None.
 pub mod nosync_in {
     pub struct NOSYNC_IN_SPEC;
@@ -1753,10 +1753,10 @@ pub mod nosync_in {
     }
 }
 
-/// RIO_SYNC_IN samples GPIO inputs synchronised with clk_sys
+/// Pad input levels after a two-stage synchronizer clocked by `clk_sys`.
 /// Hardware access: read Plain; write None.
 pub type SYNC_IN = Reg<sync_in::SYNC_IN_SPEC>;
-/// RIO_SYNC_IN samples GPIO inputs synchronised with clk_sys
+/// Pad input levels after a two-stage synchronizer clocked by `clk_sys`.
 /// Hardware access: read Plain; write None.
 pub mod sync_in {
     pub struct SYNC_IN_SPEC;

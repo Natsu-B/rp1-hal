@@ -35,153 +35,153 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// Controls the tick generator
+    /// Start/stop control and running status for the timer tick generator.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn timer_ctrl(&self) -> &TIMER_CTRL {
         &self.timer_ctrl
     }
-    /// Total number of clk_tick cycles before next tick
+    /// Tick period of the timer tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
     /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn timer_cycles(&self) -> &TIMER_CYCLES {
         &self.timer_cycles
     }
-    /// Countdown timer before next tick
+    /// Current countdown to the next timer tick. Reading it does not disturb the programmed period.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn timer_count(&self) -> &TIMER_COUNT {
         &self.timer_count
     }
-    /// Controls the tick generator
+    /// Start/stop control and running status for the watchdog tick generator.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn watchdog_ctrl(&self) -> &WATCHDOG_CTRL {
         &self.watchdog_ctrl
     }
-    /// Total number of clk_tick cycles before next tick
+    /// Tick period of the watchdog tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
     /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn watchdog_cycles(&self) -> &WATCHDOG_CYCLES {
         &self.watchdog_cycles
     }
-    /// Countdown timer before next tick
+    /// Current countdown to the next watchdog tick. Reading it does not disturb the programmed period.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn watchdog_count(&self) -> &WATCHDOG_COUNT {
         &self.watchdog_count
     }
-    /// Controls the tick generator
+    /// Start/stop control and running status for the processor tick generator.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn proc_ctrl(&self) -> &PROC_CTRL {
         &self.proc_ctrl
     }
-    /// Total number of clk_tick cycles before next tick
+    /// Tick period of the processor tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
     /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn proc_cycles(&self) -> &PROC_CYCLES {
         &self.proc_cycles
     }
-    /// Countdown timer before next tick
+    /// Current countdown to the next processor tick. Reading it does not disturb the programmed period.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn proc_count(&self) -> &PROC_COUNT {
         &self.proc_count
     }
-    /// Controls the tick generator
+    /// Start/stop control and running status for the DMA channel 0 tick generator.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn dma0_ctrl(&self) -> &DMA0_CTRL {
         &self.dma0_ctrl
     }
-    /// Total number of clk_tick cycles before next tick
+    /// Tick period of the DMA channel 0 tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
     /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn dma0_cycles(&self) -> &DMA0_CYCLES {
         &self.dma0_cycles
     }
-    /// Countdown timer before next tick
+    /// Current countdown to the next DMA channel 0 tick. Reading it does not disturb the programmed period.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn dma0_count(&self) -> &DMA0_COUNT {
         &self.dma0_count
     }
-    /// Controls the tick generator
+    /// Start/stop control and running status for the DMA channel 1 tick generator.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn dma1_ctrl(&self) -> &DMA1_CTRL {
         &self.dma1_ctrl
     }
-    /// Total number of clk_tick cycles before next tick
+    /// Tick period of the DMA channel 1 tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
     /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn dma1_cycles(&self) -> &DMA1_CYCLES {
         &self.dma1_cycles
     }
-    /// Countdown timer before next tick
+    /// Current countdown to the next DMA channel 1 tick. Reading it does not disturb the programmed period.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn dma1_count(&self) -> &DMA1_COUNT {
         &self.dma1_count
     }
-    /// Controls the tick generator
+    /// Start/stop control and running status for the GPIO bank 0 filter/debounce tick generator.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn io_bank0_ctrl(&self) -> &IO_BANK0_CTRL {
         &self.io_bank0_ctrl
     }
-    /// Total number of clk_tick cycles before next tick
+    /// Tick period of the GPIO bank 0 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
     /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn io_bank0_cycles(&self) -> &IO_BANK0_CYCLES {
         &self.io_bank0_cycles
     }
-    /// Countdown timer before next tick
+    /// Current countdown to the next GPIO bank 0 filter/debounce tick. Reading it does not disturb the programmed period.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn io_bank0_count(&self) -> &IO_BANK0_COUNT {
         &self.io_bank0_count
     }
-    /// Controls the tick generator
+    /// Start/stop control and running status for the GPIO bank 1 filter/debounce tick generator.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn io_bank1_ctrl(&self) -> &IO_BANK1_CTRL {
         &self.io_bank1_ctrl
     }
-    /// Total number of clk_tick cycles before next tick
+    /// Tick period of the GPIO bank 1 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
     /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn io_bank1_cycles(&self) -> &IO_BANK1_CYCLES {
         &self.io_bank1_cycles
     }
-    /// Countdown timer before next tick
+    /// Current countdown to the next GPIO bank 1 filter/debounce tick. Reading it does not disturb the programmed period.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn io_bank1_count(&self) -> &IO_BANK1_COUNT {
         &self.io_bank1_count
     }
-    /// Controls the tick generator
+    /// Start/stop control and running status for the GPIO bank 2 filter/debounce tick generator.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn io_bank2_ctrl(&self) -> &IO_BANK2_CTRL {
         &self.io_bank2_ctrl
     }
-    /// Total number of clk_tick cycles before next tick
+    /// Tick period of the GPIO bank 2 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
     /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn io_bank2_cycles(&self) -> &IO_BANK2_CYCLES {
         &self.io_bank2_cycles
     }
-    /// Countdown timer before next tick
+    /// Current countdown to the next GPIO bank 2 filter/debounce tick. Reading it does not disturb the programmed period.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn io_bank2_count(&self) -> &IO_BANK2_COUNT {
@@ -189,10 +189,10 @@ impl RegisterBlock {
     }
 }
 
-/// Controls the tick generator
+/// Start/stop control and running status for the timer tick generator.
 /// Hardware access: read Plain; write Plain.
 pub type TIMER_CTRL = Reg<timer_ctrl::TIMER_CTRL_SPEC>;
-/// Controls the tick generator
+/// Start/stop control and running status for the timer tick generator.
 /// Hardware access: read Plain; write Plain.
 pub mod timer_ctrl {
     pub struct TIMER_CTRL_SPEC;
@@ -228,7 +228,7 @@ pub mod timer_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<TIMER_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<TIMER_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<TIMER_CTRL_SPEC>;
-    /// Start/stop tick generation
+    /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
     /// Field write behavior: Plain.
     pub mod enable {
         pub type R = crate::BitReader;
@@ -237,7 +237,7 @@ pub mod timer_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Tick generator is running
+    /// Generator state: 0 stopped, 1 running.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod running {
@@ -260,7 +260,7 @@ pub mod timer_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ASW<'_> {
@@ -268,7 +268,7 @@ pub mod timer_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ACW<'_> {
@@ -276,7 +276,7 @@ pub mod timer_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::AXW<'_> {
@@ -285,11 +285,11 @@ pub mod timer_ctrl {
     }
 }
 
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the timer tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub type TIMER_CYCLES = Reg<timer_cycles::TIMER_CYCLES_SPEC>;
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the timer tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub mod timer_cycles {
@@ -326,7 +326,7 @@ pub mod timer_cycles {
     pub type AtomicSetW = crate::AtomicSetW<TIMER_CYCLES_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<TIMER_CYCLES_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<TIMER_CYCLES_SPEC>;
-    /// Total clk_tick cycles before next tick
+    /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
     /// Field write behavior: Plain.
     pub mod cycles {
         pub type R = crate::FieldReader<u32>;
@@ -348,7 +348,7 @@ pub mod timer_cycles {
         }
     }
     impl AtomicSetW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ASW<'_> {
@@ -356,7 +356,7 @@ pub mod timer_cycles {
         }
     }
     impl AtomicClearW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ACW<'_> {
@@ -364,7 +364,7 @@ pub mod timer_cycles {
         }
     }
     impl AtomicXorW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::AXW<'_> {
@@ -373,10 +373,10 @@ pub mod timer_cycles {
     }
 }
 
-/// Countdown timer before next tick
+/// Current countdown to the next timer tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub type TIMER_COUNT = Reg<timer_count::TIMER_COUNT_SPEC>;
-/// Countdown timer before next tick
+/// Current countdown to the next timer tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub mod timer_count {
     pub struct TIMER_COUNT_SPEC;
@@ -385,7 +385,7 @@ pub mod timer_count {
     }
     impl crate::Readable for TIMER_COUNT_SPEC {}
     pub type R = crate::R<TIMER_COUNT_SPEC>;
-    /// Remaining clk_tick cycles before next tick
+    /// Input-clock cycles left until the next tick. The value while stopped is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod count {
@@ -399,10 +399,10 @@ pub mod timer_count {
     }
 }
 
-/// Controls the tick generator
+/// Start/stop control and running status for the watchdog tick generator.
 /// Hardware access: read Plain; write Plain.
 pub type WATCHDOG_CTRL = Reg<watchdog_ctrl::WATCHDOG_CTRL_SPEC>;
-/// Controls the tick generator
+/// Start/stop control and running status for the watchdog tick generator.
 /// Hardware access: read Plain; write Plain.
 pub mod watchdog_ctrl {
     pub struct WATCHDOG_CTRL_SPEC;
@@ -438,7 +438,7 @@ pub mod watchdog_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<WATCHDOG_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<WATCHDOG_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<WATCHDOG_CTRL_SPEC>;
-    /// Start/stop tick generation
+    /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
     /// Field write behavior: Plain.
     pub mod enable {
         pub type R = crate::BitReader;
@@ -447,7 +447,7 @@ pub mod watchdog_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Tick generator is running
+    /// Generator state: 0 stopped, 1 running.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod running {
@@ -470,7 +470,7 @@ pub mod watchdog_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ASW<'_> {
@@ -478,7 +478,7 @@ pub mod watchdog_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ACW<'_> {
@@ -486,7 +486,7 @@ pub mod watchdog_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::AXW<'_> {
@@ -495,11 +495,11 @@ pub mod watchdog_ctrl {
     }
 }
 
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the watchdog tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub type WATCHDOG_CYCLES = Reg<watchdog_cycles::WATCHDOG_CYCLES_SPEC>;
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the watchdog tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub mod watchdog_cycles {
@@ -536,7 +536,7 @@ pub mod watchdog_cycles {
     pub type AtomicSetW = crate::AtomicSetW<WATCHDOG_CYCLES_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<WATCHDOG_CYCLES_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<WATCHDOG_CYCLES_SPEC>;
-    /// Total clk_tick cycles before next tick
+    /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
     /// Field write behavior: Plain.
     pub mod cycles {
         pub type R = crate::FieldReader<u32>;
@@ -558,7 +558,7 @@ pub mod watchdog_cycles {
         }
     }
     impl AtomicSetW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ASW<'_> {
@@ -566,7 +566,7 @@ pub mod watchdog_cycles {
         }
     }
     impl AtomicClearW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ACW<'_> {
@@ -574,7 +574,7 @@ pub mod watchdog_cycles {
         }
     }
     impl AtomicXorW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::AXW<'_> {
@@ -583,10 +583,10 @@ pub mod watchdog_cycles {
     }
 }
 
-/// Countdown timer before next tick
+/// Current countdown to the next watchdog tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub type WATCHDOG_COUNT = Reg<watchdog_count::WATCHDOG_COUNT_SPEC>;
-/// Countdown timer before next tick
+/// Current countdown to the next watchdog tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub mod watchdog_count {
     pub struct WATCHDOG_COUNT_SPEC;
@@ -595,7 +595,7 @@ pub mod watchdog_count {
     }
     impl crate::Readable for WATCHDOG_COUNT_SPEC {}
     pub type R = crate::R<WATCHDOG_COUNT_SPEC>;
-    /// Remaining clk_tick cycles before next tick
+    /// Input-clock cycles left until the next tick. The value while stopped is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod count {
@@ -609,10 +609,10 @@ pub mod watchdog_count {
     }
 }
 
-/// Controls the tick generator
+/// Start/stop control and running status for the processor tick generator.
 /// Hardware access: read Plain; write Plain.
 pub type PROC_CTRL = Reg<proc_ctrl::PROC_CTRL_SPEC>;
-/// Controls the tick generator
+/// Start/stop control and running status for the processor tick generator.
 /// Hardware access: read Plain; write Plain.
 pub mod proc_ctrl {
     pub struct PROC_CTRL_SPEC;
@@ -648,7 +648,7 @@ pub mod proc_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<PROC_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<PROC_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<PROC_CTRL_SPEC>;
-    /// Start/stop tick generation
+    /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
     /// Field write behavior: Plain.
     pub mod enable {
         pub type R = crate::BitReader;
@@ -657,7 +657,7 @@ pub mod proc_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Tick generator is running
+    /// Generator state: 0 stopped, 1 running.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod running {
@@ -680,7 +680,7 @@ pub mod proc_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ASW<'_> {
@@ -688,7 +688,7 @@ pub mod proc_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ACW<'_> {
@@ -696,7 +696,7 @@ pub mod proc_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::AXW<'_> {
@@ -705,11 +705,11 @@ pub mod proc_ctrl {
     }
 }
 
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the processor tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub type PROC_CYCLES = Reg<proc_cycles::PROC_CYCLES_SPEC>;
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the processor tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub mod proc_cycles {
@@ -746,7 +746,7 @@ pub mod proc_cycles {
     pub type AtomicSetW = crate::AtomicSetW<PROC_CYCLES_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<PROC_CYCLES_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<PROC_CYCLES_SPEC>;
-    /// Total clk_tick cycles before next tick
+    /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
     /// Field write behavior: Plain.
     pub mod cycles {
         pub type R = crate::FieldReader<u32>;
@@ -768,7 +768,7 @@ pub mod proc_cycles {
         }
     }
     impl AtomicSetW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ASW<'_> {
@@ -776,7 +776,7 @@ pub mod proc_cycles {
         }
     }
     impl AtomicClearW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ACW<'_> {
@@ -784,7 +784,7 @@ pub mod proc_cycles {
         }
     }
     impl AtomicXorW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::AXW<'_> {
@@ -793,10 +793,10 @@ pub mod proc_cycles {
     }
 }
 
-/// Countdown timer before next tick
+/// Current countdown to the next processor tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub type PROC_COUNT = Reg<proc_count::PROC_COUNT_SPEC>;
-/// Countdown timer before next tick
+/// Current countdown to the next processor tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub mod proc_count {
     pub struct PROC_COUNT_SPEC;
@@ -805,7 +805,7 @@ pub mod proc_count {
     }
     impl crate::Readable for PROC_COUNT_SPEC {}
     pub type R = crate::R<PROC_COUNT_SPEC>;
-    /// Remaining clk_tick cycles before next tick
+    /// Input-clock cycles left until the next tick. The value while stopped is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod count {
@@ -819,10 +819,10 @@ pub mod proc_count {
     }
 }
 
-/// Controls the tick generator
+/// Start/stop control and running status for the DMA channel 0 tick generator.
 /// Hardware access: read Plain; write Plain.
 pub type DMA0_CTRL = Reg<dma0_ctrl::DMA0_CTRL_SPEC>;
-/// Controls the tick generator
+/// Start/stop control and running status for the DMA channel 0 tick generator.
 /// Hardware access: read Plain; write Plain.
 pub mod dma0_ctrl {
     pub struct DMA0_CTRL_SPEC;
@@ -858,7 +858,7 @@ pub mod dma0_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<DMA0_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<DMA0_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<DMA0_CTRL_SPEC>;
-    /// Start/stop tick generation
+    /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
     /// Field write behavior: Plain.
     pub mod enable {
         pub type R = crate::BitReader;
@@ -867,7 +867,7 @@ pub mod dma0_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Tick generator is running
+    /// Generator state: 0 stopped, 1 running.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod running {
@@ -890,7 +890,7 @@ pub mod dma0_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ASW<'_> {
@@ -898,7 +898,7 @@ pub mod dma0_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ACW<'_> {
@@ -906,7 +906,7 @@ pub mod dma0_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::AXW<'_> {
@@ -915,11 +915,11 @@ pub mod dma0_ctrl {
     }
 }
 
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the DMA channel 0 tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub type DMA0_CYCLES = Reg<dma0_cycles::DMA0_CYCLES_SPEC>;
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the DMA channel 0 tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub mod dma0_cycles {
@@ -956,7 +956,7 @@ pub mod dma0_cycles {
     pub type AtomicSetW = crate::AtomicSetW<DMA0_CYCLES_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<DMA0_CYCLES_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<DMA0_CYCLES_SPEC>;
-    /// Total clk_tick cycles before next tick
+    /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
     /// Field write behavior: Plain.
     pub mod cycles {
         pub type R = crate::FieldReader<u32>;
@@ -978,7 +978,7 @@ pub mod dma0_cycles {
         }
     }
     impl AtomicSetW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ASW<'_> {
@@ -986,7 +986,7 @@ pub mod dma0_cycles {
         }
     }
     impl AtomicClearW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ACW<'_> {
@@ -994,7 +994,7 @@ pub mod dma0_cycles {
         }
     }
     impl AtomicXorW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::AXW<'_> {
@@ -1003,10 +1003,10 @@ pub mod dma0_cycles {
     }
 }
 
-/// Countdown timer before next tick
+/// Current countdown to the next DMA channel 0 tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub type DMA0_COUNT = Reg<dma0_count::DMA0_COUNT_SPEC>;
-/// Countdown timer before next tick
+/// Current countdown to the next DMA channel 0 tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub mod dma0_count {
     pub struct DMA0_COUNT_SPEC;
@@ -1015,7 +1015,7 @@ pub mod dma0_count {
     }
     impl crate::Readable for DMA0_COUNT_SPEC {}
     pub type R = crate::R<DMA0_COUNT_SPEC>;
-    /// Remaining clk_tick cycles before next tick
+    /// Input-clock cycles left until the next tick. The value while stopped is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod count {
@@ -1029,10 +1029,10 @@ pub mod dma0_count {
     }
 }
 
-/// Controls the tick generator
+/// Start/stop control and running status for the DMA channel 1 tick generator.
 /// Hardware access: read Plain; write Plain.
 pub type DMA1_CTRL = Reg<dma1_ctrl::DMA1_CTRL_SPEC>;
-/// Controls the tick generator
+/// Start/stop control and running status for the DMA channel 1 tick generator.
 /// Hardware access: read Plain; write Plain.
 pub mod dma1_ctrl {
     pub struct DMA1_CTRL_SPEC;
@@ -1068,7 +1068,7 @@ pub mod dma1_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<DMA1_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<DMA1_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<DMA1_CTRL_SPEC>;
-    /// Start/stop tick generation
+    /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
     /// Field write behavior: Plain.
     pub mod enable {
         pub type R = crate::BitReader;
@@ -1077,7 +1077,7 @@ pub mod dma1_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Tick generator is running
+    /// Generator state: 0 stopped, 1 running.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod running {
@@ -1100,7 +1100,7 @@ pub mod dma1_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ASW<'_> {
@@ -1108,7 +1108,7 @@ pub mod dma1_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ACW<'_> {
@@ -1116,7 +1116,7 @@ pub mod dma1_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::AXW<'_> {
@@ -1125,11 +1125,11 @@ pub mod dma1_ctrl {
     }
 }
 
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the DMA channel 1 tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub type DMA1_CYCLES = Reg<dma1_cycles::DMA1_CYCLES_SPEC>;
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the DMA channel 1 tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub mod dma1_cycles {
@@ -1166,7 +1166,7 @@ pub mod dma1_cycles {
     pub type AtomicSetW = crate::AtomicSetW<DMA1_CYCLES_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<DMA1_CYCLES_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<DMA1_CYCLES_SPEC>;
-    /// Total clk_tick cycles before next tick
+    /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
     /// Field write behavior: Plain.
     pub mod cycles {
         pub type R = crate::FieldReader<u32>;
@@ -1188,7 +1188,7 @@ pub mod dma1_cycles {
         }
     }
     impl AtomicSetW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ASW<'_> {
@@ -1196,7 +1196,7 @@ pub mod dma1_cycles {
         }
     }
     impl AtomicClearW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ACW<'_> {
@@ -1204,7 +1204,7 @@ pub mod dma1_cycles {
         }
     }
     impl AtomicXorW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::AXW<'_> {
@@ -1213,10 +1213,10 @@ pub mod dma1_cycles {
     }
 }
 
-/// Countdown timer before next tick
+/// Current countdown to the next DMA channel 1 tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub type DMA1_COUNT = Reg<dma1_count::DMA1_COUNT_SPEC>;
-/// Countdown timer before next tick
+/// Current countdown to the next DMA channel 1 tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub mod dma1_count {
     pub struct DMA1_COUNT_SPEC;
@@ -1225,7 +1225,7 @@ pub mod dma1_count {
     }
     impl crate::Readable for DMA1_COUNT_SPEC {}
     pub type R = crate::R<DMA1_COUNT_SPEC>;
-    /// Remaining clk_tick cycles before next tick
+    /// Input-clock cycles left until the next tick. The value while stopped is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod count {
@@ -1239,10 +1239,10 @@ pub mod dma1_count {
     }
 }
 
-/// Controls the tick generator
+/// Start/stop control and running status for the GPIO bank 0 filter/debounce tick generator.
 /// Hardware access: read Plain; write Plain.
 pub type IO_BANK0_CTRL = Reg<io_bank0_ctrl::IO_BANK0_CTRL_SPEC>;
-/// Controls the tick generator
+/// Start/stop control and running status for the GPIO bank 0 filter/debounce tick generator.
 /// Hardware access: read Plain; write Plain.
 pub mod io_bank0_ctrl {
     pub struct IO_BANK0_CTRL_SPEC;
@@ -1278,7 +1278,7 @@ pub mod io_bank0_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<IO_BANK0_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<IO_BANK0_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<IO_BANK0_CTRL_SPEC>;
-    /// Start/stop tick generation
+    /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
     /// Field write behavior: Plain.
     pub mod enable {
         pub type R = crate::BitReader;
@@ -1287,7 +1287,7 @@ pub mod io_bank0_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Tick generator is running
+    /// Generator state: 0 stopped, 1 running.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod running {
@@ -1310,7 +1310,7 @@ pub mod io_bank0_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ASW<'_> {
@@ -1318,7 +1318,7 @@ pub mod io_bank0_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ACW<'_> {
@@ -1326,7 +1326,7 @@ pub mod io_bank0_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::AXW<'_> {
@@ -1335,11 +1335,11 @@ pub mod io_bank0_ctrl {
     }
 }
 
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the GPIO bank 0 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub type IO_BANK0_CYCLES = Reg<io_bank0_cycles::IO_BANK0_CYCLES_SPEC>;
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the GPIO bank 0 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub mod io_bank0_cycles {
@@ -1376,7 +1376,7 @@ pub mod io_bank0_cycles {
     pub type AtomicSetW = crate::AtomicSetW<IO_BANK0_CYCLES_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<IO_BANK0_CYCLES_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<IO_BANK0_CYCLES_SPEC>;
-    /// Total clk_tick cycles before next tick
+    /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
     /// Field write behavior: Plain.
     pub mod cycles {
         pub type R = crate::FieldReader<u32>;
@@ -1398,7 +1398,7 @@ pub mod io_bank0_cycles {
         }
     }
     impl AtomicSetW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ASW<'_> {
@@ -1406,7 +1406,7 @@ pub mod io_bank0_cycles {
         }
     }
     impl AtomicClearW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ACW<'_> {
@@ -1414,7 +1414,7 @@ pub mod io_bank0_cycles {
         }
     }
     impl AtomicXorW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::AXW<'_> {
@@ -1423,10 +1423,10 @@ pub mod io_bank0_cycles {
     }
 }
 
-/// Countdown timer before next tick
+/// Current countdown to the next GPIO bank 0 filter/debounce tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub type IO_BANK0_COUNT = Reg<io_bank0_count::IO_BANK0_COUNT_SPEC>;
-/// Countdown timer before next tick
+/// Current countdown to the next GPIO bank 0 filter/debounce tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub mod io_bank0_count {
     pub struct IO_BANK0_COUNT_SPEC;
@@ -1435,7 +1435,7 @@ pub mod io_bank0_count {
     }
     impl crate::Readable for IO_BANK0_COUNT_SPEC {}
     pub type R = crate::R<IO_BANK0_COUNT_SPEC>;
-    /// Remaining clk_tick cycles before next tick
+    /// Input-clock cycles left until the next tick. The value while stopped is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod count {
@@ -1449,10 +1449,10 @@ pub mod io_bank0_count {
     }
 }
 
-/// Controls the tick generator
+/// Start/stop control and running status for the GPIO bank 1 filter/debounce tick generator.
 /// Hardware access: read Plain; write Plain.
 pub type IO_BANK1_CTRL = Reg<io_bank1_ctrl::IO_BANK1_CTRL_SPEC>;
-/// Controls the tick generator
+/// Start/stop control and running status for the GPIO bank 1 filter/debounce tick generator.
 /// Hardware access: read Plain; write Plain.
 pub mod io_bank1_ctrl {
     pub struct IO_BANK1_CTRL_SPEC;
@@ -1488,7 +1488,7 @@ pub mod io_bank1_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<IO_BANK1_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<IO_BANK1_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<IO_BANK1_CTRL_SPEC>;
-    /// Start/stop tick generation
+    /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
     /// Field write behavior: Plain.
     pub mod enable {
         pub type R = crate::BitReader;
@@ -1497,7 +1497,7 @@ pub mod io_bank1_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Tick generator is running
+    /// Generator state: 0 stopped, 1 running.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod running {
@@ -1520,7 +1520,7 @@ pub mod io_bank1_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ASW<'_> {
@@ -1528,7 +1528,7 @@ pub mod io_bank1_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ACW<'_> {
@@ -1536,7 +1536,7 @@ pub mod io_bank1_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::AXW<'_> {
@@ -1545,11 +1545,11 @@ pub mod io_bank1_ctrl {
     }
 }
 
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the GPIO bank 1 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub type IO_BANK1_CYCLES = Reg<io_bank1_cycles::IO_BANK1_CYCLES_SPEC>;
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the GPIO bank 1 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub mod io_bank1_cycles {
@@ -1586,7 +1586,7 @@ pub mod io_bank1_cycles {
     pub type AtomicSetW = crate::AtomicSetW<IO_BANK1_CYCLES_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<IO_BANK1_CYCLES_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<IO_BANK1_CYCLES_SPEC>;
-    /// Total clk_tick cycles before next tick
+    /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
     /// Field write behavior: Plain.
     pub mod cycles {
         pub type R = crate::FieldReader<u32>;
@@ -1608,7 +1608,7 @@ pub mod io_bank1_cycles {
         }
     }
     impl AtomicSetW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ASW<'_> {
@@ -1616,7 +1616,7 @@ pub mod io_bank1_cycles {
         }
     }
     impl AtomicClearW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ACW<'_> {
@@ -1624,7 +1624,7 @@ pub mod io_bank1_cycles {
         }
     }
     impl AtomicXorW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::AXW<'_> {
@@ -1633,10 +1633,10 @@ pub mod io_bank1_cycles {
     }
 }
 
-/// Countdown timer before next tick
+/// Current countdown to the next GPIO bank 1 filter/debounce tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub type IO_BANK1_COUNT = Reg<io_bank1_count::IO_BANK1_COUNT_SPEC>;
-/// Countdown timer before next tick
+/// Current countdown to the next GPIO bank 1 filter/debounce tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub mod io_bank1_count {
     pub struct IO_BANK1_COUNT_SPEC;
@@ -1645,7 +1645,7 @@ pub mod io_bank1_count {
     }
     impl crate::Readable for IO_BANK1_COUNT_SPEC {}
     pub type R = crate::R<IO_BANK1_COUNT_SPEC>;
-    /// Remaining clk_tick cycles before next tick
+    /// Input-clock cycles left until the next tick. The value while stopped is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod count {
@@ -1659,10 +1659,10 @@ pub mod io_bank1_count {
     }
 }
 
-/// Controls the tick generator
+/// Start/stop control and running status for the GPIO bank 2 filter/debounce tick generator.
 /// Hardware access: read Plain; write Plain.
 pub type IO_BANK2_CTRL = Reg<io_bank2_ctrl::IO_BANK2_CTRL_SPEC>;
-/// Controls the tick generator
+/// Start/stop control and running status for the GPIO bank 2 filter/debounce tick generator.
 /// Hardware access: read Plain; write Plain.
 pub mod io_bank2_ctrl {
     pub struct IO_BANK2_CTRL_SPEC;
@@ -1698,7 +1698,7 @@ pub mod io_bank2_ctrl {
     pub type AtomicSetW = crate::AtomicSetW<IO_BANK2_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<IO_BANK2_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<IO_BANK2_CTRL_SPEC>;
-    /// Start/stop tick generation
+    /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
     /// Field write behavior: Plain.
     pub mod enable {
         pub type R = crate::BitReader;
@@ -1707,7 +1707,7 @@ pub mod io_bank2_ctrl {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// Tick generator is running
+    /// Generator state: 0 stopped, 1 running.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod running {
@@ -1730,7 +1730,7 @@ pub mod io_bank2_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ASW<'_> {
@@ -1738,7 +1738,7 @@ pub mod io_bank2_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ACW<'_> {
@@ -1746,7 +1746,7 @@ pub mod io_bank2_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Start/stop tick generation
+        /// Write 1 to request start, 0 to request stop. The change is not immediate; check `running` for the actual state.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::AXW<'_> {
@@ -1755,11 +1755,11 @@ pub mod io_bank2_ctrl {
     }
 }
 
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the GPIO bank 2 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub type IO_BANK2_CYCLES = Reg<io_bank2_cycles::IO_BANK2_CYCLES_SPEC>;
-/// Total number of clk_tick cycles before next tick
+/// Tick period of the GPIO bank 2 filter/debounce tick generator, counted in `clk_ref` cycles (nominally the crystal frequency). May be changed while the generator runs.
 /// Boot ROM initialization value 0x32 was Confirmed in scope "Boot ROM TICKS group initialization"; this is not the hardware reset value.
 /// Hardware access: read Plain; write Plain.
 pub mod io_bank2_cycles {
@@ -1796,7 +1796,7 @@ pub mod io_bank2_cycles {
     pub type AtomicSetW = crate::AtomicSetW<IO_BANK2_CYCLES_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<IO_BANK2_CYCLES_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<IO_BANK2_CYCLES_SPEC>;
-    /// Total clk_tick cycles before next tick
+    /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
     /// Field write behavior: Plain.
     pub mod cycles {
         pub type R = crate::FieldReader<u32>;
@@ -1818,7 +1818,7 @@ pub mod io_bank2_cycles {
         }
     }
     impl AtomicSetW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ASW<'_> {
@@ -1826,7 +1826,7 @@ pub mod io_bank2_cycles {
         }
     }
     impl AtomicClearW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::ACW<'_> {
@@ -1834,7 +1834,7 @@ pub mod io_bank2_cycles {
         }
     }
     impl AtomicXorW {
-        /// Total clk_tick cycles before next tick
+        /// Input-clock cycles per tick. The effect of 0, and when a change made while running takes hold, are unknown.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn cycles(&mut self) -> cycles::AXW<'_> {
@@ -1843,10 +1843,10 @@ pub mod io_bank2_cycles {
     }
 }
 
-/// Countdown timer before next tick
+/// Current countdown to the next GPIO bank 2 filter/debounce tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub type IO_BANK2_COUNT = Reg<io_bank2_count::IO_BANK2_COUNT_SPEC>;
-/// Countdown timer before next tick
+/// Current countdown to the next GPIO bank 2 filter/debounce tick. Reading it does not disturb the programmed period.
 /// Hardware access: read Plain; write None.
 pub mod io_bank2_count {
     pub struct IO_BANK2_COUNT_SPEC;
@@ -1855,7 +1855,7 @@ pub mod io_bank2_count {
     }
     impl crate::Readable for IO_BANK2_COUNT_SPEC {}
     pub type R = crate::R<IO_BANK2_COUNT_SPEC>;
-    /// Remaining clk_tick cycles before next tick
+    /// Input-clock cycles left until the next tick. The value while stopped is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod count {

@@ -31,7 +31,7 @@ impl core::ops::Deref for ADC {
 
 unsafe impl Send for ADC {}
 
-/// RP1 AUDIO_IN_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Digital microphone input block. It can generate the microphone clock driven out on the pads from its own audio clock. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -49,7 +49,7 @@ impl AUDIO_IN {
 
 unsafe impl Send for AUDIO_IN {}
 
-/// RP1 AUDIO_OUT_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Audio output block, clocked from the audio PLL clock path. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -67,7 +67,7 @@ impl AUDIO_OUT {
 
 unsafe impl Send for AUDIO_OUT {}
 
-/// RP1 BUSFABRIC_AXISHIM_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// AXI shim in the bus fabric. Its exact function and register behaviour are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -85,7 +85,7 @@ impl BUSFABRIC_AXISHIM {
 
 unsafe impl Send for BUSFABRIC_AXISHIM {}
 
-/// RP1 BUSFABRIC_MONITOR_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Monitoring window for the bus fabric. The individual measurement controls are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -153,7 +153,7 @@ impl core::ops::Deref for CLOCKS_VIDEO {
 
 unsafe impl Send for CLOCKS_VIDEO {}
 
-/// RP1 DMA register block. Bus=AHB. No RP1 atomic alias listed.
+/// Synopsys DesignWare AXI DMA controller; its registers are described by the separate IP model. AHB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-axi-dmac`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -175,7 +175,7 @@ impl DMA {
 
 unsafe impl Send for DMA {}
 
-/// RP1 DMA_TICK_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Two paced DMA request generators driven by the TICKS DMA tick channels. Bus=APB. Atomic aliases: XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[allow(non_camel_case_types)]
 pub struct DMA_TICK {
@@ -200,7 +200,7 @@ impl core::ops::Deref for DMA_TICK {
 
 unsafe impl Send for DMA_TICK {}
 
-/// RP1 ETH register block. Bus=APB. No RP1 atomic alias listed.
+/// Cadence GEM Ethernet MAC with an RGMII interface, frame DMA and IEEE 1588 timestamp support. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `cadence-gem`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -222,7 +222,7 @@ impl ETH {
 
 unsafe impl Send for ETH {}
 
-/// RP1 ETH_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// RP1 glue logic around the GEM Ethernet MAC: timestamp unit, RGMII clocking and interrupt routing. Bus=APB. Atomic aliases: normal at base, XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[allow(non_camel_case_types)]
 pub struct ETH_CFG {
@@ -247,7 +247,7 @@ impl core::ops::Deref for ETH_CFG {
 
 unsafe impl Send for ETH_CFG {}
 
-/// RP1 EXAC register block. Bus=AXI3. No RP1 atomic alias listed.
+/// EXAC memory window on the AXI3 bus. Its function is not known. No RP1 XOR/SET/CLEAR alias window is defined.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
 pub struct EXAC {
@@ -264,7 +264,7 @@ impl EXAC {
 
 unsafe impl Send for EXAC {}
 
-/// RP1 I2C0 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare I2C controller; its registers are described by the separate IP model. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-i2c`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -286,7 +286,7 @@ impl I2C0 {
 
 unsafe impl Send for I2C0 {}
 
-/// RP1 I2C1 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare I2C controller; its registers are described by the separate IP model. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-i2c`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -308,7 +308,7 @@ impl I2C1 {
 
 unsafe impl Send for I2C1 {}
 
-/// RP1 I2C2 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare I2C controller; its registers are described by the separate IP model. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-i2c`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -330,7 +330,7 @@ impl I2C2 {
 
 unsafe impl Send for I2C2 {}
 
-/// RP1 I2C3 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare I2C controller; its registers are described by the separate IP model. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-i2c`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -352,7 +352,7 @@ impl I2C3 {
 
 unsafe impl Send for I2C3 {}
 
-/// RP1 I2C4 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare I2C controller; its registers are described by the separate IP model. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-i2c`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -374,7 +374,7 @@ impl I2C4 {
 
 unsafe impl Send for I2C4 {}
 
-/// RP1 I2C5 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare I2C controller; its registers are described by the separate IP model. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-i2c`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -396,7 +396,7 @@ impl I2C5 {
 
 unsafe impl Send for I2C5 {}
 
-/// RP1 I2C6 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare I2C controller; its registers are described by the separate IP model. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-i2c`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -418,7 +418,7 @@ impl I2C6 {
 
 unsafe impl Send for I2C6 {}
 
-/// RP1 I2S0 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare I2S audio interface; its registers are described by the separate IP model. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-designware-i2s`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -440,7 +440,7 @@ impl I2S0 {
 
 unsafe impl Send for I2S0 {}
 
-/// RP1 I2S1 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare I2S audio interface; its registers are described by the separate IP model. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-designware-i2s`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -462,7 +462,7 @@ impl I2S1 {
 
 unsafe impl Send for I2S1 {}
 
-/// RP1 I2S2 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare I2S audio interface; its registers are described by the separate IP model. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-designware-i2s`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -484,7 +484,7 @@ impl I2S2 {
 
 unsafe impl Send for I2S2 {}
 
-/// RP1 IO_BANK0_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// GPIO bank 0 function select, signal overrides and per-pin interrupt routing. Bus=APB. Atomic aliases: XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[allow(non_camel_case_types)]
 pub struct IO_BANK0 {
@@ -559,7 +559,7 @@ impl core::ops::Deref for IO_BANK2 {
 
 unsafe impl Send for IO_BANK2 {}
 
-/// RP1 MIPI0_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Integration registers for this MIPI instance. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -577,7 +577,7 @@ impl MIPI0_CFG {
 
 unsafe impl Send for MIPI0_CFG {}
 
-/// RP1 MIPI0_CSIDMA register block. Bus=APB. No RP1 atomic alias listed.
+/// DMA registers for the CSI camera receive path. Individual fields are not known. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `mipi-csi-dma`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -599,7 +599,7 @@ impl MIPI0_CSIDMA {
 
 unsafe impl Send for MIPI0_CSIDMA {}
 
-/// RP1 MIPI0_CSIHOST register block. Bus=APB. No RP1 atomic alias listed.
+/// CSI host interface registers. Individual fields are not known. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `mipi-csi-host`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -621,7 +621,7 @@ impl MIPI0_CSIHOST {
 
 unsafe impl Send for MIPI0_CSIHOST {}
 
-/// RP1 MIPI0_DSIDMA register block. Bus=APB. No RP1 atomic alias listed.
+/// DMA registers for the DSI display transmit path. Individual fields are not known. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `mipi-dsi-dma`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -643,7 +643,7 @@ impl MIPI0_DSIDMA {
 
 unsafe impl Send for MIPI0_DSIDMA {}
 
-/// RP1 MIPI0_DSIHOST register block. Bus=APB. No RP1 atomic alias listed.
+/// DSI host interface registers. Individual fields are not known. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `mipi-dsi-host`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -665,7 +665,7 @@ impl MIPI0_DSIHOST {
 
 unsafe impl Send for MIPI0_DSIHOST {}
 
-/// RP1 MIPI0_ISP register block. Bus=APB. No RP1 atomic alias listed.
+/// ISP registers for this MIPI instance. Individual fields are not known. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `mipi-isp`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -687,7 +687,7 @@ impl MIPI0_ISP {
 
 unsafe impl Send for MIPI0_ISP {}
 
-/// RP1 MIPI1_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Integration registers for this MIPI instance. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -705,7 +705,7 @@ impl MIPI1_CFG {
 
 unsafe impl Send for MIPI1_CFG {}
 
-/// RP1 MIPI1_CSIDMA register block. Bus=APB. No RP1 atomic alias listed.
+/// DMA registers for the CSI camera receive path. Individual fields are not known. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `mipi-csi-dma`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -727,7 +727,7 @@ impl MIPI1_CSIDMA {
 
 unsafe impl Send for MIPI1_CSIDMA {}
 
-/// RP1 MIPI1_CSIHOST register block. Bus=APB. No RP1 atomic alias listed.
+/// CSI host interface registers. Individual fields are not known. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `mipi-csi-host`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -749,7 +749,7 @@ impl MIPI1_CSIHOST {
 
 unsafe impl Send for MIPI1_CSIHOST {}
 
-/// RP1 MIPI1_DSIDMA register block. Bus=APB. No RP1 atomic alias listed.
+/// DMA registers for the DSI display transmit path. Individual fields are not known. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `mipi-dsi-dma`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -771,7 +771,7 @@ impl MIPI1_DSIDMA {
 
 unsafe impl Send for MIPI1_DSIDMA {}
 
-/// RP1 MIPI1_DSIHOST register block. Bus=APB. No RP1 atomic alias listed.
+/// DSI host interface registers. Individual fields are not known. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `mipi-dsi-host`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -793,7 +793,7 @@ impl MIPI1_DSIHOST {
 
 unsafe impl Send for MIPI1_DSIHOST {}
 
-/// RP1 MIPI1_ISP register block. Bus=APB. No RP1 atomic alias listed.
+/// ISP registers for this MIPI instance. Individual fields are not known. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `mipi-isp`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -833,7 +833,7 @@ impl OTP {
 
 unsafe impl Send for OTP {}
 
-/// RP1 PADS_BANK0_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Pad electrical controls and input threshold selection for GPIO bank 0. Bus=APB. Atomic aliases: XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[allow(non_camel_case_types)]
 pub struct PADS_BANK0 {
@@ -908,7 +908,7 @@ impl core::ops::Deref for PADS_BANK2 {
 
 unsafe impl Send for PADS_BANK2 {}
 
-/// RP1 PADS_ETH_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Pad control for the Ethernet pins. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -951,7 +951,7 @@ impl core::ops::Deref for PCIE_APBS {
 
 unsafe impl Send for PCIE_APBS {}
 
-/// RP1 PIO_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Programmable I/O block built from state machines. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1044,7 +1044,7 @@ impl core::ops::Deref for PLL_VIDEO {
 
 unsafe impl Send for PLL_VIDEO {}
 
-/// RP1 POWER_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Power control registers. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1062,7 +1062,7 @@ impl POWER {
 
 unsafe impl Send for POWER {}
 
-/// RP1 PWM0_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// PWM block with four waveform channels. Waveforms run on `clk_pwm`; the register bus runs on `clk_sys`. Bus=APB. Atomic aliases: XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[allow(non_camel_case_types)]
 pub struct PWM0 {
@@ -1087,7 +1087,7 @@ impl core::ops::Deref for PWM0 {
 
 unsafe impl Send for PWM0 {}
 
-/// RP1 PWM1_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// PWM block with four waveform channels. Waveforms run on `clk_pwm`; the register bus runs on `clk_sys`. Bus=APB. Atomic aliases: XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[allow(non_camel_case_types)]
 pub struct PWM1 {
@@ -1137,7 +1137,7 @@ impl core::ops::Deref for RESETS {
 
 unsafe impl Send for RESETS {}
 
-/// RP1 ROSC0_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Ring oscillator control. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1155,7 +1155,7 @@ impl ROSC0 {
 
 unsafe impl Send for ROSC0 {}
 
-/// RP1 ROSC1_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Ring oscillator control. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1173,7 +1173,7 @@ impl ROSC1 {
 
 unsafe impl Send for ROSC1 {}
 
-/// RP1 SDIO0 register block. Bus=AHB. No RP1 atomic alias listed.
+/// SD/eMMC host controller; its registers are described by the separate IP model. AHB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `sdhci-compatible-host`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1195,7 +1195,7 @@ impl SDIO0 {
 
 unsafe impl Send for SDIO0 {}
 
-/// RP1 SDIO0_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Integration registers for the matching SD host controller. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1213,7 +1213,7 @@ impl SDIO0_CFG {
 
 unsafe impl Send for SDIO0_CFG {}
 
-/// RP1 SDIO1 register block. Bus=AHB. No RP1 atomic alias listed.
+/// SD/eMMC host controller; its registers are described by the separate IP model. AHB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `sdhci-compatible-host`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1235,7 +1235,7 @@ impl SDIO1 {
 
 unsafe impl Send for SDIO1 {}
 
-/// RP1 SDIO1_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Integration registers for the matching SD host controller. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1253,7 +1253,7 @@ impl SDIO1_CFG {
 
 unsafe impl Send for SDIO1_CFG {}
 
-/// RP1 SPI0 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare SSI (SPI) controller. In master mode the controller's clock divider runs from the system clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-ssi`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1275,7 +1275,7 @@ impl SPI0 {
 
 unsafe impl Send for SPI0 {}
 
-/// RP1 SPI1 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare SSI (SPI) controller. In master mode the controller's clock divider runs from the system clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-ssi`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1297,7 +1297,7 @@ impl SPI1 {
 
 unsafe impl Send for SPI1 {}
 
-/// RP1 SPI2 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare SSI (SPI) controller. In master mode the controller's clock divider runs from the system clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-ssi`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1319,7 +1319,7 @@ impl SPI2 {
 
 unsafe impl Send for SPI2 {}
 
-/// RP1 SPI3 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare SSI (SPI) controller. In master mode the controller's clock divider runs from the system clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-ssi`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1341,7 +1341,7 @@ impl SPI3 {
 
 unsafe impl Send for SPI3 {}
 
-/// RP1 SPI4 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare SSI (SPI) controller. In master mode the controller's clock divider runs from the system clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-ssi`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1363,7 +1363,7 @@ impl SPI4 {
 
 unsafe impl Send for SPI4 {}
 
-/// RP1 SPI5 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare SSI (SPI) controller. In master mode the controller's clock divider runs from the system clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-ssi`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1385,7 +1385,7 @@ impl SPI5 {
 
 unsafe impl Send for SPI5 {}
 
-/// RP1 SPI6 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare SSI (SPI) controller. In master mode the controller's clock divider runs from the system clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-ssi`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1407,7 +1407,7 @@ impl SPI6 {
 
 unsafe impl Send for SPI6 {}
 
-/// RP1 SPI7 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare SSI (SPI) controller. In master mode the controller's clock divider runs from the system clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-ssi`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1429,7 +1429,7 @@ impl SPI7 {
 
 unsafe impl Send for SPI7 {}
 
-/// RP1 SPI8 register block. Bus=APB. No RP1 atomic alias listed.
+/// Synopsys DesignWare SSI (SPI) controller. In master mode the controller's clock divider runs from the system clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `synopsys-dw-apb-ssi`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1451,7 +1451,7 @@ impl SPI8 {
 
 unsafe impl Send for SPI8 {}
 
-/// RP1 SYSCFG_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// System configuration registers. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1469,7 +1469,7 @@ impl SYSCFG {
 
 unsafe impl Send for SYSCFG {}
 
-/// RP1 SYSINFO_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// System information registers. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1487,7 +1487,7 @@ impl SYSINFO {
 
 unsafe impl Send for SYSINFO {}
 
-/// RP1 SYS_RIO0_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Host-side GPIO RIO block for bank 0: output latch, output enable and input sample registers. Bus=APB. Atomic aliases: XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[allow(non_camel_case_types)]
 pub struct SYS_RIO0 {
@@ -1634,7 +1634,7 @@ impl UART0 {
 
 unsafe impl Send for UART0 {}
 
-/// RP1 UART1 register block. Bus=APB. No RP1 atomic alias listed.
+/// Arm PL011 UART, with a baud clock separate from the APB clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `arm-pl011`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1656,7 +1656,7 @@ impl UART1 {
 
 unsafe impl Send for UART1 {}
 
-/// RP1 UART2 register block. Bus=APB. No RP1 atomic alias listed.
+/// Arm PL011 UART, with a baud clock separate from the APB clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `arm-pl011`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1678,7 +1678,7 @@ impl UART2 {
 
 unsafe impl Send for UART2 {}
 
-/// RP1 UART3 register block. Bus=APB. No RP1 atomic alias listed.
+/// Arm PL011 UART, with a baud clock separate from the APB clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `arm-pl011`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1700,7 +1700,7 @@ impl UART3 {
 
 unsafe impl Send for UART3 {}
 
-/// RP1 UART4 register block. Bus=APB. No RP1 atomic alias listed.
+/// Arm PL011 UART, with a baud clock separate from the APB clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `arm-pl011`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1722,7 +1722,7 @@ impl UART4 {
 
 unsafe impl Send for UART4 {}
 
-/// RP1 UART5 register block. Bus=APB. No RP1 atomic alias listed.
+/// Arm PL011 UART, with a baud clock separate from the APB clock. APB bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `arm-pl011`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1744,7 +1744,7 @@ impl UART5 {
 
 unsafe impl Send for UART5 {}
 
-/// RP1 USBHOST0 register block. Bus=AXI3. No RP1 atomic alias listed.
+/// USB xHCI host controller register window on the AXI3 bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `usb-xhci-host`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1766,7 +1766,7 @@ impl USBHOST0 {
 
 unsafe impl Send for USBHOST0 {}
 
-/// RP1 USBHOST0_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Integration registers for the matching USB host controller. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1784,7 +1784,7 @@ impl USBHOST0_CFG {
 
 unsafe impl Send for USBHOST0_CFG {}
 
-/// RP1 USBHOST1 register block. Bus=AXI3. No RP1 atomic alias listed.
+/// USB xHCI host controller register window on the AXI3 bus. No RP1 XOR/SET/CLEAR alias window is defined.
 /// External IP instance delegated to `usb-xhci-host`; only RP1 instance metadata is provided.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1806,7 +1806,7 @@ impl USBHOST1 {
 
 unsafe impl Send for USBHOST1 {}
 
-/// RP1 USBHOST1_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Integration registers for the matching USB host controller. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1824,7 +1824,7 @@ impl USBHOST1_CFG {
 
 unsafe impl Send for USBHOST1_CFG {}
 
-/// RP1 VBUSCTRL_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// USB VBUS control registers. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1842,7 +1842,7 @@ impl VBUSCTRL {
 
 unsafe impl Send for VBUSCTRL {}
 
-/// RP1 VIDEO_OUT_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Integration registers for the video output path. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1860,7 +1860,7 @@ impl VIDEO_OUT_CFG {
 
 unsafe impl Send for VIDEO_OUT_CFG {}
 
-/// RP1 VIDEO_OUT_DPI_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Parallel (DPI) display output registers. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1878,7 +1878,7 @@ impl VIDEO_OUT_DPI {
 
 unsafe impl Send for VIDEO_OUT_DPI {}
 
-/// RP1 VIDEO_OUT_VEC_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Video encoder registers. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
@@ -1921,7 +1921,7 @@ impl core::ops::Deref for WATCHDOG {
 
 unsafe impl Send for WATCHDOG {}
 
-/// RP1 XOSC_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// Crystal oscillator control. Individual fields are not known. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 /// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]

@@ -8,4 +8,4 @@ size = 0x1000
 ownership = "singleton"
 default_origin = "official"
 legacy_svd_name = "EXAC"
-note = "RP1 EXAC register block. Bus=AXI3. No RP1 atomic alias listed."
+note = "EXAC memory window on the AXI3 bus. Its function is not known. No RP1 XOR/SET/CLEAR alias window is defined."

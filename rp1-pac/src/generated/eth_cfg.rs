@@ -4,7 +4,7 @@
 
 use crate::Reg;
 
-/// RP1 ETH_CFG_RW register block. Bus=APB. Atomic alias: normal read/write access.
+/// RP1 glue logic around the GEM Ethernet MAC: timestamp unit, RGMII clocking and interrupt routing. Bus=APB. Atomic aliases: normal at base, XOR at +0x1000, SET at +0x2000, CLR at +0x3000.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
 #[repr(C)]
 pub struct RegisterBlock {
@@ -22,68 +22,68 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// General Ethernet control register
+    /// MAC glue controls for the timestamp unit, bus error reporting and memory power.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn control(&self) -> &CONTROL {
         &self.control
     }
-    /// General Ethernet status register
+    /// RGMII link status and AXI burst-length error flags.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn status(&self) -> &STATUS {
         &self.status
     }
-    /// TSU timer count value \[31:0\]
+    /// Bits 31:0 of the 94-bit timestamp counter. How the three words are latched for a consistent read is not known.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn tsu_timer_cnt0(&self) -> &TSU_TIMER_CNT0 {
         &self.tsu_timer_cnt0
     }
-    /// TSU timer count value \[63:32\]
+    /// Bits 63:32 of the 94-bit timestamp counter.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn tsu_timer_cnt1(&self) -> &TSU_TIMER_CNT1 {
         &self.tsu_timer_cnt1
     }
-    /// TSU timer count value \[93:64\]
+    /// Bits 93:64 of the 94-bit timestamp counter.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn tsu_timer_cnt2(&self) -> &TSU_TIMER_CNT2 {
         &self.tsu_timer_cnt2
     }
-    /// Clock control
+    /// RGMII clock generator controls. Safe to change while running.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn clkgen(&self) -> &CLKGEN {
         &self.clkgen
     }
-    /// Clock-to-fabric clock select
+    /// Chooses which RGMII clock is sent to the frequency counter.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn clk2fc(&self) -> &CLK2FC {
         &self.clk2fc
     }
-    /// Raw interrupts
+    /// Raw interrupt sources, before the enable mask.
     /// Hardware access: read Plain; write Plain.
     /// Write API is not exposed because the verified operation semantics are insufficient.
     #[inline(always)]
     pub const fn intr(&self) -> &INTR {
         &self.intr
     }
-    /// Interrupt enable
+    /// Interrupt enable, one bit per source: 1 lets the source reach the IRQ output, 0 masks it.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn inte(&self) -> &INTE {
         &self.inte
     }
-    /// Interrupt force
+    /// Interrupt force, one bit per source: 1 asserts the source by software, 0 removes the force.
     /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn intf(&self) -> &INTF {
         &self.intf
     }
-    /// Interrupt status after masking and forcing
+    /// Effective interrupt state seen by the IRQ output: (INTR & INTE) | INTF.
     /// Hardware access: read Plain; write None.
     #[inline(always)]
     pub const fn ints(&self) -> &INTS {
@@ -91,10 +91,10 @@ impl RegisterBlock {
     }
 }
 
-/// General Ethernet control register
+/// MAC glue controls for the timestamp unit, bus error reporting and memory power.
 /// Hardware access: read Plain; write Plain.
 pub type CONTROL = Reg<control::CONTROL_SPEC>;
-/// General Ethernet control register
+/// MAC glue controls for the timestamp unit, bus error reporting and memory power.
 /// Hardware access: read Plain; write Plain.
 pub mod control {
     pub struct CONTROL_SPEC;
@@ -130,7 +130,7 @@ pub mod control {
     pub type AtomicSetW = crate::AtomicSetW<CONTROL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CONTROL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CONTROL_SPEC>;
-    /// TSU master/slave
+    /// Drives the GEM timestamp unit master/slave select input. Which level means master is not known.
     /// Field write behavior: Plain.
     pub mod tsu_ms {
         pub type R = crate::BitReader;
@@ -139,7 +139,7 @@ pub mod control {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// TSU increment control
+    /// 2-bit value driven to the GEM timestamp increment control input. Code meanings are not known.
     /// Field write behavior: Plain.
     pub mod tsu_inc_ctrl {
         pub type R = crate::FieldReader<u32>;
@@ -148,7 +148,7 @@ pub mod control {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 1, 2>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 1, 2>;
     }
-    /// Enable MAC bus errors to pass through fabric
+    /// 1 passes GEM bus errors on to the fabric; 0 suppresses them. With this set, accesses to unused MAC address space can raise bus faults.
     /// Field write behavior: Plain.
     pub mod buserr_en {
         pub type R = crate::BitReader;
@@ -157,7 +157,7 @@ pub mod control {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// Memory power down
+    /// 1 requests memory power-down; 0 keeps memory powered. Content retention and wake-up sequence are not known.
     /// Field write behavior: Plain.
     pub mod mem_pd {
         pub type R = crate::BitReader;
@@ -203,25 +203,25 @@ pub mod control {
         }
     }
     impl AtomicSetW {
-        /// TSU master/slave
+        /// Drives the GEM timestamp unit master/slave select input. Which level means master is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn tsu_ms(&mut self) -> tsu_ms::ASW<'_> {
             tsu_ms::ASW::new(self)
         }
-        /// TSU increment control
+        /// 2-bit value driven to the GEM timestamp increment control input. Code meanings are not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn tsu_inc_ctrl(&mut self) -> tsu_inc_ctrl::ASW<'_> {
             tsu_inc_ctrl::ASW::new(self)
         }
-        /// Enable MAC bus errors to pass through fabric
+        /// 1 passes GEM bus errors on to the fabric; 0 suppresses them. With this set, accesses to unused MAC address space can raise bus faults.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn buserr_en(&mut self) -> buserr_en::ASW<'_> {
             buserr_en::ASW::new(self)
         }
-        /// Memory power down
+        /// 1 requests memory power-down; 0 keeps memory powered. Content retention and wake-up sequence are not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mem_pd(&mut self) -> mem_pd::ASW<'_> {
@@ -229,25 +229,25 @@ pub mod control {
         }
     }
     impl AtomicClearW {
-        /// TSU master/slave
+        /// Drives the GEM timestamp unit master/slave select input. Which level means master is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn tsu_ms(&mut self) -> tsu_ms::ACW<'_> {
             tsu_ms::ACW::new(self)
         }
-        /// TSU increment control
+        /// 2-bit value driven to the GEM timestamp increment control input. Code meanings are not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn tsu_inc_ctrl(&mut self) -> tsu_inc_ctrl::ACW<'_> {
             tsu_inc_ctrl::ACW::new(self)
         }
-        /// Enable MAC bus errors to pass through fabric
+        /// 1 passes GEM bus errors on to the fabric; 0 suppresses them. With this set, accesses to unused MAC address space can raise bus faults.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn buserr_en(&mut self) -> buserr_en::ACW<'_> {
             buserr_en::ACW::new(self)
         }
-        /// Memory power down
+        /// 1 requests memory power-down; 0 keeps memory powered. Content retention and wake-up sequence are not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mem_pd(&mut self) -> mem_pd::ACW<'_> {
@@ -255,25 +255,25 @@ pub mod control {
         }
     }
     impl AtomicXorW {
-        /// TSU master/slave
+        /// Drives the GEM timestamp unit master/slave select input. Which level means master is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn tsu_ms(&mut self) -> tsu_ms::AXW<'_> {
             tsu_ms::AXW::new(self)
         }
-        /// TSU increment control
+        /// 2-bit value driven to the GEM timestamp increment control input. Code meanings are not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn tsu_inc_ctrl(&mut self) -> tsu_inc_ctrl::AXW<'_> {
             tsu_inc_ctrl::AXW::new(self)
         }
-        /// Enable MAC bus errors to pass through fabric
+        /// 1 passes GEM bus errors on to the fabric; 0 suppresses them. With this set, accesses to unused MAC address space can raise bus faults.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn buserr_en(&mut self) -> buserr_en::AXW<'_> {
             buserr_en::AXW::new(self)
         }
-        /// Memory power down
+        /// 1 requests memory power-down; 0 keeps memory powered. Content retention and wake-up sequence are not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn mem_pd(&mut self) -> mem_pd::AXW<'_> {
@@ -282,10 +282,10 @@ pub mod control {
     }
 }
 
-/// General Ethernet status register
+/// RGMII link status and AXI burst-length error flags.
 /// Hardware access: read Plain; write None.
 pub type STATUS = Reg<status::STATUS_SPEC>;
-/// General Ethernet status register
+/// RGMII link status and AXI burst-length error flags.
 /// Hardware access: read Plain; write None.
 pub mod status {
     pub struct STATUS_SPEC;
@@ -294,31 +294,31 @@ pub mod status {
     }
     impl crate::Readable for STATUS_SPEC {}
     pub type R = crate::R<STATUS_SPEC>;
-    /// RGMII link status
+    /// RGMII link up/down indication. Polarity is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod rgmii_link_status {
         pub type R = crate::BitReader;
     }
-    /// RGMII speed: 0=10Mb, 1=100Mb, 2=1Gb
+    /// RGMII speed: 0 10 Mb/s, 1 100 Mb/s, 2 1 Gb/s. Code 3 is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod rgmii_speed {
         pub type R = crate::FieldReader<u32>;
     }
-    /// RGMII duplex mode
+    /// RGMII duplex: half or full. Which value means full duplex is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod rgmii_duplex {
         pub type R = crate::BitReader;
     }
-    /// Illegal AXI read address transaction
+    /// 1 when a read burst longer than 16 AXI beats was seen. Recovery needs a block reset and possibly a full system reset.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod arlen_illegal {
         pub type R = crate::BitReader;
     }
-    /// Illegal AXI write address transaction
+    /// 1 when a write burst longer than 16 AXI beats was seen. Recovery needs a block reset and possibly a full system reset.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod awlen_illegal {
@@ -348,10 +348,10 @@ pub mod status {
     }
 }
 
-/// TSU timer count value \[31:0\]
+/// Bits 31:0 of the 94-bit timestamp counter. How the three words are latched for a consistent read is not known.
 /// Hardware access: read Plain; write None.
 pub type TSU_TIMER_CNT0 = Reg<tsu_timer_cnt0::TSU_TIMER_CNT0_SPEC>;
-/// TSU timer count value \[31:0\]
+/// Bits 31:0 of the 94-bit timestamp counter. How the three words are latched for a consistent read is not known.
 /// Hardware access: read Plain; write None.
 pub mod tsu_timer_cnt0 {
     pub struct TSU_TIMER_CNT0_SPEC;
@@ -363,7 +363,7 @@ pub mod tsu_timer_cnt0 {
     impl crate::ResetValue for TSU_TIMER_CNT0_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// TSU timer count \[31:0\]
+    /// Timestamp counter bits 31:0. Counter units are not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod cnt0 {
@@ -377,10 +377,10 @@ pub mod tsu_timer_cnt0 {
     }
 }
 
-/// TSU timer count value \[63:32\]
+/// Bits 63:32 of the 94-bit timestamp counter.
 /// Hardware access: read Plain; write None.
 pub type TSU_TIMER_CNT1 = Reg<tsu_timer_cnt1::TSU_TIMER_CNT1_SPEC>;
-/// TSU timer count value \[63:32\]
+/// Bits 63:32 of the 94-bit timestamp counter.
 /// Hardware access: read Plain; write None.
 pub mod tsu_timer_cnt1 {
     pub struct TSU_TIMER_CNT1_SPEC;
@@ -392,7 +392,7 @@ pub mod tsu_timer_cnt1 {
     impl crate::ResetValue for TSU_TIMER_CNT1_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// TSU timer count \[63:32\]
+    /// Timestamp counter bits 63:32.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod cnt1 {
@@ -406,10 +406,10 @@ pub mod tsu_timer_cnt1 {
     }
 }
 
-/// TSU timer count value \[93:64\]
+/// Bits 93:64 of the 94-bit timestamp counter.
 /// Hardware access: read Plain; write None.
 pub type TSU_TIMER_CNT2 = Reg<tsu_timer_cnt2::TSU_TIMER_CNT2_SPEC>;
-/// TSU timer count value \[93:64\]
+/// Bits 93:64 of the 94-bit timestamp counter.
 /// Hardware access: read Plain; write None.
 pub mod tsu_timer_cnt2 {
     pub struct TSU_TIMER_CNT2_SPEC;
@@ -421,7 +421,7 @@ pub mod tsu_timer_cnt2 {
     impl crate::ResetValue for TSU_TIMER_CNT2_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// TSU timer count \[93:64\]
+    /// Timestamp counter bits 93:64, in bits 29:0 of this register.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod cnt2 {
@@ -435,10 +435,10 @@ pub mod tsu_timer_cnt2 {
     }
 }
 
-/// Clock control
+/// RGMII clock generator controls. Safe to change while running.
 /// Hardware access: read Plain; write Plain.
 pub type CLKGEN = Reg<clkgen::CLKGEN_SPEC>;
-/// Clock control
+/// RGMII clock generator controls. Safe to change while running.
 /// Hardware access: read Plain; write Plain.
 pub mod clkgen {
     pub struct CLKGEN_SPEC;
@@ -471,7 +471,7 @@ pub mod clkgen {
     pub type AtomicSetW = crate::AtomicSetW<CLKGEN_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CLKGEN_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CLKGEN_SPEC>;
-    /// Speed override value
+    /// Speed code used when speed_override_en=1: 0 10 Mb/s, 1 100 Mb/s, 2 1 Gb/s. Code 3 is not known.
     /// Field write behavior: Plain.
     pub mod speed_override {
         pub type R = crate::FieldReader<u32>;
@@ -480,7 +480,7 @@ pub mod clkgen {
         pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 0, 2>;
         pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 0, 2>;
     }
-    /// Use specified speed instead of MAC speed
+    /// 0 uses the speed from the MAC; 1 uses speed_override.
     /// Field write behavior: Plain.
     pub mod speed_override_en {
         pub type R = crate::BitReader;
@@ -489,13 +489,13 @@ pub mod clkgen {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// Speed from MAC
+    /// Speed code reported by GEM, regardless of the override setting. The exact encoding is not known.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod speed_from_mac {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Asynchronously kill clock generator
+    /// 1 stops the clock immediately without synchronization. Use enable for a glitch-free stop.
     /// Field write behavior: Plain.
     pub mod kill {
         pub type R = crate::BitReader;
@@ -504,7 +504,7 @@ pub mod clkgen {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// Start/stop clock generator cleanly
+    /// 1 starts the clock cleanly; 0 stops it cleanly.
     /// Field write behavior: Plain.
     pub mod enable {
         pub type R = crate::BitReader;
@@ -513,7 +513,7 @@ pub mod clkgen {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// Duty-cycle correction for odd divisors
+    /// 1 corrects the duty cycle to 50% for odd divisors; 0 leaves it uncorrected.
     /// Field write behavior: Plain.
     pub mod dc50 {
         pub type R = crate::BitReader;
@@ -522,7 +522,7 @@ pub mod clkgen {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 8>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 8>;
     }
-    /// Add delay to RGMII TX clock
+    /// 1 adds a delay to the TX clock; 0 bypasses it. The delay amount is not known.
     /// Field write behavior: Plain.
     pub mod txclkdelen {
         pub type R = crate::BitReader;
@@ -588,37 +588,37 @@ pub mod clkgen {
         }
     }
     impl AtomicSetW {
-        /// Speed override value
+        /// Speed code used when speed_override_en=1: 0 10 Mb/s, 1 100 Mb/s, 2 1 Gb/s. Code 3 is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn speed_override(&mut self) -> speed_override::ASW<'_> {
             speed_override::ASW::new(self)
         }
-        /// Use specified speed instead of MAC speed
+        /// 0 uses the speed from the MAC; 1 uses speed_override.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn speed_override_en(&mut self) -> speed_override_en::ASW<'_> {
             speed_override_en::ASW::new(self)
         }
-        /// Asynchronously kill clock generator
+        /// 1 stops the clock immediately without synchronization. Use enable for a glitch-free stop.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn kill(&mut self) -> kill::ASW<'_> {
             kill::ASW::new(self)
         }
-        /// Start/stop clock generator cleanly
+        /// 1 starts the clock cleanly; 0 stops it cleanly.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ASW<'_> {
             enable::ASW::new(self)
         }
-        /// Duty-cycle correction for odd divisors
+        /// 1 corrects the duty cycle to 50% for odd divisors; 0 leaves it uncorrected.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dc50(&mut self) -> dc50::ASW<'_> {
             dc50::ASW::new(self)
         }
-        /// Add delay to RGMII TX clock
+        /// 1 adds a delay to the TX clock; 0 bypasses it. The delay amount is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn txclkdelen(&mut self) -> txclkdelen::ASW<'_> {
@@ -626,37 +626,37 @@ pub mod clkgen {
         }
     }
     impl AtomicClearW {
-        /// Speed override value
+        /// Speed code used when speed_override_en=1: 0 10 Mb/s, 1 100 Mb/s, 2 1 Gb/s. Code 3 is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn speed_override(&mut self) -> speed_override::ACW<'_> {
             speed_override::ACW::new(self)
         }
-        /// Use specified speed instead of MAC speed
+        /// 0 uses the speed from the MAC; 1 uses speed_override.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn speed_override_en(&mut self) -> speed_override_en::ACW<'_> {
             speed_override_en::ACW::new(self)
         }
-        /// Asynchronously kill clock generator
+        /// 1 stops the clock immediately without synchronization. Use enable for a glitch-free stop.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn kill(&mut self) -> kill::ACW<'_> {
             kill::ACW::new(self)
         }
-        /// Start/stop clock generator cleanly
+        /// 1 starts the clock cleanly; 0 stops it cleanly.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::ACW<'_> {
             enable::ACW::new(self)
         }
-        /// Duty-cycle correction for odd divisors
+        /// 1 corrects the duty cycle to 50% for odd divisors; 0 leaves it uncorrected.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dc50(&mut self) -> dc50::ACW<'_> {
             dc50::ACW::new(self)
         }
-        /// Add delay to RGMII TX clock
+        /// 1 adds a delay to the TX clock; 0 bypasses it. The delay amount is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn txclkdelen(&mut self) -> txclkdelen::ACW<'_> {
@@ -664,37 +664,37 @@ pub mod clkgen {
         }
     }
     impl AtomicXorW {
-        /// Speed override value
+        /// Speed code used when speed_override_en=1: 0 10 Mb/s, 1 100 Mb/s, 2 1 Gb/s. Code 3 is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn speed_override(&mut self) -> speed_override::AXW<'_> {
             speed_override::AXW::new(self)
         }
-        /// Use specified speed instead of MAC speed
+        /// 0 uses the speed from the MAC; 1 uses speed_override.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn speed_override_en(&mut self) -> speed_override_en::AXW<'_> {
             speed_override_en::AXW::new(self)
         }
-        /// Asynchronously kill clock generator
+        /// 1 stops the clock immediately without synchronization. Use enable for a glitch-free stop.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn kill(&mut self) -> kill::AXW<'_> {
             kill::AXW::new(self)
         }
-        /// Start/stop clock generator cleanly
+        /// 1 starts the clock cleanly; 0 stops it cleanly.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn enable(&mut self) -> enable::AXW<'_> {
             enable::AXW::new(self)
         }
-        /// Duty-cycle correction for odd divisors
+        /// 1 corrects the duty cycle to 50% for odd divisors; 0 leaves it uncorrected.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn dc50(&mut self) -> dc50::AXW<'_> {
             dc50::AXW::new(self)
         }
-        /// Add delay to RGMII TX clock
+        /// 1 adds a delay to the TX clock; 0 bypasses it. The delay amount is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn txclkdelen(&mut self) -> txclkdelen::AXW<'_> {
@@ -703,10 +703,10 @@ pub mod clkgen {
     }
 }
 
-/// Clock-to-fabric clock select
+/// Chooses which RGMII clock is sent to the frequency counter.
 /// Hardware access: read Plain; write Plain.
 pub type CLK2FC = Reg<clk2fc::CLK2FC_SPEC>;
-/// Clock-to-fabric clock select
+/// Chooses which RGMII clock is sent to the frequency counter.
 /// Hardware access: read Plain; write Plain.
 pub mod clk2fc {
     pub struct CLK2FC_SPEC;
@@ -742,7 +742,7 @@ pub mod clk2fc {
     pub type AtomicSetW = crate::AtomicSetW<CLK2FC_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<CLK2FC_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<CLK2FC_SPEC>;
-    /// Clock source select
+    /// 0 none, 1 RGMII TX clock, 2 RGMII RX clock. Code 3 is not known.
     /// Field write behavior: Plain.
     pub mod sel {
         pub type R = crate::FieldReader<u32>;
@@ -767,7 +767,7 @@ pub mod clk2fc {
         }
     }
     impl AtomicSetW {
-        /// Clock source select
+        /// 0 none, 1 RGMII TX clock, 2 RGMII RX clock. Code 3 is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sel(&mut self) -> sel::ASW<'_> {
@@ -775,7 +775,7 @@ pub mod clk2fc {
         }
     }
     impl AtomicClearW {
-        /// Clock source select
+        /// 0 none, 1 RGMII TX clock, 2 RGMII RX clock. Code 3 is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sel(&mut self) -> sel::ACW<'_> {
@@ -783,7 +783,7 @@ pub mod clk2fc {
         }
     }
     impl AtomicXorW {
-        /// Clock source select
+        /// 0 none, 1 RGMII TX clock, 2 RGMII RX clock. Code 3 is not known.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn sel(&mut self) -> sel::AXW<'_> {
@@ -792,11 +792,11 @@ pub mod clk2fc {
     }
 }
 
-/// Raw interrupts
+/// Raw interrupt sources, before the enable mask.
 /// Hardware access: read Plain; write Plain.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type INTR = Reg<intr::INTR_SPEC>;
-/// Raw interrupts
+/// Raw interrupt sources, before the enable mask.
 /// Hardware access: read Plain; write Plain.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub mod intr {
@@ -819,79 +819,79 @@ pub mod intr {
     impl crate::UnsafeAtomicXor for INTR_SPEC {
         const OFFSET: usize = 0x1000;
     }
-    /// ethernet
+    /// 1 while the GEM aggregate interrupt source is active. Read-only level; it cannot be cleared here.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ethernet {
         pub type R = crate::BitReader;
     }
-    /// wol
+    /// 1 when the Wake-on-LAN source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod wol {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 pdelay resp tx
+    /// 1 when the PTP Pdelay_Resp transmitted source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_pdelay_resp_tx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 pdelay req tx
+    /// 1 when the PTP Pdelay_Req (TX-named) source has fired. Write 1 to clear; writing 0 leaves it pending. The source table describes this TX-named bit as the receive path; the actual direction is not known.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_pdelay_req_tx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 delay req tx
+    /// 1 when the PTP Delay_Req transmitted source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_delay_req_tx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 sync frame tx
+    /// 1 when the PTP Sync transmitted source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_sync_frame_tx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 sof tx
+    /// 1 when the start of frame transmitted source has fired. Write 1 to clear; writing 0 leaves it pending. The source drops at the end of the frame.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_sof_tx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 pdelay resp rx
+    /// 1 when the PTP Pdelay_Resp received source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_pdelay_resp_rx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 pdelay req rx
+    /// 1 when the PTP Pdelay_Req received source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_pdelay_req_rx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 delay req rx
+    /// 1 when the PTP Delay_Req received source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_delay_req_rx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 sync frame rx
+    /// 1 when the PTP Sync received source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_sync_frame_rx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 sof rx
+    /// 1 when the start of frame received source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_sof_rx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 tsu timer cmp val
+    /// 1 when the timestamp comparator match (upper 70 counter bits) source has fired. Write 1 to clear; writing 0 leaves it pending.
     /// Field write behavior: WriteOneToClear.
     /// Typed write API is not exposed by register policy.
     pub mod ieee1588_tsu_timer_cmp_val {
@@ -953,10 +953,10 @@ pub mod intr {
     }
 }
 
-/// Interrupt enable
+/// Interrupt enable, one bit per source: 1 lets the source reach the IRQ output, 0 masks it.
 /// Hardware access: read Plain; write Plain.
 pub type INTE = Reg<inte::INTE_SPEC>;
-/// Interrupt enable
+/// Interrupt enable, one bit per source: 1 lets the source reach the IRQ output, 0 masks it.
 /// Hardware access: read Plain; write Plain.
 pub mod inte {
     pub struct INTE_SPEC;
@@ -992,7 +992,7 @@ pub mod inte {
     pub type AtomicSetW = crate::AtomicSetW<INTE_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<INTE_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<INTE_SPEC>;
-    /// ethernet
+    /// Enable for the GEM aggregate interrupt source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ethernet {
         pub type R = crate::BitReader;
@@ -1001,7 +1001,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// wol
+    /// Enable for the Wake-on-LAN source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod wol {
         pub type R = crate::BitReader;
@@ -1010,7 +1010,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// ieee1588 pdelay resp tx
+    /// Enable for the PTP Pdelay_Resp transmitted source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_pdelay_resp_tx {
         pub type R = crate::BitReader;
@@ -1019,7 +1019,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
     }
-    /// ieee1588 pdelay req tx
+    /// Enable for the PTP Pdelay_Req (TX-named) source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_pdelay_req_tx {
         pub type R = crate::BitReader;
@@ -1028,7 +1028,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// ieee1588 delay req tx
+    /// Enable for the PTP Delay_Req transmitted source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_delay_req_tx {
         pub type R = crate::BitReader;
@@ -1037,7 +1037,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// ieee1588 sync frame tx
+    /// Enable for the PTP Sync transmitted source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_sync_frame_tx {
         pub type R = crate::BitReader;
@@ -1046,7 +1046,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// ieee1588 sof tx
+    /// Enable for the start of frame transmitted source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_sof_tx {
         pub type R = crate::BitReader;
@@ -1055,7 +1055,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// ieee1588 pdelay resp rx
+    /// Enable for the PTP Pdelay_Resp received source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_pdelay_resp_rx {
         pub type R = crate::BitReader;
@@ -1064,7 +1064,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// ieee1588 pdelay req rx
+    /// Enable for the PTP Pdelay_Req received source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_pdelay_req_rx {
         pub type R = crate::BitReader;
@@ -1073,7 +1073,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 8>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 8>;
     }
-    /// ieee1588 delay req rx
+    /// Enable for the PTP Delay_Req received source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_delay_req_rx {
         pub type R = crate::BitReader;
@@ -1082,7 +1082,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 9>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 9>;
     }
-    /// ieee1588 sync frame rx
+    /// Enable for the PTP Sync received source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_sync_frame_rx {
         pub type R = crate::BitReader;
@@ -1091,7 +1091,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 10>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 10>;
     }
-    /// ieee1588 sof rx
+    /// Enable for the start of frame received source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_sof_rx {
         pub type R = crate::BitReader;
@@ -1100,7 +1100,7 @@ pub mod inte {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 11>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 11>;
     }
-    /// ieee1588 tsu timer cmp val
+    /// Enable for the timestamp comparator match (upper 70 counter bits) source. 1 passes it to the IRQ output; 0 masks it.
     /// Field write behavior: Plain.
     pub mod ieee1588_tsu_timer_cmp_val {
         pub type R = crate::BitReader;
@@ -1218,79 +1218,79 @@ pub mod inte {
         }
     }
     impl AtomicSetW {
-        /// ethernet
+        /// Enable for the GEM aggregate interrupt source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ethernet(&mut self) -> ethernet::ASW<'_> {
             ethernet::ASW::new(self)
         }
-        /// wol
+        /// Enable for the Wake-on-LAN source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn wol(&mut self) -> wol::ASW<'_> {
             wol::ASW::new(self)
         }
-        /// ieee1588 pdelay resp tx
+        /// Enable for the PTP Pdelay_Resp transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_tx(&mut self) -> ieee1588_pdelay_resp_tx::ASW<'_> {
             ieee1588_pdelay_resp_tx::ASW::new(self)
         }
-        /// ieee1588 pdelay req tx
+        /// Enable for the PTP Pdelay_Req (TX-named) source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_tx(&mut self) -> ieee1588_pdelay_req_tx::ASW<'_> {
             ieee1588_pdelay_req_tx::ASW::new(self)
         }
-        /// ieee1588 delay req tx
+        /// Enable for the PTP Delay_Req transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_tx(&mut self) -> ieee1588_delay_req_tx::ASW<'_> {
             ieee1588_delay_req_tx::ASW::new(self)
         }
-        /// ieee1588 sync frame tx
+        /// Enable for the PTP Sync transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_tx(&mut self) -> ieee1588_sync_frame_tx::ASW<'_> {
             ieee1588_sync_frame_tx::ASW::new(self)
         }
-        /// ieee1588 sof tx
+        /// Enable for the start of frame transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_tx(&mut self) -> ieee1588_sof_tx::ASW<'_> {
             ieee1588_sof_tx::ASW::new(self)
         }
-        /// ieee1588 pdelay resp rx
+        /// Enable for the PTP Pdelay_Resp received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_rx(&mut self) -> ieee1588_pdelay_resp_rx::ASW<'_> {
             ieee1588_pdelay_resp_rx::ASW::new(self)
         }
-        /// ieee1588 pdelay req rx
+        /// Enable for the PTP Pdelay_Req received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_rx(&mut self) -> ieee1588_pdelay_req_rx::ASW<'_> {
             ieee1588_pdelay_req_rx::ASW::new(self)
         }
-        /// ieee1588 delay req rx
+        /// Enable for the PTP Delay_Req received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_rx(&mut self) -> ieee1588_delay_req_rx::ASW<'_> {
             ieee1588_delay_req_rx::ASW::new(self)
         }
-        /// ieee1588 sync frame rx
+        /// Enable for the PTP Sync received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_rx(&mut self) -> ieee1588_sync_frame_rx::ASW<'_> {
             ieee1588_sync_frame_rx::ASW::new(self)
         }
-        /// ieee1588 sof rx
+        /// Enable for the start of frame received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_rx(&mut self) -> ieee1588_sof_rx::ASW<'_> {
             ieee1588_sof_rx::ASW::new(self)
         }
-        /// ieee1588 tsu timer cmp val
+        /// Enable for the timestamp comparator match (upper 70 counter bits) source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_tsu_timer_cmp_val(&mut self) -> ieee1588_tsu_timer_cmp_val::ASW<'_> {
@@ -1298,79 +1298,79 @@ pub mod inte {
         }
     }
     impl AtomicClearW {
-        /// ethernet
+        /// Enable for the GEM aggregate interrupt source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ethernet(&mut self) -> ethernet::ACW<'_> {
             ethernet::ACW::new(self)
         }
-        /// wol
+        /// Enable for the Wake-on-LAN source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn wol(&mut self) -> wol::ACW<'_> {
             wol::ACW::new(self)
         }
-        /// ieee1588 pdelay resp tx
+        /// Enable for the PTP Pdelay_Resp transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_tx(&mut self) -> ieee1588_pdelay_resp_tx::ACW<'_> {
             ieee1588_pdelay_resp_tx::ACW::new(self)
         }
-        /// ieee1588 pdelay req tx
+        /// Enable for the PTP Pdelay_Req (TX-named) source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_tx(&mut self) -> ieee1588_pdelay_req_tx::ACW<'_> {
             ieee1588_pdelay_req_tx::ACW::new(self)
         }
-        /// ieee1588 delay req tx
+        /// Enable for the PTP Delay_Req transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_tx(&mut self) -> ieee1588_delay_req_tx::ACW<'_> {
             ieee1588_delay_req_tx::ACW::new(self)
         }
-        /// ieee1588 sync frame tx
+        /// Enable for the PTP Sync transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_tx(&mut self) -> ieee1588_sync_frame_tx::ACW<'_> {
             ieee1588_sync_frame_tx::ACW::new(self)
         }
-        /// ieee1588 sof tx
+        /// Enable for the start of frame transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_tx(&mut self) -> ieee1588_sof_tx::ACW<'_> {
             ieee1588_sof_tx::ACW::new(self)
         }
-        /// ieee1588 pdelay resp rx
+        /// Enable for the PTP Pdelay_Resp received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_rx(&mut self) -> ieee1588_pdelay_resp_rx::ACW<'_> {
             ieee1588_pdelay_resp_rx::ACW::new(self)
         }
-        /// ieee1588 pdelay req rx
+        /// Enable for the PTP Pdelay_Req received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_rx(&mut self) -> ieee1588_pdelay_req_rx::ACW<'_> {
             ieee1588_pdelay_req_rx::ACW::new(self)
         }
-        /// ieee1588 delay req rx
+        /// Enable for the PTP Delay_Req received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_rx(&mut self) -> ieee1588_delay_req_rx::ACW<'_> {
             ieee1588_delay_req_rx::ACW::new(self)
         }
-        /// ieee1588 sync frame rx
+        /// Enable for the PTP Sync received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_rx(&mut self) -> ieee1588_sync_frame_rx::ACW<'_> {
             ieee1588_sync_frame_rx::ACW::new(self)
         }
-        /// ieee1588 sof rx
+        /// Enable for the start of frame received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_rx(&mut self) -> ieee1588_sof_rx::ACW<'_> {
             ieee1588_sof_rx::ACW::new(self)
         }
-        /// ieee1588 tsu timer cmp val
+        /// Enable for the timestamp comparator match (upper 70 counter bits) source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_tsu_timer_cmp_val(&mut self) -> ieee1588_tsu_timer_cmp_val::ACW<'_> {
@@ -1378,79 +1378,79 @@ pub mod inte {
         }
     }
     impl AtomicXorW {
-        /// ethernet
+        /// Enable for the GEM aggregate interrupt source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ethernet(&mut self) -> ethernet::AXW<'_> {
             ethernet::AXW::new(self)
         }
-        /// wol
+        /// Enable for the Wake-on-LAN source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn wol(&mut self) -> wol::AXW<'_> {
             wol::AXW::new(self)
         }
-        /// ieee1588 pdelay resp tx
+        /// Enable for the PTP Pdelay_Resp transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_tx(&mut self) -> ieee1588_pdelay_resp_tx::AXW<'_> {
             ieee1588_pdelay_resp_tx::AXW::new(self)
         }
-        /// ieee1588 pdelay req tx
+        /// Enable for the PTP Pdelay_Req (TX-named) source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_tx(&mut self) -> ieee1588_pdelay_req_tx::AXW<'_> {
             ieee1588_pdelay_req_tx::AXW::new(self)
         }
-        /// ieee1588 delay req tx
+        /// Enable for the PTP Delay_Req transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_tx(&mut self) -> ieee1588_delay_req_tx::AXW<'_> {
             ieee1588_delay_req_tx::AXW::new(self)
         }
-        /// ieee1588 sync frame tx
+        /// Enable for the PTP Sync transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_tx(&mut self) -> ieee1588_sync_frame_tx::AXW<'_> {
             ieee1588_sync_frame_tx::AXW::new(self)
         }
-        /// ieee1588 sof tx
+        /// Enable for the start of frame transmitted source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_tx(&mut self) -> ieee1588_sof_tx::AXW<'_> {
             ieee1588_sof_tx::AXW::new(self)
         }
-        /// ieee1588 pdelay resp rx
+        /// Enable for the PTP Pdelay_Resp received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_rx(&mut self) -> ieee1588_pdelay_resp_rx::AXW<'_> {
             ieee1588_pdelay_resp_rx::AXW::new(self)
         }
-        /// ieee1588 pdelay req rx
+        /// Enable for the PTP Pdelay_Req received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_rx(&mut self) -> ieee1588_pdelay_req_rx::AXW<'_> {
             ieee1588_pdelay_req_rx::AXW::new(self)
         }
-        /// ieee1588 delay req rx
+        /// Enable for the PTP Delay_Req received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_rx(&mut self) -> ieee1588_delay_req_rx::AXW<'_> {
             ieee1588_delay_req_rx::AXW::new(self)
         }
-        /// ieee1588 sync frame rx
+        /// Enable for the PTP Sync received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_rx(&mut self) -> ieee1588_sync_frame_rx::AXW<'_> {
             ieee1588_sync_frame_rx::AXW::new(self)
         }
-        /// ieee1588 sof rx
+        /// Enable for the start of frame received source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_rx(&mut self) -> ieee1588_sof_rx::AXW<'_> {
             ieee1588_sof_rx::AXW::new(self)
         }
-        /// ieee1588 tsu timer cmp val
+        /// Enable for the timestamp comparator match (upper 70 counter bits) source. 1 passes it to the IRQ output; 0 masks it.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_tsu_timer_cmp_val(&mut self) -> ieee1588_tsu_timer_cmp_val::AXW<'_> {
@@ -1459,10 +1459,10 @@ pub mod inte {
     }
 }
 
-/// Interrupt force
+/// Interrupt force, one bit per source: 1 asserts the source by software, 0 removes the force.
 /// Hardware access: read Plain; write Plain.
 pub type INTF = Reg<intf::INTF_SPEC>;
-/// Interrupt force
+/// Interrupt force, one bit per source: 1 asserts the source by software, 0 removes the force.
 /// Hardware access: read Plain; write Plain.
 pub mod intf {
     pub struct INTF_SPEC;
@@ -1498,7 +1498,7 @@ pub mod intf {
     pub type AtomicSetW = crate::AtomicSetW<INTF_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<INTF_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<INTF_SPEC>;
-    /// ethernet
+    /// Force for the GEM aggregate interrupt source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ethernet {
         pub type R = crate::BitReader;
@@ -1507,7 +1507,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
     }
-    /// wol
+    /// Force for the Wake-on-LAN source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod wol {
         pub type R = crate::BitReader;
@@ -1516,7 +1516,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
     }
-    /// ieee1588 pdelay resp tx
+    /// Force for the PTP Pdelay_Resp transmitted source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_pdelay_resp_tx {
         pub type R = crate::BitReader;
@@ -1525,7 +1525,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
     }
-    /// ieee1588 pdelay req tx
+    /// Force for the PTP Pdelay_Req (TX-named) source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_pdelay_req_tx {
         pub type R = crate::BitReader;
@@ -1534,7 +1534,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
-    /// ieee1588 delay req tx
+    /// Force for the PTP Delay_Req transmitted source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_delay_req_tx {
         pub type R = crate::BitReader;
@@ -1543,7 +1543,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
-    /// ieee1588 sync frame tx
+    /// Force for the PTP Sync transmitted source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_sync_frame_tx {
         pub type R = crate::BitReader;
@@ -1552,7 +1552,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
-    /// ieee1588 sof tx
+    /// Force for the start of frame transmitted source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_sof_tx {
         pub type R = crate::BitReader;
@@ -1561,7 +1561,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
     }
-    /// ieee1588 pdelay resp rx
+    /// Force for the PTP Pdelay_Resp received source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_pdelay_resp_rx {
         pub type R = crate::BitReader;
@@ -1570,7 +1570,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
     }
-    /// ieee1588 pdelay req rx
+    /// Force for the PTP Pdelay_Req received source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_pdelay_req_rx {
         pub type R = crate::BitReader;
@@ -1579,7 +1579,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 8>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 8>;
     }
-    /// ieee1588 delay req rx
+    /// Force for the PTP Delay_Req received source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_delay_req_rx {
         pub type R = crate::BitReader;
@@ -1588,7 +1588,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 9>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 9>;
     }
-    /// ieee1588 sync frame rx
+    /// Force for the PTP Sync received source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_sync_frame_rx {
         pub type R = crate::BitReader;
@@ -1597,7 +1597,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 10>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 10>;
     }
-    /// ieee1588 sof rx
+    /// Force for the start of frame received source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_sof_rx {
         pub type R = crate::BitReader;
@@ -1606,7 +1606,7 @@ pub mod intf {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 11>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 11>;
     }
-    /// ieee1588 tsu timer cmp val
+    /// Force for the timestamp comparator match (upper 70 counter bits) source. 1 raises the IRQ by software; 0 removes the force.
     /// Field write behavior: Plain.
     pub mod ieee1588_tsu_timer_cmp_val {
         pub type R = crate::BitReader;
@@ -1724,79 +1724,79 @@ pub mod intf {
         }
     }
     impl AtomicSetW {
-        /// ethernet
+        /// Force for the GEM aggregate interrupt source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ethernet(&mut self) -> ethernet::ASW<'_> {
             ethernet::ASW::new(self)
         }
-        /// wol
+        /// Force for the Wake-on-LAN source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn wol(&mut self) -> wol::ASW<'_> {
             wol::ASW::new(self)
         }
-        /// ieee1588 pdelay resp tx
+        /// Force for the PTP Pdelay_Resp transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_tx(&mut self) -> ieee1588_pdelay_resp_tx::ASW<'_> {
             ieee1588_pdelay_resp_tx::ASW::new(self)
         }
-        /// ieee1588 pdelay req tx
+        /// Force for the PTP Pdelay_Req (TX-named) source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_tx(&mut self) -> ieee1588_pdelay_req_tx::ASW<'_> {
             ieee1588_pdelay_req_tx::ASW::new(self)
         }
-        /// ieee1588 delay req tx
+        /// Force for the PTP Delay_Req transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_tx(&mut self) -> ieee1588_delay_req_tx::ASW<'_> {
             ieee1588_delay_req_tx::ASW::new(self)
         }
-        /// ieee1588 sync frame tx
+        /// Force for the PTP Sync transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_tx(&mut self) -> ieee1588_sync_frame_tx::ASW<'_> {
             ieee1588_sync_frame_tx::ASW::new(self)
         }
-        /// ieee1588 sof tx
+        /// Force for the start of frame transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_tx(&mut self) -> ieee1588_sof_tx::ASW<'_> {
             ieee1588_sof_tx::ASW::new(self)
         }
-        /// ieee1588 pdelay resp rx
+        /// Force for the PTP Pdelay_Resp received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_rx(&mut self) -> ieee1588_pdelay_resp_rx::ASW<'_> {
             ieee1588_pdelay_resp_rx::ASW::new(self)
         }
-        /// ieee1588 pdelay req rx
+        /// Force for the PTP Pdelay_Req received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_rx(&mut self) -> ieee1588_pdelay_req_rx::ASW<'_> {
             ieee1588_pdelay_req_rx::ASW::new(self)
         }
-        /// ieee1588 delay req rx
+        /// Force for the PTP Delay_Req received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_rx(&mut self) -> ieee1588_delay_req_rx::ASW<'_> {
             ieee1588_delay_req_rx::ASW::new(self)
         }
-        /// ieee1588 sync frame rx
+        /// Force for the PTP Sync received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_rx(&mut self) -> ieee1588_sync_frame_rx::ASW<'_> {
             ieee1588_sync_frame_rx::ASW::new(self)
         }
-        /// ieee1588 sof rx
+        /// Force for the start of frame received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_rx(&mut self) -> ieee1588_sof_rx::ASW<'_> {
             ieee1588_sof_rx::ASW::new(self)
         }
-        /// ieee1588 tsu timer cmp val
+        /// Force for the timestamp comparator match (upper 70 counter bits) source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_tsu_timer_cmp_val(&mut self) -> ieee1588_tsu_timer_cmp_val::ASW<'_> {
@@ -1804,79 +1804,79 @@ pub mod intf {
         }
     }
     impl AtomicClearW {
-        /// ethernet
+        /// Force for the GEM aggregate interrupt source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ethernet(&mut self) -> ethernet::ACW<'_> {
             ethernet::ACW::new(self)
         }
-        /// wol
+        /// Force for the Wake-on-LAN source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn wol(&mut self) -> wol::ACW<'_> {
             wol::ACW::new(self)
         }
-        /// ieee1588 pdelay resp tx
+        /// Force for the PTP Pdelay_Resp transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_tx(&mut self) -> ieee1588_pdelay_resp_tx::ACW<'_> {
             ieee1588_pdelay_resp_tx::ACW::new(self)
         }
-        /// ieee1588 pdelay req tx
+        /// Force for the PTP Pdelay_Req (TX-named) source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_tx(&mut self) -> ieee1588_pdelay_req_tx::ACW<'_> {
             ieee1588_pdelay_req_tx::ACW::new(self)
         }
-        /// ieee1588 delay req tx
+        /// Force for the PTP Delay_Req transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_tx(&mut self) -> ieee1588_delay_req_tx::ACW<'_> {
             ieee1588_delay_req_tx::ACW::new(self)
         }
-        /// ieee1588 sync frame tx
+        /// Force for the PTP Sync transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_tx(&mut self) -> ieee1588_sync_frame_tx::ACW<'_> {
             ieee1588_sync_frame_tx::ACW::new(self)
         }
-        /// ieee1588 sof tx
+        /// Force for the start of frame transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_tx(&mut self) -> ieee1588_sof_tx::ACW<'_> {
             ieee1588_sof_tx::ACW::new(self)
         }
-        /// ieee1588 pdelay resp rx
+        /// Force for the PTP Pdelay_Resp received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_rx(&mut self) -> ieee1588_pdelay_resp_rx::ACW<'_> {
             ieee1588_pdelay_resp_rx::ACW::new(self)
         }
-        /// ieee1588 pdelay req rx
+        /// Force for the PTP Pdelay_Req received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_rx(&mut self) -> ieee1588_pdelay_req_rx::ACW<'_> {
             ieee1588_pdelay_req_rx::ACW::new(self)
         }
-        /// ieee1588 delay req rx
+        /// Force for the PTP Delay_Req received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_rx(&mut self) -> ieee1588_delay_req_rx::ACW<'_> {
             ieee1588_delay_req_rx::ACW::new(self)
         }
-        /// ieee1588 sync frame rx
+        /// Force for the PTP Sync received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_rx(&mut self) -> ieee1588_sync_frame_rx::ACW<'_> {
             ieee1588_sync_frame_rx::ACW::new(self)
         }
-        /// ieee1588 sof rx
+        /// Force for the start of frame received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_rx(&mut self) -> ieee1588_sof_rx::ACW<'_> {
             ieee1588_sof_rx::ACW::new(self)
         }
-        /// ieee1588 tsu timer cmp val
+        /// Force for the timestamp comparator match (upper 70 counter bits) source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_tsu_timer_cmp_val(&mut self) -> ieee1588_tsu_timer_cmp_val::ACW<'_> {
@@ -1884,79 +1884,79 @@ pub mod intf {
         }
     }
     impl AtomicXorW {
-        /// ethernet
+        /// Force for the GEM aggregate interrupt source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ethernet(&mut self) -> ethernet::AXW<'_> {
             ethernet::AXW::new(self)
         }
-        /// wol
+        /// Force for the Wake-on-LAN source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn wol(&mut self) -> wol::AXW<'_> {
             wol::AXW::new(self)
         }
-        /// ieee1588 pdelay resp tx
+        /// Force for the PTP Pdelay_Resp transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_tx(&mut self) -> ieee1588_pdelay_resp_tx::AXW<'_> {
             ieee1588_pdelay_resp_tx::AXW::new(self)
         }
-        /// ieee1588 pdelay req tx
+        /// Force for the PTP Pdelay_Req (TX-named) source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_tx(&mut self) -> ieee1588_pdelay_req_tx::AXW<'_> {
             ieee1588_pdelay_req_tx::AXW::new(self)
         }
-        /// ieee1588 delay req tx
+        /// Force for the PTP Delay_Req transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_tx(&mut self) -> ieee1588_delay_req_tx::AXW<'_> {
             ieee1588_delay_req_tx::AXW::new(self)
         }
-        /// ieee1588 sync frame tx
+        /// Force for the PTP Sync transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_tx(&mut self) -> ieee1588_sync_frame_tx::AXW<'_> {
             ieee1588_sync_frame_tx::AXW::new(self)
         }
-        /// ieee1588 sof tx
+        /// Force for the start of frame transmitted source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_tx(&mut self) -> ieee1588_sof_tx::AXW<'_> {
             ieee1588_sof_tx::AXW::new(self)
         }
-        /// ieee1588 pdelay resp rx
+        /// Force for the PTP Pdelay_Resp received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_resp_rx(&mut self) -> ieee1588_pdelay_resp_rx::AXW<'_> {
             ieee1588_pdelay_resp_rx::AXW::new(self)
         }
-        /// ieee1588 pdelay req rx
+        /// Force for the PTP Pdelay_Req received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_pdelay_req_rx(&mut self) -> ieee1588_pdelay_req_rx::AXW<'_> {
             ieee1588_pdelay_req_rx::AXW::new(self)
         }
-        /// ieee1588 delay req rx
+        /// Force for the PTP Delay_Req received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_delay_req_rx(&mut self) -> ieee1588_delay_req_rx::AXW<'_> {
             ieee1588_delay_req_rx::AXW::new(self)
         }
-        /// ieee1588 sync frame rx
+        /// Force for the PTP Sync received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sync_frame_rx(&mut self) -> ieee1588_sync_frame_rx::AXW<'_> {
             ieee1588_sync_frame_rx::AXW::new(self)
         }
-        /// ieee1588 sof rx
+        /// Force for the start of frame received source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_sof_rx(&mut self) -> ieee1588_sof_rx::AXW<'_> {
             ieee1588_sof_rx::AXW::new(self)
         }
-        /// ieee1588 tsu timer cmp val
+        /// Force for the timestamp comparator match (upper 70 counter bits) source. 1 raises the IRQ by software; 0 removes the force.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn ieee1588_tsu_timer_cmp_val(&mut self) -> ieee1588_tsu_timer_cmp_val::AXW<'_> {
@@ -1965,10 +1965,10 @@ pub mod intf {
     }
 }
 
-/// Interrupt status after masking and forcing
+/// Effective interrupt state seen by the IRQ output: (INTR & INTE) | INTF.
 /// Hardware access: read Plain; write None.
 pub type INTS = Reg<ints::INTS_SPEC>;
-/// Interrupt status after masking and forcing
+/// Effective interrupt state seen by the IRQ output: (INTR & INTE) | INTF.
 /// Hardware access: read Plain; write None.
 pub mod ints {
     pub struct INTS_SPEC;
@@ -1980,79 +1980,79 @@ pub mod ints {
     impl crate::ResetValue for INTS_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    /// ethernet
+    /// 1 when the GEM aggregate interrupt source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ethernet {
         pub type R = crate::BitReader;
     }
-    /// wol
+    /// 1 when the Wake-on-LAN source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod wol {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 pdelay resp tx
+    /// 1 when the PTP Pdelay_Resp transmitted source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_pdelay_resp_tx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 pdelay req tx
+    /// 1 when the PTP Pdelay_Req (TX-named) source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_pdelay_req_tx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 delay req tx
+    /// 1 when the PTP Delay_Req transmitted source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_delay_req_tx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 sync frame tx
+    /// 1 when the PTP Sync transmitted source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_sync_frame_tx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 sof tx
+    /// 1 when the start of frame transmitted source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_sof_tx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 pdelay resp rx
+    /// 1 when the PTP Pdelay_Resp received source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_pdelay_resp_rx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 pdelay req rx
+    /// 1 when the PTP Pdelay_Req received source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_pdelay_req_rx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 delay req rx
+    /// 1 when the PTP Delay_Req received source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_delay_req_rx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 sync frame rx
+    /// 1 when the PTP Sync received source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_sync_frame_rx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 sof rx
+    /// 1 when the start of frame received source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_sof_rx {
         pub type R = crate::BitReader;
     }
-    /// ieee1588 tsu timer cmp val
+    /// 1 when the timestamp comparator match (upper 70 counter bits) source is driving the IRQ output.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
     pub mod ieee1588_tsu_timer_cmp_val {

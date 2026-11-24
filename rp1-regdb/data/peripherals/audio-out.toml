@@ -8,7 +8,7 @@ size = 0x1000
 ownership = "singleton"
 default_origin = "official"
 legacy_svd_name = "AUDIO_OUT_RW"
-note = "RP1 AUDIO_OUT_RW register block. Bus=APB. Atomic alias: normal read/write access."
+note = "Audio output block, clocked from the audio PLL clock path. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000."
 
 [peripheral.atomic_view]
 kind = "rp1-native"
