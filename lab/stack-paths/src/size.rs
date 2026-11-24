@@ -9,10 +9,12 @@
 use object::{Object, ObjectSection, ObjectSymbol};
 use std::collections::HashSet;
 
-/// Memory map of `rp1-rt/link.x`.
+/// Memory map of `rp1-rt/link.x` (origin, length); a host test compares it with the script.
 const SRAM: (u64, u32) = (0x2000_0000, 48 * 1024);
-const ISRAM_LEN: u32 = 8 * 1024;
+const ISRAM: (u64, u32) = (0x1000_0000, 8 * 1024);
 const DSRAM: (u64, u32) = (0x1000_2000, 8 * 1024);
+/// The C library functions that compiler-builtins provides.
+const MEM_FUNCTIONS: [&str; 4] = ["memcpy", "memmove", "memset", "memcmp"];
 
 /// Crates whose code is the platform (rp1-hal and its runtime, protocol and register crates).
 const PLATFORM_CRATES: [&str; 4] = ["rp1_rt", "rp1_hal", "rp1_proto", "rp1_pac"];
@@ -53,7 +55,7 @@ pub fn owner(name: &str) -> Owner {
         v0_crate(v0)
     } else if let Some(legacy) = name.strip_prefix("_ZN") {
         ident(legacy)
-    } else if name.starts_with("__") || name.starts_with("mem") {
+    } else if name.starts_with("__") || MEM_FUNCTIONS.contains(&name) {
         // compiler-builtins: __aeabi_*, memcpy, memset, ...
         return Owner::Runtime;
     } else {
@@ -209,8 +211,8 @@ impl Size {
             SRAM.1,
             free(SRAM.1, self.image),
             self.isram,
-            ISRAM_LEN,
-            free(ISRAM_LEN, self.isram),
+            ISRAM.1,
+            free(ISRAM.1, self.isram),
             self.dsram_static,
             self.stack0,
             self.stack1,
@@ -230,7 +232,7 @@ impl Size {
     /// Every budget has room left (the linker asserts the same; this is a cross-check).
     pub fn fits(&self) -> bool {
         self.image <= u64::from(SRAM.1)
-            && self.isram <= u64::from(ISRAM_LEN)
+            && self.isram <= u64::from(ISRAM.1)
             && self.dsram_static + self.stack0.max(self.stack1) <= u64::from(DSRAM.1)
     }
 }
@@ -278,6 +280,8 @@ mod tests {
             ),
             ("_ZN4core3fmt5write17h0123456789abcdefE", Owner::Runtime),
             ("my_no_mangle_fn", Owner::User),
+            ("memory_test", Owner::User),
+            ("memcmp", Owner::Runtime),
             (
                 ".Lanon.9e35279fbf81762a22508ca34cf25b38.14",
                 Owner::Unattributed,
@@ -286,6 +290,34 @@ mod tests {
         ] {
             assert_eq!(owner(name), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn memory_map_matches_the_linker_script() {
+        let script = include_str!("../../../rp1-rt/link.x");
+        let region = |name: &str| -> (u64, u32) {
+            let line = script
+                .lines()
+                .find(|l| l.trim_start().starts_with(&format!("{name} ")))
+                .unwrap_or_else(|| panic!("no {name} in link.x"));
+            let value = |key: &str| {
+                let v = line
+                    .split(key)
+                    .nth(1)
+                    .unwrap()
+                    .trim_start_matches([' ', '=']);
+                let v = v.split([',', ' ']).next().unwrap();
+                match (v.strip_prefix("0x"), v.strip_suffix('K')) {
+                    (Some(h), _) => u64::from_str_radix(h, 16).unwrap(),
+                    (_, Some(k)) => k.parse::<u64>().unwrap() * 1024,
+                    _ => v.parse().unwrap(),
+                }
+            };
+            (value("ORIGIN"), value("LENGTH") as u32)
+        };
+        assert_eq!(region("SRAM"), SRAM);
+        assert_eq!(region("ISRAM"), ISRAM);
+        assert_eq!(region("DSRAM"), DSRAM);
     }
 
     #[test]
