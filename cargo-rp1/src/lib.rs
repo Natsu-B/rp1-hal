@@ -277,6 +277,7 @@ fn check_irq_tables(file: &object::File<'_>, note: &Note<'_>) -> Result<()> {
         .ok_or("missing __rp1_default_irq")?
         .address()
         & !1;
+    check_platform_vectors(file, data, default)?;
     let ownership = note.get(note::OWNERSHIP).unwrap().value;
     let claims = ownership[4..].as_chunks::<4>().0;
     for core in 0..2 {
@@ -311,6 +312,34 @@ fn check_irq_tables(file: &object::File<'_>, note: &Note<'_>) -> Result<()> {
             )
             .into());
         }
+    }
+    Ok(())
+}
+
+/// The platform's proc0 handlers: the PERSTn detector (IRQ53) and SCMI (IRQ57). Platform init
+/// arms both lines, so an image has both handlers on their vectors, or neither (no platform).
+/// A handler that is missing from its vector would be masked by the default handler at its
+/// first entry and the service would stop without a trace.
+const PLATFORM_VECTORS: [(usize, &str); 2] =
+    [(53, "__rp1_p0_PCIE_OUT"), (57, "__rp1_p0_PROC_MISC")];
+
+fn check_platform_vectors(file: &object::File<'_>, vectors: &[u8], default: u64) -> Result<()> {
+    let mut installed = [false; 2];
+    for (slot, (irq, name)) in installed.iter_mut().zip(PLATFORM_VECTORS) {
+        let vector = u64::from(word(vectors, (16 + irq) * 4)? & !1);
+        let handler = file
+            .symbols()
+            .find(|s| s.name() == Ok(name))
+            .map(|s| s.address() & !1);
+        *slot = vector != default && handler == Some(vector);
+    }
+    if installed[0] != installed[1] {
+        return Err(format!(
+            "proc0 platform vectors: IRQ53 {} IRQ57 {}; both or neither must be the platform's handler",
+            if installed[0] { "installed" } else { "missing" },
+            if installed[1] { "installed" } else { "missing" },
+        )
+        .into());
     }
     Ok(())
 }
@@ -888,13 +917,21 @@ mod tests {
 
     // Section-only ARM ELF32 is sufficient for the object reader; no loader is involved.
     fn irq_elf(handler: u32, length: usize) -> Vec<u8> {
+        irq_elf_with(handler, length, &[])
+    }
+    /// `irq_elf` with more function symbols in the image.
+    fn irq_elf_with(handler: u32, length: usize, extra: &[(&str, u32)]) -> Vec<u8> {
         let names = b"\0.vectors\0.shstrtab\0.symtab\0.strtab\0";
-        let strings = b"\0__rp1_default_irq\0";
+        let mut strings = vec![0];
         let mut symbols = vec![0; 16];
-        symbols.extend_from_slice(&1u32.to_le_bytes());
-        symbols.extend_from_slice(&handler.to_le_bytes());
-        symbols.extend_from_slice(&2u32.to_le_bytes());
-        symbols.extend_from_slice(&[0x12, 0, 1, 0]);
+        for (name, address) in [("__rp1_default_irq", handler)].iter().chain(extra) {
+            symbols.extend_from_slice(&(strings.len() as u32).to_le_bytes());
+            symbols.extend_from_slice(&address.to_le_bytes());
+            symbols.extend_from_slice(&2u32.to_le_bytes());
+            symbols.extend_from_slice(&[0x12, 0, 1, 0]);
+            strings.extend_from_slice(name.as_bytes());
+            strings.push(0);
+        }
         let mut out = vec![0; ELF_HEADER_BYTES];
         let mut vectors = vec![0; length];
         for core in 0..2 {
@@ -985,6 +1022,40 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// I5-53 (and I5-57): proc0 vectors 53 and 57 hold the platform's handlers together.
+    #[test]
+    fn platform_vectors_are_installed_together() {
+        let desc =
+            rp1_build::wire::descriptor("test", "0.1.0", &Default::default(), [0; 32], [0; 20])
+                .unwrap();
+        let note = Note::parse(&desc).unwrap();
+        let (default, pcie, scmi) = (0x2000_0401, 0x2000_0501, 0x2000_0601);
+        // The linker script PROVIDEs a missing handler's symbol as the default handler.
+        let check = |pcie_symbol, v53: u32, v57: u32| {
+            let symbols = [
+                ("__rp1_p0_PCIE_OUT", pcie_symbol),
+                ("__rp1_p0_PROC_MISC", scmi),
+            ];
+            let mut bytes = irq_elf_with(default, VECTOR_SECTION_BYTES, &symbols);
+            for (irq, vector) in [(53, v53), (57, v57)] {
+                let offset = ELF_HEADER_BYTES + (16 + irq) * 4;
+                bytes[offset..offset + 4].copy_from_slice(&vector.to_le_bytes());
+            }
+            check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap(), &note)
+        };
+        check(pcie, pcie, scmi).unwrap();
+        check(pcie, default, default).unwrap();
+        for (pcie_symbol, v53, v57) in [
+            (pcie, default, scmi),
+            (default, default, scmi),
+            (pcie, scmi, scmi),
+            (pcie, pcie, default),
+        ] {
+            let error = check(pcie_symbol, v53, v57).unwrap_err().to_string();
+            assert!(error.contains("proc0 platform vectors"), "{error}");
         }
     }
 
