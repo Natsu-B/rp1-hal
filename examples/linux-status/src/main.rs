@@ -14,8 +14,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let monitor = Monitor::open()?;
     let status = monitor.status()?;
     println!(
-        "RP1_STATUS epoch={} shm={:?} shm_generation={}",
-        status.epoch, status.shm, status.shm_generation
+        "RP1_STATUS epoch={} shm={:?} shm_generation={} pcie={} scmi={}",
+        status.epoch, status.shm, status.shm_generation, status.pcie, status.scmi
     );
     for (core, c) in status.cores.iter().enumerate() {
         println!(

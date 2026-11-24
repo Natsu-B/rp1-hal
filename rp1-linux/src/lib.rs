@@ -16,7 +16,7 @@ use std::{
 };
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod status;
-pub use status::{CoreState, CoreStatus, Health, Monitor, ShmState, Status};
+pub use status::{CoreState, CoreStatus, Health, Monitor, PcieState, ScmiState, ShmState, Status};
 
 /// The firmware's note as the loader put it in the boot DT.
 const NOTE: &str = "/sys/firmware/devicetree/base/rp1-firmware/rp1,note";

@@ -1,6 +1,6 @@
 //! The firmware's status words on the link page (`rp1_proto::status`), written by rp1-rt.
 use super::{Mapping, NOTE, Result};
-pub use rp1_proto::status::CoreState;
+pub use rp1_proto::status::{CoreState, PcieState, ScmiState};
 use rp1_proto::{
     Error, barrier, link,
     note::{LINK, Link, Note},
@@ -14,6 +14,10 @@ pub struct Status {
     pub epoch: u32,
     pub shm: ShmState,
     pub shm_generation: u32,
+    /// proc0's PCIe endpoint and its PERSTn detector (`PLAT_PCIE`).
+    pub pcie: PcieState,
+    /// proc0's SCMI server (`PLAT_SCMI`).
+    pub scmi: ScmiState,
     /// proc0, proc1.
     pub cores: [CoreStatus; 2],
 }
@@ -84,15 +88,26 @@ impl Monitor {
     /// One read of the status words.
     ///
     /// `Err(NotReady)` unless the ABI word matches and `EPOCH` is even and unchanged across the
-    /// read (no firmware restart in between; never started looks the same). The details of a
-    /// core are final when its state is terminal. The two cores, their beats and the shm words
-    /// are not one snapshot.
+    /// read (no firmware restart in between; never started looks the same). A firmware with
+    /// another version of this layout is an error that names both versions. The details of a
+    /// core are final when its state is terminal. The two cores, their beats, the shm words and
+    /// the platform words are not one snapshot.
     pub fn status(&self) -> Result<Status> {
         let read = |offset| self.link.read(offset);
         let epoch = read(s::EPOCH);
         let abi = read(s::ABI);
         if abi == u32::MAX {
             return Err("BAR2 reads 0xffffffff: PCIe link down".into());
+        }
+        if let Some(version) = s::abi_version(abi)
+            && version != s::ABI_VERSION
+        {
+            return Err(format!(
+                "the firmware's status words are RL v{version}, this rp1-linux reads v{}: \
+                 build the firmware and rp1-linux from the same tree",
+                s::ABI_VERSION
+            )
+            .into());
         }
         if abi != s::ABI_VALUE || !epoch.is_multiple_of(2) {
             return Err(Error::NotReady.into());
@@ -105,6 +120,8 @@ impl Monitor {
             code => ShmState::Error(code),
         };
         let shm_generation = read(link::SHM_GENERATION);
+        let pcie = PcieState::from_word(read(s::PLAT_PCIE));
+        let scmi = ScmiState::from_word(read(s::PLAT_SCMI));
         barrier();
         if read(s::EPOCH) != epoch {
             return Err(Error::NotReady.into());
@@ -113,6 +130,8 @@ impl Monitor {
             epoch,
             shm,
             shm_generation,
+            pcie,
+            scmi,
             cores,
         })
     }
@@ -242,6 +261,42 @@ mod tests {
         assert!(m.status().unwrap_err().to_string().contains("link down"));
     }
 
+    /// An RL v2 firmware (no platform words) is named as such, not reported as not ready.
+    #[test]
+    fn status_names_another_abi_version() {
+        let m = monitor([None; 2]);
+        m.link.write(s::ABI, s::abi_value(2));
+        let error = m.status().unwrap_err().to_string();
+        assert!(
+            error.contains("RL v2") && error.contains("reads v3"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn status_decodes_the_platform_words() {
+        let m = monitor([None; 2]);
+        let status = m.status().unwrap();
+        assert_eq!(
+            (status.pcie, status.scmi),
+            (PcieState::NotStarted, ScmiState::NotStarted)
+        );
+        m.link.write(s::PLAT_PCIE, s::PLAT_PCIE_UP);
+        m.link.write(s::PLAT_SCMI, s::PLAT_SCMI_SERVING | 7 << 16);
+        let status = m.status().unwrap();
+        assert_eq!(
+            (status.pcie, status.scmi),
+            (PcieState::Up, ScmiState::Serving { requests: 7 })
+        );
+        m.link.write(s::PLAT_PCIE, s::PLAT_PCIE_LOST | 0x001b_0000);
+        m.link.write(s::PLAT_SCMI, s::PLAT_SCMI_QUARANTINED);
+        let status = m.status().unwrap();
+        assert_eq!(
+            (status.pcie.to_string(), status.scmi),
+            ("Lost(monitor2_hi=0x001b)".into(), ScmiState::Quarantined)
+        );
+    }
+
     #[test]
     fn details_only_in_a_terminal_state() {
         let m = monitor([None; 2]);
@@ -309,6 +364,8 @@ mod tests {
             epoch: 2,
             shm: ShmState::NotEnabled,
             shm_generation: 0,
+            pcie: PcieState::Up,
+            scmi: ScmiState::Serving { requests: 0 },
             cores: [0, 1].map(|core| CoreStatus {
                 state: CoreState::Running,
                 beat: if core == 0 { beat } else { 0 },

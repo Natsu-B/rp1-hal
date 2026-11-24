@@ -279,6 +279,8 @@ offset 8.. T             8 バイト境界
   rp1-rt の feature `panic-location` で有効にする（`examples/dual-core`）。
 - Linux（`rp1_linux::Monitor`、`Firmware::status` / `health`）:
   - `status()`: `ABI` が一致し `EPOCH` が偶数で前後同じときだけ返す（それ以外は `NotReady`。一度も起動していない場合も同じ）。
+    `"RL"` で版が違う `ABI`（版 2 のファームなど）は、両方の版を書いたエラー。`PLAT_PCIE` / `PLAT_SCMI` は rp1-proto の
+    `PcieState::from_word` / `ScmiState::from_word`（rp1-hal と共用）で解釈し、`linux-status` は `pcie=Up scmi=Serving(requests=N)` の形で出す。
     `STATE` が終端のときに限り、barrier の後に読んだ詳細は確定した値。実行中の詳細は返さない。2 つのコア・`BEAT`・`SHM_*` が同じ時点の値である保証は無い。
     BAR2 が `0xffff_ffff` を返したらリンク断のエラー。
   - `health(window)`: 終端・未知の状態のコアは `Down`。宣言 `heartbeat` のあるコアの `BEAT` を
