@@ -345,16 +345,18 @@ declared or default, and gives it to the linker as `__stack_margin0`: proc0's de
 
 `stack-paths` is a host tool. It disassembles a firmware ELF with `arm-none-eabi-objdump`
 (`RP1_OBJDUMP` overrides it) and bounds the stack use of the proc0 platform roots, which it
-takes from the vector table: IRQ57, IRQ53 and HardFault. It prints `S_plat` and fails when
-`S_plat` exceeds the margin (`--margin <bytes>` overrides it):
+takes from the vector table: IRQ57, IRQ53 and HardFault. It reads proc0's stack and its
+platform margin from the ELF (`__stack_size0`, `__stack_margin0`), prints `S_plat` and fails
+when `S_plat` exceeds the margin, or the margin leaves no user stack (`reason=proc0-stack`). An
+ELF without `__stack_margin0` (built before rp1-build had it) is an error (exit status 2):
 
 ```sh
 cargo rp1 build -p irq-proof --target thumbv7m-none-eabi --release
 cargo run -p stack-paths -- target/thumbv7m-none-eabi/release/irq-proof
 # stack root=<symbol> bytes=N              (one line per root)
-# stack_static=PASS s_plat=N h57=N h53=N hhard=N hfault=0 margin=768
-# stack_static=FAIL reason=<code> at=<symbol+offset> root=<symbol>   (exit status 1)
-# stack_static=FAIL reason=margin s_plat=N ... margin=768             (exit status 1)
+# stack_static=PASS s_plat=N h57=N h53=N hhard=N hfault=0 margin=768 stack0=2816
+# stack_static=FAIL reason=<code> at=<symbol+offset> root=<symbol>        (exit status 1)
+# stack_static=FAIL reason=margin|proc0-stack s_plat=N ... stack0=N        (exit status 1)
 ```
 
 The rules and the conservative choices (tail calls, noreturn calls, jump tables, linker
@@ -412,12 +414,12 @@ holds everything (no UART line; the firmware does not report its own size).
 
 ```sh
 cargo run -p stack-paths -- <firmware.elf> --size
-# size budget image=N/49152 sram_free=N isram=N/8192 isram_free=N dsram_static=N stack0=N stack1=N platform_stack=768 dsram_free0=N dsram_free1=N
+# size budget image=N/49152 sram_free=N isram=N/8192 isram_free=N dsram_static=N stack0=N stack1=N margin=768 dsram_free0=N dsram_free1=N
 # size owner=platform|runtime|user|unattributed code=N data=N bss=N
 ```
 
 `image` is the shared-SRAM image (`__image_end`, as `cargo rp1 build` reports it), `stack0`
-includes the `platform_stack` margin, and `dsram_freeN = 8192 - dsram_static - stackN`. Owners
+includes the platform `margin` (both from the ELF), and `dsram_freeN = 8192 - dsram_static - stackN`. Owners
 come from symbol names: platform = `rp1_rt`, `rp1_hal`, `rp1_proto`, `rp1_pac`, `__rp1_*`,
 the vector tables, the reset code and the `rp1` module that rp1-build generates; runtime =
 `core` and compiler-builtins; user = the firmware crate (its panic handler included);

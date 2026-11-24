@@ -337,17 +337,35 @@ fn platform_share() {
 
 #[test]
 fn s_plat_must_fit_the_margin() {
-    let line = |diagnostic, margin| verdict(440, 0, 8, 8, margin, diagnostic);
+    let line = |diagnostic, margin, stack0| {
+        verdict(440, 0, 8, 8, Proc0Stack { stack0, margin }, diagnostic)
+    };
     assert_eq!(
-        line(false, 768),
+        line(false, 768, 2816),
         (
             true,
-            "stack_static=PASS s_plat=564 h57=440 h53=8 hhard=8 hfault=0 margin=768".into()
+            "stack_static=PASS s_plat=564 h57=440 h53=8 hhard=8 hfault=0 margin=768 stack0=2816"
+                .into()
         )
     );
-    assert!(line(false, 564).0);
-    let (pass, text) = line(false, 512);
+    assert!(line(false, 564, 2816).0);
+    let (pass, text) = line(false, 512, 2816);
     assert!(!pass && text.starts_with("stack_static=FAIL reason=margin s_plat=564 "));
-    let (pass, text) = line(true, 768);
+    let (pass, text) = line(true, 768, 2816);
     assert!(!pass && text.starts_with("stack_static=DIAG "));
+}
+
+#[test]
+fn margin_must_leave_a_user_stack() {
+    // An image without a user part above the margin (or a margin of the whole stack) fails,
+    // whatever S_plat is.
+    let line = |margin, stack0| verdict(440, 0, 8, 8, Proc0Stack { stack0, margin }, false);
+    assert!(line(768, 776).0);
+    for (margin, stack0) in [(768, 768), (2048, 2048), (4096, 2048)] {
+        let (pass, text) = line(margin, stack0);
+        assert!(
+            !pass && text.starts_with("stack_static=FAIL reason=proc0-stack "),
+            "{text}"
+        );
+    }
 }

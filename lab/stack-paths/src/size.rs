@@ -130,20 +130,15 @@ pub struct Size {
     pub dsram_static: u64,
     pub stack0: u64,
     pub stack1: u64,
-    /// The platform's share of `stack0` (proc0's default stack margin).
-    pub platform_stack: u64,
+    /// The platform's part of `stack0` (`__stack_margin0`).
+    pub margin: u64,
     /// By owner, in the order of [`OWNERS`].
     pub owners: [Bytes; 4],
 }
 
 impl Size {
-    pub fn of(file: &object::File<'_>, platform_stack: u64) -> Result<Self, String> {
-        let symbol = |name: &str| {
-            file.symbols()
-                .find(|s| s.name() == Ok(name))
-                .map(|s| s.address())
-                .ok_or_else(|| format!("missing symbol {name}"))
-        };
+    pub fn of(file: &object::File<'_>) -> Result<Self, String> {
+        let symbol = |name| symbol(file, name);
         let image = symbol("__image_end")?
             .checked_sub(SRAM.0)
             .ok_or("__image_end below SRAM")?;
@@ -151,6 +146,7 @@ impl Size {
             .checked_sub(DSRAM.0)
             .ok_or("__ebss below DSRAM")?;
         let (stack0, stack1) = (symbol("__stack_size0")?, symbol("__stack_size1")?);
+        let margin = symbol("__stack_margin0")?;
 
         let mut owners = [Bytes::default(); 4];
         let mut isram = 0;
@@ -198,7 +194,7 @@ impl Size {
             dsram_static,
             stack0,
             stack1,
-            platform_stack,
+            margin,
             owners,
         })
     }
@@ -208,7 +204,7 @@ impl Size {
         let free = |len: u32, used: u64| i64::from(len) - used as i64;
         let mut lines = vec![format!(
             "size budget image={}/{} sram_free={} isram={}/{} isram_free={} dsram_static={} \
-             stack0={} stack1={} platform_stack={} dsram_free0={} dsram_free1={}",
+             stack0={} stack1={} margin={} dsram_free0={} dsram_free1={}",
             self.image,
             SRAM.1,
             free(SRAM.1, self.image),
@@ -218,7 +214,7 @@ impl Size {
             self.dsram_static,
             self.stack0,
             self.stack1,
-            self.platform_stack,
+            self.margin,
             free(DSRAM.1, self.dsram_static + self.stack0),
             free(DSRAM.1, self.dsram_static + self.stack1),
         )];
@@ -237,6 +233,14 @@ impl Size {
             && self.isram <= u64::from(ISRAM_LEN)
             && self.dsram_static + self.stack0.max(self.stack1) <= u64::from(DSRAM.1)
     }
+}
+
+/// The value of an ELF symbol (an address, or a linker-script constant).
+pub fn symbol(file: &object::File<'_>, name: &str) -> Result<u64, String> {
+    file.symbols()
+        .find(|s| s.name() == Ok(name))
+        .map(|s| s.address())
+        .ok_or_else(|| format!("missing symbol {name}"))
 }
 
 #[cfg(test)]
@@ -292,7 +296,7 @@ mod tests {
             dsram_static: 272,
             stack0: 2816,
             stack1: 2048,
-            platform_stack: 768,
+            margin: 768,
             owners: [Bytes {
                 code: 1,
                 data: 2,
@@ -303,7 +307,7 @@ mod tests {
         assert_eq!(
             lines[0],
             "size budget image=43536/49152 sram_free=5616 isram=3876/8192 isram_free=4316 \
-             dsram_static=272 stack0=2816 stack1=2048 platform_stack=768 dsram_free0=5104 \
+             dsram_static=272 stack0=2816 stack1=2048 margin=768 dsram_free0=5104 \
              dsram_free1=5872"
         );
         assert_eq!(lines[1], "size owner=platform code=1 data=2 bss=3");

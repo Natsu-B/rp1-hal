@@ -15,9 +15,9 @@ v = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(v)
 
 BUDGET = ("size budget image=43536/49152 sram_free=5616 isram=3876/8192 isram_free=4316 "
-          "dsram_static=272 stack0=2816 stack1=2048 platform_stack=768 dsram_free0=5104 "
+          "dsram_static=272 stack0=2816 stack1=2048 margin=768 dsram_free0=5104 "
           "dsram_free1=5872")
-STACK_PASS = "stack_static=PASS s_plat=572 h57=448 h53=8 hhard=8 hfault=0 margin=768"
+STACK_PASS = "stack_static=PASS s_plat=572 h57=448 h53=8 hhard=8 hfault=0 margin=768 stack0=2816"
 
 
 def tool(stack=STACK_PASS, budget=BUDGET):
@@ -44,9 +44,9 @@ class Rows(unittest.TestCase):
         self.assertEqual(v.stack_row(tool(stack=fail), 1), (v.FAIL, fail[len("stack_static=FAIL "):]))
         # FAIL with exit 0 is a tool inconsistency, not a verdict.
         self.assertEqual(v.stack_row(tool(stack=fail), 0)[0], v.INCOMPLETE)
-        margin = "stack_static=FAIL reason=margin s_plat=900 h57=776 h53=8 hhard=8 hfault=0 margin=768"
+        margin = "stack_static=FAIL reason=margin s_plat=900 h57=776 h53=8 hhard=8 hfault=0 margin=768 stack0=2816"
         self.assertEqual(v.stack_row(tool(stack=margin), 1)[0], v.FAIL)
-        diag = "stack_static=DIAG s_plat=564 h57=440 h53=8 hhard=8 hfault=0 margin=768"
+        diag = "stack_static=DIAG s_plat=564 h57=440 h53=8 hhard=8 hfault=0 margin=768 stack0=2816"
         self.assertEqual(v.stack_row(tool(stack=diag), 1)[0], v.FAIL)
         self.assertEqual(v.stack_row(None, None)[0], v.INCOMPLETE)
         self.assertEqual(v.stack_row(tool(stack=""), 0)[0], v.INCOMPLETE)

@@ -6,4 +6,3 @@ license.workspace = true
 
 [dependencies]
 object = "0.36"
-rp1-build = { path = "../../rp1-build" }

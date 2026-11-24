@@ -708,21 +708,38 @@ pub fn s_plat(h57: u32, hfault: u32, h53: u32, hhard: u32) -> u32 {
     h57.max(hfault) + h53 + hhard + 3 * FRAME
 }
 
+/// proc0's stack as the image declares it: `__stack_size0` (the whole stack) and
+/// `__stack_margin0` (the platform's part of it, from rp1-build).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Proc0Stack {
+    pub stack0: u32,
+    pub margin: u32,
+}
+
 /// The `stack_static=` line for the handler bounds, and whether it is a PASS: `S_plat` must fit
-/// in proc0's platform stack `margin`. A `diagnostic` run (`--cut`) is never a PASS.
+/// in the image's platform margin, and the margin must leave room for the user's stack. A
+/// `diagnostic` run (`--cut`) is never a PASS.
 pub fn verdict(
     h57: u32,
     hfault: u32,
     h53: u32,
     hhard: u32,
-    margin: u32,
+    stack: Proc0Stack,
     diagnostic: bool,
 ) -> (bool, String) {
     let s = s_plat(h57, hfault, h53, hhard);
-    let terms =
-        format!("s_plat={s} h57={h57} h53={h53} hhard={hhard} hfault={hfault} margin={margin}");
+    let Proc0Stack { stack0, margin } = stack;
+    let terms = format!(
+        "s_plat={s} h57={h57} h53={h53} hhard={hhard} hfault={hfault} margin={margin} \
+         stack0={stack0}"
+    );
     if diagnostic {
         (false, format!("stack_static=DIAG {terms}"))
+    } else if margin >= stack0 {
+        (
+            false,
+            format!("stack_static=FAIL reason=proc0-stack {terms}"),
+        )
     } else if s > margin {
         (false, format!("stack_static=FAIL reason=margin {terms}"))
     } else {
