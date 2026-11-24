@@ -411,7 +411,7 @@ pub mod gpio_ctrl {
         pub type R = crate::BitReader;
     }
     /// Write 1 to clear this pad's latched edge events; the bit then returns to 0 by itself. Writing 0 has no effect. Level events that are still active assert again.
-    /// Field write behavior: WriteOneToSet.
+    /// Field write behavior: SelfClearing.
     /// Typed write API is not exposed by register policy.
     pub mod irqreset {
         pub type R = crate::BitReader;

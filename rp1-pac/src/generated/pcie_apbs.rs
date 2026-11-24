@@ -125,8 +125,8 @@ impl RegisterBlock {
     pub const fn phy_cr_acc_data(&self) -> &PHY_CR_ACC_DATA {
         &self.phy_cr_acc_data
     }
-    /// Read port of the LTSSM transition FIFO. Each read pops one entry, so check that the FIFO is non-empty first. Reading an empty FIFO has unknown results. The PAC currently models this as a plain read.
-    /// Hardware access: read Plain; write None.
+    /// Read port of the LTSSM transition FIFO. Each read pops one entry, so check that the FIFO is non-empty first. Reading an empty FIFO has unknown results. The PAC `read()` of this register pops as well.
+    /// Hardware access: read Fifo; write None.
     #[inline(always)]
     pub const fn ltssm_state_new(&self) -> &LTSSM_STATE_NEW {
         &self.ltssm_state_new
@@ -352,7 +352,7 @@ pub mod control {
         pub type R = crate::BitReader;
     }
     /// Write 1 to allow link training again after a hot reset request. Self-clearing.
-    /// Field write behavior: WriteOneToSet.
+    /// Field write behavior: SelfClearing.
     /// Typed write API is not exposed by register policy.
     pub mod set_hot_rst_app_ltssm_enable {
         pub type R = crate::BitReader;
@@ -1475,13 +1475,13 @@ pub mod phy_cr_acc_ctrl {
         pub type R = crate::FieldReader<u32>;
     }
     /// Write 1 to write phy_cr_acc_data.wdata to the PHY register at addr. Self-clearing.
-    /// Field write behavior: WriteOneToSet.
+    /// Field write behavior: SelfClearing.
     /// Typed write API is not exposed by register policy.
     pub mod write {
         pub type R = crate::BitReader;
     }
     /// Write 1 to read the addressed PHY register into phy_cr_acc_data.rdata. Self-clearing.
-    /// Field write behavior: WriteOneToSet.
+    /// Field write behavior: SelfClearing.
     /// Typed write API is not exposed by register policy.
     pub mod read {
         pub type R = crate::BitReader;
@@ -1562,11 +1562,11 @@ pub mod phy_cr_acc_data {
     }
 }
 
-/// Read port of the LTSSM transition FIFO. Each read pops one entry, so check that the FIFO is non-empty first. Reading an empty FIFO has unknown results. The PAC currently models this as a plain read.
-/// Hardware access: read Plain; write None.
+/// Read port of the LTSSM transition FIFO. Each read pops one entry, so check that the FIFO is non-empty first. Reading an empty FIFO has unknown results. The PAC `read()` of this register pops as well.
+/// Hardware access: read Fifo; write None.
 pub type LTSSM_STATE_NEW = Reg<ltssm_state_new::LTSSM_STATE_NEW_SPEC>;
-/// Read port of the LTSSM transition FIFO. Each read pops one entry, so check that the FIFO is non-empty first. Reading an empty FIFO has unknown results. The PAC currently models this as a plain read.
-/// Hardware access: read Plain; write None.
+/// Read port of the LTSSM transition FIFO. Each read pops one entry, so check that the FIFO is non-empty first. Reading an empty FIFO has unknown results. The PAC `read()` of this register pops as well.
+/// Hardware access: read Fifo; write None.
 pub mod ltssm_state_new {
     pub struct LTSSM_STATE_NEW_SPEC;
     impl crate::RegisterSpec for LTSSM_STATE_NEW_SPEC {
@@ -1718,7 +1718,7 @@ pub mod vdm_config_reg1 {
     impl crate::Readable for VDM_CONFIG_REG1_SPEC {}
     pub type R = crate::R<VDM_CONFIG_REG1_SPEC>;
     /// Write 1 to send the message using the staged payload. Self-clearing.
-    /// Field write behavior: WriteOneToSet.
+    /// Field write behavior: SelfClearing.
     /// Typed write API is not exposed by register policy.
     pub mod req {
         pub type R = crate::BitReader;
@@ -2002,13 +2002,13 @@ pub mod pm_control {
         pub type R = crate::BitReader;
     }
     /// Write 1 to request entry to ASPM L1. Cleared once the request is taken.
-    /// Field write behavior: WriteOneToSet.
+    /// Field write behavior: SelfClearing.
     /// Typed write API is not exposed by register policy.
     pub mod app_req_entr_l1 {
         pub type R = crate::BitReader;
     }
     /// Write 1 to send a PME message to wake from L1/L2; PME support must be enabled. Self-clearing.
-    /// Field write behavior: WriteOneToSet.
+    /// Field write behavior: SelfClearing.
     /// Typed write API is not exposed by register policy.
     pub mod apps_pm_xmt_pme {
         pub type R = crate::BitReader;
