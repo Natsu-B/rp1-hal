@@ -375,13 +375,16 @@ of the bound and must not panic again: `rp1_rt::status::record_panic` has no bou
 
 STATIC (2026-11-25, release builds, rustc 1.99.1):
 
-| Firmware | `stack_static` | H57 | H53 | Hhard | `S_plat` |
-|---|---|---:|---:|---:|---:|
-| examples/dual-core | PASS | 592 | 8 | 8 | 716 |
-| irq-proof | PASS | 448 | 8 | 8 | 572 |
-| shm-firmware (default) | PASS | 448 | 8 | 8 | 572 |
-| shm-firmware (ring-dma) | PASS | 448 | 8 | 8 | 572 |
-| irq-sweep, pwm-loopback, scmi-starvation | FAIL `unresolved-indirect-call` in `core::fmt::write` | - | - | - | - |
+| Firmware | `stack_static` | H57 | H53 | Hhard | Hfault | Hnmi | `S_plat` |
+|---|---|---:|---:|---:|---:|---:|---:|
+| examples/dual-core | PASS | 592 | 8 | 8 | 8 | none | 716 |
+| irq-proof | PASS | 448 | 8 | 8 | 8 | none | 572 |
+| shm-firmware (default) | PASS | 448 | 8 | 8 | 8 | none | 572 |
+| shm-firmware (ring-dma) | PASS | 448 | 8 | 8 | 8 | none | 572 |
+| irq-sweep, pwm-loopback, scmi-starvation | FAIL `unresolved-indirect-call` in `core::fmt::write` | - | - | - | - | - | - |
+
+Every image has `stack0=2816` and `margin=768` from the ELF, and the default handler in the
+fault and NMI vectors.
 
 The three FAIL images log a message from their panic handler; `log!` formats through
 `core::fmt::write`, whose calls through the `Write` vtable the tool cannot resolve. Their
@@ -437,7 +440,7 @@ bound and the user figure an upper bound.
 
 STATIC (2026-11-25, rustc 1.99.1, release `cargo rp1 build`; bytes):
 
-| Firmware | Image / 49152 | SRAM free | ISRAM / 8192 | Platform code | Runtime code | User code | Unattributed | stack0 (platform) / stack1 | DSRAM free p0 / p1 |
+| Firmware | Image / 49152 | SRAM free | ISRAM / 8192 | Platform code | Runtime code | User code | Unattributed | stack0 (margin) / stack1 | DSRAM free p0 / p1 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | examples/dual-core | 26816 | 22336 | 808 | 11082 | 6202 | 5990 | 3264 | 2816 (768) / 2048 | 5264 / 6032 |
 | irq-proof | 43536 | 5616 | 3876 | 16366 | 6374 | 15942 | 4514 | 2816 (768) / 2048 | 5104 / 5872 |
