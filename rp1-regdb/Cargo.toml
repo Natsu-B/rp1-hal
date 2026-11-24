@@ -2,6 +2,7 @@
 name = "rp1-regdb"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "RP1 TOML register database validator and PAC generator"
 
 [dependencies]

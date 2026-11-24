@@ -2,6 +2,7 @@
 name = "rp1-pac"
 version = "0.0.1"
 edition = "2024"
+license.workspace = true
 description = "TOML-generated peripheral access crate for Raspberry Pi RP1"
 
 [dependencies]
