@@ -506,7 +506,8 @@ Failing `evidence=` codes are `no_cursor`, `log_lost`, `timeout`, `no_irq`, `io_
 `unavailable` (see the script header). PWM reads its sysfs state back (`evidence=sysfs`: the PWM
 core accepted the setting, not a measured GPIO12 output), and an
 already-exported PWM channel produces a failed probe. The fan probe requires a nonzero tach
-reading (`evidence=tach`). The register dump uses read-only `busybox devmem` on bound
+reading (`evidence=tach`), so it needs a fan with its tach wire connected; leave `fan` out
+otherwise. The register dump uses read-only `busybox devmem` on bound
 blocks. Record the source revision and SHA-256 of the external `RP1_ELF` when comparing with
 stock RP1 firmware.
 
@@ -522,5 +523,7 @@ USBHOST `+0x98` was zero while xHCI interrupts arrived.
 
 STATIC: rp1-hal enables the Linux-owned I2C/SPI wrapper gates and programs the USBHOST
 wrapper words before Linux starts. HW (2026-11, [interrupts](../docs/interrupts.md#4-根拠)):
-Linux-side IRQ delivery observed for I2C2, I2C6, SPI1, Ethernet, and USB. HW unverified: this
-checker's result on firmware after SCMI moved to IRQ 57; the runs above predate it.
+Linux-side IRQ delivery observed for I2C2, I2C6, SPI1, Ethernet, and USB. HW (2026-11-24, cold
+boot, firmware with SCMI on IRQ 57): this checker passes for I2C2, I2C6, SPI1 (16 and 4096 bytes),
+PWM0, Ethernet, and USB, and `rp1-realos-check` passes. The fan row was not verified: the test
+board reads no tach pulses, also with stock RP1 firmware.
