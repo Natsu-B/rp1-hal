@@ -81,7 +81,7 @@ PCIe を 2〜200 µs 空けても書き・読みの時間は変わらない（AS
 
 **ライブラリの既定（v0.1 以降、STATIC + HW）**: 次を `#[isram]` で ISRAM に置く。冷たい経路は `#[rp1_rt::cold]`（`.text.cold`、共有 SRAM）に分ける。
 - `rp1-proto`: `RingTx::push` / `push_slice`、`RingRx::pop` / `pop_into`（feature `isram`、既定で有効。ホストでは何もしない）
-- `rp1-hal`: `cold::EndpointService::poll` の空振り判定（レジスタ 1 回の読み）。再設定（`poll_slow`）は cold。SCMI は proc0 の IRQ57 で処理し、ハンドラは共有 SRAM に配置する（STATIC）
+- `rp1-hal`: SCMI（IRQ57）と PERSTn 検出器（IRQ53）は proc0 の割り込みで処理し、ハンドラは共有 SRAM に配置する。proc0 のループで poll するものは無い（STATIC）
 - 使う側のホットループ（例: lab の proc0 `idle0`、proc1 `wait_command`、バッチ送受信）は手で `#[isram]`。配列の `==` は `memcmp`（共有 SRAM）を呼ぶので避ける
 
 **v0.2（自動配置、実装済み・STATIC。shm-firmware の最終ビルドで HW）**: `cargo rp1 build <cargo build の引数>` が 2 段リンクする。
@@ -414,3 +414,4 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | 2026-10-30 | SPI マスターを追加（`peripherals = ["SPI0"]` など、OWNERSHIP 16+n）。bank 0 のマスター SPI0/1/3/5（rpi-cm5。SPI2 の MISO は Linux UART1 の GPIO1、SPI4/7 はスレーブ専用、SPI6/8 は bank 0 外）。クロックは clk_sys（RP1 所有、SCMI で保持・投票しない）を偶数 BAUDR で分周、リセットは CTRL1 bit 10+n。宣言すると overlay が `rp1_spiN` を disabled にし、そのリセットは Linux 用に解除しない。ネイティブ CS は配線せず、`spi::Device` が GPIO を CS にする（`docs/spi.md`） | HW（2026-10-30、cold boot ×2）: 内部ループバックで 1/10/25/50 MHz × 8/12/16 bit 一致、FIFO 64 段、既存の目印も成立 |
 | 2026-11-05 | DMA コントローラーを宣言できるようにする（`dma = {}`、OWNERSHIP 65、ボード表の Linux 必須ブロックから外す）。所有時は `rp1_dma` を無効化し clk_dma を SCMI で保持、`dmas` で `rp1_dma` を使う有効なノードは `pwms` と同じく衝突。`rp1_hal::dma` は単一ブロックの mem-to-mem（ポーリング完了）で、M3 アドレスはデータシートの 40-bit 写像で変換する（SRAM `0xC0_2000_0000`、ATU 窓 `0x80_0000_0000`、ホスト物理 `0x10_0000_0000 + p`） | HW（2026-11-05、cold boot）: SRAM→SRAM と SRAM→Linux DDR（ATU 窓・直接写像の両方）が全語一致。DDR へは 64 KiB ブロックで約 200 MB/s、CPU の posted 書き込みは約 8.5 MB/s（docs/dma.md） |
 | 2026-11-16 | 割り込みの線は、実機で「源を立てるとその線の NVIC pending bit だけが立つ」と確かめたものだけを `IRQ_VERIFIED` に入れて公開する（未確認の線は出さない。`docs/declaration-and-note.md` §1.3.1）。I2C0/2/3・SPI1/3・PWM1・ADC_FIFO を追加。IO_BANK1/2 は届くがピンが Linux のものなので出さない。I2C/SPI の RP1 出力イネーブル `+0x108` はドライバの `enable_interrupt` が開け、`free` / `abort` が閉じる | HW（2026-11、掃引 2 種のイメージで各 2 起動、9 本すべて同じ結果）。`+0x108` 閉で 0/3、開で 3/3（HW） |
+| 2026-11-24 | PERSTn 後のエンドポイント再設定（`cold::EndpointService`、`cold::reconfig`）を削除する。init の後の PERSTn は IRQ53 の検出器が `PLAT_PCIE = Lost` / `SHM_STATUS = SHM_WINDOW_LOST` として報告するだけで、回復は RP1 の再ロード。proc0 のループは何も poll しない | init の後の PERSTn からは回復しない（規則 L1）。再設定は outbound の shm 窓を戻さず、DBI・selector を proc0 のループから書くので `shm::enable` との排他が要った（STATIC）。検出の経路は HW 未確認 |

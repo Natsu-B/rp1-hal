@@ -260,7 +260,7 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
             fragment(&format!("target = <&{label}>"), "status = \"disabled\";");
         }
         // PoC lab DT (PCIe handoff study, HW 2026-10-08): hold PERST 20 ms with the refclk
-        // running so the RP1 endpoint reconfiguration (rp1_hal::cold) is reliable.
+        // running so the RP1 endpoint bring-up after PERSTn (rp1_hal::cold) is reliable.
         fragment("target = <&pcie2>", "brcm,tperst-clk-ms = <20>;");
     }
     s.push_str("};\n");
