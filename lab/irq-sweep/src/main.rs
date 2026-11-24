@@ -83,12 +83,9 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     rp1_proto::barrier();
     mark!("IRQ_SWEEP_BOOT boot={:08x}", boot);
 
-    // From here on the image only serves Linux: the endpoint across PERSTn, and the clocks.
-    let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
+    // From here on the image only serves Linux, from the platform interrupts (SCMI, PERSTn).
     loop {
-        if let Some(r) = endpoint.poll() {
-            log!("p0 pcie perst {:?}\n", r).unwrap();
-        }
+        rp1_rt::wait_for_event();
     }
 }
 

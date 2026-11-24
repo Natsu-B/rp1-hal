@@ -80,23 +80,19 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     log!("p0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
 
     let mut system = System {
-        endpoint: unsafe { rp1_hal::cold::EndpointService::new() },
         pcie: sys.pcie,
         probed: false,
         attempted: false,
     };
     // The system services keep running while proc0's items wait for their interrupts.
-    proc0::run(p.TIMER_ALARM0, i2c.ok(), p.irq, &mut || {
-        let perst = system.endpoint.poll();
-        system.handle(perst);
-    });
+    proc0::run(p.TIMER_ALARM0, i2c.ok(), p.irq, &mut || system.handle());
 
     let mut rx = REPORT.consumer(&mut core);
     let mut report = [0; proc1::Report::WORDS];
     let mut words = 0;
     loop {
-        let (word, perst) = idle0(&mut rx, &mut system);
-        system.handle(perst);
+        let word = idle0(&mut rx, &system);
+        system.handle();
         if let Some(word) = word
             && words < report.len()
         {
@@ -109,21 +105,15 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     }
 }
 
-type Perst = Option<Result<rp1_hal::cold::Reconfigured, rp1_hal::cold::ReconfigError>>;
-
-/// proc0's PCIe endpoint across PERSTn and the two shm requests Linux makes through the link page.
+/// The two shm requests Linux makes through the link page.
 struct System {
-    endpoint: rp1_hal::cold::EndpointService,
     pcie: rp1_hal::platform::Pcie,
     probed: bool,
     attempted: bool,
 }
 impl System {
-    /// The slow part of one round: log what the polls returned and serve a shm request.
-    fn handle(&mut self, perst: Perst) {
-        if let Some(r) = perst {
-            log!("p0 pcie perst {:?}\n", r).unwrap();
-        }
+    /// The slow part of one round: serve a shm request.
+    fn handle(&mut self) {
         let request = link_read(link::SHM_REQUEST);
         if !self.probed && request == 2 {
             self.probed = true;
@@ -166,18 +156,14 @@ fn probe_window(pcie: &mut rp1_hal::platform::Pcie) {
 #[rp1_rt::isram]
 fn idle0(
     rx: &mut rp1_rt::sync::Consumer<'_, u32, 8, Proc1, Proc0>,
-    system: &mut System,
-) -> (Option<u32>, Perst) {
+    system: &System,
+) -> Option<u32> {
     loop {
         let word = rx.pop();
-        let perst = system.endpoint.poll();
         let request = link_read(link::SHM_REQUEST);
-        if word.is_some()
-            || perst.is_some()
-            || (!system.probed && request == 2)
-            || (!system.attempted && request == 1)
+        if word.is_some() || (!system.probed && request == 2) || (!system.attempted && request == 1)
         {
-            return (word, perst);
+            return word;
         }
     }
 }
