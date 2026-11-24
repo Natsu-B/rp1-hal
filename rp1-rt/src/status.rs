@@ -26,7 +26,14 @@ fn word(offset: usize) -> &'static AtomicU32 {
     &PAGE[offset / 4]
 }
 fn field(core: u32, offset: usize) -> &'static AtomicU32 {
-    word(s::BLOCKS[core as usize] + offset)
+    word(block(core) + offset)
+}
+/// The status block of `core`; any core other than 0 is proc1 (the startup code stores only 0
+/// or 1). Without an index, the panic handler's path through here cannot panic again, which
+/// keeps it free of recursion for the static stack bound (`stack-paths`).
+fn block(core: u32) -> usize {
+    let [proc0, proc1] = s::BLOCKS;
+    if core == 0 { proc0 } else { proc1 }
 }
 
 /// Startup, before `main` and with interrupts masked. proc0 runs it before it can launch proc1.
@@ -194,6 +201,15 @@ mod tests {
         let fault = [s::STATE, s::REASON, s::LINE, s::AUX].map(|o| read(0, o));
         assert_eq!(fault, [CoreState::Fault.word(), 3, 0x2000_0401, 0x100]);
         assert_eq!(file(0), "");
+    }
+
+    #[test]
+    fn any_core_number_has_a_block() {
+        // The panic path must not panic on a corrupted core number.
+        assert_eq!(block(0), s::BLOCKS[0]);
+        for core in [1, 2, u32::MAX] {
+            assert_eq!(block(core), s::BLOCKS[1]);
+        }
     }
 
     #[test]

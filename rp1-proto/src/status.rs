@@ -201,10 +201,14 @@ impl CoreState {
 }
 
 /// The `FILE` words for `path`: its last `FILE_LEN` bytes, NUL padded.
+///
+/// No slice index: a panic handler calls this, and it must not panic again.
 pub fn file_words(path: &str) -> [u32; FILE_LEN / 4] {
-    let tail = &path.as_bytes()[path.len().saturating_sub(FILE_LEN)..];
+    let skip = path.len().saturating_sub(FILE_LEN);
     let mut bytes = [0; FILE_LEN];
-    bytes[..tail.len()].copy_from_slice(tail);
+    for (b, c) in bytes.iter_mut().zip(path.bytes().skip(skip)) {
+        *b = c;
+    }
     let mut words = [0; FILE_LEN / 4];
     for (w, b) in words.iter_mut().zip(bytes.as_chunks::<4>().0) {
         *w = u32::from_le_bytes(*b);
