@@ -256,7 +256,7 @@ offset 8.. T             8 バイト境界
 |---|---|---|
 | 0x40 | `EPOCH` | proc0 が起動時に 奇数 → 両ブロックのゼロ化 → `ABI` → 偶数 の順に書く。`ABI` が一致していれば前の値（奇数なら 1 つ下の偶数）+ 2、でなければ 2 |
 | 0x44 | `ABI` | `"RL"` + 版 `u16 = 2` |
-| 0x48 | `PLAT_PCIE` | proc0 の `platform::init` が最初に 1（エンドポイント初期化中）を書く。0 は未開始。`ABI` 版 2 の読み手は解釈しない |
+| 0x48 | `PLAT_PCIE` | STATIC: proc0 の `platform::init` が最初に 1（初期化中）を書き、IRQ53 の有効化前に 2（Up）か 4（DetectorOff）を書く。以後は IRQ53 だけが書く（3 = Lost、4 = DetectorOff）。bits 0〜7: 0=未開始、1=初期化中、2=Up、3=Lost、4=DetectorOff。bits 8〜15: DetectorOff の理由（1=武装時に `PCIE_INTF` ≠ 0、2=空の入場 16 回）。bits 16〜31: Lost を検出したときの `PCIE_MONITOR2[31:16]`。`ABI` 版 2 の読み手は解釈しない |
 | 0x50〜0x7f / 0x80〜0xaf | proc0 / proc1 のブロック | 下表 |
 | 0x4c | `PLAT_SCMI` | STATIC: proc0 の init が IRQ57 の有効化前に Serving を公開し、以後 IRQ57 が更新する。bits 0〜7: 0=未開始、1=Serving、2=Quarantined。bits 16〜31: Serving 中の要求数（飽和）。`ABI` 版 2 の読み手は解釈しない |
 | 0xb0〜0xbf | 予約 0 | |

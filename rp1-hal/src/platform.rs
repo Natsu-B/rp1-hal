@@ -20,6 +20,10 @@
 //! 7. Endpoint bring-up: PERSTn wait (up to 20 s), core alive, DBI, LTSSM enable, link.
 //! 8. SYSCFG reset released.
 //! 9. Enable SCMI on proc0 IRQ57.
+//! 10. Arm the PERSTn detector on proc0 IRQ53 ([`perstn`]). A forced PCIe interrupt source
+//!     leaves it off (`DetectorOff`), and init still succeeds.
+//! 11. Return. Init writes no handler state and no status word after the ISER of its line:
+//!     a handler that ran at once keeps what it wrote (rule E1).
 //!
 //! Init returns once Linux's PCIe probe has released PERSTn and
 //! the link is up: about 3 s (HW 2026-11, cold boot, reboot and poweroff: the PERSTn wait
@@ -28,8 +32,11 @@ use crate::{Error, clocks::Clocks, cold, linux_blocks, scmi};
 use core::{fmt, marker::PhantomData};
 use scmi::irq;
 
+pub(crate) mod perstn;
+
 pub use crate::cold::ColdError;
 pub use irq::{ScmiState, ScmiStats, scmi_state};
+pub use perstn::{LostDetail, PcieState, pcie_state};
 
 /// The platform resource: one per image, issued to proc0 only. [`Token::init`] consumes it, so
 /// the bring-up runs once.
@@ -48,6 +55,13 @@ pub struct System {
 /// The PCIe endpoint init brought up. proc0 only (not `Send`).
 pub struct Pcie {
     _proc0: PhantomData<*mut ()>,
+}
+
+impl Pcie {
+    /// What IRQ53 read when it saw a host reset; None while [`pcie_state`] is not `Lost`.
+    pub fn lost_detail(&self) -> Option<LostDetail> {
+        perstn::lost_detail()
+    }
 }
 
 /// Snapshot IRQ57's counters on proc0 with interrupts masked.
@@ -76,6 +90,26 @@ pub struct InitReport {
     /// PCIE_MONITOR2 once the link was up.
     pub monitor2: u32,
     pub linux_blocks: linux_blocks::Report,
+    pub detector: DetectorReport,
+}
+
+/// What step 10 read while arming the PERSTn detector, and its result.
+///
+/// On a normal boot: `inte` 0x2, `intf` 0, bit 1 of `intr_at_arm` 0, `nvic53` and `vec53_ok`
+/// true. The other bits of `intr_at_arm` are latches IRQ53 does not look at (bits 0, 3 and 6
+/// stay set after the bring-up, HW 2026-11): print them, do not judge them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DetectorReport {
+    /// PCIE_INTE read after arming: 0 if arming failed or IRQ53 already saw a reset.
+    pub inte: u32,
+    /// PCIE_INTF at arming. Nonzero leaves the detector off.
+    pub intf: u32,
+    /// PCIE_INTR at arming; 0 if `intf` was nonzero (not read).
+    pub intr_at_arm: u32,
+    /// IRQ53 enabled after arming.
+    pub nvic53: bool,
+    /// proc0 vector 53 is the detector's handler, not the default one.
+    pub vec53_ok: bool,
 }
 
 /// The step that failed. Steps after it did not run.
@@ -129,12 +163,15 @@ impl Token {
 }
 
 /// `warm=0 ltssm_off=1 link_before_scmi=0 perstn_wait_us=… link_wait_us=… monitor2=0x…
-/// clocks_programmed=1`: one line of `key=value` fields, flags as 0 / 1.
+/// clocks_programmed=1 inte=0x2 intf=0x0 intr_at_arm_bit1=0 nvic53=1 vec53_ok=1
+/// intr_at_arm=0x…`: one line of `key=value` fields, flags as 0 / 1.
 impl fmt::Display for InitReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let d = &self.detector;
         write!(
             f,
-            "warm={} ltssm_off={} link_before_scmi={} perstn_wait_us={} link_wait_us={} monitor2=0x{:x} clocks_programmed={}",
+            "warm={} ltssm_off={} link_before_scmi={} perstn_wait_us={} link_wait_us={} monitor2=0x{:x} clocks_programmed={} \
+             inte=0x{:x} intf=0x{:x} intr_at_arm_bit1={} nvic53={} vec53_ok={} intr_at_arm=0x{:x}",
             u8::from(self.monitor2_at_start & cold::LINK != 0),
             u8::from(self.ltssm_off),
             u8::from(self.link_before_scmi),
@@ -142,6 +179,12 @@ impl fmt::Display for InitReport {
             self.link_wait_us,
             self.monitor2,
             u8::from(self.clocks_programmed),
+            d.inte,
+            d.intf,
+            (d.intr_at_arm >> 1) & 1,
+            u8::from(d.nvic53),
+            u8::from(d.vec53_ok),
+            d.intr_at_arm,
         )
     }
 }
@@ -162,9 +205,10 @@ trait Steps {
     fn bring_up(&mut self) -> Result<(u32, u32, u32), ColdError>;
     fn release_syscfg(&mut self) -> Result<(), ColdError>;
     fn enable_scmi(&mut self);
+    fn arm_perstn(&mut self) -> DetectorReport;
 }
 
-/// Steps 0..9 of the module documentation.
+/// Steps 0..11 of the module documentation.
 fn run<S: Steps>(
     s: &mut S,
     log: impl FnOnce(&mut S) -> Result<(), Error>,
@@ -196,6 +240,7 @@ fn run<S: Steps>(
     let (perstn_wait_us, link_wait_us, monitor2) = s.bring_up().map_err(InitError::Endpoint)?;
     s.release_syscfg().map_err(InitError::Syscfg)?;
     s.enable_scmi();
+    let detector = s.arm_perstn();
     let report = InitReport {
         clocks_programmed,
         monitor2_at_start,
@@ -205,6 +250,7 @@ fn run<S: Steps>(
         link_wait_us,
         monitor2,
         linux_blocks,
+        detector,
     };
     Ok((clocks, report))
 }
@@ -248,6 +294,18 @@ impl Steps for Rp1 {
     fn enable_scmi(&mut self) {
         irq::enable(&mut irq::Mmio)
     }
+    fn arm_perstn(&mut self) -> DetectorReport {
+        let io = &mut perstn::Mmio;
+        let armed = perstn::arm(io);
+        let (inte, nvic53, vec53_ok) = perstn::diagnose(io, perstn::handler());
+        DetectorReport {
+            inte,
+            intf: armed.intf,
+            intr_at_arm: armed.intr_at_arm,
+            nvic53,
+            vec53_ok,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +319,14 @@ mod tests {
     const PERSTN_US: u32 = 3_062_273;
     const LINK_US: u32 = 8_204;
     const UP: u32 = 0x001b_0000 | LINK;
+    /// A normal arming: bits 0, 3 and 6 of PCIE_INTR still latched from the bring-up.
+    const ARMED: DetectorReport = DetectorReport {
+        inte: 0x2,
+        intf: 0,
+        intr_at_arm: 0x49,
+        nvic53: true,
+        vec53_ok: true,
+    };
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Ev {
@@ -276,6 +342,7 @@ mod tests {
         BringUp,
         Syscfg,
         EnableScmi,
+        ArmPerstn,
     }
 
     /// Where a link-up is injected, relative to the quiesce.
@@ -340,6 +407,10 @@ mod tests {
     }
 
     impl Steps for Fake {
+        fn arm_perstn(&mut self) -> DetectorReport {
+            self.trace.push(Ev::ArmPerstn);
+            ARMED
+        }
         fn set_pcie_state(&mut self, word: u32) {
             self.trace.push(Ev::PcieState(word));
         }
@@ -401,7 +472,7 @@ mod tests {
     }
 
     /// I1: cold start. The SCMI channel is first written after LTSSM enable read back as 0
-    /// and the link read again as down; IRQ57 follows SYSCFG release.
+    /// and the link read again as down; IRQ57 follows SYSCFG release, IRQ53 comes last.
     #[test]
     fn cold_start_clears_the_channel_only_after_the_quiesce() {
         let mut f = Fake::cold();
@@ -421,6 +492,7 @@ mod tests {
                 Ev::BringUp,
                 Ev::Syscfg,
                 Ev::EnableScmi,
+                Ev::ArmPerstn,
             ]
         );
         assert_eq!(clocks, CLOCKS);
@@ -438,6 +510,7 @@ mod tests {
                     released: [1, 2, 3],
                     pending: [0; 3],
                 },
+                detector: ARMED,
             }
         );
         assert!(!f.h1_violated);
@@ -524,7 +597,8 @@ mod tests {
         let (_, report) = f.run().unwrap();
         assert_eq!(
             format!("{report}"),
-            "warm=0 ltssm_off=1 link_before_scmi=0 perstn_wait_us=3062273 link_wait_us=8204 monitor2=0x1b0000 clocks_programmed=1"
+            "warm=0 ltssm_off=1 link_before_scmi=0 perstn_wait_us=3062273 link_wait_us=8204 monitor2=0x1b0000 clocks_programmed=1 \
+             inte=0x2 intf=0x0 intr_at_arm_bit1=0 nvic53=1 vec53_ok=1 intr_at_arm=0x49"
         );
         let warm = InitReport {
             monitor2_at_start: UP,
@@ -533,6 +607,19 @@ mod tests {
         };
         assert!(format!("{warm}").starts_with("warm=1 "));
         assert!(format!("{warm}").contains(" perstn_wait_us=4294967295 "));
+        let arm_fault = InitReport {
+            detector: DetectorReport {
+                inte: 0,
+                intf: 0x4,
+                intr_at_arm: 0,
+                nvic53: false,
+                vec53_ok: true,
+            },
+            ..report
+        };
+        assert!(format!("{arm_fault}").ends_with(
+            " inte=0x0 intf=0x4 intr_at_arm_bit1=0 nvic53=0 vec53_ok=1 intr_at_arm=0x0"
+        ));
     }
 
     /// RP1's registers for the real `cold::quiesce_with` and `scmi::reset_channel`: the step
@@ -638,6 +725,9 @@ mod tests {
             Ok(())
         }
         fn enable_scmi(&mut self) {}
+        fn arm_perstn(&mut self) -> DetectorReport {
+            DetectorReport::default()
+        }
     }
     const SHMEM: core::ops::Range<usize> = scmi::SHMEM..scmi::SHMEM + 256;
     /// NVIC ISER0..7 and ISPR0..7: no line is enabled or pended.

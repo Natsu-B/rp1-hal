@@ -103,9 +103,14 @@ PWM0 と TIMER_3 は試作ファームでの観測を根拠に `IRQ_VERIFIED` �
 
 SCMI（57）は `platform::init` が proc0 に設定する（STATIC）。
 
+PCIe（53）は `platform::init` の最後に proc0 で PERSTn の検出器として武装する（優先度 0、STATIC。
+HW 未確認）。`PCIE_INTE` を bit 1（PERSTn の辺）だけにし、入場で `PCIE_INTS` に何か立っていれば
+窓を失ったとして `SHM_STATUS = SHM_WINDOW_LOST`、`PLAT_PCIE = Lost` を書いて線を止める。回復はしない
+（RP1 の再ロード）。`PCIE_INTS` が 0 の入場が 16 回続くと検出器を止める（`DetectorOff`）。状態は
+`platform::pcie_state()`（両コア）と `Pcie::lost_detail()`（proc0）で読める。
+
 ## 5. まだ無いもの
 
 - I2C / SPI / UART の割り込み駆動の転送（FIFO 処理・エラー取得・中止を公開 API で）。
 - PWM / ADC / DMA の割り込み API と、DMA の周辺転送。
-- PCIe（53）の割り込み処理。
 - 入れ子（システム割り込み + 利用者のハンドラ）のスタック量の実測。
