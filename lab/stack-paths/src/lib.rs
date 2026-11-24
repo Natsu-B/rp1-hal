@@ -413,18 +413,19 @@ impl Analyzer<'_> {
     }
 }
 
-/// Addresses that a direct branch of the function jumps to.
+/// Addresses that a direct branch or a jump table entry of the function jumps to.
 fn local_targets(p: &Program, func: &Function) -> HashSet<u32> {
-    p.insns[func.start..func.end]
-        .iter()
-        .filter_map(|x| match effect(x) {
-            Ok(Effect {
-                flow: Flow::Branch(t),
-                ..
-            }) => Some(t),
-            _ => None,
-        })
-        .collect()
+    let mut targets = HashSet::new();
+    for i in func.start..func.end {
+        match effect(&p.insns[i]).map(|e| e.flow) {
+            Ok(Flow::Branch(t)) => {
+                targets.insert(t);
+            }
+            Ok(Flow::Table { half }) => targets.extend(p.table(i, half).unwrap_or_default()),
+            _ => {}
+        }
+    }
+    targets
 }
 
 /// `movw rN, #lo; movt rN, #hi; bx|blx rN` with no branch into the sequence: the target.
@@ -674,20 +675,22 @@ fn load_store(op: &str, args: &str) -> Result<Effect, &'static str> {
         return Err("sp-write");
     }
     let conditional = CONDITIONS.iter().any(|c| op.ends_with(c));
+    let post = after.strip_prefix(',');
     let push = if base != SP {
         0
     } else if after == "!" {
         // Pre-indexed: `str r4, [sp, #-4]!`.
         -i64::from(offset.and_then(immediate).ok_or("variable-sp")? as i32)
-    } else if let Some(post) = after.strip_prefix(',') {
+    } else if let Some(post) = post {
         // Post-indexed: `ldr r4, [sp], #4`.
         -i64::from(immediate(post).ok_or("variable-sp")? as i32)
     } else {
         0
     };
     if written.contains(&PC) {
-        // `ldr pc, [sp], #4` is `pop {pc}`; any other load into PC is an indirect jump.
-        if base == SP && push == -4 && dests.len() == 1 {
+        // `ldr pc, [sp], #4` is `pop {pc}`; any other load into PC is an indirect jump. The
+        // pre-indexed `ldr pc, [sp, #4]!` loads the slot above the return address.
+        if base == SP && post.is_some() && push == -4 && dests.len() == 1 {
             return Ok(Effect {
                 push,
                 flow: Flow::Return,

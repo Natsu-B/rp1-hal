@@ -174,6 +174,26 @@ fn jump_table_follows_every_entry() {
     );
     let p = Program::parse(&text.replace("sub\tsp, #16", "nop"));
     assert_eq!(p.bound(0x1000).unwrap().bytes, 8 + 8 + 8);
+    // A jump table entry into a movw/movt/bx sequence breaks the thunk pattern too.
+    let thunk = "
+00001000 <g>:
+00001000:\ttbb\t[pc, r0]
+00001004:\t.short\t0x0301
+00001006:\tmovw\tip, #12289
+0000100a:\tmovt\tip, #0
+0000100e:\tbx\tip
+
+00003000 <leaf>:
+00003000:\tpush\t{r4, lr}
+00003002:\tpop\t{r4, pc}
+";
+    let f = Program::parse(thunk).bound(0x1000).unwrap_err();
+    assert_eq!(
+        (f.reason, f.at.as_str()),
+        ("unresolved-indirect-jump", "g+0xe")
+    );
+    let p = Program::parse(&thunk.replace("0x0301", "0x0101"));
+    assert_eq!(p.bound(0x1000).unwrap().bytes, 8);
     // An entry outside the function fails.
     let p = Program::parse(
         &text
@@ -244,6 +264,9 @@ fn unresolved_indirect_control_fails() {
     fails(&[("f", 0x1000, ldr)], "unresolved-indirect-jump", "f+0x0");
     let mov: &[&str] = &["mov pc, r1"];
     fails(&[("f", 0x1000, mov)], "unresolved-indirect-jump", "f+0x0");
+    // Only the post-indexed form pops the return address.
+    let pre: &[&str] = &["str lr, [sp, #-4]!", "ldr pc, [sp, #4]!"];
+    fails(&[("f", 0x1000, pre)], "unresolved-indirect-jump", "f+0x4");
     // A branch into the movw/movt pair breaks the thunk pattern.
     let joined: &[&str] = &[
         "cbz r0, 1008 <f+0x8>",
