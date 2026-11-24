@@ -321,6 +321,34 @@ hold as well: lines in table order with the boot's nonce, both enable words 0, a
 `IRQ_SWEEP_END` before a `PLAT_INIT ok=1` line with a fresh PERSTn wait. It prints
 `IRQ_SWEEP_VERDICT=PASS|FAIL`; `--json` writes the per-line results.
 
+## Static stack bound (`stack-paths`, STATIC)
+
+`stack-paths` is a host tool. It disassembles a firmware ELF with `arm-none-eabi-objdump`
+(`RP1_OBJDUMP` overrides it) and bounds the stack use of the proc0 platform roots, which it
+takes from the vector table: IRQ57, IRQ53 and HardFault. It then prints
+`S_plat = max(H57, Hfault) + H53 + Hhard + 3 * 36` with `Hfault = 0`, because the configurable
+fault handlers are not enabled yet:
+
+```sh
+cargo run -p stack-paths -- target/thumbv7m-none-eabi/release/irq-proof
+# stack root=<symbol> bytes=N              (one line per root)
+# stack_static=PASS s_plat=N h57=N h53=N hhard=N hfault=0
+# stack_static=FAIL reason=<code> at=<symbol+offset> root=<symbol>   (exit status 1)
+```
+
+The rules and the conservative choices (tail calls, noreturn calls, jump tables, linker
+thunks) are documented in `stack-paths/src/lib.rs`. Anything the tool cannot bound is a FAIL:
+an SP write other than push/pop, `sub|add sp, #imm` or immediate SP-indexed writeback,
+recursion, or an unresolved indirect call or jump. `--root <symbol>` adds a root and
+`--cut <symbol>` treats calls to a function as 0 bytes and noreturn. A cut run prints
+`stack_static=DIAG` and exits non-zero: it is a diagnostic, never a PASS.
+
+STATIC (2026-11-25, release builds of `irq-proof` and `examples/dual-core`): both FAIL with
+`reason=recursion`. The IRQ57 handler can panic (bounds checks), and the panic handler
+(`rp1_rt::status::record_panic`) has its own bounds check on the core index, which can call
+the panic handler again. With `--cut` on the panic handler (its mangled symbol ends in `rust_begin_unwind`):
+H57 = 440 / 448 B, H53 = 8 B, Hhard = 8 B, `S_plat` = 564 / 572 B (DIAG).
+
 ## PWM loopback diagnostic (STATIC / HW 未検証)
 
 `pwm-loopback` is a separate, focused firmware example. See [the PWM API, register evidence
