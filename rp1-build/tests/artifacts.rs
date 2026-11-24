@@ -900,10 +900,23 @@ fn snapshot(paths: &[std::path::PathBuf]) -> Vec<(std::path::PathBuf, Vec<u8>)> 
 #[test]
 fn branch_commits_change_watched_git_paths() {
     // REVIEW2 #6: on a branch a commit rewrites the ref, not HEAD.
+    if std::env::var_os("GIT_DIR").is_some() {
+        // The code under test follows GIT_DIR (set by `git rebase -x`), not the temporary repo.
+        eprintln!("skipped: GIT_DIR is set");
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let git = |args: &[&str]| {
-        let st = Command::new("git")
+        let mut command = Command::new("git");
+        // `git rebase -x` exports GIT_DIR and friends; without this the commands below would
+        // run against the repository under test instead of the temporary one.
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("GIT_") {
+                command.env_remove(name);
+            }
+        }
+        let st = command
             .args([
                 "-c",
                 "user.name=t",
