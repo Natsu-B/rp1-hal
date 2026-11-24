@@ -332,42 +332,6 @@ pub mod out {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 27>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 27>;
     }
-    /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: Plain.
-    pub mod gpio28 {
-        pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 28>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 28>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 28>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 28>;
-    }
-    /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: Plain.
-    pub mod gpio29 {
-        pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 29>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 29>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 29>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 29>;
-    }
-    /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: Plain.
-    pub mod gpio30 {
-        pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 30>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 30>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 30>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 30>;
-    }
-    /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: Plain.
-    pub mod gpio31 {
-        pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 31>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 31>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 31>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 31>;
-    }
     impl R {
         #[inline(always)]
         pub fn gpio0(&self) -> gpio0::R {
@@ -480,22 +444,6 @@ pub mod out {
         #[inline(always)]
         pub fn gpio27(&self) -> gpio27::R {
             crate::BitReader::new(((self.bits() >> 27) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio28(&self) -> gpio28::R {
-            crate::BitReader::new(((self.bits() >> 28) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio29(&self) -> gpio29::R {
-            crate::BitReader::new(((self.bits() >> 29) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio30(&self) -> gpio30::R {
-            crate::BitReader::new(((self.bits() >> 30) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio31(&self) -> gpio31::R {
-            crate::BitReader::new(((self.bits() >> 31) & 1) != 0)
         }
     }
     impl W {
@@ -610,22 +558,6 @@ pub mod out {
         #[inline(always)]
         pub fn gpio27(&mut self) -> gpio27::W<'_> {
             gpio27::W::new(self)
-        }
-        #[inline(always)]
-        pub fn gpio28(&mut self) -> gpio28::W<'_> {
-            gpio28::W::new(self)
-        }
-        #[inline(always)]
-        pub fn gpio29(&mut self) -> gpio29::W<'_> {
-            gpio29::W::new(self)
-        }
-        #[inline(always)]
-        pub fn gpio30(&mut self) -> gpio30::W<'_> {
-            gpio30::W::new(self)
-        }
-        #[inline(always)]
-        pub fn gpio31(&mut self) -> gpio31::W<'_> {
-            gpio31::W::new(self)
         }
     }
     impl AtomicSetW {
@@ -797,30 +729,6 @@ pub mod out {
         pub fn gpio27(&mut self) -> gpio27::ASW<'_> {
             gpio27::ASW::new(self)
         }
-        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio28(&mut self) -> gpio28::ASW<'_> {
-            gpio28::ASW::new(self)
-        }
-        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio29(&mut self) -> gpio29::ASW<'_> {
-            gpio29::ASW::new(self)
-        }
-        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio30(&mut self) -> gpio30::ASW<'_> {
-            gpio30::ASW::new(self)
-        }
-        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio31(&mut self) -> gpio31::ASW<'_> {
-            gpio31::ASW::new(self)
-        }
     }
     impl AtomicClearW {
         /// GPIO 0 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
@@ -991,30 +899,6 @@ pub mod out {
         pub fn gpio27(&mut self) -> gpio27::ACW<'_> {
             gpio27::ACW::new(self)
         }
-        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio28(&mut self) -> gpio28::ACW<'_> {
-            gpio28::ACW::new(self)
-        }
-        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio29(&mut self) -> gpio29::ACW<'_> {
-            gpio29::ACW::new(self)
-        }
-        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio30(&mut self) -> gpio30::ACW<'_> {
-            gpio30::ACW::new(self)
-        }
-        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio31(&mut self) -> gpio31::ACW<'_> {
-            gpio31::ACW::new(self)
-        }
     }
     impl AtomicXorW {
         /// GPIO 0 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies.
@@ -1184,30 +1068,6 @@ pub mod out {
         #[inline(always)]
         pub fn gpio27(&mut self) -> gpio27::AXW<'_> {
             gpio27::AXW::new(self)
-        }
-        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio28(&mut self) -> gpio28::AXW<'_> {
-            gpio28::AXW::new(self)
-        }
-        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio29(&mut self) -> gpio29::AXW<'_> {
-            gpio29::AXW::new(self)
-        }
-        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio30(&mut self) -> gpio30::AXW<'_> {
-            gpio30::AXW::new(self)
-        }
-        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio31(&mut self) -> gpio31::AXW<'_> {
-            gpio31::AXW::new(self)
         }
     }
 }
@@ -1503,42 +1363,6 @@ pub mod oe {
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 27>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 27>;
     }
-    /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: Plain.
-    pub mod gpio28 {
-        pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 28>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 28>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 28>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 28>;
-    }
-    /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: Plain.
-    pub mod gpio29 {
-        pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 29>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 29>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 29>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 29>;
-    }
-    /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: Plain.
-    pub mod gpio30 {
-        pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 30>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 30>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 30>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 30>;
-    }
-    /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: Plain.
-    pub mod gpio31 {
-        pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 31>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 31>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 31>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 31>;
-    }
     impl R {
         #[inline(always)]
         pub fn gpio0(&self) -> gpio0::R {
@@ -1651,22 +1475,6 @@ pub mod oe {
         #[inline(always)]
         pub fn gpio27(&self) -> gpio27::R {
             crate::BitReader::new(((self.bits() >> 27) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio28(&self) -> gpio28::R {
-            crate::BitReader::new(((self.bits() >> 28) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio29(&self) -> gpio29::R {
-            crate::BitReader::new(((self.bits() >> 29) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio30(&self) -> gpio30::R {
-            crate::BitReader::new(((self.bits() >> 30) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio31(&self) -> gpio31::R {
-            crate::BitReader::new(((self.bits() >> 31) & 1) != 0)
         }
     }
     impl W {
@@ -1781,22 +1589,6 @@ pub mod oe {
         #[inline(always)]
         pub fn gpio27(&mut self) -> gpio27::W<'_> {
             gpio27::W::new(self)
-        }
-        #[inline(always)]
-        pub fn gpio28(&mut self) -> gpio28::W<'_> {
-            gpio28::W::new(self)
-        }
-        #[inline(always)]
-        pub fn gpio29(&mut self) -> gpio29::W<'_> {
-            gpio29::W::new(self)
-        }
-        #[inline(always)]
-        pub fn gpio30(&mut self) -> gpio30::W<'_> {
-            gpio30::W::new(self)
-        }
-        #[inline(always)]
-        pub fn gpio31(&mut self) -> gpio31::W<'_> {
-            gpio31::W::new(self)
         }
     }
     impl AtomicSetW {
@@ -1968,30 +1760,6 @@ pub mod oe {
         pub fn gpio27(&mut self) -> gpio27::ASW<'_> {
             gpio27::ASW::new(self)
         }
-        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio28(&mut self) -> gpio28::ASW<'_> {
-            gpio28::ASW::new(self)
-        }
-        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio29(&mut self) -> gpio29::ASW<'_> {
-            gpio29::ASW::new(self)
-        }
-        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio30(&mut self) -> gpio30::ASW<'_> {
-            gpio30::ASW::new(self)
-        }
-        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio31(&mut self) -> gpio31::ASW<'_> {
-            gpio31::ASW::new(self)
-        }
     }
     impl AtomicClearW {
         /// GPIO 0 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
@@ -2162,30 +1930,6 @@ pub mod oe {
         pub fn gpio27(&mut self) -> gpio27::ACW<'_> {
             gpio27::ACW::new(self)
         }
-        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio28(&mut self) -> gpio28::ACW<'_> {
-            gpio28::ACW::new(self)
-        }
-        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio29(&mut self) -> gpio29::ACW<'_> {
-            gpio29::ACW::new(self)
-        }
-        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio30(&mut self) -> gpio30::ACW<'_> {
-            gpio30::ACW::new(self)
-        }
-        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio31(&mut self) -> gpio31::ACW<'_> {
-            gpio31::ACW::new(self)
-        }
     }
     impl AtomicXorW {
         /// GPIO 0 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it.
@@ -2355,30 +2099,6 @@ pub mod oe {
         #[inline(always)]
         pub fn gpio27(&mut self) -> gpio27::AXW<'_> {
             gpio27::AXW::new(self)
-        }
-        /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio28(&mut self) -> gpio28::AXW<'_> {
-            gpio28::AXW::new(self)
-        }
-        /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio29(&mut self) -> gpio29::AXW<'_> {
-            gpio29::AXW::new(self)
-        }
-        /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio30(&mut self) -> gpio30::AXW<'_> {
-            gpio30::AXW::new(self)
-        }
-        /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn gpio31(&mut self) -> gpio31::AXW<'_> {
-            gpio31::AXW::new(self)
         }
     }
 }
@@ -2566,30 +2286,6 @@ pub mod nosync_in {
     pub mod gpio27 {
         pub type R = crate::BitReader;
     }
-    /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: ReadOnly.
-    /// Read-only field; no writer is generated.
-    pub mod gpio28 {
-        pub type R = crate::BitReader;
-    }
-    /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: ReadOnly.
-    /// Read-only field; no writer is generated.
-    pub mod gpio29 {
-        pub type R = crate::BitReader;
-    }
-    /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: ReadOnly.
-    /// Read-only field; no writer is generated.
-    pub mod gpio30 {
-        pub type R = crate::BitReader;
-    }
-    /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: ReadOnly.
-    /// Read-only field; no writer is generated.
-    pub mod gpio31 {
-        pub type R = crate::BitReader;
-    }
     impl R {
         #[inline(always)]
         pub fn gpio0(&self) -> gpio0::R {
@@ -2702,22 +2398,6 @@ pub mod nosync_in {
         #[inline(always)]
         pub fn gpio27(&self) -> gpio27::R {
             crate::BitReader::new(((self.bits() >> 27) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio28(&self) -> gpio28::R {
-            crate::BitReader::new(((self.bits() >> 28) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio29(&self) -> gpio29::R {
-            crate::BitReader::new(((self.bits() >> 29) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio30(&self) -> gpio30::R {
-            crate::BitReader::new(((self.bits() >> 30) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio31(&self) -> gpio31::R {
-            crate::BitReader::new(((self.bits() >> 31) & 1) != 0)
         }
     }
 }
@@ -2905,30 +2585,6 @@ pub mod sync_in {
     pub mod gpio27 {
         pub type R = crate::BitReader;
     }
-    /// Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: ReadOnly.
-    /// Read-only field; no writer is generated.
-    pub mod gpio28 {
-        pub type R = crate::BitReader;
-    }
-    /// Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: ReadOnly.
-    /// Read-only field; no writer is generated.
-    pub mod gpio29 {
-        pub type R = crate::BitReader;
-    }
-    /// Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: ReadOnly.
-    /// Read-only field; no writer is generated.
-    pub mod gpio30 {
-        pub type R = crate::BitReader;
-    }
-    /// Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown.
-    /// Field write behavior: ReadOnly.
-    /// Read-only field; no writer is generated.
-    pub mod gpio31 {
-        pub type R = crate::BitReader;
-    }
     impl R {
         #[inline(always)]
         pub fn gpio0(&self) -> gpio0::R {
@@ -3041,22 +2697,6 @@ pub mod sync_in {
         #[inline(always)]
         pub fn gpio27(&self) -> gpio27::R {
             crate::BitReader::new(((self.bits() >> 27) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio28(&self) -> gpio28::R {
-            crate::BitReader::new(((self.bits() >> 28) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio29(&self) -> gpio29::R {
-            crate::BitReader::new(((self.bits() >> 29) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio30(&self) -> gpio30::R {
-            crate::BitReader::new(((self.bits() >> 30) & 1) != 0)
-        }
-        #[inline(always)]
-        pub fn gpio31(&self) -> gpio31::R {
-            crate::BitReader::new(((self.bits() >> 31) & 1) != 0)
         }
     }
 }

@@ -375,54 +375,6 @@ verified_read = "official"
 verified_write = "official"
 origin = "official"
 note = "GPIO 27 output value: 0 low, 1 high. Only visible when drive is enabled and no override applies."
-[[register.field]]
-id = "gpio28"
-name = "GPIO28"
-lsb = 28
-width = 1
-api_read = "public"
-api_write = "public"
-write_behavior = "plain"
-verified_read = "official"
-verified_write = "official"
-origin = "official"
-note = "Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio29"
-name = "GPIO29"
-lsb = 29
-width = 1
-api_read = "public"
-api_write = "public"
-write_behavior = "plain"
-verified_read = "official"
-verified_write = "official"
-origin = "official"
-note = "Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio30"
-name = "GPIO30"
-lsb = 30
-width = 1
-api_read = "public"
-api_write = "public"
-write_behavior = "plain"
-verified_read = "official"
-verified_write = "official"
-origin = "official"
-note = "Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio31"
-name = "GPIO31"
-lsb = 31
-width = 1
-api_read = "public"
-api_write = "public"
-write_behavior = "plain"
-verified_read = "official"
-verified_write = "official"
-origin = "official"
-note = "Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
 
 [[register]]
 id = "oe"
@@ -783,54 +735,6 @@ verified_read = "official"
 verified_write = "official"
 origin = "official"
 note = "GPIO 27 output enable: 0 high impedance, 1 drive the `out` value if the pad allows it."
-[[register.field]]
-id = "gpio28"
-name = "GPIO28"
-lsb = 28
-width = 1
-api_read = "public"
-api_write = "public"
-write_behavior = "plain"
-verified_read = "official"
-verified_write = "official"
-origin = "official"
-note = "Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio29"
-name = "GPIO29"
-lsb = 29
-width = 1
-api_read = "public"
-api_write = "public"
-write_behavior = "plain"
-verified_read = "official"
-verified_write = "official"
-origin = "official"
-note = "Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio30"
-name = "GPIO30"
-lsb = 30
-width = 1
-api_read = "public"
-api_write = "public"
-write_behavior = "plain"
-verified_read = "official"
-verified_write = "official"
-origin = "official"
-note = "Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio31"
-name = "GPIO31"
-lsb = 31
-width = 1
-api_read = "public"
-api_write = "public"
-write_behavior = "plain"
-verified_read = "official"
-verified_write = "official"
-origin = "official"
-note = "Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
 
 [[register]]
 id = "nosync_in"
@@ -1156,50 +1060,6 @@ verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
 note = "GPIO 27 unsynchronized input level: 0 low, 1 high."
-[[register.field]]
-id = "gpio28"
-name = "GPIO28"
-lsb = 28
-width = 1
-api_read = "public"
-write_behavior = "read-only"
-verified_read = "official"
-verified_write = "not-applicable"
-origin = "official"
-note = "Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio29"
-name = "GPIO29"
-lsb = 29
-width = 1
-api_read = "public"
-write_behavior = "read-only"
-verified_read = "official"
-verified_write = "not-applicable"
-origin = "official"
-note = "Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio30"
-name = "GPIO30"
-lsb = 30
-width = 1
-api_read = "public"
-write_behavior = "read-only"
-verified_read = "official"
-verified_write = "not-applicable"
-origin = "official"
-note = "Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio31"
-name = "GPIO31"
-lsb = 31
-width = 1
-api_read = "public"
-write_behavior = "read-only"
-verified_read = "official"
-verified_write = "not-applicable"
-origin = "official"
-note = "Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
 
 [[register]]
 id = "sync_in"
@@ -1525,47 +1385,3 @@ verified_read = "official"
 verified_write = "not-applicable"
 origin = "official"
 note = "GPIO 27 synchronized input level: 0 low, 1 high."
-[[register.field]]
-id = "gpio28"
-name = "GPIO28"
-lsb = 28
-width = 1
-api_read = "public"
-write_behavior = "read-only"
-verified_read = "official"
-verified_write = "not-applicable"
-origin = "official"
-note = "Bit for GPIO index 28. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio29"
-name = "GPIO29"
-lsb = 29
-width = 1
-api_read = "public"
-write_behavior = "read-only"
-verified_read = "official"
-verified_write = "not-applicable"
-origin = "official"
-note = "Bit for GPIO index 29. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio30"
-name = "GPIO30"
-lsb = 30
-width = 1
-api_read = "public"
-write_behavior = "read-only"
-verified_read = "official"
-verified_write = "not-applicable"
-origin = "official"
-note = "Bit for GPIO index 30. Bank 0 only has pads 0-27, so the effect of this bit is unknown."
-[[register.field]]
-id = "gpio31"
-name = "GPIO31"
-lsb = 31
-width = 1
-api_read = "public"
-write_behavior = "read-only"
-verified_read = "official"
-verified_write = "not-applicable"
-origin = "official"
-note = "Bit for GPIO index 31. Bank 0 only has pads 0-27, so the effect of this bit is unknown."

@@ -5,7 +5,7 @@
 - external-IP instances: 41
 - registers: 344
 - hidden registers: 6
-- fields: 1786
+- fields: 1770
 - atomic-enabled registers: 204
 - NVIC external interrupt slots: 64 (IRQn 0..63)
 - named interrupts: 61 (IRQn 0..60)
