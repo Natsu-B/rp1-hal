@@ -14,7 +14,11 @@ use std::{collections::BTreeMap, vec::Vec};
 /// PCIE_MONITOR2 bit 17: PERSTn deasserted. With the link up and core alive.
 pub(crate) const PERSTN_HIGH: u32 = 1 << 17;
 pub(crate) const MONITOR2_UP: u32 = 0x001b_0000 | crate::cold::LINK;
-/// Bits 0, 3 and 6 of PCIE_INTR are still latched after the bring-up (HW 2026-11).
+/// PCIE_INTE as the bring-up leaves it (HW 2026-11).
+pub(crate) const BRING_UP_INTE: u32 = 0x4b;
+/// The PCIE_INTR latches expected after the bring-up: bits 0, 3 and 6. On HW 2026-11,
+/// PCIE_INTS = 0x49 with INTE = [`BRING_UP_INTE`]; that INTR holds the same bits is HYP until
+/// the init report's `intr_at_arm` is read on HW.
 pub(crate) const BRING_UP_LATCHES: u32 = 0x49;
 /// An address the thread workload reads: anything the detector does not touch.
 const THREAD_REGISTER: usize = 0x4001_0000;
@@ -100,7 +104,7 @@ impl Fake {
     pub(crate) fn after_bring_up(delivery: Delivery) -> Self {
         let registers = [
             (PCIE_INTR, BRING_UP_LATCHES),
-            (PCIE_INTE, 0x4b),
+            (PCIE_INTE, BRING_UP_INTE),
             (PCIE_MONITOR2, MONITOR2_UP),
             (SHM_STATUS, 1),
             (STATUS_WORD, status::PLAT_PCIE_INITIALIZING),
@@ -145,13 +149,18 @@ impl Fake {
     pub(crate) fn published(&self) -> PcieState {
         PcieState::from_word(self.get(STATUS_WORD))
     }
-    /// Sets PCIE_INTR bits; a pulse pends on INTS becoming nonzero.
-    fn latch(&mut self, bits: u32) {
+    /// A register changed by the hardware or a write: not traced. A pulse pends on INTS
+    /// becoming nonzero.
+    pub(crate) fn set(&mut self, address: usize, value: u32) {
         let before = self.ints();
-        self.registers.insert(PCIE_INTR, self.get(PCIE_INTR) | bits);
+        self.registers.insert(address, value);
         if before == 0 && self.ints() != 0 {
             self.pending = true;
         }
+    }
+    /// Sets PCIE_INTR bits.
+    fn latch(&mut self, bits: u32) {
+        self.set(PCIE_INTR, self.get(PCIE_INTR) | bits);
     }
     fn edge(&mut self, edge: Edge) {
         let monitor2 = self.get(PCIE_MONITOR2);
@@ -283,6 +292,15 @@ impl Fake {
                 "{context:?} INTE = {value:#x}"
             );
         }
+        // G6 for init: step 10 writes INTE, the NVIC line and PLAT_PCIE, nothing else.
+        for (context, op) in &self.trace {
+            if let (Context::Init, Op::Write(address, _)) = (context, op) {
+                assert!(
+                    [PCIE_INTE, ICPR, ISER, ISPR, STATUS_WORD].contains(address),
+                    "init wrote {address:#x}"
+                );
+            }
+        }
         // D8 and G1, G6 for each entry.
         for ops in self.entry_ops() {
             let mmio = ops
@@ -344,13 +362,7 @@ impl Io for Fake {
             ICPR => self.pending &= value & IRQ_BIT == 0,
             PCIE_INTR => panic!("PCIE_INTR is never written"),
             _ if self.read_only.contains(&address) => {}
-            _ => {
-                let before = self.ints();
-                self.registers.insert(address, value);
-                if before == 0 && self.ints() != 0 {
-                    self.pending = true;
-                }
-            }
+            _ => self.set(address, value),
         }
     }
     fn set_priority(&mut self, value: u8) {

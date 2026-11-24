@@ -17,7 +17,7 @@ fn start(state: u32) -> [Op; 5] {
     ]
 }
 
-/// D1: a normal arming. INTR's other latches (bits 0, 3, 6) are not a reset.
+/// D1: a normal arming. INTR's other latches ([`BRING_UP_LATCHES`]) are not a reset.
 #[test]
 fn arming_with_only_other_latches_stays_up() {
     for delivery in DELIVERIES {
@@ -199,18 +199,21 @@ fn sixteenth_spurious_entry_turns_the_detector_off() {
 }
 
 /// D6: an INTS bit other than the PERSTn edge (a source forced after arming, an INTE that
-/// let the bring-up's latches through) is treated as a reset.
+/// let the bring-up's latches through) is treated as a reset. The corruption is not a write
+/// of the platform's, so it is set without a trace.
 #[test]
 fn any_other_interrupt_source_is_lost() {
-    type Corrupt = fn(&mut Fake);
-    let corruptions: [Corrupt; 2] = [|f| f.write(PCIE_INTF, 1 << 3), |f| f.write(PCIE_INTE, 0x4b)];
-    for corrupt in corruptions {
-        let mut f = Fake::after_bring_up(Delivery::Level);
-        f.arm();
-        corrupt(&mut f);
-        f.run_thread(2);
-        f.assert_lost_once();
-        assert_eq!(f.get(PCIE_INTR), BRING_UP_LATCHES, "INTR kept");
+    let corruptions = [(PCIE_INTF, 1 << 3), (PCIE_INTE, BRING_UP_INTE)];
+    for delivery in DELIVERIES {
+        for (address, value) in corruptions {
+            let mut f = Fake::after_bring_up(delivery);
+            f.arm();
+            f.set(address, value);
+            f.run_thread(2);
+            f.assert_lost_once();
+            assert_eq!(f.get(PCIE_INTR), BRING_UP_LATCHES, "INTR kept");
+            f.check_invariants();
+        }
     }
 }
 
