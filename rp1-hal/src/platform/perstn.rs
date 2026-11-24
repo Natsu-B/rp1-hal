@@ -28,7 +28,7 @@ const IPR: usize = 0xe000_e400 + IRQ;
 const VTOR: usize = 0xe000_ed08;
 const PRIORITY: u8 = 0;
 /// PCIE_INTR / INTE bit 1: a PERSTn edge.
-const PERSTN_EDGE: u32 = 1 << 1;
+pub(crate) const PERSTN_EDGE: u32 = 1 << 1;
 const MAX_SPURIOUS: u32 = 16;
 const STATUS_WORD: usize = rp1_proto::LINK_START as usize + status::PLAT_PCIE;
 const SHM_STATUS: usize = rp1_proto::LINK_START as usize + link::SHM_STATUS;
@@ -212,6 +212,11 @@ static mut WORDS: [u32; 5] = [status::PLAT_PCIE_INITIALIZING, 0, 0, 0, 0];
 
 pub(crate) fn entries() -> u32 {
     Mmio.load(Word::Entries)
+}
+
+/// The detector's own state word, decoded. proc0 only; IRQ53 may change it unless masked.
+pub(crate) fn state() -> PcieState {
+    PcieState::from_word(Mmio.load(Word::State))
 }
 
 pub(crate) fn lost_detail() -> Option<LostDetail> {

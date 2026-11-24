@@ -55,6 +55,9 @@ pub struct System {
 /// The PCIe endpoint init brought up. proc0 only (not `Send`).
 pub struct Pcie {
     _proc0: PhantomData<*mut ()>,
+    /// [`crate::shm::enable`] published the reservation, or outbound region 0 read back wrong:
+    /// the window stays as it is until RP1 is reloaded.
+    pub(crate) shm_pinned: bool,
 }
 
 impl Pcie {
@@ -156,6 +159,7 @@ impl Token {
             clocks,
             pcie: Pcie {
                 _proc0: PhantomData,
+                shm_pinned: false,
             },
             report,
         })

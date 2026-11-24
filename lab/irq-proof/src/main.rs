@@ -81,6 +81,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
 
     let mut system = System {
         endpoint: unsafe { rp1_hal::cold::EndpointService::new() },
+        pcie: sys.pcie,
         probed: false,
         attempted: false,
     };
@@ -113,6 +114,7 @@ type Perst = Option<Result<rp1_hal::cold::Reconfigured, rp1_hal::cold::ReconfigE
 /// proc0's PCIe endpoint across PERSTn and the two shm requests Linux makes through the link page.
 struct System {
     endpoint: rp1_hal::cold::EndpointService,
+    pcie: rp1_hal::platform::Pcie,
     probed: bool,
     attempted: bool,
 }
@@ -125,19 +127,20 @@ impl System {
         let request = link_read(link::SHM_REQUEST);
         if !self.probed && request == 2 {
             self.probed = true;
-            probe_window();
+            probe_window(&mut self.pcie);
         }
         if !self.attempted && request == 1 {
             self.attempted = true;
-            let enabled = unsafe { rp1_hal::shm::enable(rp1::SHM_NOTE, &rp1::SHM_NOTE_SHA256) };
+            let enabled =
+                rp1_hal::shm::enable(&mut self.pcie, rp1::SHM_NOTE, &rp1::SHM_NOTE_SHA256);
             log!("p0 shm enable {:?}\n", enabled).unwrap();
         }
     }
 }
 
 /// shm-linux's whole-window check before it enables the area: pattern every word, read back.
-fn probe_window() {
-    let area = unsafe { rp1_hal::shm::configure_window(rp1::SHM_NOTE) }.unwrap();
+fn probe_window(pcie: &mut rp1_hal::platform::Pcie) {
+    let area = rp1_hal::shm::lab_map_window(pcie, rp1::SHM_NOTE).unwrap();
     let words = area.size as usize / 4;
     let pointer = rp1_proto::SHM_WINDOW as *mut u32;
     for i in 0..words {

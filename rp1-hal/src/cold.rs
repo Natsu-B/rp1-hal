@@ -445,7 +445,7 @@ impl EndpointService {
     /// Exclusion contract (replaces the PoC's "proc1 held in reset" check): while this service
     /// is in use, no other code may access the PCIe DBI selector (0x4010_8000), DBI
     /// (0x4010_9000..) or the outbound PCIe window. In this crate only proc0 code
-    /// ([`crate::shm::configure_window`] / [`crate::shm::enable`]) touches the selector/DBI, and
+    /// ([`crate::shm::enable`]) touches the selector/DBI, and
     /// it runs in the same proc0 loop, so it cannot interleave with [`Self::poll`]. proc1 must
     /// not use the outbound window until Linux has published shm (`SHM_STATUS == 1`), which is
     /// after the final PERSTn of a cold boot. A PERSTn after that (live host reset) is unsupported.

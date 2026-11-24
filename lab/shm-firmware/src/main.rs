@@ -118,6 +118,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     let mut attempted = false;
     let mut probed = false;
+    let mut pcie = sys.pcie;
     loop {
         // 0xadc and 0x5b1 are proc1's (it owns the ADC and SPI0); the rest are I2C requests.
         let request = proof_pending();
@@ -136,7 +137,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         }
         if !probed && link_read(link::SHM_REQUEST) == 2 {
             probed = true;
-            let area = unsafe { rp1_hal::shm::configure_window(rp1::SHM_NOTE) }.unwrap();
+            let area = rp1_hal::shm::lab_map_window(&mut pcie, rp1::SHM_NOTE).unwrap();
             let words = area.size as usize / 4;
             let pointer = rp1_proto::SHM_WINDOW as *mut u32;
             let start = now();
@@ -170,7 +171,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         }
         if !attempted && link_read(link::SHM_REQUEST) == 1 {
             attempted = true;
-            let enabled = unsafe { rp1_hal::shm::enable(rp1::SHM_NOTE, &rp1::SHM_NOTE_SHA256) };
+            let enabled = rp1_hal::shm::enable(&mut pcie, rp1::SHM_NOTE, &rp1::SHM_NOTE_SHA256);
             log!("p0 shm enable {:?}\n", enabled).unwrap();
         }
     }

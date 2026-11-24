@@ -341,13 +341,15 @@ shm ごとの `generic-uio` ノードに焼き込む。ローダーはそのア�
 ゼロ化はファームが `Shm::enable` で行う（ローダーは DDR を触らない）。
 
 STATIC（v0.1 実装）: rpi-cm5 は `0x2200_0000`、予約全体は 1..16 MiB。既存の scratch/openamp 予約を拡張しない。
-Linux の PCIe probe/PERSTn 完了後、UIO の link ページで初期化を要求し、proc0 が `rp1_hal::shm::enable` で ATU と領域を初期化する。
+Linux の PCIe probe/PERSTn 完了後、UIO の link ページで初期化を要求し、proc0 が `rp1_hal::shm::enable(&mut pcie, ..)` で ATU と領域を初期化する。
+公開は PERSTn 検出器（IRQ53）が `Up` の間だけで、ATU の設定と `SHM_STATUS = 1` はそれぞれ割り込みを止めた区間で検査してから行う（STATIC、ホスト試験のみ）。
 具体的な API・ローダーの開発用パッチ・検証方法は [lab/README.md](../lab/README.md)。
 HW（2026-10-29、同じ組で cold boot 2 回）: 2 MiB 予約の全語を M3 窓から書いて読み戻し一致、ring は各向き 10^6 件で欠落・破損 0、
 block 1 MiB は両向き全語一致。M3 から DDR: 読み遅延 約 1.32 µs/語、走査読み 約 3.0 MB/s、書き 約 5.9 MB/s。
 ring は RP1→Linux 0.76 MB/s、Linux→RP1 0.35 MB/s（16 byte）で、Linux を止めても M3 側の push 約 20 µs / pop 約 43 µs が律速。
 Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側が遅い原因は未特定（HYP: 共有 SRAM からの命令取得と proc0 のポーリングとの競合）。
 ファームは `Shm::enable` で outbound ATU を設定してからハンドルを返す。PCIe リセットで ATU は消える（HW、2026-09-29）ので v0.1 は cold boot のみ保証。
+公開後のリセットは IRQ53 が検出して `SHM_STATUS = SHM_WINDOW_LOST` にする（STATIC。検出の経路は実機で起こしていない）。
 
 測ること（最初の縦 1 本で）: M3 からの DDR 読み出し遅延・帯域・書き込み帯域、Linux 側 uncached（UIO）と cached（/dev/mem + DC CIVAC）の読み書き速度、UIO の IRQ 待ち遅延。
 

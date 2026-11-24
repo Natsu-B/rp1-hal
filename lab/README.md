@@ -147,7 +147,9 @@ each doorbell reply (unstable `host_irq = true`, `linux-doorbell <link> <doorbel
 `missed=`); hwirq58 stays with SCMI's mailbox. No cached mapping, kernel patch or private
 kernel API is used. Device mappings never go through libc memcpy/memset.
 
-RP1 calls unsafe `shm::enable` once after the final Linux PERSTn, then one unsafe `Area::attach`
+RP1 calls `shm::enable(&mut pcie, ..)` once when Linux requests it. It publishes only while the
+PERSTn detector is `Up` and refuses a second call; the lab's whole-window probe maps the window with
+the hidden `shm::lab_map_window` instead. Then one unsafe `Area::attach`
 per owning core. `ring_tx`, `ring_rx` and `block` check the note's type/core/direction and reject
 duplicate endpoint acquisition. Returned low-level block writers require the declared writer
 ownership. Linux `Firmware::open` checks UIO names, physical ranges, note hash and generation;

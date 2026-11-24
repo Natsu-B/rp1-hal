@@ -4,7 +4,7 @@
 //! PCIE_INTS = (INTR & INTE) | INTF. A PERSTn deassertion (`Edge::Up`) latches INTR bit 1; an
 //! assertion (`Edge::Down`) latches it only if H2 holds (`latch_on_assert`, HYP). The NVIC
 //! enable and pending bits are separate. IRQ53 preempts init and thread code at each access
-//! boundary, never itself.
+//! boundary, never itself, and not while thread code has PRIMASK set ([`Fake::masked`]).
 
 extern crate std;
 
@@ -37,6 +37,12 @@ pub(crate) enum Op {
     Priority(u8),
     Barrier,
     Store(Word, u32),
+    /// A thread read of one of the detector's DSRAM words. The handler's own loads are not
+    /// recorded.
+    Load(Word, u32),
+    /// `cpsid i` / `cpsie i`.
+    Mask,
+    Unmask,
 }
 
 /// How a pending PCIE_INTS reaches the NVIC.
@@ -79,6 +85,10 @@ pub(crate) struct Fake {
     pub(crate) context: Context,
     pub(crate) enabled: bool,
     pub(crate) pending: bool,
+    /// PRIMASK: an IRQ53 that is due waits for `Op::Unmask`.
+    pub(crate) masked: bool,
+    /// Registers that keep their value when written (a readback mismatch).
+    pub(crate) read_only: Vec<usize>,
     pub(crate) trace: Vec<(Context, Op)>,
     pub(crate) injections: Vec<(At, Event)>,
     pub(crate) thread_accesses: usize,
@@ -105,6 +115,8 @@ impl Fake {
             context: Context::Init,
             enabled: false,
             pending: false,
+            masked: false,
+            read_only: Vec::new(),
             trace: Vec::new(),
             injections: Vec::new(),
             thread_accesses: 0,
@@ -170,13 +182,16 @@ impl Fake {
             self.inject(At::Thread(self.thread_accesses));
             self.thread_accesses += 1;
         }
-        if self.context == Context::Irq {
-            return;
+        if self.context != Context::Irq {
+            self.deliver();
         }
+    }
+    /// Takes IRQ53 while it is enabled, pending and not masked.
+    fn deliver(&mut self) {
         if matches!(self.delivery, Delivery::Level) && self.ints() != 0 {
             self.pending = true;
         }
-        while self.enabled && self.pending {
+        while self.enabled && self.pending && !self.masked {
             self.pending = false;
             let interrupted = core::mem::replace(&mut self.context, Context::Irq);
             self.trace.push((Context::Irq, Op::Enter));
@@ -191,6 +206,19 @@ impl Fake {
     pub(crate) fn record(&mut self, op: Op) {
         self.now += 1;
         self.trace.push((self.context, op));
+    }
+    /// Runs `f` as thread code between `cpsid i` and `cpsie i`. An IRQ53 that became due
+    /// inside is taken right after `cpsie i`.
+    pub(crate) fn masked<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.boundary();
+        self.record(Op::Mask);
+        self.masked = true;
+        let value = f(self);
+        self.boundary();
+        self.record(Op::Unmask);
+        self.masked = false;
+        self.deliver();
+        value
     }
     /// Arms (step 10) and takes any IRQ53 that is due before init returns.
     pub(crate) fn arm(&mut self) -> Armed {
@@ -315,6 +343,7 @@ impl Io for Fake {
             ISPR => self.pending |= value & IRQ_BIT != 0,
             ICPR => self.pending &= value & IRQ_BIT == 0,
             PCIE_INTR => panic!("PCIE_INTR is never written"),
+            _ if self.read_only.contains(&address) => {}
             _ => {
                 let before = self.ints();
                 self.registers.insert(address, value);
