@@ -703,9 +703,25 @@ fn load_store(op: &str, args: &str) -> Result<Effect, &'static str> {
     })
 }
 
-/// The platform's share of the proc0 stack (contract §5.5).
-pub fn s_plat(h57: u32, hfault: u32, h53: u32, hhard: u32) -> u32 {
-    h57.max(hfault) + h53 + hhard + 3 * FRAME
+/// Stack bounds of the proc0 platform handlers (contract §5.5), entry frames excluded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Handlers {
+    pub h57: u32,
+    pub h53: u32,
+    pub hhard: u32,
+    /// The deepest configurable fault handler (MemManage, BusFault, UsageFault).
+    pub hfault: u32,
+    /// The NMI handler, if the NMI vector holds one other than the default handler.
+    pub hnmi: Option<u32>,
+}
+
+impl Handlers {
+    /// The platform's share of the proc0 stack: `max(H57, Hfault) + H53 + Hhard + 3 * F`, plus
+    /// `Hnmi + F` for an NMI handler, which can preempt all of them.
+    pub fn s_plat(&self) -> u32 {
+        let nmi = self.hnmi.map_or(0, |h| h + FRAME);
+        self.h57.max(self.hfault) + self.h53 + self.hhard + 3 * FRAME + nmi
+    }
 }
 
 /// proc0's stack as the image declares it: `__stack_size0` (the whole stack) and
@@ -719,19 +735,13 @@ pub struct Proc0Stack {
 /// The `stack_static=` line for the handler bounds, and whether it is a PASS: `S_plat` must fit
 /// in the image's platform margin, and the margin must leave room for the user's stack. A
 /// `diagnostic` run (`--cut`) is never a PASS.
-pub fn verdict(
-    h57: u32,
-    hfault: u32,
-    h53: u32,
-    hhard: u32,
-    stack: Proc0Stack,
-    diagnostic: bool,
-) -> (bool, String) {
-    let s = s_plat(h57, hfault, h53, hhard);
+pub fn verdict(h: &Handlers, stack: Proc0Stack, diagnostic: bool) -> (bool, String) {
+    let s = h.s_plat();
     let Proc0Stack { stack0, margin } = stack;
+    let hnmi = h.hnmi.map_or("none".into(), |n| n.to_string());
     let terms = format!(
-        "s_plat={s} h57={h57} h53={h53} hhard={hhard} hfault={hfault} margin={margin} \
-         stack0={stack0}"
+        "s_plat={s} h57={} h53={} hhard={} hfault={} hnmi={hnmi} margin={margin} stack0={stack0}",
+        h.h57, h.h53, h.hhard, h.hfault
     );
     if diagnostic {
         (false, format!("stack_static=DIAG {terms}"))

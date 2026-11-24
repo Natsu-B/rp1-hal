@@ -334,8 +334,11 @@ S_plat = max(H57, Hfault) + H53 + Hhard + 3 · F          (the platform's share)
 stack0 = user + roundup(S_plat, 256)                     (user: declared, default 2 KiB)
 ```
 
-`Hfault = 0` while the configurable fault handlers are disabled, and `Hhard` is the default
-HardFault handler. The platform bounds only `S_plat`; the user part `T + Σ H_p` has no bound
+`Hfault` is the deepest of the MemManage, BusFault and UsageFault handlers. They are rp1-rt's
+default handler while the configurable faults are disabled, so `Hfault` stays below `H57`.
+`Hhard` is the default HardFault handler. An NMI handler other than the default one would add
+`Hnmi + F` on top; the platform enables no NMI source (HYP), so the default handler in the NMI
+slot is not counted. The platform bounds only `S_plat`; the user part `T + Σ H_p` has no bound
 here. rp1-build's `PLATFORM_STACK_MARGIN` (768 B) is that roundup for the largest `S_plat` of
 this workspace's firmware (716 B, STATIC 2026-11-25). rp1-build adds it to proc0's user stack,
 declared or default, and gives it to the linker as `__stack_margin0`: proc0's default stack is
@@ -345,7 +348,8 @@ declared or default, and gives it to the linker as `__stack_margin0`: proc0's de
 
 `stack-paths` is a host tool. It disassembles a firmware ELF with `arm-none-eabi-objdump`
 (`RP1_OBJDUMP` overrides it) and bounds the stack use of the proc0 platform roots, which it
-takes from the vector table: IRQ57, IRQ53 and HardFault. It reads proc0's stack and its
+takes from the vector table: IRQ57, IRQ53, HardFault, MemManage, BusFault, UsageFault and NMI.
+It reads proc0's stack and its
 platform margin from the ELF (`__stack_size0`, `__stack_margin0`), prints `S_plat` and fails
 when `S_plat` exceeds the margin, or the margin leaves no user stack (`reason=proc0-stack`). An
 ELF without `__stack_margin0` (built before rp1-build had it) is an error (exit status 2):
@@ -353,8 +357,8 @@ ELF without `__stack_margin0` (built before rp1-build had it) is an error (exit 
 ```sh
 cargo rp1 build -p irq-proof --target thumbv7m-none-eabi --release
 cargo run -p stack-paths -- target/thumbv7m-none-eabi/release/irq-proof
-# stack root=<symbol> bytes=N              (one line per root)
-# stack_static=PASS s_plat=N h57=N h53=N hhard=N hfault=0 margin=768 stack0=2816
+# stack root=<symbol> vector=<slot> bytes=N   (one line per root)
+# stack_static=PASS s_plat=N h57=N h53=N hhard=N hfault=N hnmi=none margin=768 stack0=2816
 # stack_static=FAIL reason=<code> at=<symbol+offset> root=<symbol>        (exit status 1)
 # stack_static=FAIL reason=margin|proc0-stack s_plat=N ... stack0=N        (exit status 1)
 ```

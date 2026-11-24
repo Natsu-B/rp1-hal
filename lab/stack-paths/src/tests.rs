@@ -329,22 +329,43 @@ fn objdump_text_forms() {
     assert_eq!(p.bound(0x2000_1371).unwrap().bytes, 8 + 256);
 }
 
+const HANDLERS: Handlers = Handlers {
+    h57: 440,
+    h53: 8,
+    hhard: 8,
+    hfault: 0,
+    hnmi: None,
+};
+
 #[test]
 fn platform_share() {
-    assert_eq!(s_plat(440, 0, 8, 8), 440 + 8 + 8 + 108);
-    assert_eq!(s_plat(10, 20, 0, 0), 20 + 108);
+    assert_eq!(HANDLERS.s_plat(), 440 + 8 + 8 + 108);
+    let faults = Handlers {
+        h57: 10,
+        hfault: 20,
+        h53: 0,
+        hhard: 0,
+        hnmi: None,
+    };
+    assert_eq!(faults.s_plat(), 20 + 108);
+    // An NMI handler stacks on top of everything, with its own frame.
+    let nmi = Handlers {
+        hnmi: Some(8),
+        ..HANDLERS
+    };
+    assert_eq!(nmi.s_plat(), HANDLERS.s_plat() + 8 + 36);
 }
 
 #[test]
 fn s_plat_must_fit_the_margin() {
-    let line = |diagnostic, margin, stack0| {
-        verdict(440, 0, 8, 8, Proc0Stack { stack0, margin }, diagnostic)
-    };
+    let line =
+        |diagnostic, margin, stack0| verdict(&HANDLERS, Proc0Stack { stack0, margin }, diagnostic);
     assert_eq!(
         line(false, 768, 2816),
         (
             true,
-            "stack_static=PASS s_plat=564 h57=440 h53=8 hhard=8 hfault=0 margin=768 stack0=2816"
+            "stack_static=PASS s_plat=564 h57=440 h53=8 hhard=8 hfault=0 hnmi=none margin=768 \
+             stack0=2816"
                 .into()
         )
     );
@@ -353,13 +374,29 @@ fn s_plat_must_fit_the_margin() {
     assert!(!pass && text.starts_with("stack_static=FAIL reason=margin s_plat=564 "));
     let (pass, text) = line(true, 768, 2816);
     assert!(!pass && text.starts_with("stack_static=DIAG "));
+    let nmi = Handlers {
+        hnmi: Some(200),
+        ..HANDLERS
+    };
+    let (pass, text) = verdict(
+        &nmi,
+        Proc0Stack {
+            stack0: 2816,
+            margin: 768,
+        },
+        false,
+    );
+    assert!(
+        !pass && text.contains("s_plat=800 ") && text.contains("hnmi=200 "),
+        "{text}"
+    );
 }
 
 #[test]
 fn margin_must_leave_a_user_stack() {
     // An image without a user part above the margin (or a margin of the whole stack) fails,
     // whatever S_plat is.
-    let line = |margin, stack0| verdict(440, 0, 8, 8, Proc0Stack { stack0, margin }, false);
+    let line = |margin, stack0| verdict(&HANDLERS, Proc0Stack { stack0, margin }, false);
     assert!(line(768, 776).0);
     for (margin, stack0) in [(768, 768), (2048, 2048), (4096, 2048)] {
         let (pass, text) = line(margin, stack0);

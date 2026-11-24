@@ -1,5 +1,6 @@
 //! `stack-paths <firmware.elf> [--root <symbol>]...`: static stack bounds of the proc0 platform
-//! handlers and `S_plat` (contract §5.5). Exits non-zero unless every root has a bound, `S_plat`
+//! handlers and `S_plat` (contract §5.5). The roots are proc0's IRQ57, IRQ53, HardFault,
+//! MemManage, BusFault, UsageFault and NMI vectors, plus any `--root`. Exits non-zero unless every root has a bound, `S_plat`
 //! fits in the image's platform margin (`__stack_margin0`, which rp1-build adds to proc0's
 //! stack) and proc0's stack (`__stack_size0`) is larger than that margin.
 //! `--size` first prints the image's size report ([`stack_paths::size`]).
@@ -8,16 +9,24 @@
 //! `RP1_OBJDUMP` overrides the disassembler (default `arm-none-eabi-objdump`).
 
 use object::{Object, ObjectSection};
-use stack_paths::{Proc0Stack, Program, verdict};
+use stack_paths::{Handlers, Proc0Stack, Program, verdict};
 use std::process::{Command, ExitCode};
 
 const USAGE: &str =
     "usage: stack-paths <firmware.elf> [--root <symbol>]... [--cut <symbol>]... [--size]";
 
-/// proc0 vector slots: HardFault, IRQ53 (PCIE_OUT), IRQ57 (PROC_MISC).
-const HARDFAULT: usize = 3;
-const IRQ53: usize = 16 + 53;
-const IRQ57: usize = 16 + 57;
+/// The proc0 vector slots that are roots, with their names on the `stack root=` lines.
+const VECTORS: [(usize, &str); 7] = [
+    (16 + 57, "irq57"),
+    (16 + 53, "irq53"),
+    (3, "hardfault"),
+    (4, "memmanage"),
+    (5, "busfault"),
+    (6, "usagefault"),
+    (2, "nmi"),
+];
+/// rp1-rt's handler of every exception the platform does not handle.
+const DEFAULT_HANDLER: &str = "__rp1_default";
 
 fn main() -> ExitCode {
     match run() {
@@ -91,22 +100,21 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         );
     }
     let mut roots = Vec::new();
-    for slot in [IRQ57, IRQ53, HARDFAULT] {
-        roots.push(vector(slot)?);
+    for (slot, label) in VECTORS {
+        roots.push((vector(slot)?, label));
     }
     for name in &extra {
-        roots.push(
-            program
-                .address_of(name)
-                .ok_or_else(|| format!("no function {name}"))?,
-        );
+        let address = program
+            .address_of(name)
+            .ok_or_else(|| format!("no function {name}"))?;
+        roots.push((address, "extra"));
     }
     let mut bytes = Vec::new();
-    for &address in &roots {
+    for &(address, label) in &roots {
         let name = program.name_at(address).unwrap_or("?");
         match program.bound_cut(address, &cut) {
             Ok(b) => {
-                println!("stack root={name} bytes={}", b.bytes);
+                println!("stack root={name} vector={label} bytes={}", b.bytes);
                 bytes.push(b.bytes);
             }
             Err(f) => {
@@ -118,10 +126,20 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             }
         }
     }
-    let (h57, h53, hhard) = (bytes[0], bytes[1], bytes[2]);
-    // Configurable fault handlers are not enabled yet, so Hfault = 0.
-    let hfault = 0;
-    let (pass, line) = verdict(h57, hfault, h53, hhard, stack, !cut.is_empty());
+    // NMI preempts every other handler, so a real NMI handler adds its bound and one frame. The
+    // default handler there is not counted: the platform enables no NMI source (HYP).
+    let default = stack_paths::size::symbol(&file, DEFAULT_HANDLER).ok();
+    let nmi = (default.map(|a| a & !1) != Some(u64::from(vector(2)? & !1))).then_some(bytes[6]);
+    let handlers = Handlers {
+        h57: bytes[0],
+        h53: bytes[1],
+        hhard: bytes[2],
+        // MemManage, BusFault and UsageFault, whichever handler they hold: with the default
+        // handler (the configurable faults disabled) this is at most H57, so S_plat stays.
+        hfault: bytes[3].max(bytes[4]).max(bytes[5]),
+        hnmi: nmi,
+    };
+    let (pass, line) = verdict(&handlers, stack, !cut.is_empty());
     println!("{line}");
     Ok(pass)
 }
