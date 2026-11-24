@@ -292,8 +292,10 @@ fn diagnose_reads_inte_the_line_and_the_vector() {
     assert_eq!(diagnose(&mut f, HANDLER), (0, false, true));
 }
 
+/// The words the detector publishes decode to their states (the decoding itself is
+/// rp1-proto's, shared with Linux).
 #[test]
-fn published_words_decode_strictly() {
+fn published_words_decode_to_their_states() {
     let cases = [
         (status::PLAT_PCIE_UP, PcieState::Up),
         (
@@ -311,10 +313,5 @@ fn published_words_decode_strictly() {
     ];
     for (word, state) in cases {
         assert_eq!(PcieState::from_word(word), state);
-    }
-    assert_eq!(PcieState::from_word(0), PcieState::NotStarted);
-    assert_eq!(PcieState::from_word(1), PcieState::Initializing);
-    for word in [5, 0x102, 0x1_0002, 0x1_0004, 0x103] {
-        assert_eq!(PcieState::from_word(word), PcieState::Unknown(word));
     }
 }

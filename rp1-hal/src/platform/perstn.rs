@@ -33,43 +33,9 @@ const MAX_SPURIOUS: u32 = 16;
 const STATUS_WORD: usize = rp1_proto::LINK_START as usize + status::PLAT_PCIE;
 const SHM_STATUS: usize = rp1_proto::LINK_START as usize + link::SHM_STATUS;
 
-/// proc0's published PCIe state ([`pcie_state`]), the same on both cores.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PcieState {
-    NotStarted,
-    Initializing,
-    /// The link is up and the detector is armed.
-    Up,
-    /// The host reset the endpoint after init. `monitor2_hi` is PCIE_MONITOR2[31:16] at the
-    /// detection; proc0 has the full value and the time in [`super::Pcie::lost_detail`].
-    Lost {
-        monitor2_hi: u16,
-    },
-    /// A later host reset would not be seen. `reason` is one of
-    /// `rp1_proto::status::PLAT_PCIE_OFF_*`.
-    DetectorOff {
-        reason: u8,
-    },
-    Unknown(u32),
-}
-
-impl PcieState {
-    pub(crate) fn from_word(word: u32) -> Self {
-        let (state, reason, high) = (word & 0xff, (word >> 8) & 0xff, word >> 16);
-        match (state, reason, high) {
-            (status::PLAT_PCIE_NOT_STARTED, 0, 0) => Self::NotStarted,
-            (status::PLAT_PCIE_INITIALIZING, 0, 0) => Self::Initializing,
-            (status::PLAT_PCIE_UP, 0, 0) => Self::Up,
-            (status::PLAT_PCIE_LOST, 0, _) => Self::Lost {
-                monitor2_hi: high as u16,
-            },
-            (status::PLAT_PCIE_DETECTOR_OFF, _, 0) => Self::DetectorOff {
-                reason: reason as u8,
-            },
-            _ => Self::Unknown(word),
-        }
-    }
-}
+/// proc0's published PCIe state ([`pcie_state`]), the same on both cores. In `Lost`, proc0 has
+/// the full PCIE_MONITOR2 and the time in [`super::Pcie::lost_detail`].
+pub use status::PcieState;
 
 /// Read proc0's published PCIe state.
 pub fn pcie_state() -> PcieState {

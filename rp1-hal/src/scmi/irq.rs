@@ -13,6 +13,7 @@ use core::{
     mem::MaybeUninit,
     sync::atomic::{AtomicU32, Ordering::Relaxed},
 };
+use rp1_proto::status::{PLAT_SCMI_QUARANTINED as QUARANTINED, PLAT_SCMI_SERVING as SERVING};
 
 const IRQ: usize = rp1_rt::pac::Interrupt::PROC_MISC as usize;
 const IRQ_BIT: u32 = 1 << (IRQ % 32);
@@ -25,30 +26,9 @@ const PROC_GATE: usize = 0xf800_0008;
 const PRIORITY: u8 = 1 << 5;
 const MAX_EMPTY_STREAK: u8 = 16;
 const STATUS_WORD: usize = rp1_proto::LINK_START as usize + rp1_proto::status::PLAT_SCMI;
-const SERVING: u32 = 1;
-const QUARANTINED: u32 = 2;
 
 /// The SCMI server state published by proc0, readable on either core.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ScmiState {
-    NotStarted,
-    Serving { requests: u16 },
-    Quarantined,
-    Unknown(u32),
-}
-
-impl ScmiState {
-    fn from_word(word: u32) -> Self {
-        match word {
-            0 => Self::NotStarted,
-            QUARANTINED => Self::Quarantined,
-            _ if word & 0xffff == SERVING => Self::Serving {
-                requests: (word >> 16) as u16,
-            },
-            _ => Self::Unknown(word),
-        }
-    }
-}
+pub use rp1_proto::status::ScmiState;
 
 // Both cores can read the word. Plain atomic loads and stores need no shared-SRAM RMW.
 fn status_word() -> &'static AtomicU32 {
