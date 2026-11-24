@@ -17,12 +17,22 @@ fn start(state: u32) -> [Op; 5] {
     ]
 }
 
+/// Step 10's reads for its report, after the arming.
+fn report_reads(inte: u32, nvic53: bool) -> [Op; 4] {
+    [
+        Op::Read(PCIE_INTE, inte),
+        Op::Read(ISER, u32::from(nvic53) * IRQ_BIT),
+        Op::Read(VTOR, VECTORS as u32),
+        Op::Read(VECTOR53, HANDLERS.detector as u32),
+    ]
+}
+
 /// D1: a normal arming. INTR's other latches ([`BRING_UP_LATCHES`]) are not a reset.
 #[test]
 fn arming_with_only_other_latches_stays_up() {
     for delivery in DELIVERIES {
         let mut f = Fake::after_bring_up(delivery);
-        let armed = f.arm();
+        let report = f.arm();
         assert_eq!(
             f.init_ops(),
             [
@@ -38,15 +48,20 @@ fn arming_with_only_other_latches_stays_up() {
                 Op::Write(ISER, IRQ_BIT),
                 Op::Read(PCIE_INTR, BRING_UP_LATCHES),
             ])
+            .chain(report_reads(PERSTN_EDGE, true))
             .collect::<Vec<_>>()
         );
         assert_eq!(
-            armed,
-            Armed {
+            report,
+            DetectorReport {
+                inte: PERSTN_EDGE,
                 intf: 0,
-                intr_at_arm: BRING_UP_LATCHES
+                intr_at_arm: BRING_UP_LATCHES,
+                nvic53: true,
+                vec53_ok: true,
             }
         );
+        assert_eq!(report.perstn_edge_at_arm(), Some(false));
         f.run_thread(8);
         assert_eq!(f.entries(), 0);
         assert_eq!(f.state(), PcieState::Up);
@@ -61,21 +76,28 @@ fn arming_with_only_other_latches_stays_up() {
 fn forced_source_at_arming_turns_the_detector_off() {
     let mut f = Fake::after_bring_up(Delivery::Level);
     f.registers.insert(PCIE_INTF, 1 << 3);
-    let armed = f.arm();
+    let report = f.arm();
     let off = detector_off(status::PLAT_PCIE_OFF_ARM_FAULT);
     assert_eq!(
-        armed,
-        Armed {
+        report,
+        DetectorReport {
+            inte: 0,
             intf: 1 << 3,
-            intr_at_arm: 0
+            intr_at_arm: 0,
+            nvic53: false,
+            vec53_ok: true,
         }
     );
+    assert_eq!(report.perstn_edge_at_arm(), None);
     let arming = [
         Op::Write(PCIE_INTE, PERSTN_EDGE),
         Op::Read(PCIE_INTF, 1 << 3),
         Op::Write(PCIE_INTE, 0),
     ];
-    assert_eq!(f.init_ops(), [&arming[..], &start(off)].concat());
+    assert_eq!(
+        f.init_ops(),
+        [&arming[..], &start(off), &report_reads(0, false)].concat()
+    );
     assert_eq!(
         f.published(),
         PcieState::DetectorOff {
@@ -94,8 +116,9 @@ fn edge_latched_before_arming_is_lost_once() {
         let mut f = Fake::after_bring_up(delivery);
         f.registers
             .insert(PCIE_INTR, BRING_UP_LATCHES | PERSTN_EDGE);
-        let armed = f.arm();
-        assert_eq!(armed.intr_at_arm, BRING_UP_LATCHES | PERSTN_EDGE);
+        let report = f.arm();
+        assert_eq!(report.intr_at_arm, BRING_UP_LATCHES | PERSTN_EDGE);
+        assert_eq!(report.perstn_edge_at_arm(), Some(true));
         f.run_thread(4);
         f.assert_lost_once();
         assert_eq!(f.entries(), 1, "{delivery:?}");
@@ -104,13 +127,14 @@ fn edge_latched_before_arming_is_lost_once() {
 }
 
 /// D3': IRQ53 runs right after ISER53 and before init's next access. What it wrote survives
-/// init's return, and init's remaining accesses are the INTR read and the ISPR.
+/// init's return, and init's remaining accesses are the INTR read, the ISPR and the report's
+/// reads, which see the line disabled.
 #[test]
 fn immediate_detection_survives_the_rest_of_init() {
     for delivery in DELIVERIES {
         let mut f = Fake::after_bring_up(delivery);
         f.injections.push((At::Iser, Event::Edge(Edge::Up)));
-        f.arm();
+        let report = f.arm();
         let iser = f
             .trace
             .iter()
@@ -125,9 +149,13 @@ fn immediate_detection_survives_the_rest_of_init() {
             after,
             [
                 Op::Read(PCIE_INTR, BRING_UP_LATCHES | PERSTN_EDGE),
-                Op::Write(ISPR, IRQ_BIT)
+                Op::Write(ISPR, IRQ_BIT),
             ]
+            .into_iter()
+            .chain(report_reads(0, false))
+            .collect::<Vec<_>>()
         );
+        assert_eq!((report.inte, report.nvic53), (0, false));
         f.run_thread(4);
         f.assert_lost_once();
         assert!(!f.enabled);
@@ -283,16 +311,19 @@ fn platform_handlers_do_not_log() {
     }
 }
 
-/// I5-53 at run time: the report compares vector 53 with the handler.
+/// I5-53 at run time: `vec53_ok` only for the detector's handler, not for the default one the
+/// linker script would put in its place, nor for anything else.
 #[test]
-fn diagnose_reads_inte_the_line_and_the_vector() {
-    let mut f = Fake::after_bring_up(Delivery::Level);
-    f.arm();
-    assert_eq!(diagnose(&mut f, HANDLER), (PERSTN_EDGE, true, true));
-    assert_eq!(diagnose(&mut f, HANDLER + 2), (PERSTN_EDGE, true, false));
-    f.injections
-        .push((At::Thread(f.thread_accesses), Event::Edge(Edge::Up)));
-    assert_eq!(diagnose(&mut f, HANDLER), (0, false, true));
+fn vec53_ok_needs_the_detectors_handler() {
+    for (vector, ok) in [
+        (HANDLERS.detector, true),
+        (HANDLERS.default, false),
+        (HANDLERS.detector + 2, false),
+    ] {
+        let mut f = Fake::after_bring_up(Delivery::Level);
+        f.registers.insert(VECTOR53, vector as u32);
+        assert_eq!(f.arm().vec53_ok, ok, "{vector:#x}");
+    }
 }
 
 /// The words the detector publishes decode to their states (the decoding itself is

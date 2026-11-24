@@ -84,40 +84,82 @@ pub(crate) trait Io {
     fn store(&mut self, word: Word, value: u32);
 }
 
-/// The values step 10 read, for the init report.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Armed {
-    pub(crate) intf: u32,
-    /// 0 if PCIE_INTF was set: not read, the detector stayed off.
-    pub(crate) intr_at_arm: u32,
+/// What step 10 read while arming the PERSTn detector, and its result.
+///
+/// On a normal boot: `inte` 0x2, `intf` 0, no PERSTn edge in `intr_at_arm`, `nvic53` and
+/// `vec53_ok` true. The other bits of `intr_at_arm` are latches IRQ53 does not look at: print
+/// them, do not judge them. (HW 2026-11: PCIE_INTS = 0x49 with INTE = 0x4b after the
+/// bring-up; INTR is expected to hold the same bits 0, 3 and 6, HYP.)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DetectorReport {
+    /// PCIE_INTE read after arming: 0 if arming failed or IRQ53 already saw a reset.
+    pub inte: u32,
+    /// PCIE_INTF at arming. Nonzero leaves the detector off.
+    pub intf: u32,
+    /// PCIE_INTR at arming; 0 if `intf` was nonzero (not read).
+    pub intr_at_arm: u32,
+    /// IRQ53 enabled after arming.
+    pub nvic53: bool,
+    /// proc0 vector 53 is the detector's handler, not the default one.
+    pub vec53_ok: bool,
 }
 
-/// Step 10 of init. PCIE_INTR keeps its latches: a PERSTn edge already latched is a reset
-/// that came after the endpoint bring-up consumed its own, so it is detected, not cleared.
-pub(crate) fn arm(io: &mut impl Io) -> Armed {
+impl DetectorReport {
+    /// Whether PCIE_INTR held a PERSTn edge at arming; None if it was not read (`intf`
+    /// nonzero).
+    pub fn perstn_edge_at_arm(&self) -> Option<bool> {
+        (self.intf == 0).then_some(self.intr_at_arm & PERSTN_EDGE != 0)
+    }
+}
+
+/// The two values vector 53 can hold: the detector's handler, and the default handler the
+/// linker script provides in its place when the detector's is not linked in.
+#[derive(Clone, Copy)]
+pub(crate) struct Handlers {
+    pub(crate) detector: usize,
+    pub(crate) default: usize,
+}
+
+impl Handlers {
+    fn installed(self, vector: usize) -> bool {
+        vector == self.detector && vector != self.default
+    }
+}
+
+/// Step 10 of init, then the reads for its report. PCIE_INTR keeps its latches: a PERSTn edge
+/// already latched is a reset that came after the endpoint bring-up consumed its own, so it is
+/// detected, not cleared.
+pub(crate) fn arm(io: &mut impl Io, handlers: Handlers) -> DetectorReport {
     io.write(PCIE_INTE, PERSTN_EDGE);
     let intf = io.read(PCIE_INTF);
-    if intf != 0 {
+    let intr_at_arm = if intf != 0 {
         // A forced source would read as a reset on the first entry.
         io.write(PCIE_INTE, 0);
         start(io, detector_off(status::PLAT_PCIE_OFF_ARM_FAULT));
-        return Armed {
-            intf,
-            intr_at_arm: 0,
-        };
-    }
-    let intr = io.read(PCIE_INTR);
-    start(io, status::PLAT_PCIE_UP);
-    io.set_priority(PRIORITY);
-    io.write(ICPR, IRQ_BIT);
-    io.write(ISER, IRQ_BIT);
-    // ICPR also cleared the pend of an edge latched before it.
-    if io.read(PCIE_INTR) & PERSTN_EDGE != 0 {
-        io.write(ISPR, IRQ_BIT);
-    }
-    Armed {
+        0
+    } else {
+        let intr = io.read(PCIE_INTR);
+        start(io, status::PLAT_PCIE_UP);
+        io.set_priority(PRIORITY);
+        io.write(ICPR, IRQ_BIT);
+        io.write(ISER, IRQ_BIT);
+        // ICPR also cleared the pend of an edge latched before it.
+        if io.read(PCIE_INTR) & PERSTN_EDGE != 0 {
+            io.write(ISPR, IRQ_BIT);
+        }
+        intr
+    };
+    // For the report only: reads, so whatever IRQ53 wrote since ISER stays (rule E1).
+    let inte = io.read(PCIE_INTE);
+    let nvic53 = io.read(ISER) & IRQ_BIT != 0;
+    let slot = io.read(VTOR) as usize + 4 * (16 + IRQ);
+    let vector = io.read(slot) as usize;
+    DetectorReport {
+        inte,
         intf,
-        intr_at_arm: intr,
+        intr_at_arm,
+        nvic53,
+        vec53_ok: handlers.installed(vector),
     }
 }
 
@@ -132,14 +174,6 @@ fn start(io: &mut impl Io, state: u32) {
 fn set_state(io: &mut impl Io, state: u32) {
     io.store(Word::State, state);
     io.write(STATUS_WORD, state);
-}
-
-/// After step 10, for the report only: (PCIE_INTE, IRQ53 enabled, vector 53 is `handler`).
-pub(crate) fn diagnose(io: &mut impl Io, handler: usize) -> (u32, bool, bool) {
-    let inte = io.read(PCIE_INTE);
-    let enabled = io.read(ISER) & IRQ_BIT != 0;
-    let vector = io.read(VTOR) as usize + 4 * (16 + IRQ);
-    (inte, enabled, io.read(vector) as usize == handler)
 }
 
 fn handle(io: &mut impl Io) {
@@ -226,11 +260,23 @@ impl Io for Mmio {
 
 unsafe extern "C" {
     fn __rp1_p0_PCIE_OUT();
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    fn __rp1_default_irq();
 }
 
-/// The address vector 53 must hold.
-pub(crate) fn handler() -> usize {
-    __rp1_p0_PCIE_OUT as *const () as usize
+impl Handlers {
+    /// The handlers as linked into this image.
+    pub(crate) fn linked() -> Self {
+        #[cfg(all(target_arch = "arm", target_os = "none"))]
+        let default = __rp1_default_irq as *const () as usize;
+        // Host builds have no vector table; nothing runs the real step 10 there.
+        #[cfg(not(all(target_arch = "arm", target_os = "none")))]
+        let default = 0;
+        Self {
+            detector: __rp1_p0_PCIE_OUT as *const () as usize,
+            default,
+        }
+    }
 }
 
 #[rp1_rt::interrupt(proc0, __platform, sram)]

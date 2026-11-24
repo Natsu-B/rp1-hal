@@ -36,7 +36,7 @@ pub(crate) mod perstn;
 
 pub use crate::cold::ColdError;
 pub use irq::{ScmiState, ScmiStats, scmi_state};
-pub use perstn::{LostDetail, PcieState, pcie_state};
+pub use perstn::{DetectorReport, LostDetail, PcieState, pcie_state};
 
 /// The platform resource: one per image, issued to proc0 only. [`Token::init`] consumes it, so
 /// the bring-up runs once.
@@ -96,25 +96,6 @@ pub struct InitReport {
     pub detector: DetectorReport,
 }
 
-/// What step 10 read while arming the PERSTn detector, and its result.
-///
-/// On a normal boot: `inte` 0x2, `intf` 0, bit 1 of `intr_at_arm` 0, `nvic53` and `vec53_ok`
-/// true. The other bits of `intr_at_arm` are latches IRQ53 does not look at (bits 0, 3 and 6
-/// stay set after the bring-up, HW 2026-11): print them, do not judge them.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DetectorReport {
-    /// PCIE_INTE read after arming: 0 if arming failed or IRQ53 already saw a reset.
-    pub inte: u32,
-    /// PCIE_INTF at arming. Nonzero leaves the detector off.
-    pub intf: u32,
-    /// PCIE_INTR at arming; 0 if `intf` was nonzero (not read).
-    pub intr_at_arm: u32,
-    /// IRQ53 enabled after arming.
-    pub nvic53: bool,
-    /// proc0 vector 53 is the detector's handler, not the default one.
-    pub vec53_ok: bool,
-}
-
 /// The step that failed. Steps after it did not run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
@@ -168,14 +149,15 @@ impl Token {
 
 /// `warm=0 ltssm_off=1 link_before_scmi=0 perstn_wait_us=… link_wait_us=… monitor2=0x…
 /// clocks_programmed=1 inte=0x2 intf=0x0 intr_at_arm_bit1=0 nvic53=1 vec53_ok=1
-/// intr_at_arm=0x…`: one line of `key=value` fields, flags as 0 / 1.
+/// intr_at_arm=0x…`: one line of `key=value` fields, flags as 0 / 1. `intr_at_arm_bit1` is the
+/// PERSTn edge bit, `-` when PCIE_INTR was not read (`intf` nonzero).
 impl fmt::Display for InitReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let d = &self.detector;
         write!(
             f,
             "warm={} ltssm_off={} link_before_scmi={} perstn_wait_us={} link_wait_us={} monitor2=0x{:x} clocks_programmed={} \
-             inte=0x{:x} intf=0x{:x} intr_at_arm_bit1={} nvic53={} vec53_ok={} intr_at_arm=0x{:x}",
+             inte=0x{:x} intf=0x{:x} intr_at_arm_bit1=",
             u8::from(self.monitor2_at_start & cold::LINK != 0),
             u8::from(self.ltssm_off),
             u8::from(self.link_before_scmi),
@@ -185,7 +167,16 @@ impl fmt::Display for InitReport {
             u8::from(self.clocks_programmed),
             d.inte,
             d.intf,
-            (d.intr_at_arm >> 1) & 1,
+        )?;
+        // `write_str`, not `{}`: a `str` argument links the formatter's padding code (~0.7 KiB).
+        f.write_str(match d.perstn_edge_at_arm() {
+            Some(false) => "0",
+            Some(true) => "1",
+            None => "-",
+        })?;
+        write!(
+            f,
+            " nvic53={} vec53_ok={} intr_at_arm=0x{:x}",
             u8::from(d.nvic53),
             u8::from(d.vec53_ok),
             d.intr_at_arm,
@@ -299,16 +290,7 @@ impl Steps for Rp1 {
         irq::enable(&mut irq::Mmio)
     }
     fn arm_perstn(&mut self) -> DetectorReport {
-        let io = &mut perstn::Mmio;
-        let armed = perstn::arm(io);
-        let (inte, nvic53, vec53_ok) = perstn::diagnose(io, perstn::handler());
-        DetectorReport {
-            inte,
-            intf: armed.intf,
-            intr_at_arm: armed.intr_at_arm,
-            nvic53,
-            vec53_ok,
-        }
+        perstn::arm(&mut perstn::Mmio, perstn::Handlers::linked())
     }
 }
 
@@ -323,11 +305,11 @@ mod tests {
     const PERSTN_US: u32 = 3_062_273;
     const LINK_US: u32 = 8_204;
     const UP: u32 = 0x001b_0000 | LINK;
-    /// A normal arming: bits 0, 3 and 6 of PCIE_INTR still latched from the bring-up.
+    /// A normal arming, with the PCIE_INTR latches expected after the bring-up.
     const ARMED: DetectorReport = DetectorReport {
         inte: 0x2,
         intf: 0,
-        intr_at_arm: 0x49,
+        intr_at_arm: perstn::fake::BRING_UP_LATCHES,
         nvic53: true,
         vec53_ok: true,
     };
@@ -622,7 +604,7 @@ mod tests {
             ..report
         };
         assert!(format!("{arm_fault}").ends_with(
-            " inte=0x0 intf=0x4 intr_at_arm_bit1=0 nvic53=0 vec53_ok=1 intr_at_arm=0x0"
+            " inte=0x0 intf=0x4 intr_at_arm_bit1=- nvic53=0 vec53_ok=1 intr_at_arm=0x0"
         ));
     }
 

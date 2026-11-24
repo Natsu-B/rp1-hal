@@ -22,8 +22,12 @@ pub(crate) const BRING_UP_INTE: u32 = 0x4b;
 pub(crate) const BRING_UP_LATCHES: u32 = 0x49;
 /// An address the thread workload reads: anything the detector does not touch.
 const THREAD_REGISTER: usize = 0x4001_0000;
-const VECTORS: usize = 0x2000_0000;
-pub(crate) const HANDLER: usize = 0x2000_1235;
+pub(crate) const VECTORS: usize = 0x2000_0000;
+pub(crate) const VECTOR53: usize = VECTORS + 4 * (16 + IRQ);
+pub(crate) const HANDLERS: Handlers = Handlers {
+    detector: 0x2000_1235,
+    default: 0x2000_0f01,
+};
 const MAX_MMIO_PER_ENTRY: usize = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,7 +113,7 @@ impl Fake {
             (SHM_STATUS, 1),
             (STATUS_WORD, status::PLAT_PCIE_INITIALIZING),
             (VTOR, VECTORS as u32),
-            (VECTORS + 4 * (16 + IRQ), HANDLER as u32),
+            (VECTOR53, HANDLERS.detector as u32),
         ];
         Self {
             registers: registers.into_iter().collect(),
@@ -230,11 +234,11 @@ impl Fake {
         value
     }
     /// Arms (step 10) and takes any IRQ53 that is due before init returns.
-    pub(crate) fn arm(&mut self) -> Armed {
-        let armed = arm(self);
+    pub(crate) fn arm(&mut self) -> DetectorReport {
+        let report = arm(self, HANDLERS);
         self.boundary();
         self.context = Context::Thread;
-        armed
+        report
     }
     /// The application's thread: `n` reads of a register the detector does not use. An event
     /// injected at a boundary is delivered at that boundary.
