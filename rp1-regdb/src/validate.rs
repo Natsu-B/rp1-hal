@@ -502,6 +502,17 @@ fn validate_atomic(
             "{context}: [ATOMIC_PLAIN_WRITE_ONLY] atomic aliases require plain register write behavior"
         ));
     }
+    let has_typed = exposures
+        .iter()
+        .any(|(_, exposure, _)| *exposure == AtomicExposure::Typed);
+    let has_w1c_field = register.fields.iter().any(|field| {
+        field.effective_write_behavior(register) == FieldWriteBehavior::WriteOneToClear
+    });
+    if has_typed && has_w1c_field {
+        errors.push(format!(
+            "{context}: [TYPED_ATOMIC_W1C_FORBIDDEN] typed atomic aliases are forbidden on a register with write-one-to-clear fields"
+        ));
+    }
     match atomic.kind {
         AtomicKind::None => errors.push(format!(
             "{context}: [ATOMIC_KIND_REQUIRED] atomic operation requires a kind"

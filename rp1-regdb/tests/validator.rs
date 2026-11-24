@@ -181,6 +181,21 @@ fn rejects_modify_on_mixed_semantics_register() {
 }
 
 #[test]
+fn rejects_modify_and_typed_atomic_on_register_with_w1c_flags() {
+    let mut db = database();
+    let intr = register_mut(&mut db, "PWM0", "INTR");
+    intr.hardware_write = WriteBehavior::Plain;
+    intr.api.modify = ApiExposure::Public;
+    intr.atomic.kind = AtomicKind::Rp1Native;
+    intr.atomic.set = AtomicExposure::Typed;
+
+    let errors = validate(&db).unwrap_err().join("\n");
+    assert!(errors.contains("PWM0 register INTR"));
+    assert!(errors.contains("MODIFY_MIXED_SEMANTICS"));
+    assert!(errors.contains("TYPED_ATOMIC_W1C_FORBIDDEN"));
+}
+
+#[test]
 fn watchdog_pause_fields_keep_debug_source_bit_mapping() {
     let db = database();
     let watchdog = db

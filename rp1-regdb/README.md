@@ -156,6 +156,8 @@ Custom windows name each view. PCIe MSI-X uses SET `+0x0800` and CLEAR
 
 Atomic operations are rejected for command, FIFO, W1C/W1S, self-clearing,
 state-machine-only, unknown, OTP/eFuse, and other unsafe registers.
+Typed atomic writers are also rejected on a plain register that contains any
+write-one-to-clear field, so an alias write cannot touch pending flags.
 
 WATCHDOG offsets `0x0c..0x1c` are Boot ROM proc0/proc1 start-service state,
 not generic scratch memory. They expose no safe writer, modify, reset, typed
