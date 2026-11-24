@@ -279,7 +279,7 @@ fn marker_growth_fits_the_final_dtb_window_and_oversize_is_refused() {
 }
 
 /// A real merged board DTB (firmware DTB + config.txt overlays + `.rp1.dtbo`), when given
-/// (not committed; the committed stock-tree cases are in `rp1-build/tests/stock_dtb.rs`).
+/// (see `rp1-build/tests/stock_dtb.rs` for tests that start from an unmodified board DTB).
 /// rp1boot must apply its plan, print one marker per disabled node and the count, and keep the
 /// final DTB in the window. `RP1BOOT_TEST_EXPECT_DISABLED` (comma-separated node paths), when
 /// set, must be exactly the disabled set.

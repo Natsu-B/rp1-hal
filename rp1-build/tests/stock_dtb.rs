@@ -1,31 +1,45 @@
-//! STATIC: the boot-time enforcement on the real CM5 Lite board tree (a reduced copy of the stock
-//! DTB, `fixtures/cm5l-rp1.dts`) with the lab firmware's declaration, and config.txt overlays
-//! written as the equivalents of the stock `uart1-pi5`, `uart3-pi5` and `gpio-led` overlays.
+//! STATIC: predict boot-time ownership with the lab firmware's declaration and test overlays.
+//! The default tests use a synthetic tree. Set `RP1_TEST_DTB` to an unmodified
+//! `bcm2712-rpi-cm5l-cm5io.dtb` to also check the stock CM5 Lite board tree.
 use rp1_build::{declaration, generate, metadata::TypeInfo, overlay};
-use rp1_dt::check::Plan;
+use rp1_dt::check::{Disable, Plan};
 use std::{fs, path::Path, process::Command};
 
 const BOARD: &str = include_str!("fixtures/cm5l-rp1.dts");
-const RP1: &str = "/axi/pcie@1000120000/rp1";
+const GPIOMEM: &str = "/pcie/rp1/gpiomem@c0400d0000";
+const UART3: &str = "/pcie/rp1/serial3";
 /// `dtoverlay=uart1-pi5`: Linux UART1 on GPIO 0/1 (the lab's config.txt).
 const UART1_PI5: &str = "&uart1 { status = \"okay\"; pinctrl-0 = <&uart1_pins>; };";
 /// `dtoverlay=uart3-pi5`: UART3 on GPIO 8/9 (SPI0 CS and MISO in the lab firmware).
 const UART3_PI5: &str = "&uart3 { status = \"okay\"; pinctrl-0 = <&uart3_pins>; };";
-/// `dtoverlay=gpio-led,gpio=22`: a pin group under `gpio` and a gpio-leds node using GPIO22.
-const GPIO_LED_22: &str = "&gpio { led_pins: led_pins@22 { brcm,pins = <22>; brcm,function = <1>; brcm,pull = <0>; }; };
-&{/} { leds@0 { compatible = \"gpio-leds\"; pinctrl-names = \"default\"; pinctrl-0 = <&led_pins>; status = \"okay\";
-    led { label = \"myled1\"; gpios = <&gpio 22 0>; linux,default-trigger = \"none\"; }; }; };";
+/// The LED's parent configures GPIO22 and its child uses GPIO22 as an output.
+const GPIO_LED_22: &str = r#"
+&rp1_gpio {
+    indicator_pin: indicator-pin {
+        groups = "gpio22";
+        function = "gpio";
+    };
+};
 
-fn dtc(dir: &Path, name: &str, source: &str, symbols: bool) -> Vec<u8> {
+&{/} {
+    ownership-indicators {
+        pinctrl-0 = <&indicator_pin>;
+        pinctrl-names = "default";
+        compatible = "gpio-leds";
+
+        conflict {
+            gpios = <&rp1_gpio 22 0>;
+        };
+    };
+};
+"#;
+
+fn dtc(dir: &Path, name: &str, source: &str) -> Vec<u8> {
     let dts = dir.join(format!("{name}.dts"));
     let out = dir.join(format!("{name}.dtb"));
     fs::write(&dts, source).unwrap();
-    let mut cmd = Command::new("dtc");
-    if symbols {
-        cmd.arg("-@");
-    }
-    let o = cmd
-        .args(["-q", "-I", "dts", "-O", "dtb", "-o"])
+    let o = Command::new("dtc")
+        .args(["-@", "-q", "-I", "dts", "-O", "dtb", "-o"])
         .arg(&out)
         .arg(&dts)
         .output()
@@ -36,15 +50,14 @@ fn dtc(dir: &Path, name: &str, source: &str, symbols: bool) -> Vec<u8> {
 
 /// The firmware DTB after the given config.txt overlays, and the lab firmware's `.rp1.dtbo` and
 /// note. Then what rp1boot would do.
-fn predict(overlays: &[&str]) -> overlay::BootPrediction {
+fn predict(board: &[u8], overlays: &[&str]) -> overlay::BootPrediction {
     let tmp = tempfile::tempdir().unwrap();
-    let mut base = rp1_dt::fdt::Fdt::parse(&dtc(tmp.path(), "board", BOARD, false)).unwrap();
+    let mut base = rp1_dt::fdt::Fdt::parse(board).unwrap();
     for (i, source) in overlays.iter().enumerate() {
         let dtbo = dtc(
             tmp.path(),
             &format!("config{i}"),
             &format!("/dts-v1/;\n/plugin/;\n{source}\n"),
-            true,
         );
         rp1_dt::overlay::apply(&mut base, &dtbo).unwrap();
     }
@@ -58,97 +71,101 @@ fn predict(overlays: &[&str]) -> overlay::BootPrediction {
         ("Wide256".into(), TypeInfo::of::<[u32; 64]>()),
     ]);
     let a = generate(&name, &version, &d, [0; 32], [0; 20]).unwrap();
-    let app = dtc(tmp.path(), "app", &a.dts, true);
+    let app = dtc(tmp.path(), "app", &a.dts);
     overlay::predict_boot(&base.to_bytes(), &app, &a.note).unwrap()
 }
 
-fn disabled(p: &overlay::BootPrediction) -> Vec<(String, bool, String)> {
-    let Plan::Disable(nodes) = &p.plan else {
+fn fixture() -> Vec<u8> {
+    let tmp = tempfile::tempdir().unwrap();
+    dtc(tmp.path(), "board", BOARD)
+}
+
+fn disabled(p: overlay::BootPrediction) -> Vec<Disable> {
+    let Plan::Disable(nodes) = p.plan else {
         panic!("unexpected refusal: {:?}", p.plan);
     };
     nodes
-        .iter()
-        .map(|n| (n.path.clone(), n.policy_only, n.reasons.join("; ")))
-        .collect()
+}
+
+fn assert_gpiomem_only(prediction: overlay::BootPrediction, path: &str) {
+    let nodes = disabled(prediction);
+    assert_eq!(nodes.len(), 1, "{nodes:?}");
+    assert_eq!(nodes[0].path, path);
+    assert!(nodes[0].policy_only, "{nodes:?}");
+}
+
+fn assert_uart3_conflict(prediction: overlay::BootPrediction, uart_path: &str, gpiomem_path: &str) {
+    let nodes = disabled(prediction);
+    let [uart3, gpiomem] = nodes.as_slice() else {
+        panic!("expected UART3 and gpiomem disables: {nodes:?}");
+    };
+    assert_eq!(uart3.path, uart_path);
+    assert_eq!(gpiomem.path, gpiomem_path);
+    assert!(!uart3.policy_only && gpiomem.policy_only, "{nodes:?}");
+    for pin in ["GPIO8", "GPIO9"] {
+        assert!(uart3.reasons.iter().any(|r| r.contains(pin)), "{uart3:?}");
+    }
 }
 
 #[test]
 fn lab_config_disables_only_gpiomem_by_policy() {
-    let nodes = disabled(&predict(&[UART1_PI5]));
-    assert_eq!(nodes.len(), 1, "{nodes:?}");
-    assert_eq!(nodes[0].0, format!("{RP1}/gpiomem@d0000"));
-    assert!(nodes[0].1, "{nodes:?}");
+    assert_gpiomem_only(predict(&fixture(), &[UART1_PI5]), GPIOMEM);
 }
 
 #[test]
-fn uart3_pi5_disables_serial_3c000_and_gpiomem() {
-    let nodes = disabled(&predict(&[UART1_PI5, UART3_PI5]));
-    let paths: Vec<_> = nodes.iter().map(|n| n.0.as_str()).collect();
-    assert_eq!(
-        paths,
-        [
-            format!("{RP1}/serial@3c000"),
-            format!("{RP1}/gpiomem@d0000")
-        ],
-        "{nodes:?}"
-    );
-    let uart3 = &nodes[0];
-    assert!(!uart3.1);
-    assert!(
-        uart3.2.contains("GPIO8") && uart3.2.contains("GPIO9"),
-        "{uart3:?}"
-    );
+fn uart3_pi5_disables_uart3_and_gpiomem() {
+    assert_uart3_conflict(predict(&fixture(), &[UART1_PI5, UART3_PI5]), UART3, GPIOMEM);
 }
 
 #[test]
 fn gpio_led_on_an_rp1_pin_disables_the_leds_node_its_led_and_gpiomem() {
-    let nodes = disabled(&predict(&[UART1_PI5, GPIO_LED_22]));
-    let paths: Vec<_> = nodes.iter().map(|n| n.0.as_str()).collect();
+    let nodes = disabled(predict(&fixture(), &[UART1_PI5, GPIO_LED_22]));
+    let paths: Vec<_> = nodes.iter().map(|n| n.path.as_str()).collect();
     assert_eq!(
         paths,
-        [&format!("{RP1}/gpiomem@d0000"), "/leds@0", "/leds@0/led"],
+        [
+            GPIOMEM,
+            "/ownership-indicators",
+            "/ownership-indicators/conflict"
+        ],
         "{nodes:?}"
     );
-    assert!(nodes[0].1, "{nodes:?}");
+    assert!(nodes[0].policy_only, "{nodes:?}");
     assert!(
-        nodes[1].2.contains("configures RP1-owned GPIO22"),
+        nodes[1]
+            .reasons
+            .iter()
+            .any(|r| r.contains("configures RP1-owned GPIO22")),
         "{nodes:?}"
     );
-    assert!(nodes[2].2.contains("gpios uses GPIO22"), "{nodes:?}");
+    assert!(
+        nodes[2]
+            .reasons
+            .iter()
+            .any(|r| r.contains("gpios uses GPIO22")),
+        "{nodes:?}"
+    );
 }
 
 #[test]
 fn consumers_under_a_disabled_parent_are_not_disabled() {
-    // rp1_i2c0 (i2c@70000) is disabled in the board DTB; its child's reset GPIO is RP1's.
-    let nodes = disabled(&predict(&[
-        UART1_PI5,
-        "&rp1_i2c0 { status = \"disabled\"; dev@50 { reg = <0x50>; reset-gpios = <&rp1_gpio 22 0>; pinctrl-0 = <&uart3_pins>; }; };",
-    ]));
-    assert_eq!(nodes.len(), 1, "{nodes:?}");
-    assert!(nodes[0].1, "{nodes:?}");
+    let child =
+        "&rp1_i2c0 { test-child { reset-gpios = <&rp1_gpio 22 0>; pinctrl-0 = <&uart3_pins>; }; };";
+    assert_gpiomem_only(predict(&fixture(), &[UART1_PI5, child]), GPIOMEM);
 }
 
 #[test]
-fn bcm2712_pinctrl_groups_named_gpio_n_are_not_rp1_pins() {
-    // spi10_gpio2 is a BCM2712 group on its GPIO 2..4: same names, other controller.
-    let nodes = disabled(&predict(&[
-        UART1_PI5,
-        "&{/} { bcm-user { pinctrl-0 = <&spi10_gpio2>; status = \"okay\"; }; };",
-    ]));
-    assert_eq!(nodes.len(), 1, "{nodes:?}");
-    assert!(nodes[0].1, "{nodes:?}");
+fn pinctrl_groups_on_another_controller_are_not_rp1_pins() {
+    let consumer = "&{/} { soc-user { pinctrl-0 = <&soc_gpio2>; }; };";
+    assert_gpiomem_only(predict(&fixture(), &[UART1_PI5, consumer]), GPIOMEM);
 }
 
 #[test]
 fn unresolvable_console_does_not_stop_a_gpiomem_only_boot() {
-    // Review 12 (Claude L3): the stock tree always has gpiomem@d0000, so the default policy
-    // always plans one disable. An unknown console stops the boot only next to a conflict.
+    let board = fixture();
     let console = "&{/chosen} { stdout-path = \"serial9:115200n8\"; };";
-    let nodes = disabled(&predict(&[UART1_PI5, console]));
-    assert_eq!(nodes.len(), 1, "{nodes:?}");
-    assert_eq!(nodes[0].0, format!("{RP1}/gpiomem@d0000"));
-    assert!(nodes[0].1, "{nodes:?}");
-    let p = predict(&[UART1_PI5, UART3_PI5, console]);
+    assert_gpiomem_only(predict(&board, &[UART1_PI5, console]), GPIOMEM);
+    let p = predict(&board, &[UART1_PI5, UART3_PI5, console]);
     let Plan::Refuse(why) = &p.plan else {
         panic!("expected refusal, got {:?}", p.plan);
     };
@@ -157,4 +174,20 @@ fn unresolvable_console_does_not_stop_a_gpiomem_only_boot() {
             .any(|w| w.contains("cannot tell whether a disable would remove the Linux console")),
         "{why:?}"
     );
+}
+
+#[test]
+fn real_stock_dtb() {
+    let Some(path) = std::env::var_os("RP1_TEST_DTB") else {
+        eprintln!("RP1_TEST_DTB unset: skipping stock CM5 Lite DTB checks");
+        return;
+    };
+    let board = fs::read(&path).unwrap_or_else(|err| panic!("reading stock DTB {path:?}: {err}"));
+    let gpiomem = "/axi/pcie@1000120000/rp1/gpiomem@d0000";
+    let uart3 = "/axi/pcie@1000120000/rp1/serial@3c000";
+    let bcm_consumer = "&{/} { soc-user { pinctrl-0 = <&spi10_gpio2>; }; };";
+
+    assert_gpiomem_only(predict(&board, &[UART1_PI5]), gpiomem);
+    assert_uart3_conflict(predict(&board, &[UART1_PI5, UART3_PI5]), uart3, gpiomem);
+    assert_gpiomem_only(predict(&board, &[UART1_PI5, bcm_consumer]), gpiomem);
 }
