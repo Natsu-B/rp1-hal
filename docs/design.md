@@ -89,7 +89,7 @@ PCIe を 2〜200 µs 空けても書き・読みの時間は変わらない（AS
 `rp1-isram-auto.x`（`*(.text.<symbol>)` の並び）にして、`RP1_ISRAM_PLAN` 経由で rp1-build が `.isram` 内に `INCLUDE` させて 2 段目をリンクする。
 最後に計画した関数がすべて ISRAM にあることと予算を検査する。`cargo rp1 isram-plan <elf>` で計画だけ表示できる。
 - 根: `.isram` にある関数（手で付けたもの）と、両ベクタ表の例外ハンドラ。
-- 止める所（共有 SRAM に残す）: `.text.cold`、名前が panic / fmt / `_fail` / `failed` のもの、リセット経路が ISRAM のコピー前に使う関数（`__rp1_reset*`、`__rp1_initialize` から各コアの main までの到達集合、例: `memcpy`）。
+- 止める所（共有 SRAM に残す）: `.text.cold`、名前が panic / fmt / `_fail` / `failed` のもの、リセット経路が ISRAM のコピー前に使う関数（`__rp1_reset*`、`__rp1_initialize` から各コアの main までの到達集合、例: `memcpy`）、別の記号と同じアドレスのもの（LLVM が同一の関数をまとめたもの。例: `loop { wfe }` だけの main と `__rp1_default`。入力セクションの名前はどちらか一方で、ELF からは分からない）。
 - 間接呼び出し（関数ポインタ、`dyn`）は見えない。共有 SRAM に残るだけで正しさには影響しない（両コアの ISRAM は同じ内容）。
 - link.x は `.isram` を `.text` より前に書く（入力セクションは最初に一致した規則へ行く）。`.text` は別の PT_LOAD（`code`）にして、`.isram` のロード位置と重ねない。
 - STATIC: rp1-proto の feature `isram` を切ったビルドで、ring の 4 関数（1070 B）が自動で ISRAM に入り、合計は手で付けた場合とほぼ同じ（2344 B / 2336 B）。

@@ -106,6 +106,9 @@ fn print_plan(plan: &cargo_rp1::isram::Plan) {
     for name in &plan.pre_isram {
         println!("  stays (runs before ISRAM is copied) {name}");
     }
+    for name in &plan.merged {
+        println!("  stays (merged with another symbol) {name}");
+    }
     println!(
         "STATIC: ISRAM plan {} functions, {} B now + {} B planned = {}/{} B",
         plan.functions.len(),

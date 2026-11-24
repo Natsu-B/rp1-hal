@@ -6,7 +6,10 @@
 //! - boundaries: `#[cold]` functions (`.text.cold`) and panic / formatting paths. They stay in
 //!   shared SRAM and the search does not continue through them;
 //! - pre-ISRAM code: everything the reset path runs before the per-core ISRAM copy exists
-//!   (`__rp1_reset*`, `__rp1_initialize` and their callees up to the core entry points).
+//!   (`__rp1_reset*`, `__rp1_initialize` and their callees up to the core entry points);
+//! - merged functions: a symbol that shares its address with another one (LLVM merges
+//!   identical functions, e.g. a `loop { wfe }` entry with `__rp1_default`). Only one of the
+//!   names has a `.text.<symbol>` input section and the ELF does not say which.
 //!
 //! Indirect calls (function pointers, `dyn`) are not visible in the ELF and stay where they
 //! are; that only costs speed, never correctness, because both cores carry the same ISRAM
@@ -37,6 +40,8 @@ pub struct Function {
     pub address: u64,
     pub size: u64,
     pub section: String,
+    /// Another function symbol has the same address.
+    pub merged: bool,
 }
 
 #[derive(Debug, Default)]
@@ -51,6 +56,8 @@ pub struct Plan {
     pub boundaries: BTreeSet<String>,
     /// Reachable functions left in shared SRAM because the reset path needs them first.
     pub pre_isram: BTreeSet<String>,
+    /// Reachable functions left in shared SRAM because they are merged with another symbol.
+    pub merged: BTreeSet<String>,
 }
 
 impl Plan {
@@ -176,6 +183,10 @@ pub fn plan_from(
                 plan.pre_isram.insert(n);
                 continue;
             }
+            if f.merged {
+                plan.merged.insert(n);
+                continue;
+            }
             if f.section != ".text" {
                 continue;
             }
@@ -226,8 +237,16 @@ pub fn plan(path: &Path, objdump: &Path) -> Result<Plan> {
                 address: s.address() & !1,
                 size: s.size(),
                 section,
+                merged: false,
             },
         );
+    }
+    let mut names_at = BTreeMap::<u64, usize>::new();
+    for f in functions.values() {
+        *names_at.entry(f.address).or_default() += 1;
+    }
+    for f in functions.values_mut() {
+        f.merged = names_at[&f.address] > 1;
     }
     let isram = file.section_by_name(".isram").ok_or("missing .isram")?;
     let vectors = file.section_by_name(".vectors").ok_or("missing .vectors")?;
@@ -331,6 +350,7 @@ mod tests {
             address,
             size,
             section: section.into(),
+            merged: false,
         }
     }
 
@@ -374,6 +394,35 @@ mod tests {
         assert_eq!(
             plan.fragment().lines().skip(1).collect::<Vec<_>>(),
             ["    *(.text.helper)", "    *(.text.leaf)"]
+        );
+    }
+
+    /// A handler merged with another symbol is not planned: its input section may be named
+    /// after the other one, so the second link would leave it where it is.
+    #[test]
+    fn merged_functions_stay() {
+        let dump = "
+20000100 <__rp1_default>:
+20000100:\tbl\t20000200 <leaf>
+";
+        let merged = Function {
+            merged: true,
+            ..f(0x2000_0100, 8, ".text")
+        };
+        let functions: BTreeMap<String, Function> = [
+            ("__rp1_default", merged.clone()),
+            ("__rp1_proc1_main", merged),
+            ("leaf", f(0x2000_0200, 2, ".text")),
+        ]
+        .into_iter()
+        .map(|(n, f)| (n.to_string(), f))
+        .collect();
+        let handlers = BTreeSet::from(["__rp1_proc1_main".to_string()]);
+        let plan = plan_from(&functions, &call_graph(dump), &handlers, 0);
+        assert!(plan.functions.is_empty());
+        assert_eq!(
+            plan.merged.iter().collect::<Vec<_>>(),
+            [&"__rp1_proc1_main".to_string()]
         );
     }
 }
