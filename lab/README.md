@@ -391,22 +391,26 @@ panic handlers are planned to give way to a platform panic handler (HYP); that i
 
 `plat-verify.py` takes the ELF and the UART captures of one boot of that ELF, records their
 sha256, runs `stack-paths --size` (through `cargo run` in this repository, or `--stack-paths
-EXE` / `STACK_PATHS`) and prints one row each, PASS, FAIL or INCOMPLETE:
+EXE` / `STACK_PATHS`), records which stack-paths ran (the executable's sha256, or the
+repository's commit and a dirty flag) and prints one row each, PASS, FAIL or INCOMPLETE:
 
 ```sh
 python3 lab/plat-verify.py --elf target/thumbv7m-none-eabi/release/irq-proof \
     --uart0 UART0_LOG --uart10 UART10_LOG
 # stack_static=PASS s_plat=572 ...       static bound (stack-paths)
-# stack_watermark_free=PASS min=N n=N need=512   observed, separate row
+# stack_watermark_free=PASS p0_min=N p1_min=N n=N need=512 stack0=N   observed, separate row
 # size=PASS image=N/49152 ...            every budget has room left
 # plat_verify=PASS|FAIL|INCOMPLETE
 ```
 
 `stack_watermark_free` is the smallest untouched stack space the firmware reported after its
-load: `IRQ_STACK p0_free= p1_free=` and `p1 shm cmd= ... stack_free=` (irq-proof),
-`RINGDMA_STACK free_bytes=` (ring-dma). It is an observation, not a bound or an overflow
-guard. Give the capture of one boot only; images without watermark lines are INCOMPLETE on
-this row. A row without evidence (no ELF, no capture, no line, the tool did not run) is
+load, per core: proc0 from `IRQ_STACK p0_free= p0_size=`, proc1 from `p1_free=` and
+`p1 shm cmd= ... stack_free=` (irq-proof) or `RINGDMA_STACK free_bytes=` (ring-dma). It is an
+observation, not a bound or an overflow guard. The row is about proc0's headroom with the
+platform handlers on top, so it needs a proc0 value and its size: proc1 lines alone (ring-dma,
+shm-firmware) are INCOMPLETE. A `p0_size=` or `p1_size=` that differs from the ELF's `stack0`
+or `stack1` is FAIL `reason=other-image`: the capture is of another build. Give the capture of
+one boot only. A row without evidence (no ELF, no capture, no line, the tool did not run) is
 INCOMPLETE, never PASS. Exit status 0 = PASS, 1 = FAIL, 3 = INCOMPLETE. Host tests:
 `python3 lab/test_plat_verify.py`. HW 未検証: no boot of these images has been checked with
 `plat-verify` yet.

@@ -55,15 +55,34 @@ class Rows(unittest.TestCase):
         self.assertEqual(v.stack_row(tool() + STACK_PASS + "\n", 0)[0], v.INCOMPLETE)
 
     def test_stack_watermark_free(self):
-        self.assertEqual(v.watermark_row([UART0, None]), (v.PASS, "min=600 n=4 need=512"))
-        self.assertEqual(v.watermark_row([UART0.replace("free_bytes=600", "free_bytes=448"), ""])[0],
-                         v.FAIL)
-        self.assertEqual(v.watermark_row([UART0.replace("p0_free=1320", "p0_free=512")])[0], v.PASS)
-        self.assertEqual(v.watermark_row([UART0.replace("p0_free=1320", "p0_free=511")])[0], v.FAIL)
-        self.assertEqual(v.watermark_row([None, None])[0], v.INCOMPLETE)
-        self.assertEqual(v.watermark_row(["PLAT_INIT ok=1\n", "Linux version\n"])[0], v.INCOMPLETE)
+        stacks = (2816, 2048)
+        row = lambda text: v.watermark_row([text, None], stacks)
+        self.assertEqual(row(UART0),
+                         (v.PASS, "p0_min=1320 p1_min=600 n=4 need=512 stack0=2816"))
+        self.assertEqual(row(UART0.replace("free_bytes=600", "free_bytes=448"))[0], v.FAIL)
+        self.assertEqual(row(UART0.replace("p0_free=1320", "p0_free=512"))[0], v.PASS)
+        self.assertEqual(row(UART0.replace("p0_free=1320", "p0_free=511"))[0], v.FAIL)
+        self.assertEqual(v.watermark_row([None, None], stacks)[0], v.INCOMPLETE)
+        self.assertEqual(v.watermark_row(["PLAT_INIT ok=1\n", "Linux version\n"], stacks)[0],
+                         v.INCOMPLETE)
         # A size field of a watermark line is not a free value.
-        self.assertEqual(v.watermark_row(["IRQ_STACK p0_size=100 p1_size=100\n"])[0], v.INCOMPLETE)
+        self.assertEqual(row("IRQ_STACK p0_size=100 p1_size=100\n")[0], v.INCOMPLETE)
+        # proc1 lines alone say nothing about proc0's headroom.
+        proc1 = "".join(l for l in UART0.splitlines(True) if "IRQ_STACK" not in l)
+        self.assertEqual(row(proc1), (v.INCOMPLETE, "no proc0 watermark (p0_free=), proc1 n=2"))
+        # proc0's free value without its size cannot be tied to the ELF.
+        self.assertEqual(row(UART0.replace(" p0_size=2816", ""))[0], v.INCOMPLETE)
+        self.assertEqual(v.watermark_row([UART0], None)[0], v.INCOMPLETE)
+        # A capture of another build (another stack size) fails.
+        self.assertEqual(row(UART0.replace("p0_size=2816", "p0_size=2048")),
+                         (v.FAIL, "reason=other-image p0_size=2048 stack0=2816"))
+        self.assertEqual(row(UART0.replace("p1_size=2048", "p1_size=6144"))[0], v.FAIL)
+        self.assertEqual(row(UART0 + UART0.replace("p0_size=2816", "p0_size=2048"))[0], v.FAIL)
+
+    def test_elf_stacks(self):
+        self.assertEqual(v.elf_stacks(tool()), (2816, 2048))
+        self.assertIsNone(v.elf_stacks(tool(budget="")))
+        self.assertIsNone(v.elf_stacks(None))
 
     def test_size(self):
         self.assertEqual(v.size_row(tool())[0], v.PASS)
@@ -104,7 +123,16 @@ class Main(unittest.TestCase):
         code, out = self.run_main(["--elf", "@fw.elf", "--uart0", "@uart0.log"])
         self.assertEqual(code, 0, out)
         self.assertIn("sha256=", out.splitlines()[0])
+        # The stack-paths that ran is named with its sha256.
+        self.assertRegex(out, r"input stack_paths=\S+stack-paths sha256=[0-9a-f]{64}\n")
         self.assertTrue(out.rstrip().endswith("plat_verify=PASS"), out)
+
+    def test_other_image_fails(self):
+        budget = BUDGET.replace("stack0=2816", "stack0=3072")
+        code, out = self.run_main(["--elf", "@fw.elf", "--uart0", "@uart0.log"],
+                                  output=tool(budget=budget))
+        self.assertEqual(code, 1, out)
+        self.assertIn("stack_watermark_free=FAIL reason=other-image", out)
 
     def test_missing_capture_is_incomplete(self):
         code, out = self.run_main(["--elf", "@fw.elf", "--uart0", "@nothing.log"])

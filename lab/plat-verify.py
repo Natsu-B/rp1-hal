@@ -11,13 +11,17 @@ on each line). It prints one line per row, each PASS, FAIL or INCOMPLETE:
 - `stack_static`: stack-paths' static bound of the proc0 platform handlers. PASS only with
   `stack_static=PASS` and exit status 0 (S_plat within proc0's platform stack margin).
 - `stack_watermark_free`: the smallest untouched stack space the firmware reported after its
-  load (`IRQ_STACK p0_free= p1_free=`, `stack_free=`, `RINGDMA_STACK free_bytes=`), observed,
-  not a bound. PASS if at least 512 B; no such line is INCOMPLETE.
+  load, observed, not a bound. proc0: `IRQ_STACK p0_free= p0_size=`; proc1: `p1_free=`,
+  `stack_free=`, `RINGDMA_STACK free_bytes=`. PASS if every value is at least 512 B. Without a
+  proc0 value with its size the row is INCOMPLETE (the row is about proc0's headroom with the
+  platform handlers on top). A `p0_size=`/`p1_size=` that differs from the ELF's
+  `stack0`/`stack1` is FAIL `reason=other-image` (the capture is of another build).
 - `size`: stack-paths' size budget line; PASS if every budget has room left.
 - `plat_verify`: PASS only if every row is PASS; FAIL if any row is FAIL; else INCOMPLETE.
 
 A row without evidence (no ELF, no capture, no line, a tool that did not run) is INCOMPLETE,
-never PASS. The ELF and every capture are named with their sha256 first.
+never PASS. The ELF and every capture are named with their sha256 first, and the stack-paths
+that ran with its sha256 (--stack-paths) or this repository's commit and dirty flag (cargo run).
 Exit 0 = PASS, 1 = FAIL, 3 = INCOMPLETE, 2 = usage error.
 """
 import argparse
@@ -32,12 +36,15 @@ MIN_STACK_FREE = 512
 PASS, FAIL, INCOMPLETE = "PASS", "FAIL", "INCOMPLETE"
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
-# Watermark lines of the lab firmware: (marker, field) pairs. A line counts when it has both.
+# Watermark lines of the lab firmware: (marker, core, field). A line counts when it has both.
 WATERMARKS = [
-    (re.compile(r"\bIRQ_STACK\b"), re.compile(r"\bp[01]_free=(\d+)")),
-    (re.compile(r"\bstack_free="), re.compile(r"\bstack_free=(\d+)")),
-    (re.compile(r"\bRINGDMA_STACK\b"), re.compile(r"\bfree_bytes=(\d+)")),
+    (re.compile(r"\bIRQ_STACK\b"), 0, re.compile(r"\bp0_free=(\d+)")),
+    (re.compile(r"\bIRQ_STACK\b"), 1, re.compile(r"\bp1_free=(\d+)")),
+    (re.compile(r"\bstack_free="), 1, re.compile(r"\bstack_free=(\d+)")),
+    (re.compile(r"\bRINGDMA_STACK\b"), 1, re.compile(r"\bfree_bytes=(\d+)")),
 ]
+# The stack size a watermark line was measured against, per core.
+SIZES = [re.compile(r"\bIRQ_STACK\b.*\bp0_size=(\d+)"), re.compile(r"\bIRQ_STACK\b.*\bp1_size=(\d+)")]
 FIELD = re.compile(r"\b([a-z][a-z0-9_]*)=(-?\d+)(?:/(\d+))?")
 
 
@@ -58,30 +65,61 @@ def stack_row(output, status):
     return INCOMPLETE, f"stack-paths exit={status}"
 
 
-def watermark_row(texts):
-    """`stack_watermark_free` from the captures (a list of texts; None: not given)."""
-    values = []
+def watermark_row(texts, stacks):
+    """`stack_watermark_free` from the captures (a list of texts; None: not given) and the ELF's
+    `(stack0, stack1)` from the size budget (None: unknown)."""
+    free, sizes = ([], []), (set(), set())
     for text in texts:
         for line in (text or "").splitlines():
-            for marker, field in WATERMARKS:
+            for marker, core, field in WATERMARKS:
                 if marker.search(line):
-                    values += [int(v) for v in field.findall(line)]
-    if not values:
-        return INCOMPLETE, "no watermark line"
-    low = min(values)
-    return (PASS if low >= MIN_STACK_FREE else FAIL), f"min={low} n={len(values)} need={MIN_STACK_FREE}"
+                    free[core].extend(int(v) for v in field.findall(line))
+            for core, size in enumerate(SIZES):
+                sizes[core].update(int(v) for v in size.findall(line))
+    if not free[0]:
+        return INCOMPLETE, f"no proc0 watermark (p0_free=), proc1 n={len(free[1])}"
+    if not sizes[0]:
+        return INCOMPLETE, "no proc0 stack size (p0_size=)"
+    if stacks is None:
+        return INCOMPLETE, "no ELF stack sizes to compare p0_size= with"
+    for core in (0, 1):
+        if sizes[core] - {stacks[core]}:
+            seen = ",".join(map(str, sorted(sizes[core])))
+            return FAIL, f"reason=other-image p{core}_size={seen} stack{core}={stacks[core]}"
+    low = [min(v) if v else None for v in free]
+    ok = all(v is None or v >= MIN_STACK_FREE for v in low)
+    p1 = "none" if low[1] is None else low[1]
+    detail = (f"p0_min={low[0]} p1_min={p1} n={len(free[0]) + len(free[1])} need={MIN_STACK_FREE} "
+              f"stack0={stacks[0]}")
+    return (PASS if ok else FAIL), detail
+
+
+def budget(output):
+    """The `size budget` line of `stack-paths --size` and its fields, or None."""
+    lines = [l for l in (output or "").splitlines() if l.startswith("size budget ")]
+    if len(lines) != 1:
+        return None
+    return lines[0], {k: int(v) for k, v, _ in FIELD.findall(lines[0])}
+
+
+def elf_stacks(output):
+    """`(stack0, stack1)` from the size budget line, or None."""
+    fields = (budget(output) or (None, {}))[1]
+    if "stack0" not in fields or "stack1" not in fields:
+        return None
+    return fields["stack0"], fields["stack1"]
 
 
 def size_row(output):
     """`size` from the `size budget` line of `stack-paths --size`."""
-    lines = [l for l in (output or "").splitlines() if l.startswith("size budget ")]
-    if len(lines) != 1:
+    found = budget(output)
+    if found is None:
         return INCOMPLETE, "no size budget line"
-    fields = {k: int(v) for k, v, _ in FIELD.findall(lines[0])}
+    line, fields = found
     free = ["sram_free", "isram_free", "dsram_free0", "dsram_free1"]
     if any(k not in fields for k in free):
         return INCOMPLETE, "incomplete size budget line"
-    detail = lines[0][len("size budget "):]
+    detail = line[len("size budget "):]
     return (PASS if all(fields[k] >= 0 for k in free) else FAIL), detail
 
 
@@ -92,7 +130,28 @@ def overall(rows):
     return FAIL if FAIL in values else INCOMPLETE
 
 
+def tool_version(exe):
+    """Which stack-paths gives the verdict: the executable's sha256, or this repository's commit
+    and whether its tree is dirty (cargo run builds from it)."""
+    if exe:
+        path = pathlib.Path(exe)
+        return f"{exe} sha256={sha256(path)}" if path.is_file() else f"{exe} sha256=unknown"
+
+    def git(*args):
+        try:
+            done = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True,
+                                  check=False)
+        except OSError:
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    head, status = git("rev-parse", "HEAD"), git("status", "--porcelain")
+    dirty = "unknown" if status is None else int(bool(status))
+    return f"cargo-run git={head or 'unknown'} dirty={dirty}"
+
+
 def run_stack_paths(elf, exe):
+    print(f"input stack_paths={tool_version(exe)}")
     if exe:
         command = [exe]
     else:
@@ -142,7 +201,7 @@ def main(argv):
         print(f"input elf={elf} missing")
     texts = [read("uart0", a.uart0), read("uart10", a.uart10)]
 
-    rows = [stack_row(output, status), watermark_row(texts), size_row(output)]
+    rows = [stack_row(output, status), watermark_row(texts, elf_stacks(output)), size_row(output)]
     for name, (value, detail) in zip(["stack_static", "stack_watermark_free", "size"], rows):
         print(f"{name}={value} {detail}")
     verdict = overall(rows)
