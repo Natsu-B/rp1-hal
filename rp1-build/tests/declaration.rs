@@ -495,3 +495,23 @@ fn heartbeat_period() {
         &["E0", "proc1.heartbeat"],
     );
 }
+
+#[test]
+fn proc0_default_stack_holds_the_platform_margin() {
+    use rp1_build::metadata::{DEFAULT_STACK, PLATFORM_STACK_MARGIN};
+    let d = parse("");
+    assert_eq!(
+        d.stack_size(0).unwrap(),
+        DEFAULT_STACK + PLATFORM_STACK_MARGIN
+    );
+    assert_eq!(d.stack_size(1).unwrap(), DEFAULT_STACK);
+    // Declaring one core keeps the other's default; a declared size is the whole stack.
+    let d = parse("stack = { proc1 = '6KiB' }");
+    assert_eq!(
+        d.stack_size(0).unwrap(),
+        DEFAULT_STACK + PLATFORM_STACK_MARGIN
+    );
+    assert_eq!(d.stack_size(1).unwrap(), 6144);
+    let d = parse("stack = { proc0 = '2KiB' }");
+    assert_eq!(d.stack_size(0).unwrap(), 2048);
+}

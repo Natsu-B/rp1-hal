@@ -1,14 +1,17 @@
-//! `stack-paths <firmware.elf> [--root <symbol>]...`: static stack bounds of the proc0 platform
-//! handlers and `S_plat` (contract §5.5). Exits non-zero unless every root has a bound.
+//! `stack-paths <firmware.elf> [--root <symbol>]... [--margin <bytes>]`: static stack bounds of
+//! the proc0 platform handlers and `S_plat` (contract §5.5). Exits non-zero unless every root
+//! has a bound and `S_plat` fits in the platform margin of proc0's default stack
+//! (`rp1_build::metadata::PLATFORM_STACK_MARGIN`; `--margin` overrides it).
 //! `--cut <symbol>` (diagnostic) counts calls to that function as 0 bytes and noreturn; the
 //! result is then `stack_static=DIAG`, never PASS, and the exit status is non-zero.
 //! `RP1_OBJDUMP` overrides the disassembler (default `arm-none-eabi-objdump`).
 
 use object::{Object, ObjectSection};
-use stack_paths::{Program, s_plat};
+use stack_paths::{Program, verdict};
 use std::process::{Command, ExitCode};
 
-const USAGE: &str = "usage: stack-paths <firmware.elf> [--root <symbol>]... [--cut <symbol>]...";
+const USAGE: &str =
+    "usage: stack-paths <firmware.elf> [--root <symbol>]... [--cut <symbol>]... [--margin <bytes>]";
 
 /// proc0 vector slots: HardFault, IRQ53 (PCIE_OUT), IRQ57 (PROC_MISC).
 const HARDFAULT: usize = 3;
@@ -31,10 +34,12 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     let mut elf = None;
     let mut extra = Vec::new();
     let mut cut_names = Vec::new();
+    let mut margin = rp1_build::metadata::PLATFORM_STACK_MARGIN as u32;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--root" => extra.push(args.next().ok_or(USAGE)?),
             "--cut" => cut_names.push(args.next().ok_or(USAGE)?),
+            "--margin" => margin = args.next().ok_or(USAGE)?.parse()?,
             _ if elf.is_none() && !a.starts_with('-') => elf = Some(a),
             _ => return Err(USAGE.into()),
         }
@@ -101,10 +106,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     let (h57, h53, hhard) = (bytes[0], bytes[1], bytes[2]);
     // Configurable fault handlers are not enabled yet, so Hfault = 0.
     let hfault = 0;
-    let verdict = if cut.is_empty() { "PASS" } else { "DIAG" };
-    println!(
-        "stack_static={verdict} s_plat={} h57={h57} h53={h53} hhard={hhard} hfault={hfault}",
-        s_plat(h57, hfault, h53, hhard)
-    );
-    Ok(cut.is_empty())
+    let (pass, line) = verdict(h57, hfault, h53, hhard, margin, !cut.is_empty());
+    println!("{line}");
+    Ok(pass)
 }

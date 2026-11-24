@@ -334,3 +334,20 @@ fn platform_share() {
     assert_eq!(s_plat(440, 0, 8, 8), 440 + 8 + 8 + 108);
     assert_eq!(s_plat(10, 20, 0, 0), 20 + 108);
 }
+
+#[test]
+fn s_plat_must_fit_the_margin() {
+    let line = |diagnostic, margin| verdict(440, 0, 8, 8, margin, diagnostic);
+    assert_eq!(
+        line(false, 768),
+        (
+            true,
+            "stack_static=PASS s_plat=564 h57=440 h53=8 hhard=8 hfault=0 margin=768".into()
+        )
+    );
+    assert!(line(false, 564).0);
+    let (pass, text) = line(false, 512);
+    assert!(!pass && text.starts_with("stack_static=FAIL reason=margin s_plat=564 "));
+    let (pass, text) = line(true, 768);
+    assert!(!pass && text.starts_with("stack_static=DIAG "));
+}

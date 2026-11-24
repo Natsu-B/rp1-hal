@@ -144,11 +144,25 @@ pub struct Stack {
     pub proc0: String,
     pub proc1: String,
 }
+/// Default stack of each core for the user's code, in bytes.
+pub const DEFAULT_STACK: usize = 2048;
+/// proc0's extra default stack for the platform handlers (IRQ57, IRQ53, HardFault), which run on
+/// proc0's MSP on top of the user's code: `roundup(S_plat, 256)`, with
+/// `S_plat = max(H57, Hfault) + H53 + Hhard + 3 * 36` (36 B per exception frame). STATIC
+/// (2026-11-25, `stack-paths`): the largest `S_plat` of this workspace's firmware is 716 B.
+/// `stack-paths` fails an image whose `S_plat` exceeds this margin.
+pub const PLATFORM_STACK_MARGIN: usize = 768;
+/// proc0's default stack: [`DEFAULT_STACK`] plus [`PLATFORM_STACK_MARGIN`]. A declared `proc0`
+/// replaces it and is the whole stack, the platform's share included.
+pub const DEFAULT_STACK_PROC0: usize = DEFAULT_STACK + PLATFORM_STACK_MARGIN;
+const _: () =
+    assert!(PLATFORM_STACK_MARGIN.is_multiple_of(256) && DEFAULT_STACK_PROC0.is_multiple_of(8));
+
 impl Default for Stack {
     fn default() -> Self {
         Self {
-            proc0: "2KiB".into(),
-            proc1: "2KiB".into(),
+            proc0: DEFAULT_STACK_PROC0.to_string(),
+            proc1: DEFAULT_STACK.to_string(),
         }
     }
 }

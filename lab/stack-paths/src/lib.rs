@@ -706,5 +706,27 @@ pub fn s_plat(h57: u32, hfault: u32, h53: u32, hhard: u32) -> u32 {
     h57.max(hfault) + h53 + hhard + 3 * FRAME
 }
 
+/// The `stack_static=` line for the handler bounds, and whether it is a PASS: `S_plat` must fit
+/// in proc0's platform stack `margin`. A `diagnostic` run (`--cut`) is never a PASS.
+pub fn verdict(
+    h57: u32,
+    hfault: u32,
+    h53: u32,
+    hhard: u32,
+    margin: u32,
+    diagnostic: bool,
+) -> (bool, String) {
+    let s = s_plat(h57, hfault, h53, hhard);
+    let terms =
+        format!("s_plat={s} h57={h57} h53={h53} hhard={hhard} hfault={hfault} margin={margin}");
+    if diagnostic {
+        (false, format!("stack_static=DIAG {terms}"))
+    } else if s > margin {
+        (false, format!("stack_static=FAIL reason=margin {terms}"))
+    } else {
+        (true, format!("stack_static=PASS {terms}"))
+    }
+}
+
 #[cfg(test)]
 mod tests;

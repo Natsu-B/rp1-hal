@@ -650,6 +650,7 @@ name = "stack-paths"
 version = "0.1.0"
 dependencies = [
  "object",
+ "rp1-build",
 ]
 
 [[package]]

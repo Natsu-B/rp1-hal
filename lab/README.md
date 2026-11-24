@@ -212,7 +212,8 @@ proof and its regressions passed on the image as first built; later changes to t
 its checker are STATIC until the next run. Its system part is `shm-firmware`'s without the
 I2C/ADC/SPI proofs (same owners and the rings `shm-linux` uses), so the SHM, doorbell and UART1
 regressions run in the same boot. The doorbell is answered by proc1's `IO_BANK0` handler; main
-code never answers it. Both stacks are the default 2 KiB, which the proof measures.
+code never answers it. Both stacks are the defaults, which the proof measures (proc0 2 KiB + the
+768 B platform margin since 2026-11-25, STATIC; proc1 2 KiB; the HW run above had 2 KiB on both).
 
 Every marker line on UART0 ends with `nonce=<8 hex digits>`, a value made at boot; the firmware
 also stores it in the link page (+0x28) for Linux to print. Items that need no Linux run right
