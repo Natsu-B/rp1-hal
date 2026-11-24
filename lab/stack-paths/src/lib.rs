@@ -5,7 +5,7 @@
 //! changes SP by a known amount: `push`/`pop`, `stmdb sp!`/`ldmia sp!`, `sub|add sp, #imm`
 //! and immediate pre/post-indexed `ldr|str` with SP as the base. Any other SP write, a
 //! conditional SP change, recursion, an indirect call or jump that is not a linker thunk,
-//! a jump table, `svc`, a branch to anything but an instruction of the same function or the
+//! a jump table it cannot read, `svc`, a branch to anything but an instruction of the same function or the
 //! start of another function, or a path that falls off the end of a function is a [`Fail`].
 //!
 //! Choices, all conservative:
@@ -21,6 +21,9 @@
 //!   data (`falls-into-data`).
 //! - Every return (`bx lr`, `pop {.., pc}`, `ldr pc, [sp], #4`) must be at depth 0, and two
 //!   paths that meet must have the same depth.
+//! - `bx lr` is a return whatever LR holds: the tool assumes LR still holds the return address
+//!   there and does not track writes to LR (LLVM emits `bx lr` only in epilogues). An
+//!   `ldr lr, [..]; bx lr` or `mov lr, rN; bx lr` would be an indirect jump it does not see.
 //! - `bx rN`/`blx rN` resolve only when the two instructions before them are `movw rN` and
 //!   `movt rN` and neither the branch nor the `movt` is a branch target of the function: the
 //!   long-branch thunks the linker inserts between ISRAM and SRAM code.
@@ -50,6 +53,7 @@ pub struct Fail {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bound {
     pub bytes: u32,
+    /// Some path reaches a return at depth 0.
     pub returns: bool,
 }
 
@@ -100,7 +104,18 @@ struct Effect {
     /// Bytes pushed (negative: released).
     push: i64,
     flow: Flow,
+    /// The instruction has a condition (a conditional branch, or a condition suffix inside an
+    /// IT block), so it may not execute.
     conditional: bool,
+}
+impl Effect {
+    fn new(push: i64, flow: Flow, conditional: bool) -> Self {
+        Self {
+            push,
+            flow,
+            conditional,
+        }
+    }
 }
 
 const CONDITIONS: [&str; 17] = [
@@ -330,17 +345,7 @@ impl Analyzer<'_> {
                 Some(_) => return Err(fail("sp-mismatch")),
                 None => depth[i - func.start] = Some(d),
             }
-            let mut e = effect(&p.insns[i]).map_err(fail)?;
-            if let Flow::Indirect { reg, call } = e.flow {
-                let t = thunk(p, func, &targets, i, reg).ok_or_else(|| {
-                    fail(if call {
-                        "unresolved-indirect-call"
-                    } else {
-                        "unresolved-indirect-jump"
-                    })
-                })?;
-                e.flow = if call { Flow::Call(t) } else { Flow::Branch(t) };
-            }
+            let e = resolved_effect(p, func, &targets, i).map_err(fail)?;
             if e.conditional && e.push != 0 && !matches!(e.flow, Flow::Return) {
                 return Err(fail("conditional-sp"));
             }
@@ -354,19 +359,11 @@ impl Analyzer<'_> {
             let next_depth = if e.conditional { d } else { after };
             let mut next = !matches!(e.flow, Flow::Return | Flow::Trap) || e.conditional;
             match e.flow {
-                Flow::Next | Flow::Trap | Flow::Indirect { .. } => {}
+                Flow::Next | Flow::Trap => {}
+                Flow::Indirect { .. } => unreachable!("resolved_effect resolves it or fails"),
                 Flow::Table { half } => {
-                    let targets = p.table(i, half).ok_or_else(|| fail("jump-table"))?;
-                    if targets.is_empty() {
-                        return Err(fail("jump-table"));
-                    }
-                    for t in targets {
-                        match p.index.get(&t) {
-                            Some(&j) if (func.start..func.end).contains(&j) => {
-                                work.push((j, after))
-                            }
-                            _ => return Err(fail("jump-table")),
-                        }
+                    for j in table_targets(p, func, i, half).map_err(fail)? {
+                        work.push((j, after));
                     }
                     next = false;
                 }
@@ -382,19 +379,8 @@ impl Analyzer<'_> {
                     next = c.returns || e.conditional;
                 }
                 Flow::Branch(target) => {
-                    if let Some(&j) = p.index.get(&target)
-                        && (func.start..func.end).contains(&j)
-                    {
+                    if let Some(j) = self.branch(func, i, target, after, &mut bound)? {
                         work.push((j, after));
-                    } else {
-                        let c = self.callee(target, i)?;
-                        bound.bytes = bound.bytes.max(after + c.bytes);
-                        if c.returns {
-                            if after != 0 {
-                                return Err(fail("unbalanced-tail-call"));
-                            }
-                            bound.returns = true;
-                        }
                     }
                     next = e.conditional;
                 }
@@ -411,6 +397,77 @@ impl Analyzer<'_> {
         }
         Ok(bound)
     }
+
+    /// A branch at `i` with depth `after`: the instruction to walk next inside the function, or
+    /// a tail call, whose bound goes into `bound`.
+    fn branch(
+        &mut self,
+        func: &Function,
+        i: usize,
+        target: u32,
+        after: u32,
+        bound: &mut Bound,
+    ) -> Result<Option<usize>, Fail> {
+        let p = self.program;
+        if let Some(&j) = p.index.get(&target)
+            && (func.start..func.end).contains(&j)
+        {
+            return Ok(Some(j));
+        }
+        let c = self.callee(target, i)?;
+        bound.bytes = bound.bytes.max(after + c.bytes);
+        if c.returns {
+            if after != 0 {
+                return Err(Fail {
+                    reason: "unbalanced-tail-call",
+                    at: p.location(i),
+                });
+            }
+            bound.returns = true;
+        }
+        Ok(None)
+    }
+}
+
+/// The effect of the instruction at `i`, with a linker thunk's `bx|blx rN` resolved to a
+/// branch or call: never [`Flow::Indirect`].
+fn resolved_effect(
+    p: &Program,
+    func: &Function,
+    targets: &HashSet<u32>,
+    i: usize,
+) -> Result<Effect, &'static str> {
+    let mut e = effect(&p.insns[i])?;
+    if let Flow::Indirect { reg, call } = e.flow {
+        let t = thunk(p, func, targets, i, reg).ok_or(if call {
+            "unresolved-indirect-call"
+        } else {
+            "unresolved-indirect-jump"
+        })?;
+        e.flow = if call { Flow::Call(t) } else { Flow::Branch(t) };
+    }
+    Ok(e)
+}
+
+/// The instructions that the jump table after the `tbb`/`tbh` at `i` jumps to: at least one,
+/// all in the function.
+fn table_targets(
+    p: &Program,
+    func: &Function,
+    i: usize,
+    half: bool,
+) -> Result<Vec<usize>, &'static str> {
+    let targets = p.table(i, half).ok_or("jump-table")?;
+    if targets.is_empty() {
+        return Err("jump-table");
+    }
+    targets
+        .iter()
+        .map(|t| match p.index.get(t) {
+            Some(&j) if (func.start..func.end).contains(&j) => Ok(j),
+            _ => Err("jump-table"),
+        })
+        .collect()
 }
 
 /// Addresses that a direct branch or a jump table entry of the function jumps to.
@@ -516,13 +573,7 @@ fn effect(x: &Insn) -> Result<Effect, &'static str> {
     let args = x.args.as_str();
     let ops: Vec<&str> = args.split(',').map(str::trim).collect();
     let first = parse_reg(ops[0]);
-    let simple = |push: i64, flow: Flow, conditional: bool| {
-        Ok(Effect {
-            push,
-            flow,
-            conditional,
-        })
-    };
+    let simple = |push, flow, conditional| Ok(Effect::new(push, flow, conditional));
     if op.starts_with("it") && op[2..].chars().all(|c| c == 't' || c == 'e') {
         return simple(0, Flow::Next, false);
     }
@@ -569,6 +620,35 @@ fn effect(x: &Insn) -> Result<Effect, &'static str> {
     if op == "udf" || op == "bkpt" {
         return simple(0, Flow::Trap, false);
     }
+    if let Some(e) = multiple(op, args)? {
+        return Ok(e);
+    }
+    if op.starts_with("ldr") || op.starts_with("str") {
+        return load_store(op, args);
+    }
+    if op.starts_with("msr") {
+        let special = ops[0].to_ascii_lowercase();
+        if special.starts_with("msp") || special.starts_with("psp") {
+            return Err("sp-write");
+        }
+        return simple(0, Flow::Next, false);
+    }
+    // Instructions whose first operand is read, not written.
+    let reads_first = ["cmp", "cmn", "tst", "teq", "pld", "pli"]
+        .iter()
+        .any(|b| condition(op, b).is_some());
+    if first == Some(SP) && !reads_first {
+        return sp_arith(op, &ops);
+    }
+    if first == Some(PC) && !reads_first {
+        return Err("unresolved-indirect-jump");
+    }
+    simple(0, Flow::Next, false)
+}
+
+/// `push`/`pop`, `stmdb|stmfd sp!`/`ldmia|ldm|ldmfd sp!`, and any other `ldm*`/`stm*` (which
+/// must not touch SP); `None` for every other instruction.
+fn multiple(op: &str, args: &str) -> Result<Option<Effect>, &'static str> {
     let stack_list = |base: &str| args.split_once(',').is_some_and(|(b, _)| b.trim() == base);
     let pushes = condition(op, "push").or_else(|| {
         ["stmdb", "stmfd"]
@@ -581,7 +661,7 @@ fn effect(x: &Insn) -> Result<Effect, &'static str> {
         if regs.contains(&SP) || regs.contains(&PC) {
             return Err("unknown-instruction");
         }
-        return simple(4 * regs.len() as i64, Flow::Next, c);
+        return Ok(Some(Effect::new(4 * regs.len() as i64, Flow::Next, c)));
     }
     let pops = condition(op, "pop").or_else(|| {
         ["ldmia", "ldm", "ldmfd"]
@@ -599,59 +679,51 @@ fn effect(x: &Insn) -> Result<Effect, &'static str> {
         } else {
             Flow::Next
         };
-        return simple(-4 * regs.len() as i64, flow, c);
+        return Ok(Some(Effect::new(-4 * regs.len() as i64, flow, c)));
     }
-    if op.starts_with("ldm") || op.starts_with("stm") {
-        // Any other multiple transfer: SP may be neither the written-back base nor in the list.
-        let (base, _) = args.split_once(',').ok_or("unknown-instruction")?;
-        let regs = reg_list(args)?;
-        if parse_reg(base) == Some(SP) && base.trim().ends_with('!') {
-            return Err("variable-sp");
-        }
-        if op.starts_with("ldm") && regs.contains(&SP) {
-            return Err("sp-write");
-        }
-        if op.starts_with("ldm") && regs.contains(&PC) {
-            return Err("unresolved-indirect-jump");
-        }
-        return simple(0, Flow::Next, false);
+    if !(op.starts_with("ldm") || op.starts_with("stm")) {
+        return Ok(None);
     }
-    if op.starts_with("ldr") || op.starts_with("str") {
-        return load_store(op, args);
+    // Any other multiple transfer: SP may be neither the written-back base nor in the list.
+    let (base, _) = args.split_once(',').ok_or("unknown-instruction")?;
+    let regs = reg_list(args)?;
+    if parse_reg(base) == Some(SP) && base.trim().ends_with('!') {
+        return Err("variable-sp");
     }
-    if op.starts_with("msr") {
-        let special = ops[0].to_ascii_lowercase();
-        if special.starts_with("msp") || special.starts_with("psp") {
-            return Err("sp-write");
-        }
-        return simple(0, Flow::Next, false);
+    if op.starts_with("ldm") && regs.contains(&SP) {
+        return Err("sp-write");
     }
-    // Instructions whose first operand is read, not written.
-    let reads_first = ["cmp", "cmn", "tst", "teq", "pld", "pli"]
-        .iter()
-        .any(|b| condition(op, b).is_some());
-    if first == Some(SP) && !reads_first {
-        let add = condition(op, "add").or_else(|| condition(op, "addw"));
-        let sub = condition(op, "sub").or_else(|| condition(op, "subw"));
-        let (sign, c) = match (add, sub) {
-            (Some(c), _) => (-1, c),
-            (_, Some(c)) => (1, c),
-            _ => return Err("sp-write"),
-        };
-        // `sub sp, #imm` or `sub sp, sp, #imm`.
-        let imm = match ops.as_slice() {
-            [_, i] => immediate(i),
-            [_, s, i] if parse_reg(s) == Some(SP) => immediate(i),
-            _ => None,
-        }
-        .ok_or("variable-sp")?;
-        return simple(sign * i64::from(imm as i32), Flow::Next, c);
-    }
-    if first == Some(PC) && !reads_first {
+    if op.starts_with("ldm") && regs.contains(&PC) {
         return Err("unresolved-indirect-jump");
     }
-    simple(0, Flow::Next, false)
+    Ok(Some(Effect::new(0, Flow::Next, false)))
 }
+
+/// An instruction that writes SP as its first operand: only `add|sub[w] sp, [sp,] #imm`.
+fn sp_arith(op: &str, ops: &[&str]) -> Result<Effect, &'static str> {
+    let add = condition(op, "add").or_else(|| condition(op, "addw"));
+    let sub = condition(op, "sub").or_else(|| condition(op, "subw"));
+    let (sign, c) = match (add, sub) {
+        (Some(c), _) => (-1, c),
+        (_, Some(c)) => (1, c),
+        _ => return Err("sp-write"),
+    };
+    // `sub sp, #imm` or `sub sp, sp, #imm`.
+    let imm = match ops {
+        [_, i] => immediate(i),
+        [_, s, i] if parse_reg(s) == Some(SP) => immediate(i),
+        _ => None,
+    }
+    .ok_or("variable-sp")?;
+    Ok(Effect::new(sign * i64::from(imm as i32), Flow::Next, c))
+}
+
+/// The Thumb-2 (ARMv7-M) single loads and stores, without a condition suffix.
+const LOAD_STORE: [&str; 24] = [
+    "ldr", "ldrb", "ldrh", "ldrsb", "ldrsh", "ldrd", "ldrex", "ldrexb", "ldrexh", "ldrt", "ldrbt",
+    "ldrht", "ldrsbt", "ldrsht", "str", "strb", "strh", "strd", "strex", "strexb", "strexh",
+    "strt", "strbt", "strht",
+];
 
 /// `ldr*`/`str*`: SP changes only through an immediate pre- or post-indexed SP base.
 fn load_store(op: &str, args: &str) -> Result<Effect, &'static str> {
@@ -674,7 +746,10 @@ fn load_store(op: &str, args: &str) -> Result<Effect, &'static str> {
     if written.contains(&SP) {
         return Err("sp-write");
     }
-    let conditional = CONDITIONS.iter().any(|c| op.ends_with(c));
+    let conditional = LOAD_STORE
+        .iter()
+        .find_map(|base| condition(op, base))
+        .ok_or("unknown-instruction")?;
     let post = after.strip_prefix(',');
     let push = if base != SP {
         0
@@ -691,19 +766,11 @@ fn load_store(op: &str, args: &str) -> Result<Effect, &'static str> {
         // `ldr pc, [sp], #4` is `pop {pc}`; any other load into PC is an indirect jump. The
         // pre-indexed `ldr pc, [sp, #4]!` loads the slot above the return address.
         if base == SP && post.is_some() && push == -4 && dests.len() == 1 {
-            return Ok(Effect {
-                push,
-                flow: Flow::Return,
-                conditional,
-            });
+            return Ok(Effect::new(push, Flow::Return, conditional));
         }
         return Err("unresolved-indirect-jump");
     }
-    Ok(Effect {
-        push,
-        flow: Flow::Next,
-        conditional,
-    })
+    Ok(Effect::new(push, Flow::Next, conditional))
 }
 
 /// Stack bounds of the proc0 platform handlers (contract §5.5), entry frames excluded.

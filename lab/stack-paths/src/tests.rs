@@ -247,6 +247,9 @@ fn unknown_sp_instructions_fail() {
         ("stmia sp!, {r0, r1}", "variable-sp"),
         ("ldm r0, {r1, sp}", "sp-write"),
         ("addeq sp, #8", "conditional-sp"),
+        ("ldreq r4, [sp], #4", "conditional-sp"),
+        ("strbeq r0, [sp, #-8]!", "conditional-sp"),
+        ("ldrfoo r0, [sp], #4", "unknown-instruction"),
         ("svc 0", "svc"),
     ] {
         let f: &[&str] = &["it eq", insn, "bx lr"];
