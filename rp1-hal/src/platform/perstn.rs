@@ -210,6 +210,10 @@ fn stop(io: &mut impl Io) {
 // only `Entries`; thread readers copy it with interrupts masked.
 static mut WORDS: [u32; 5] = [status::PLAT_PCIE_INITIALIZING, 0, 0, 0, 0];
 
+pub(crate) fn entries() -> u32 {
+    Mmio.load(Word::Entries)
+}
+
 pub(crate) fn lost_detail() -> Option<LostDetail> {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
     let (state, monitor2, at_us) = crate::with_irqs_masked(|| {

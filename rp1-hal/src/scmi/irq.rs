@@ -1,5 +1,8 @@
 //! SCMI on proc0 IRQ57. Init finishes writing the handler's DSRAM state and
 //! published state word before ISER. Only IRQ57 writes them after ISER (rule E1).
+//!
+//! IRQ53 (priority 0) can preempt IRQ57. A serve time is "clean" when IRQ53's entry count is
+//! the same before and after it, so `max_serve_clean_us` is SCMI's own time.
 
 use super::{
     CHANNEL, ClockHardware, HOST_EVENTS_SET, PROC_EVENTS, PROC_EVENTS_CLR, RP1_CLOCKS, Registers,
@@ -67,7 +70,12 @@ pub struct ScmiStats {
     pub requests: u32,
     pub duplicates: u32,
     pub spurious57: u32,
+    /// The longest serve time, including any IRQ53 that preempted it.
     pub max_serve_all_us: u32,
+    /// Entries that IRQ53 did not preempt.
+    pub clean_n: u32,
+    /// The longest serve time among the `clean_n` entries.
+    pub max_serve_clean_us: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -82,6 +90,8 @@ pub(crate) trait Io: Registers {
     fn barrier(&mut self);
     fn counters(&mut self) -> Counters;
     fn set_counters(&mut self, counters: Counters);
+    /// IRQ53's entry count ([`crate::platform::perstn`]).
+    fn entries53(&mut self) -> u32;
 }
 
 struct Mailbox<'a, R>(&'a mut R);
@@ -132,6 +142,7 @@ pub(crate) fn enable(io: &mut impl Io) {
 }
 
 fn handle(server: &mut Server<'_, impl ClockHardware>, io: &mut impl Io) {
+    let entries53 = io.entries53();
     let start = io.read(TIMER_RAWL);
     let served = super::serve(server, &mut Mailbox(io));
     let mut c = io.counters();
@@ -150,6 +161,10 @@ fn handle(server: &mut Server<'_, impl ClockHardware>, io: &mut impl Io) {
         }
     }
     let elapsed = io.read(TIMER_RAWL).wrapping_sub(start);
+    if io.entries53() == entries53 {
+        c.stats.clean_n = c.stats.clean_n.saturating_add(1);
+        c.stats.max_serve_clean_us = c.stats.max_serve_clean_us.max(elapsed);
+    }
     c.stats.max_serve_all_us = c.stats.max_serve_all_us.max(elapsed);
     io.set_counters(c);
     if c.streak >= MAX_EMPTY_STREAK {
@@ -195,6 +210,9 @@ impl Io for Mmio {
     }
     fn set_counters(&mut self, counters: Counters) {
         unsafe { (&raw mut COUNTERS).write(MaybeUninit::new(counters)) };
+    }
+    fn entries53(&mut self) -> u32 {
+        crate::platform::perstn::entries()
     }
 }
 

@@ -23,6 +23,11 @@ enum Op {
     Write(usize, u32),
     Barrier,
     Counters,
+    /// IRQ57's read of IRQ53's entry count, and the index of the access boundary it passed.
+    Entries53 {
+        value: u32,
+        boundary: usize,
+    },
 }
 
 #[derive(Default)]
@@ -108,6 +113,10 @@ struct FakeRp1 {
     entries: usize,
     inject: Option<(Trigger, Request)>,
     thread_accesses: usize,
+    /// IRQ53's entry count, and the IRQ57 access before which one IRQ53 entry preempts.
+    entries53: u32,
+    irq53_before: Option<usize>,
+    irq_accesses: usize,
 }
 
 impl FakeRp1 {
@@ -125,6 +134,9 @@ impl FakeRp1 {
             entries: 0,
             inject: None,
             thread_accesses: 0,
+            entries53: 0,
+            irq53_before: None,
+            irq_accesses: 0,
         };
         let clocks = ClockBus(f.bus.clone());
         f.server = Some(prepare_server(&mut f, clocks, held));
@@ -181,8 +193,13 @@ impl FakeRp1 {
         if matches!(self.delivery, Delivery::Continuous) && self.level() {
             self.pending = true;
         }
-        // IRQ57 preempts init/thread at an access boundary. It cannot preempt itself.
+        // IRQ57 preempts init/thread at an access boundary. It cannot preempt itself, but
+        // IRQ53 (priority 0) preempts it; its only trace here is its entry count.
         if self.context == Context::Irq {
+            if self.irq53_before == Some(self.irq_accesses) {
+                self.entries53 += 1;
+            }
+            self.irq_accesses += 1;
             return;
         }
         while self.enabled && self.pending {
@@ -273,6 +290,15 @@ impl Io for FakeRp1 {
         self.bus.borrow_mut().record(self.context, Op::Counters);
         self.counters = counters;
     }
+    fn entries53(&mut self) -> u32 {
+        self.boundary();
+        let op = Op::Entries53 {
+            value: self.entries53,
+            boundary: self.irq_accesses - 1,
+        };
+        self.bus.borrow_mut().record(self.context, op);
+        self.entries53
+    }
 }
 
 // S1–S4, S7: exercise gate opening, W1C, the occupied slot, FREE and unrelated channels.
@@ -362,7 +388,8 @@ fn delivery_variants_lose_no_requests_and_bound_spurious_entries() {
     for delivery in [Delivery::Pulse, Delivery::AtReturn, Delivery::Continuous] {
         let mut f = FakeRp1::ready(delivery, 0);
         f.enable_scmi();
-        f.bus.borrow_mut().now = u32::MAX;
+        // The entries53 read takes one tick: the serve starts at u32::MAX and ends after 0.
+        f.bus.borrow_mut().now = u32::MAX - 1;
         f.request(BASE_VERSION);
         f.boundary();
         let mut times = f.trace().into_iter().filter_map(|(_, op)| match op {
@@ -530,4 +557,45 @@ fn published_count_saturates_and_unknown_words_are_preserved() {
     );
     assert_eq!(ScmiState::from_word(0), ScmiState::NotStarted);
     assert_eq!(ScmiState::from_word(3), ScmiState::Unknown(3));
+}
+
+// S8': IRQ53 preempts one IRQ57 entry before each of its accesses, the entries53 and TIMER_RAWL
+// reads included. Only a preemption between the two entries53 reads makes the serve unclean.
+#[test]
+fn irq53_inside_a_serve_keeps_it_out_of_the_clean_maximum() {
+    let serve = |irq53_before| {
+        let mut f = FakeRp1::ready(Delivery::Pulse, 0);
+        f.enable_scmi();
+        f.irq53_before = irq53_before;
+        f.request(BASE_VERSION);
+        f.boundary();
+        f
+    };
+    let baseline = serve(None);
+    assert_eq!(baseline.counters.stats.clean_n, 1);
+    // The boundaries of the two entries53 reads. An IRQ53 at a read's boundary runs before it.
+    let brackets: Vec<_> = baseline
+        .trace()
+        .into_iter()
+        .filter_map(|(_, op)| match op {
+            Op::Entries53 { boundary, .. } => Some(boundary),
+            _ => None,
+        })
+        .collect();
+    let [before, after] = brackets[..] else {
+        panic!("one bracket: {brackets:?}")
+    };
+    for boundary in 0..baseline.irq_accesses {
+        let f = serve(Some(boundary));
+        let stats = f.counters.stats;
+        assert_eq!(f.entries53, 1, "boundary {boundary}");
+        assert_eq!(stats.requests, 1);
+        assert_eq!(f.get(SHMEM + 4 * PAYLOAD), 0, "answered");
+        let dirty = before < boundary && boundary <= after;
+        assert_eq!(stats.clean_n, u32::from(!dirty), "boundary {boundary}");
+        if dirty {
+            assert_eq!(stats.max_serve_clean_us, 0);
+        }
+        assert!(stats.max_serve_clean_us <= stats.max_serve_all_us);
+    }
 }
