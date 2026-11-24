@@ -4,7 +4,7 @@
 //! The firmware calls the generated `rp1::platform::init(&mut core, p.platform)`, which runs
 //! [`Token::init`]. The steps, in order:
 //!
-//! 0. `PLAT_PCIE` = Initializing ([`rp1_proto::status::PLAT_PCIE`]).
+//! 0. `PLAT_PCIE` = Initializing ([`rp1_proto::status::PLAT_PCIE`], written by [`perstn`]).
 //! 1. Cold clocks: PLL_SYS and CLK_UART, if RP1 is at cold defaults ([`crate::cold`]).
 //! 2. clk_sys = PLL_SYS and the blocks Linux owns; on success the [`Clocks`] are published for
 //!    proc1 ([`Clocks::from_proc0`]).
@@ -186,8 +186,8 @@ impl fmt::Display for InitReport {
 
 /// The steps of init, apart from their order ([`run`]), so the host tests can check the order.
 trait Steps {
-    /// Writes the `PLAT_PCIE` status word.
-    fn set_pcie_state(&mut self, word: u32);
+    /// Sets the PERSTn detector and its `PLAT_PCIE` word to `Initializing`.
+    fn pcie_initializing(&mut self);
     fn clocks(&mut self) -> Result<bool, ColdError>;
     /// clk_sys and the Linux blocks; publishes the [`Clocks`] for proc1 on success.
     fn authority(&mut self) -> Result<(Clocks, linux_blocks::Report), Error>;
@@ -209,7 +209,7 @@ fn run<S: Steps>(
     log: impl FnOnce(&mut S) -> Result<(), Error>,
     before_link: impl FnOnce(&mut S, &Clocks),
 ) -> Result<(Clocks, InitReport), InitError> {
-    s.set_pcie_state(rp1_proto::status::PLAT_PCIE_INITIALIZING);
+    s.pcie_initializing();
     let clocks_programmed = s.clocks().map_err(InitError::Clocks)?;
     let (clocks, linux_blocks) = s.authority().map_err(InitError::Authority)?;
     log(s).map_err(InitError::Log)?;
@@ -257,11 +257,8 @@ struct Rp1 {
 }
 
 impl Steps for Rp1 {
-    fn set_pcie_state(&mut self, word: u32) {
-        let address = rp1_proto::LINK_START as usize + rp1_proto::status::PLAT_PCIE;
-        // A plain store: proc0's init is the only writer of this word.
-        unsafe { (address as *mut u32).write_volatile(word) };
-        rp1_proto::barrier();
+    fn pcie_initializing(&mut self) {
+        perstn::initializing(&mut perstn::Mmio)
     }
     fn clocks(&mut self) -> Result<bool, ColdError> {
         cold::clocks()
@@ -316,7 +313,7 @@ mod tests {
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Ev {
-        PcieState(u32),
+        PcieInitializing,
         Clocks,
         Authority,
         Log,
@@ -397,8 +394,8 @@ mod tests {
             self.trace.push(Ev::ArmPerstn);
             ARMED
         }
-        fn set_pcie_state(&mut self, word: u32) {
-            self.trace.push(Ev::PcieState(word));
+        fn pcie_initializing(&mut self) {
+            self.trace.push(Ev::PcieInitializing);
         }
         fn clocks(&mut self) -> Result<bool, ColdError> {
             self.trace.push(Ev::Clocks);
@@ -466,7 +463,7 @@ mod tests {
         assert_eq!(
             f.trace,
             [
-                Ev::PcieState(rp1_proto::status::PLAT_PCIE_INITIALIZING),
+                Ev::PcieInitializing,
                 Ev::Clocks,
                 Ev::Authority,
                 Ev::Log,
@@ -567,14 +564,7 @@ mod tests {
         let mut f = Fake::cold();
         f.authority = Err(Error::Hardware);
         assert_eq!(f.run().unwrap_err(), InitError::Authority(Error::Hardware));
-        assert_eq!(
-            f.trace,
-            [
-                Ev::PcieState(rp1_proto::status::PLAT_PCIE_INITIALIZING),
-                Ev::Clocks,
-                Ev::Authority
-            ]
-        );
+        assert_eq!(f.trace, [Ev::PcieInitializing, Ev::Clocks, Ev::Authority]);
     }
 
     #[test]
@@ -682,7 +672,7 @@ mod tests {
     }
     /// The real quiesce, link read and channel reset on [`Regs`]; the other steps succeed.
     impl Steps for Regs {
-        fn set_pcie_state(&mut self, _: u32) {}
+        fn pcie_initializing(&mut self) {}
         fn clocks(&mut self) -> Result<bool, ColdError> {
             Ok(true)
         }

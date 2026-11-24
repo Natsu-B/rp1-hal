@@ -8,8 +8,9 @@
 //! disables IRQ53. An entry that finds INTS = 0 (the pend at arming, a level source pending
 //! again) is spurious; the 16th turns the detector off.
 //!
-//! Init finishes writing the handler's DSRAM state and the `PLAT_PCIE` word before ISER. Only
-//! IRQ53 writes them after ISER (rule E1). The handler leaves PCIE_INTR latched as evidence
+//! Every write of the `PLAT_PCIE` word is in this module: init's step 0 and step 10, then
+//! IRQ53. Init finishes writing the handler's DSRAM state and the word before ISER. Only IRQ53
+//! writes them after ISER (rule E1). The handler leaves PCIE_INTR latched as evidence
 //! and writes nothing on the PCIe side but INTE = 0: no DBI, selector or RESETS.
 
 use crate::{
@@ -65,6 +66,9 @@ pub(crate) enum Word {
     Entries,
     Spurious,
 }
+
+/// The number of [`Word`]s: one past the last.
+pub(crate) const WORD_COUNT: usize = Word::Spurious as usize + 1;
 
 const fn lost(monitor2: u32) -> u32 {
     status::PLAT_PCIE_LOST | (monitor2 & 0xffff_0000)
@@ -163,6 +167,12 @@ pub(crate) fn arm(io: &mut impl Io, handlers: Handlers) -> DetectorReport {
     }
 }
 
+/// Step 0 of init: `Initializing`, in the detector's state and `PLAT_PCIE`.
+pub(crate) fn initializing(io: &mut impl Io) {
+    set_state(io, status::PLAT_PCIE_INITIALIZING);
+    io.barrier();
+}
+
 /// The detector's first state, with zeroed counters: only init calls this, before ISER.
 fn start(io: &mut impl Io, state: u32) {
     io.store(Word::Entries, 0);
@@ -208,7 +218,7 @@ fn stop(io: &mut impl Io) {
 
 // proc0-local DSRAM, indexed by `Word`. Init writes it before ISER, IRQ53 after. IRQ57 reads
 // only `Entries`; thread readers copy it with interrupts masked.
-static mut WORDS: [u32; 5] = [status::PLAT_PCIE_INITIALIZING, 0, 0, 0, 0];
+static mut WORDS: [u32; WORD_COUNT] = [0; WORD_COUNT];
 
 pub(crate) fn entries() -> u32 {
     Mmio.load(Word::Entries)

@@ -87,7 +87,7 @@ pub(crate) enum Event {
 pub(crate) struct Fake {
     pub(crate) registers: BTreeMap<usize, u32>,
     /// The detector's DSRAM words, indexed by `Word`.
-    pub(crate) words: [u32; 5],
+    pub(crate) words: [u32; WORD_COUNT],
     pub(crate) delivery: Delivery,
     pub(crate) latch_on_assert: bool,
     pub(crate) context: Context,
@@ -115,9 +115,12 @@ impl Fake {
             (VTOR, VECTORS as u32),
             (VECTOR53, HANDLERS.detector as u32),
         ];
+        let mut words = [0; WORD_COUNT];
+        // As step 0 left it.
+        words[Word::State as usize] = status::PLAT_PCIE_INITIALIZING;
         Self {
             registers: registers.into_iter().collect(),
-            words: [status::PLAT_PCIE_INITIALIZING, 0, 0, 0, 0],
+            words,
             delivery,
             latch_on_assert: true,
             context: Context::Init,

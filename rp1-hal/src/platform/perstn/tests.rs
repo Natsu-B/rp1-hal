@@ -349,3 +349,22 @@ fn published_words_decode_to_their_states() {
         assert_eq!(PcieState::from_word(word), state);
     }
 }
+
+/// Step 0: `Initializing` in the detector's state, then in `PLAT_PCIE`.
+#[test]
+fn step_0_publishes_initializing() {
+    let mut f = Fake::after_bring_up(Delivery::Level);
+    f.words = [0; WORD_COUNT];
+    initializing(&mut f);
+    let state = status::PLAT_PCIE_INITIALIZING;
+    assert_eq!(
+        f.init_ops(),
+        [
+            Op::Store(Word::State, state),
+            Op::Write(STATUS_WORD, state),
+            Op::Barrier
+        ]
+    );
+    assert_eq!(f.state(), PcieState::Initializing);
+    assert_eq!(f.published(), PcieState::Initializing);
+}
