@@ -1,5 +1,5 @@
 //! Hardware proof image for interrupts: handlers on both cores (alarms, IO_BANK0, the wrapped
-//! I2C1 and SPI0 lines), the PRIMASK critical section, the default handler, `log!` from a
+//! I2C1 and SPI0 lines), the user interrupt mask, the default handler, `log!` from a
 //! handler, stack and masking figures. Markers go to UART0; lab/verify-irq.py reads them.
 //!
 //! The system part (proc0's clocks, PCIe endpoint, SCMI and shm bring-up; proc1's shm command

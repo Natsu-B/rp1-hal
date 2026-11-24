@@ -206,7 +206,7 @@ open while it reads, because closing it shuts the PL011 down and drops received 
 ## Interrupt proof image (HW 2026-11-14)
 
 `irq-proof` is a focused firmware that proves the interrupt path on hardware: handlers entered
-and left on both cores, the `+0x108` wrapper of the DesignWare blocks, the PRIMASK critical
+and left on both cores, the `+0x108` wrapper of the DesignWare blocks, the user interrupt
 section, the default handler and `log!` from a handler. HW (2026-11-14, cold boot ×2): the
 proof and its regressions passed on the image as first built; later changes to the image and
 its checker are STATIC until the next run. Its system part is `shm-firmware`'s without the
@@ -233,7 +233,7 @@ after boot. The proof ends when Linux has rung the doorbell 1000 times.
 | `IRQ_XCORE` | no handler ran on the core it was not written for | both 0 |
 | `IRQ_UNHANDLED` | unhandled interrupts per core | `p0=0 p1=1` (the `IRQ_DEFAULT` one) |
 | `IRQ_STACK` | untouched bytes at the bottom of each stack (painted at entry) | both at least 512 |
-| `IRQ_MASKED` | longest PRIMASK interval per core, over every `critical_section` user in the image | both at most 100 µs |
+| `IRQ_MASKED` | longest interval with user IRQs masked by `critical_section` per core, timed from an initially clear BASEPRI | both at most 100 µs |
 | `IRQ_PROOF_PASS` / `IRQ_PROOF_FAIL <item>` | verdict; a failed item also prints `IRQ_PROOF_FAIL <item>` at once | PASS is the last marker, no FAIL line |
 
 After the proof each `p1 shm cmd=` line carries `stack_free=`, which must stay at 512 or more.

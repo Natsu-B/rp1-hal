@@ -18,15 +18,21 @@
 //! ```
 //!
 //! Ordinary statics, including `TICKS`, have one DSRAM copy per core.
-//! The default `critical-section-single-core` feature uses PRIMASK and restores the prior
-//! state, so nested sections work. This is **not a cross-core lock**: both cores can enter
-//! simultaneously. `Mutex` is not `SharedSafe` and cannot be placed in `#[shared]`.
-//! Cross-core communication needs the shared-memory protocols in [`crate::sync`].
-//! NMI and fault handlers must not access data protected by this critical section.
-//! Disable the default feature when supplying another critical-section implementation.
+//! The default `critical-section-single-core` feature uses BASEPRI to mask user priorities
+//! 2–7 on this core. It restores the previous mask when leaving a section, so sections nest.
+//! System interrupts at priorities 0 and 1, NMI and fault handlers must never access data
+//! protected by a user `Mutex`. Both cores can enter simultaneously. Use [`crate::sync`] for
+//! cross-core data because `Mutex` cannot be placed in `#[shared]`.
 //!
-//! Keep critical sections below 100 microseconds: PRIMASK also delays system IRQs. Handlers
-//! receive no core token and cannot access `#[proc0]`/`#[proc1]` locals. Share state with
+//! Enable `critical-section-primask` to mask all configurable exceptions during `free`.
+//! This delays platform IRQs and escalates faults in the section to HardFault, so the platform
+//! latency and fault continuation guarantees do not apply. Panic containment is still
+//! possible with a panic handler that clears PRIMASK before parking.
+//! Disable default features when supplying your own implementation. On bare-metal ARM,
+//! both built-in implementations and custom implementations use a `u8` restore state.
+//!
+//! Keep user critical sections below 100 microseconds. Handlers receive no core token and
+//! cannot access `#[proc0]`/`#[proc1]` locals. Share state with
 //! main through ordinary statics and a `Mutex` or DSRAM atomics. `log!` in a handler does not
 //! wait for the log lock: it drops the message when the log is busy, and otherwise sends it
 //! synchronously, polling the UART for each byte.
@@ -73,7 +79,13 @@ unsafe extern "C" fn __rp1_default_irq() {
     });
 }
 
-/// PRIMASK critical section for this core only; see the module docs.
+mod mask;
+#[doc(hidden)]
+pub use mask::__primask_free;
+#[cfg(test)]
+pub(crate) use mask::test_primask;
+
+/// Critical section for user contexts on this core; see the module docs.
 pub use critical_section::{CriticalSection, Mutex, with as free};
 
 /// User interrupt priority, from 2 (highest user priority) through 7 (lowest).
@@ -245,35 +257,6 @@ impl<R: Registers> Nvic<R> {
     }
     fn set_priority(&self, irq: u8, priority: Priority) {
         self.0.write_byte(IPR + usize::from(irq), priority.0 << 5);
-    }
-}
-
-#[cfg(all(
-    feature = "critical-section-single-core",
-    target_arch = "arm",
-    target_os = "none"
-))]
-mod single_core {
-    struct Primask;
-    critical_section::set_impl!(Primask);
-
-    // SAFETY: cpsid i masks all configurable exceptions on this core; release restores
-    // the prior PRIMASK state, preserving nesting. NMI and faults must not access protected
-    // data. Statics are per-core DSRAM and Mutex is not SharedSafe, so the other core
-    // cannot share the protected value through safe code.
-    unsafe impl critical_section::Impl for Primask {
-        unsafe fn acquire() -> critical_section::RawRestoreState {
-            let primask: u32;
-            unsafe {
-                core::arch::asm!("mrs {}, PRIMASK", "cpsid i", out(reg) primask, options(nostack, preserves_flags));
-            }
-            primask & 1 == 0
-        }
-        unsafe fn release(was_enabled: critical_section::RawRestoreState) {
-            if was_enabled {
-                unsafe { core::arch::asm!("cpsie i", options(nostack, preserves_flags)) };
-            }
-        }
     }
 }
 

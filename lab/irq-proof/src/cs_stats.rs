@@ -1,9 +1,10 @@
-//! This image's critical section: rp1-rt's PRIMASK section, plus the longest time it kept
-//! interrupts masked on this core. Every `critical_section` user in the image goes through
+//! This image's critical section: rp1-rt's BASEPRI section, plus the longest time it kept
+//! user interrupts masked on this core. Every `critical_section` user in the image goes through
 //! it, the libraries included, so the figure covers code the proof did not write.
+use core::arch::asm;
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
-// Ordinary statics: one copy per core, like the PRIMASK they describe.
+// Ordinary statics: one copy per core, like the BASEPRI they describe.
 static MASKED_AT: AtomicU32 = AtomicU32::new(0);
 static MAX_US: AtomicU32 = AtomicU32::new(0);
 
@@ -15,29 +16,34 @@ pub fn max_us() -> u32 {
 struct Timed;
 critical_section::set_impl!(Timed);
 
-// SAFETY: as rp1-rt's implementation: `cpsid i` masks every configurable exception on this
-// core and release restores the previous state, so sections nest. The two statics are only
-// written with interrupts masked.
+// SAFETY: as in rp1-rt, BASEPRI_MAX masks user interrupts on this core without weakening an
+// existing mask, and release restores the saved value. Only user contexts use these statics.
 unsafe impl critical_section::Impl for Timed {
-    unsafe fn acquire() -> bool {
-        let primask: u32;
+    unsafe fn acquire() -> u8 {
+        let saved: u32;
         unsafe {
-            core::arch::asm!("mrs {}, PRIMASK", "cpsid i", out(reg) primask, options(nostack, preserves_flags));
+            asm!(
+                "mrs {saved}, BASEPRI",
+                "msr BASEPRI_MAX, {mask}",
+                saved = out(reg) saved,
+                mask = in(reg) 0x40u32,
+                options(nostack, preserves_flags)
+            );
         }
-        let was_enabled = primask & 1 == 0;
-        // Only the outermost section starts the clock: a nested one does not change the mask.
-        if was_enabled {
+        if saved == 0 {
             MASKED_AT.store(crate::proof::now(), Relaxed);
         }
-        was_enabled
+        saved as u8
     }
-    unsafe fn release(was_enabled: bool) {
-        if was_enabled {
+    unsafe fn release(saved: u8) {
+        if saved == 0 {
             let us = crate::proof::now().wrapping_sub(MASKED_AT.load(Relaxed));
             if us > MAX_US.load(Relaxed) {
                 MAX_US.store(us, Relaxed);
             }
-            unsafe { core::arch::asm!("cpsie i", options(nostack, preserves_flags)) };
         }
+        unsafe {
+            asm!("msr BASEPRI, {}", in(reg) u32::from(saved), options(nostack, preserves_flags))
+        };
     }
 }

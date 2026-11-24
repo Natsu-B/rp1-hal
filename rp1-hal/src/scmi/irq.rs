@@ -212,7 +212,7 @@ pub(crate) unsafe fn install(held: u32) {
 
 pub(crate) fn stats() -> ScmiStats {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
-    let stats = crate::with_irqs_masked(|| Mmio.counters().stats);
+    let stats = rp1_rt::interrupt::__primask_free(|| Mmio.counters().stats);
     #[cfg(not(all(target_arch = "arm", target_os = "none")))]
     let stats = ScmiStats::default();
     stats

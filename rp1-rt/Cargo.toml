@@ -7,14 +7,21 @@ license.workspace = true
 [features]
 default = ["critical-section-single-core"]
 critical-section-single-core = []
+# Use PRIMASK instead of BASEPRI. Platform IRQ latency and fault continuation are not guaranteed.
+critical-section-primask = ["critical-section-single-core"]
 # `record_panic` also records the panic's file and line (larger image, see its docs).
 panic-location = []
 
 [dependencies]
-critical-section = { version = "1", features = ["restore-state-bool"] }
 rp1-pac = { path = "../rp1-pac", features = ["rt"] }
 rp1-proto = { path = "../rp1-proto" }
 rp1-macros = { path = "../rp1-macros" }
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
+critical-section = { version = "1", features = ["restore-state-u8"] }
+
+[target.'cfg(not(all(target_arch = "arm", target_os = "none")))'.dependencies]
+critical-section = "1"
 
 [dev-dependencies]
 critical-section = { version = "1", features = ["std"] }

@@ -118,10 +118,13 @@ pub fn record_fault(exception: u32, pc: u32, cfsr: u32) {
 }
 
 fn finish(core: u32, state: CoreState, reason: u32, line: u32, aux: u32, file: &str) {
-    critical_section::with(|_| {
+    // A priority-1 fault can preempt a user critical section while STATE is still Running.
+    crate::interrupt::__primask_free(|| {
         if field(core, s::STATE).load(Relaxed) != CoreState::Running.word() {
             return;
         }
+        #[cfg(test)]
+        crate::interrupt::test_primask::interrupt_point();
         field(core, s::REASON).store(reason, Relaxed);
         field(core, s::LINE).store(line, Relaxed);
         field(core, s::AUX).store(aux, Relaxed);
@@ -201,6 +204,33 @@ mod tests {
         let fault = [s::STATE, s::REASON, s::LINE, s::AUX].map(|o| read(0, o));
         assert_eq!(fault, [CoreState::Fault.word(), 3, 0x2000_0401, 0x100]);
         assert_eq!(file(0), "");
+    }
+
+    #[test]
+    fn finish_defers_fault_preemption_until_first_details_are_published() {
+        use crate::interrupt::test_primask::preempt_at_next_point;
+        use core::sync::atomic::AtomicBool;
+
+        static FAULT_RAN: AtomicBool = AtomicBool::new(false);
+
+        fn check_first_record() {
+            let words = [s::STATE, s::REASON, s::LINE, s::AUX].map(|o| read(0, o));
+            assert_eq!(words, [CoreState::Panicked.word(), 5, 42, 7]);
+            assert_eq!(file(0), "first.rs");
+        }
+
+        let _page = PAGE_LOCK.lock().unwrap();
+        start(0);
+        critical_section::with(|_| {
+            preempt_at_next_point(|| {
+                check_first_record();
+                record_fault(6, 0x2000_0401, 0x100);
+                FAULT_RAN.store(true, Relaxed);
+            });
+            finish(0, CoreState::Panicked, 5, 42, 7, "first.rs");
+            assert!(FAULT_RAN.load(Relaxed));
+            check_first_record();
+        });
     }
 
     #[test]

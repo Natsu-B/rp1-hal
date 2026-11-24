@@ -231,7 +231,7 @@ pub(crate) fn state() -> PcieState {
 
 pub(crate) fn lost_detail() -> Option<LostDetail> {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
-    let (state, monitor2, at_us) = crate::with_irqs_masked(|| {
+    let (state, monitor2, at_us) = rp1_rt::interrupt::__primask_free(|| {
         let mut io = Mmio;
         (
             io.load(Word::State),

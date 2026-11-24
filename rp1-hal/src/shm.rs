@@ -224,7 +224,7 @@ impl Io for Mmio<'_> {
     }
     fn masked<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         #[cfg(all(target_arch = "arm", target_os = "none"))]
-        return crate::with_irqs_masked(|| f(self));
+        return rp1_rt::interrupt::__primask_free(|| f(self));
         #[cfg(not(all(target_arch = "arm", target_os = "none")))]
         f(self)
     }

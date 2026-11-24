@@ -118,30 +118,6 @@ pub(crate) fn poll(address: usize, mask: u32, value: u32) -> Result<(), Error> {
         core::hint::spin_loop();
     }
 }
-/// Runs `f` with this core's interrupts masked by PRIMASK, then restores PRIMASK. The
-/// application's critical-section implementation may leave the platform's IRQs unmasked, so a
-/// thread copy of a handler's DSRAM state uses this instead.
-#[cfg(all(target_arch = "arm", target_os = "none"))]
-pub(crate) fn with_irqs_masked<T>(f: impl FnOnce() -> T) -> T {
-    let saved: u32;
-    unsafe {
-        core::arch::asm!(
-            "mrs {saved}, PRIMASK",
-            "cpsid i",
-            saved = out(reg) saved,
-            options(nostack, preserves_flags)
-        )
-    };
-    let value = f();
-    unsafe {
-        core::arch::asm!(
-            "msr PRIMASK, {saved}",
-            saved = in(reg) saved,
-            options(nostack, preserves_flags)
-        )
-    };
-    value
-}
 pub(crate) const TIMER_RAWL: usize = 0x400a_c028;
 const POLL_TIMEOUT_US: u32 = 10_000;
 
