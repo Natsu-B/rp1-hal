@@ -130,9 +130,6 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     irq.TIMER_0.enable();
     p.proc1.launch(&mut core).unwrap();
     let mut rx = VALUES.consumer(&mut core);
-    // Linux resets the endpoint (PERSTn) when it probes PCIe; re-apply the endpoint config in
-    // time. This must be polled without sleeping.
-    let mut endpoint = unsafe { rp1_hal::cold::EndpointService::new() };
     let mut logged = 0;
     loop {
         #[cfg(feature = "panic-request")]
@@ -151,9 +148,6 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         }
         if let Some(value) = rx.pop() {
             log!("proc0 received {}\n", value).unwrap();
-        }
-        if let Some(r) = endpoint.poll() {
-            log!("proc0 pcie perst {:?}\n", r).unwrap();
         }
     }
 }
