@@ -34,6 +34,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+pub mod size;
+
 /// Exception entry frame: 32 B of state plus 4 B of alignment padding, no FPU (contract §5.5).
 pub const FRAME: u32 = 36;
 

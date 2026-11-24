@@ -350,6 +350,41 @@ STATIC (2026-11-25, release builds of `irq-proof` and `examples/dual-core`): bot
 the panic handler again. With `--cut` on the panic handler (its mangled symbol ends in `rust_begin_unwind`):
 H57 = 440 / 448 B, H53 = 8 B, Hhard = 8 B, `S_plat` = 564 / 572 B (DIAG).
 
+### Platform size (`stack-paths --size`, STATIC)
+
+`--size` first prints what the platform costs in the image. It is host-side only: the ELF
+holds everything (no UART line; the firmware does not report its own size).
+
+```sh
+cargo run -p stack-paths -- <firmware.elf> --size
+# size budget image=N/49152 sram_free=N isram=N/8192 isram_free=N dsram_static=N stack0=N stack1=N platform_stack=768 dsram_free0=N dsram_free1=N
+# size owner=platform|runtime|user|unattributed code=N data=N bss=N
+```
+
+`image` is the shared-SRAM image (`__image_end`, as `cargo rp1 build` reports it), `stack0`
+includes the `platform_stack` margin, and `dsram_freeN = 8192 - dsram_static - stackN`. Owners
+come from symbol names: platform = `rp1_rt`, `rp1_hal`, `rp1_proto`, `rp1_pac`, `__rp1_*`,
+the vector tables, the reset code and the `rp1` module that rp1-build generates; runtime =
+`core` and compiler-builtins; user = the firmware crate (its panic handler included);
+unattributed = anonymous constants, literal pools and padding. LTO inlines platform code into
+user functions (for example `platform::init` into `main`), so the platform figure is a lower
+bound and the user figure an upper bound.
+
+STATIC (2026-11-25, rustc 1.99.1, release `cargo rp1 build`; bytes):
+
+| Firmware | Image / 49152 | SRAM free | ISRAM / 8192 | Platform code | Runtime code | User code | Unattributed | stack0 (platform) / stack1 | DSRAM free p0 / p1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| examples/dual-core | 26816 | 22336 | 808 | 11082 | 6202 | 5990 | 3264 | 2816 (768) / 2048 | 5264 / 6032 |
+| irq-proof | 43536 | 5616 | 3876 | 16366 | 6374 | 15942 | 4514 | 2816 (768) / 2048 | 5104 / 5872 |
+| irq-sweep | 27088 | 22064 | 0 | 7824 | 4746 | 10704 | 3606 | 2816 (768) / 2048 | 5296 / 6064 |
+| pwm-loopback | 18000 | 31152 | 8 | 7940 | 2892 | 5344 | 1594 | 2816 (768) / 2048 | 5304 / 6072 |
+| scmi-starvation | 15952 | 33200 | 220 | 6996 | 2696 | 4346 | 1704 | 2816 (768) / 2048 | 5288 / 6056 |
+| shm-firmware (default) | 43752 | 5400 | 3348 | 17224 | 9110 | 12748 | 4404 | 2816 (768) / 6144 | 5288 / 1960 |
+| shm-firmware (ring-dma) | 44608 | 4544 | 7728 | 20072 | 5622 | 10820 | 3712 | 2816 (768) / 6144 | 5288 / 1960 |
+
+Data and bss are below 130 B per owner in every image except ring-dma's 4136 B of user
+`.shared` data. The stack margin lives in DSRAM, so the SRAM images did not grow with it.
+
 ## PWM loopback diagnostic (STATIC / HW 未検証)
 
 `pwm-loopback` is a separate, focused firmware example. See [the PWM API, register evidence
