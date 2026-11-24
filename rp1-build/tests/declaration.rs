@@ -497,21 +497,31 @@ fn heartbeat_period() {
 }
 
 #[test]
-fn proc0_default_stack_holds_the_platform_margin() {
+fn proc0_stack_always_holds_the_platform_margin() {
     use rp1_build::metadata::{DEFAULT_STACK, PLATFORM_STACK_MARGIN};
+    let margin = rp1_build::metadata::Declaration::stack_margin;
+    assert_eq!((margin(0), margin(1)), (PLATFORM_STACK_MARGIN, 0));
     let d = parse("");
     assert_eq!(
         d.stack_size(0).unwrap(),
         DEFAULT_STACK + PLATFORM_STACK_MARGIN
     );
     assert_eq!(d.stack_size(1).unwrap(), DEFAULT_STACK);
-    // Declaring one core keeps the other's default; a declared size is the whole stack.
+    // Declaring one core keeps the other's default.
     let d = parse("stack = { proc1 = '6KiB' }");
     assert_eq!(
         d.stack_size(0).unwrap(),
         DEFAULT_STACK + PLATFORM_STACK_MARGIN
     );
     assert_eq!(d.stack_size(1).unwrap(), 6144);
-    let d = parse("stack = { proc0 = '2KiB' }");
-    assert_eq!(d.stack_size(0).unwrap(), 2048);
+    // A declared proc0 stack is the user's part; the margin comes on top.
+    let d = parse("stack = { proc0 = '1KiB' }");
+    assert_eq!(d.stack_size(0).unwrap(), 1024 + PLATFORM_STACK_MARGIN);
+    // The margin counts against the 8 KiB limit on proc0 only.
+    assert!(parse("stack = { proc0 = '7KiB' }").stack_size(0).is_ok());
+    assert!(parse("stack = { proc0 = '8KiB' }").stack_size(0).is_err());
+    assert_eq!(
+        parse("stack = { proc1 = '8KiB' }").stack_size(1).unwrap(),
+        8192
+    );
 }

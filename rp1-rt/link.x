@@ -46,6 +46,7 @@ ASSERT(__vectors0_end - __vectors0 == 320, "vector table 0 is not 320 bytes")
 ASSERT(SIZEOF(.vectors) == 832, "vector section is not 832 bytes")
 ASSERT(SIZEOF(.isram) <= 8192, "ISRAM budget exceeded")
 ASSERT(__ebss + MAX(__stack_size0, __stack_size1) <= 0x10004000, "DSRAM + stack budget exceeded")
+ASSERT(__stack_margin0 < __stack_size0, "proc0 stack has no room above the platform margin")
 ASSERT(__image_end <= 0x2000c000, "shared SRAM image exceeds 48 KiB")
 /* Fixed-address scratch: every raw shared-SRAM address the firmware uses (link page, SCMI
    shmem, lab request words) must be at or above this floor; below it everything belongs to the

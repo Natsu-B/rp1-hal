@@ -331,14 +331,15 @@ frame (32 B of state + 4 B alignment, no FPU), proc0's deepest chain is
 ```text
 need0  = T + Σ H_p + max(H57, Hfault) + H53 + Hhard + (|U| + 3) · F
 S_plat = max(H57, Hfault) + H53 + Hhard + 3 · F          (the platform's share)
-stack0 = 2 KiB + roundup(S_plat, 256)                    (proc0's default stack)
+stack0 = user + roundup(S_plat, 256)                     (user: declared, default 2 KiB)
 ```
 
 `Hfault = 0` while the configurable fault handlers are disabled, and `Hhard` is the default
 HardFault handler. The platform bounds only `S_plat`; the user part `T + Σ H_p` has no bound
 here. rp1-build's `PLATFORM_STACK_MARGIN` (768 B) is that roundup for the largest `S_plat` of
-this workspace's firmware, and proc0's default stack is 2816 B. A declared `proc0` stack is the
-whole stack, the margin included.
+this workspace's firmware (716 B, STATIC 2026-11-25). rp1-build adds it to proc0's user stack,
+declared or default, and gives it to the linker as `__stack_margin0`: proc0's default stack is
+2816 B, and `stack = { proc0 = "1KiB" }` gives 1792 B.
 
 ### Static bound (`stack-paths`)
 

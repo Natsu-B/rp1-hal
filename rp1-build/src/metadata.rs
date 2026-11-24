@@ -144,16 +144,16 @@ pub struct Stack {
     pub proc0: String,
     pub proc1: String,
 }
-/// Default stack of each core for the user's code, in bytes.
+/// Default stack of each core for the user's code, in bytes. A declared `stack.proc0` or
+/// `stack.proc1` replaces it.
 pub const DEFAULT_STACK: usize = 2048;
-/// proc0's extra default stack for the platform handlers (IRQ57, IRQ53, HardFault), which run on
-/// proc0's MSP on top of the user's code: `roundup(S_plat, 256)`, with
-/// `S_plat = max(H57, Hfault) + H53 + Hhard + 3 * 36` (36 B per exception frame). STATIC
-/// (2026-11-25, `stack-paths`): the largest `S_plat` of this workspace's firmware is 716 B.
-/// `stack-paths` fails an image whose `S_plat` exceeds this margin.
+/// Stack that rp1-build always adds to proc0's user stack, declared or default, for the platform
+/// handlers (IRQ57, IRQ53, HardFault), which run on proc0's MSP on top of the user's code:
+/// `roundup(S_plat, 256)`, with `S_plat = max(H57, Hfault) + H53 + Hhard + 3 * 36` (36 B per
+/// exception frame). The linker script gets it as `__stack_margin0`, and `stack-paths` fails an
+/// image whose `S_plat` exceeds that symbol.
 pub const PLATFORM_STACK_MARGIN: usize = 768;
-/// proc0's default stack: [`DEFAULT_STACK`] plus [`PLATFORM_STACK_MARGIN`]. A declared `proc0`
-/// replaces it and is the whole stack, the platform's share included.
+/// proc0's default stack: [`DEFAULT_STACK`] plus [`PLATFORM_STACK_MARGIN`].
 pub const DEFAULT_STACK_PROC0: usize = DEFAULT_STACK + PLATFORM_STACK_MARGIN;
 const _: () =
     assert!(PLATFORM_STACK_MARGIN.is_multiple_of(256) && DEFAULT_STACK_PROC0.is_multiple_of(8));
@@ -161,7 +161,7 @@ const _: () =
 impl Default for Stack {
     fn default() -> Self {
         Self {
-            proc0: DEFAULT_STACK_PROC0.to_string(),
+            proc0: DEFAULT_STACK.to_string(),
             proc1: DEFAULT_STACK.to_string(),
         }
     }
@@ -286,23 +286,37 @@ impl Declaration {
         }
         r
     }
+    /// The whole stack of `core`: the declared (or default) user stack, plus
+    /// [`Self::stack_margin`].
     pub fn stack_size(&self, core: usize) -> Result<usize> {
         let s = if core == 0 {
             &self.stack.proc0
         } else {
             &self.stack.proc1
         };
-        let n = if let Some(s) = s.strip_suffix("KiB") {
+        let user = if let Some(s) = s.strip_suffix("KiB") {
             s.parse::<usize>()?
                 .checked_mul(1024)
                 .ok_or("stack overflow")?
         } else {
             s.parse()?
         };
-        if n == 0 || n > 8192 || n % 8 != 0 {
-            return Err("stack must be 8-byte aligned and within 8 KiB".into());
+        let n = user
+            .checked_add(Self::stack_margin(core))
+            .ok_or("stack overflow")?;
+        if user == 0 || n > 8192 || user % 8 != 0 {
+            return Err(if core == 0 {
+                "stack.proc0 must be 8-byte aligned and, with the 768 B platform margin, within 8 KiB"
+            } else {
+                "stack must be 8-byte aligned and within 8 KiB"
+            }
+            .into());
         }
         Ok(n)
+    }
+    /// The platform's part of `core`'s stack: [`PLATFORM_STACK_MARGIN`] on proc0, 0 on proc1.
+    pub fn stack_margin(core: usize) -> usize {
+        if core == 0 { PLATFORM_STACK_MARGIN } else { 0 }
     }
     pub fn validate(&self) -> Result<()> {
         if self.schema != 2 || self.board != "rpi-cm5" {

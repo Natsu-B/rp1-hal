@@ -534,11 +534,11 @@ fn in_tree_declarations_have_stable_notes() {
     for (manifest, expected) in [
         (
             "examples/dual-core/Cargo.toml",
-            "98cc8a0ca1d8d9a8776deb9acbca0003102147a355bd6d04a347216b5e0d70d2",
+            "bbbac530490e68ded79976f4e0965fbb3cc52f124b8d51bbced25c2e6af84d31",
         ),
         (
             "lab/shm-firmware/Cargo.toml",
-            "06502faa70509a996c08127a2eb10d62b2cc9d5f30ef62ad92a94fd730234a20",
+            "8ae65b7dc431ebc8c69de5298eb40fbf1f03a3adf6da89784ca351d63e3129a5",
         ),
     ] {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))

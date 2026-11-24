@@ -41,7 +41,7 @@ schema = 2                                # 宣言の版（必須。2 のみ）
 board = "rpi-cm5"                         # ボード表（Linux に残すピン・ブロック、DT ラベル）。rp1-build に同梱
 clock = { authority = "rp1", clk_sys_hz = 200_000_000 }  # authority: "rp1" | "linux"
 log = { sink = "uart0", baudrate = 115_200 }             # = システム所有の uart0 { tx = 14, rx = 15 }。省略すると log! はコンパイルエラー
-stack = { proc0 = "2816", proc1 = "2KiB" }               # 省略時は proc0 = 2 KiB + プラットフォーム分 768 B、proc1 = 2 KiB（DSRAM）。宣言した値はスタック全体
+stack = { proc1 = "6KiB" }                # ユーザー分のスタック（DSRAM）。省略時は各 2 KiB。proc0 には宣言の有無によらずプラットフォーム分 768 B が足される
 link_page = "16KiB"                       # 共有 SRAM の Linux 用ページ。"none" なら全リングが placement = "linux"（v0.1 未実装）
 
 [package.metadata.rp1.proc0]

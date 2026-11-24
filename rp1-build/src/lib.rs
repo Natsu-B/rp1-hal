@@ -196,9 +196,10 @@ pub fn generate(
     d.validate()?;
     let note = wire::descriptor(name, version, d, hash, source)?;
     let layout = format!(
-        "__stack_size0 = {};\n__stack_size1 = {};\n{}\n{}",
+        "__stack_size0 = {};\n__stack_size1 = {};\n__stack_margin0 = {};\n{}\n{}",
         d.stack_size(0)?,
         d.stack_size(1)?,
+        metadata::Declaration::stack_margin(0),
         include_str!("../../rp1-rt/link.x"),
         include_str!("../../rp1-pac/irq.x")
     );
