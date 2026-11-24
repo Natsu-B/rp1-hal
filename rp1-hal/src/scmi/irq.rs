@@ -214,25 +214,10 @@ pub(crate) unsafe fn install(held: u32) {
 
 pub(crate) fn stats() -> ScmiStats {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
-    unsafe {
-        // The application's critical-section implementation may leave IRQ57 unmasked.
-        let saved: u32;
-        core::arch::asm!(
-            "mrs {saved}, PRIMASK",
-            "cpsid i",
-            saved = out(reg) saved,
-            options(nostack, preserves_flags)
-        );
-        let stats = Mmio.counters().stats;
-        core::arch::asm!(
-            "msr PRIMASK, {saved}",
-            saved = in(reg) saved,
-            options(nostack, preserves_flags)
-        );
-        stats
-    }
+    let stats = crate::with_irqs_masked(|| Mmio.counters().stats);
     #[cfg(not(all(target_arch = "arm", target_os = "none")))]
-    ScmiStats::default()
+    let stats = ScmiStats::default();
+    stats
 }
 
 #[rp1_rt::interrupt(proc0, __platform, sram)]
