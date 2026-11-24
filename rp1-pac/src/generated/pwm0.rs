@@ -36,16 +36,15 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine.
+    /// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine. Because `set_update` clears itself, the PAC offers no general modify and no safe writer for it; the enables keep their typed SET/CLR/XOR writers.
     /// Hardware access: read Plain; write Plain.
+    /// Write API is not exposed because the verified operation semantics are insufficient.
     #[inline(always)]
     pub const fn global_ctrl(&self) -> &GLOBAL_CTRL {
         &self.global_ctrl
     }
     /// FIFO level, flush and DMA request control. The registers are in the `clk_sys` domain; FIFO consumption and flush completion happen in `clk_pwm`.
-    /// Hardware access: read Fifo; write Fifo.
-    /// FIFO/data port; only dedicated FIFO operations are generated.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Hardware access: read Plain; write Plain.
     #[inline(always)]
     pub const fn fifo_ctrl(&self) -> &FIFO_CTRL {
         &self.fifo_ctrl
@@ -159,7 +158,8 @@ impl RegisterBlock {
         &self.chan3_duty
     }
     /// Raw interrupt status, before the enable mask.
-    /// Hardware access: read Plain; write Plain.
+    /// Hardware access: read Plain; write WriteOneToClear.
+    /// Write-one-to-clear register; general write and modify APIs are not generated.
     #[inline(always)]
     pub const fn intr(&self) -> &INTR {
         &self.intr
@@ -184,11 +184,13 @@ impl RegisterBlock {
     }
 }
 
-/// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine.
+/// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine. Because `set_update` clears itself, the PAC offers no general modify and no safe writer for it; the enables keep their typed SET/CLR/XOR writers.
 /// Hardware access: read Plain; write Plain.
+/// Write API is not exposed because the verified operation semantics are insufficient.
 pub type GLOBAL_CTRL = Reg<global_ctrl::GLOBAL_CTRL_SPEC>;
-/// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine.
+/// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine. Because `set_update` clears itself, the PAC offers no general modify and no safe writer for it; the enables keep their typed SET/CLR/XOR writers.
 /// Hardware access: read Plain; write Plain.
+/// Write API is not exposed because the verified operation semantics are insufficient.
 pub mod global_ctrl {
     pub struct GLOBAL_CTRL_SPEC;
     impl crate::RegisterSpec for GLOBAL_CTRL_SPEC {
@@ -196,7 +198,6 @@ pub mod global_ctrl {
     }
     impl crate::Readable for GLOBAL_CTRL_SPEC {}
     pub type R = crate::R<GLOBAL_CTRL_SPEC>;
-    impl crate::Modifiable for GLOBAL_CTRL_SPEC {}
     impl crate::UnsafeWritable for GLOBAL_CTRL_SPEC {}
     impl crate::ResetValue for GLOBAL_CTRL_SPEC {
         const RESET_VALUE: u32 = 0x0;
@@ -219,7 +220,6 @@ pub mod global_ctrl {
     impl crate::UnsafeAtomicXor for GLOBAL_CTRL_SPEC {
         const OFFSET: usize = 0x1000;
     }
-    pub type W = crate::W<GLOBAL_CTRL_SPEC>;
     pub type AtomicSetW = crate::AtomicSetW<GLOBAL_CTRL_SPEC>;
     pub type AtomicClearW = crate::AtomicClearW<GLOBAL_CTRL_SPEC>;
     pub type AtomicXorW = crate::AtomicXorW<GLOBAL_CTRL_SPEC>;
@@ -227,7 +227,6 @@ pub mod global_ctrl {
     /// Field write behavior: Plain.
     pub mod chan0_en {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 0>;
         pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 0>;
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
@@ -236,7 +235,6 @@ pub mod global_ctrl {
     /// Field write behavior: Plain.
     pub mod chan1_en {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 1>;
         pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 1>;
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
@@ -245,7 +243,6 @@ pub mod global_ctrl {
     /// Field write behavior: Plain.
     pub mod chan2_en {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 2>;
         pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 2>;
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
@@ -254,19 +251,15 @@ pub mod global_ctrl {
     /// Field write behavior: Plain.
     pub mod chan3_en {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 3>;
         pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 3>;
         pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
         pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
     /// Write 1 to apply the staged enables, channel control and phase, and `common_range`. Hardware clears the bit. Local range and duty writes do not need it; they apply at the channel's rollover.
-    /// Field write behavior: Plain.
+    /// Field write behavior: SelfClearing.
+    /// Typed write API is not exposed by register policy.
     pub mod set_update {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 31>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 31>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 31>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 31>;
     }
     impl R {
         #[inline(always)]
@@ -288,28 +281,6 @@ pub mod global_ctrl {
         #[inline(always)]
         pub fn set_update(&self) -> set_update::R {
             crate::BitReader::new(((self.bits() >> 31) & 1) != 0)
-        }
-    }
-    impl W {
-        #[inline(always)]
-        pub fn chan0_en(&mut self) -> chan0_en::W<'_> {
-            chan0_en::W::new(self)
-        }
-        #[inline(always)]
-        pub fn chan1_en(&mut self) -> chan1_en::W<'_> {
-            chan1_en::W::new(self)
-        }
-        #[inline(always)]
-        pub fn chan2_en(&mut self) -> chan2_en::W<'_> {
-            chan2_en::W::new(self)
-        }
-        #[inline(always)]
-        pub fn chan3_en(&mut self) -> chan3_en::W<'_> {
-            chan3_en::W::new(self)
-        }
-        #[inline(always)]
-        pub fn set_update(&mut self) -> set_update::W<'_> {
-            set_update::W::new(self)
         }
     }
     impl AtomicSetW {
@@ -337,12 +308,6 @@ pub mod global_ctrl {
         pub fn chan3_en(&mut self) -> chan3_en::ASW<'_> {
             chan3_en::ASW::new(self)
         }
-        /// Write 1 to apply the staged enables, channel control and phase, and `common_range`. Hardware clears the bit. Local range and duty writes do not need it; they apply at the channel's rollover.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn set_update(&mut self) -> set_update::ASW<'_> {
-            set_update::ASW::new(self)
-        }
     }
     impl AtomicClearW {
         /// Channel 0 enable: 0 off, 1 on in its configured mode. Takes effect via `set_update`.
@@ -368,12 +333,6 @@ pub mod global_ctrl {
         #[inline(always)]
         pub fn chan3_en(&mut self) -> chan3_en::ACW<'_> {
             chan3_en::ACW::new(self)
-        }
-        /// Write 1 to apply the staged enables, channel control and phase, and `common_range`. Hardware clears the bit. Local range and duty writes do not need it; they apply at the channel's rollover.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn set_update(&mut self) -> set_update::ACW<'_> {
-            set_update::ACW::new(self)
         }
     }
     impl AtomicXorW {
@@ -401,24 +360,14 @@ pub mod global_ctrl {
         pub fn chan3_en(&mut self) -> chan3_en::AXW<'_> {
             chan3_en::AXW::new(self)
         }
-        /// Write 1 to apply the staged enables, channel control and phase, and `common_range`. Hardware clears the bit. Local range and duty writes do not need it; they apply at the channel's rollover.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn set_update(&mut self) -> set_update::AXW<'_> {
-            set_update::AXW::new(self)
-        }
     }
 }
 
 /// FIFO level, flush and DMA request control. The registers are in the `clk_sys` domain; FIFO consumption and flush completion happen in `clk_pwm`.
-/// Hardware access: read Fifo; write Fifo.
-/// FIFO/data port; only dedicated FIFO operations are generated.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Hardware access: read Plain; write Plain.
 pub type FIFO_CTRL = Reg<fifo_ctrl::FIFO_CTRL_SPEC>;
 /// FIFO level, flush and DMA request control. The registers are in the `clk_sys` domain; FIFO consumption and flush completion happen in `clk_pwm`.
-/// Hardware access: read Fifo; write Fifo.
-/// FIFO/data port; only dedicated FIFO operations are generated.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Hardware access: read Plain; write Plain.
 pub mod fifo_ctrl {
     pub struct FIFO_CTRL_SPEC;
     impl crate::RegisterSpec for FIFO_CTRL_SPEC {
@@ -426,6 +375,30 @@ pub mod fifo_ctrl {
     }
     impl crate::Readable for FIFO_CTRL_SPEC {}
     pub type R = crate::R<FIFO_CTRL_SPEC>;
+    impl crate::Modifiable for FIFO_CTRL_SPEC {}
+    impl crate::UnsafeWritable for FIFO_CTRL_SPEC {}
+    impl crate::TypedAtomicSet for FIFO_CTRL_SPEC {
+        const OFFSET: usize = 0x2000;
+    }
+    impl crate::UnsafeAtomicSet for FIFO_CTRL_SPEC {
+        const OFFSET: usize = 0x2000;
+    }
+    impl crate::TypedAtomicClear for FIFO_CTRL_SPEC {
+        const OFFSET: usize = 0x3000;
+    }
+    impl crate::UnsafeAtomicClear for FIFO_CTRL_SPEC {
+        const OFFSET: usize = 0x3000;
+    }
+    impl crate::TypedAtomicXor for FIFO_CTRL_SPEC {
+        const OFFSET: usize = 0x1000;
+    }
+    impl crate::UnsafeAtomicXor for FIFO_CTRL_SPEC {
+        const OFFSET: usize = 0x1000;
+    }
+    pub type W = crate::W<FIFO_CTRL_SPEC>;
+    pub type AtomicSetW = crate::AtomicSetW<FIFO_CTRL_SPEC>;
+    pub type AtomicClearW = crate::AtomicClearW<FIFO_CTRL_SPEC>;
+    pub type AtomicXorW = crate::AtomicXorW<FIFO_CTRL_SPEC>;
     /// Number of words in the FIFO. How it counts when several channels are packed into one entry is unknown.
     /// Field write behavior: ReadOnly.
     /// Read-only field; no writer is generated.
@@ -434,9 +407,12 @@ pub mod fifo_ctrl {
     }
     /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. Whether this bit clears itself is unknown.
     /// Field write behavior: Plain.
-    /// Typed write API is not exposed by register policy.
     pub mod flush {
         pub type R = crate::BitReader;
+        pub type W<'a> = crate::BitWriter<'a, super::W, 5>;
+        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 5>;
+        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
+        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
     }
     /// 1 when the PWM clock domain has finished the flush.
     /// Field write behavior: ReadOnly.
@@ -446,21 +422,30 @@ pub mod fifo_ctrl {
     }
     /// A DMA request is raised while `level` is at or below this value. Same units as `level`.
     /// Field write behavior: Plain.
-    /// Typed write API is not exposed by register policy.
     pub mod threshold {
         pub type R = crate::FieldReader<u32>;
+        pub type W<'a> = crate::FieldWriter<'a, super::W, 11, 5>;
+        pub type ASW<'a> = crate::AtomicSetFieldWriter<'a, super::AtomicSetW, 11, 5>;
+        pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 11, 5>;
+        pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 11, 5>;
     }
     /// Minimum gap between DMA requests in bus cycles, giving in-flight writes time to reach the FIFO.
     /// Field write behavior: Plain.
-    /// Typed write API is not exposed by register policy.
     pub mod dwell_time {
         pub type R = crate::FieldReader<u32>;
+        pub type W<'a> = crate::FieldWriter<'a, super::W, 16, 5>;
+        pub type ASW<'a> = crate::AtomicSetFieldWriter<'a, super::AtomicSetW, 16, 5>;
+        pub type ACW<'a> = crate::AtomicClearFieldWriter<'a, super::AtomicClearW, 16, 5>;
+        pub type AXW<'a> = crate::AtomicXorFieldWriter<'a, super::AtomicXorW, 16, 5>;
     }
     /// 1 enables the DMA request output. 0 masks it, but the `dreq_active` interrupt source still works.
     /// Field write behavior: Plain.
-    /// Typed write API is not exposed by register policy.
     pub mod dreq_en {
         pub type R = crate::BitReader;
+        pub type W<'a> = crate::BitWriter<'a, super::W, 31>;
+        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 31>;
+        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 31>;
+        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 31>;
     }
     impl R {
         #[inline(always)]
@@ -486,6 +471,102 @@ pub mod fifo_ctrl {
         #[inline(always)]
         pub fn dreq_en(&self) -> dreq_en::R {
             crate::BitReader::new(((self.bits() >> 31) & 1) != 0)
+        }
+    }
+    impl W {
+        #[inline(always)]
+        pub fn flush(&mut self) -> flush::W<'_> {
+            flush::W::new(self)
+        }
+        #[inline(always)]
+        pub fn threshold(&mut self) -> threshold::W<'_> {
+            threshold::W::new(self)
+        }
+        #[inline(always)]
+        pub fn dwell_time(&mut self) -> dwell_time::W<'_> {
+            dwell_time::W::new(self)
+        }
+        #[inline(always)]
+        pub fn dreq_en(&mut self) -> dreq_en::W<'_> {
+            dreq_en::W::new(self)
+        }
+    }
+    impl AtomicSetW {
+        /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. Whether this bit clears itself is unknown.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn flush(&mut self) -> flush::ASW<'_> {
+            flush::ASW::new(self)
+        }
+        /// A DMA request is raised while `level` is at or below this value. Same units as `level`.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn threshold(&mut self) -> threshold::ASW<'_> {
+            threshold::ASW::new(self)
+        }
+        /// Minimum gap between DMA requests in bus cycles, giving in-flight writes time to reach the FIFO.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn dwell_time(&mut self) -> dwell_time::ASW<'_> {
+            dwell_time::ASW::new(self)
+        }
+        /// 1 enables the DMA request output. 0 masks it, but the `dreq_active` interrupt source still works.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn dreq_en(&mut self) -> dreq_en::ASW<'_> {
+            dreq_en::ASW::new(self)
+        }
+    }
+    impl AtomicClearW {
+        /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. Whether this bit clears itself is unknown.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn flush(&mut self) -> flush::ACW<'_> {
+            flush::ACW::new(self)
+        }
+        /// A DMA request is raised while `level` is at or below this value. Same units as `level`.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn threshold(&mut self) -> threshold::ACW<'_> {
+            threshold::ACW::new(self)
+        }
+        /// Minimum gap between DMA requests in bus cycles, giving in-flight writes time to reach the FIFO.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn dwell_time(&mut self) -> dwell_time::ACW<'_> {
+            dwell_time::ACW::new(self)
+        }
+        /// 1 enables the DMA request output. 0 masks it, but the `dreq_active` interrupt source still works.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn dreq_en(&mut self) -> dreq_en::ACW<'_> {
+            dreq_en::ACW::new(self)
+        }
+    }
+    impl AtomicXorW {
+        /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. Whether this bit clears itself is unknown.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn flush(&mut self) -> flush::AXW<'_> {
+            flush::AXW::new(self)
+        }
+        /// A DMA request is raised while `level` is at or below this value. Same units as `level`.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn threshold(&mut self) -> threshold::AXW<'_> {
+            threshold::AXW::new(self)
+        }
+        /// Minimum gap between DMA requests in bus cycles, giving in-flight writes time to reach the FIFO.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn dwell_time(&mut self) -> dwell_time::AXW<'_> {
+            dwell_time::AXW::new(self)
+        }
+        /// 1 enables the DMA request output. 0 masks it, but the `dreq_active` interrupt source still works.
+        /// Field write behavior: Plain.
+        #[inline(always)]
+        pub fn dreq_en(&mut self) -> dreq_en::AXW<'_> {
+            dreq_en::AXW::new(self)
         }
     }
 }
@@ -3170,10 +3251,12 @@ pub mod chan3_duty {
 }
 
 /// Raw interrupt status, before the enable mask.
-/// Hardware access: read Plain; write Plain.
+/// Hardware access: read Plain; write WriteOneToClear.
+/// Write-one-to-clear register; general write and modify APIs are not generated.
 pub type INTR = Reg<intr::INTR_SPEC>;
 /// Raw interrupt status, before the enable mask.
-/// Hardware access: read Plain; write Plain.
+/// Hardware access: read Plain; write WriteOneToClear.
+/// Write-one-to-clear register; general write and modify APIs are not generated.
 pub mod intr {
     pub struct INTR_SPEC;
     impl crate::RegisterSpec for INTR_SPEC {
@@ -3181,113 +3264,65 @@ pub mod intr {
     }
     impl crate::Readable for INTR_SPEC {}
     pub type R = crate::R<INTR_SPEC>;
-    impl crate::Modifiable for INTR_SPEC {}
+    impl crate::WriteOneToClear for INTR_SPEC {}
     impl crate::UnsafeWritable for INTR_SPEC {}
     impl crate::ResetValue for INTR_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    impl crate::TypedAtomicSet for INTR_SPEC {
-        const OFFSET: usize = 0x2000;
-    }
-    impl crate::UnsafeAtomicSet for INTR_SPEC {
-        const OFFSET: usize = 0x2000;
-    }
-    impl crate::TypedAtomicClear for INTR_SPEC {
-        const OFFSET: usize = 0x3000;
-    }
-    impl crate::UnsafeAtomicClear for INTR_SPEC {
-        const OFFSET: usize = 0x3000;
-    }
-    impl crate::TypedAtomicXor for INTR_SPEC {
-        const OFFSET: usize = 0x1000;
-    }
-    impl crate::UnsafeAtomicXor for INTR_SPEC {
-        const OFFSET: usize = 0x1000;
-    }
-    pub type W = crate::W<INTR_SPEC>;
-    pub type AtomicSetW = crate::AtomicSetW<INTR_SPEC>;
-    pub type AtomicClearW = crate::AtomicClearW<INTR_SPEC>;
-    pub type AtomicXorW = crate::AtomicXorW<INTR_SPEC>;
+    pub type ClearW = crate::ClearW<INTR_SPEC>;
     /// Raw FIFO underflow (read while empty) flag. Clear it by writing 1; writing 0 leaves it pending.
-    /// Field write behavior: Plain.
+    /// Field write behavior: WriteOneToClear.
     pub mod fifo_underflow {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 0>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 0>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 0>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 0>;
+        pub type CW<'a> = crate::ClearBitWriter<'a, super::ClearW, 0>;
     }
     /// Raw FIFO overflow (write while full) flag. Clear it by writing 1; writing 0 leaves it pending.
-    /// Field write behavior: Plain.
+    /// Field write behavior: WriteOneToClear.
     pub mod fifo_overflow {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 1>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 1>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 1>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 1>;
+        pub type CW<'a> = crate::ClearBitWriter<'a, super::ClearW, 1>;
     }
     /// Raw FIFO empty state. Follows the source; it is not cleared by writing.
-    /// Field write behavior: Plain.
+    /// Field write behavior: ReadOnly.
+    /// Read-only field; no writer is generated.
     pub mod fifo_empty {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 2>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 2>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 2>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 2>;
     }
     /// Raw FIFO full state. Follows the source; it is not cleared by writing.
-    /// Field write behavior: Plain.
+    /// Field write behavior: ReadOnly.
+    /// Read-only field; no writer is generated.
     pub mod fifo_full {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 3>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 3>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 3>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 3>;
     }
     /// Raw DMA request active state. Follows the source; it is not cleared by writing.
-    /// Field write behavior: Plain.
+    /// Field write behavior: ReadOnly.
+    /// Read-only field; no writer is generated.
     pub mod dreq_active {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 4>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 4>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 4>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 4>;
     }
     /// Raw channel 0 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-    /// Field write behavior: Plain.
+    /// Field write behavior: WriteOneToClear.
     pub mod chan0_reload {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 5>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 5>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 5>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 5>;
+        pub type CW<'a> = crate::ClearBitWriter<'a, super::ClearW, 5>;
     }
     /// Raw channel 1 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-    /// Field write behavior: Plain.
+    /// Field write behavior: WriteOneToClear.
     pub mod chan1_reload {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 6>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 6>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 6>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 6>;
+        pub type CW<'a> = crate::ClearBitWriter<'a, super::ClearW, 6>;
     }
     /// Raw channel 2 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-    /// Field write behavior: Plain.
+    /// Field write behavior: WriteOneToClear.
     pub mod chan2_reload {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 7>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 7>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 7>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 7>;
+        pub type CW<'a> = crate::ClearBitWriter<'a, super::ClearW, 7>;
     }
     /// Raw channel 3 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-    /// Field write behavior: Plain.
+    /// Field write behavior: WriteOneToClear.
     pub mod chan3_reload {
         pub type R = crate::BitReader;
-        pub type W<'a> = crate::BitWriter<'a, super::W, 8>;
-        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 8>;
-        pub type ACW<'a> = crate::AtomicClearBitWriter<'a, super::AtomicClearW, 8>;
-        pub type AXW<'a> = crate::AtomicXorBitWriter<'a, super::AtomicXorW, 8>;
+        pub type CW<'a> = crate::ClearBitWriter<'a, super::ClearW, 8>;
     }
     impl R {
         #[inline(always)]
@@ -3327,210 +3362,30 @@ pub mod intr {
             crate::BitReader::new(((self.bits() >> 8) & 1) != 0)
         }
     }
-    impl W {
+    impl ClearW {
         #[inline(always)]
-        pub fn fifo_underflow(&mut self) -> fifo_underflow::W<'_> {
-            fifo_underflow::W::new(self)
+        pub fn fifo_underflow(&mut self) -> fifo_underflow::CW<'_> {
+            fifo_underflow::CW::new(self)
         }
         #[inline(always)]
-        pub fn fifo_overflow(&mut self) -> fifo_overflow::W<'_> {
-            fifo_overflow::W::new(self)
+        pub fn fifo_overflow(&mut self) -> fifo_overflow::CW<'_> {
+            fifo_overflow::CW::new(self)
         }
         #[inline(always)]
-        pub fn fifo_empty(&mut self) -> fifo_empty::W<'_> {
-            fifo_empty::W::new(self)
+        pub fn chan0_reload(&mut self) -> chan0_reload::CW<'_> {
+            chan0_reload::CW::new(self)
         }
         #[inline(always)]
-        pub fn fifo_full(&mut self) -> fifo_full::W<'_> {
-            fifo_full::W::new(self)
+        pub fn chan1_reload(&mut self) -> chan1_reload::CW<'_> {
+            chan1_reload::CW::new(self)
         }
         #[inline(always)]
-        pub fn dreq_active(&mut self) -> dreq_active::W<'_> {
-            dreq_active::W::new(self)
+        pub fn chan2_reload(&mut self) -> chan2_reload::CW<'_> {
+            chan2_reload::CW::new(self)
         }
         #[inline(always)]
-        pub fn chan0_reload(&mut self) -> chan0_reload::W<'_> {
-            chan0_reload::W::new(self)
-        }
-        #[inline(always)]
-        pub fn chan1_reload(&mut self) -> chan1_reload::W<'_> {
-            chan1_reload::W::new(self)
-        }
-        #[inline(always)]
-        pub fn chan2_reload(&mut self) -> chan2_reload::W<'_> {
-            chan2_reload::W::new(self)
-        }
-        #[inline(always)]
-        pub fn chan3_reload(&mut self) -> chan3_reload::W<'_> {
-            chan3_reload::W::new(self)
-        }
-    }
-    impl AtomicSetW {
-        /// Raw FIFO underflow (read while empty) flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_underflow(&mut self) -> fifo_underflow::ASW<'_> {
-            fifo_underflow::ASW::new(self)
-        }
-        /// Raw FIFO overflow (write while full) flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_overflow(&mut self) -> fifo_overflow::ASW<'_> {
-            fifo_overflow::ASW::new(self)
-        }
-        /// Raw FIFO empty state. Follows the source; it is not cleared by writing.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_empty(&mut self) -> fifo_empty::ASW<'_> {
-            fifo_empty::ASW::new(self)
-        }
-        /// Raw FIFO full state. Follows the source; it is not cleared by writing.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_full(&mut self) -> fifo_full::ASW<'_> {
-            fifo_full::ASW::new(self)
-        }
-        /// Raw DMA request active state. Follows the source; it is not cleared by writing.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn dreq_active(&mut self) -> dreq_active::ASW<'_> {
-            dreq_active::ASW::new(self)
-        }
-        /// Raw channel 0 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan0_reload(&mut self) -> chan0_reload::ASW<'_> {
-            chan0_reload::ASW::new(self)
-        }
-        /// Raw channel 1 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan1_reload(&mut self) -> chan1_reload::ASW<'_> {
-            chan1_reload::ASW::new(self)
-        }
-        /// Raw channel 2 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan2_reload(&mut self) -> chan2_reload::ASW<'_> {
-            chan2_reload::ASW::new(self)
-        }
-        /// Raw channel 3 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan3_reload(&mut self) -> chan3_reload::ASW<'_> {
-            chan3_reload::ASW::new(self)
-        }
-    }
-    impl AtomicClearW {
-        /// Raw FIFO underflow (read while empty) flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_underflow(&mut self) -> fifo_underflow::ACW<'_> {
-            fifo_underflow::ACW::new(self)
-        }
-        /// Raw FIFO overflow (write while full) flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_overflow(&mut self) -> fifo_overflow::ACW<'_> {
-            fifo_overflow::ACW::new(self)
-        }
-        /// Raw FIFO empty state. Follows the source; it is not cleared by writing.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_empty(&mut self) -> fifo_empty::ACW<'_> {
-            fifo_empty::ACW::new(self)
-        }
-        /// Raw FIFO full state. Follows the source; it is not cleared by writing.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_full(&mut self) -> fifo_full::ACW<'_> {
-            fifo_full::ACW::new(self)
-        }
-        /// Raw DMA request active state. Follows the source; it is not cleared by writing.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn dreq_active(&mut self) -> dreq_active::ACW<'_> {
-            dreq_active::ACW::new(self)
-        }
-        /// Raw channel 0 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan0_reload(&mut self) -> chan0_reload::ACW<'_> {
-            chan0_reload::ACW::new(self)
-        }
-        /// Raw channel 1 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan1_reload(&mut self) -> chan1_reload::ACW<'_> {
-            chan1_reload::ACW::new(self)
-        }
-        /// Raw channel 2 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan2_reload(&mut self) -> chan2_reload::ACW<'_> {
-            chan2_reload::ACW::new(self)
-        }
-        /// Raw channel 3 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan3_reload(&mut self) -> chan3_reload::ACW<'_> {
-            chan3_reload::ACW::new(self)
-        }
-    }
-    impl AtomicXorW {
-        /// Raw FIFO underflow (read while empty) flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_underflow(&mut self) -> fifo_underflow::AXW<'_> {
-            fifo_underflow::AXW::new(self)
-        }
-        /// Raw FIFO overflow (write while full) flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_overflow(&mut self) -> fifo_overflow::AXW<'_> {
-            fifo_overflow::AXW::new(self)
-        }
-        /// Raw FIFO empty state. Follows the source; it is not cleared by writing.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_empty(&mut self) -> fifo_empty::AXW<'_> {
-            fifo_empty::AXW::new(self)
-        }
-        /// Raw FIFO full state. Follows the source; it is not cleared by writing.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn fifo_full(&mut self) -> fifo_full::AXW<'_> {
-            fifo_full::AXW::new(self)
-        }
-        /// Raw DMA request active state. Follows the source; it is not cleared by writing.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn dreq_active(&mut self) -> dreq_active::AXW<'_> {
-            dreq_active::AXW::new(self)
-        }
-        /// Raw channel 0 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan0_reload(&mut self) -> chan0_reload::AXW<'_> {
-            chan0_reload::AXW::new(self)
-        }
-        /// Raw channel 1 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan1_reload(&mut self) -> chan1_reload::AXW<'_> {
-            chan1_reload::AXW::new(self)
-        }
-        /// Raw channel 2 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan2_reload(&mut self) -> chan2_reload::AXW<'_> {
-            chan2_reload::AXW::new(self)
-        }
-        /// Raw channel 3 counter reload flag. Clear it by writing 1; writing 0 leaves it pending.
-        /// Field write behavior: Plain.
-        #[inline(always)]
-        pub fn chan3_reload(&mut self) -> chan3_reload::AXW<'_> {
-            chan3_reload::AXW::new(self)
+        pub fn chan3_reload(&mut self) -> chan3_reload::CW<'_> {
+            chan3_reload::CW::new(self)
         }
     }
 }
