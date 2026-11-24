@@ -268,4 +268,6 @@ fn PCIE_OUT() {
 }
 
 #[cfg(test)]
+pub(crate) mod fake;
+#[cfg(test)]
 mod tests;
