@@ -322,19 +322,38 @@ hold as well: lines in table order with the boot's nonce, both enable words 0, a
 `IRQ_SWEEP_END` before a `PLAT_INIT ok=1` line with a fresh PERSTn wait. It prints
 `IRQ_SWEEP_VERDICT=PASS|FAIL`; `--json` writes the per-line results.
 
-## Static stack bound (`stack-paths`, STATIC)
+## Platform stack and size checks (`stack-paths`, `plat-verify`, STATIC)
+
+The platform handlers run on proc0's MSP on top of the user's code. With `T` the thread's
+own use, `H_p` the bound of each user handler priority `p`, and `F = 36` B per exception
+frame (32 B of state + 4 B alignment, no FPU), proc0's deepest chain is
+
+```text
+need0  = T + Σ H_p + max(H57, Hfault) + H53 + Hhard + (|U| + 3) · F
+S_plat = max(H57, Hfault) + H53 + Hhard + 3 · F          (the platform's share)
+stack0 = 2 KiB + roundup(S_plat, 256)                    (proc0's default stack)
+```
+
+`Hfault = 0` while the configurable fault handlers are disabled, and `Hhard` is the default
+HardFault handler. The platform bounds only `S_plat`; the user part `T + Σ H_p` has no bound
+here. rp1-build's `PLATFORM_STACK_MARGIN` (768 B) is that roundup for the largest `S_plat` of
+this workspace's firmware, and proc0's default stack is 2816 B. A declared `proc0` stack is the
+whole stack, the margin included.
+
+### Static bound (`stack-paths`)
 
 `stack-paths` is a host tool. It disassembles a firmware ELF with `arm-none-eabi-objdump`
 (`RP1_OBJDUMP` overrides it) and bounds the stack use of the proc0 platform roots, which it
-takes from the vector table: IRQ57, IRQ53 and HardFault. It then prints
-`S_plat = max(H57, Hfault) + H53 + Hhard + 3 * 36` with `Hfault = 0`, because the configurable
-fault handlers are not enabled yet:
+takes from the vector table: IRQ57, IRQ53 and HardFault. It prints `S_plat` and fails when
+`S_plat` exceeds the margin (`--margin <bytes>` overrides it):
 
 ```sh
+cargo rp1 build -p irq-proof --target thumbv7m-none-eabi --release
 cargo run -p stack-paths -- target/thumbv7m-none-eabi/release/irq-proof
 # stack root=<symbol> bytes=N              (one line per root)
-# stack_static=PASS s_plat=N h57=N h53=N hhard=N hfault=0
+# stack_static=PASS s_plat=N h57=N h53=N hhard=N hfault=0 margin=768
 # stack_static=FAIL reason=<code> at=<symbol+offset> root=<symbol>   (exit status 1)
+# stack_static=FAIL reason=margin s_plat=N ... margin=768             (exit status 1)
 ```
 
 The rules and the conservative choices (tail calls, noreturn calls, jump tables, linker
@@ -344,11 +363,46 @@ recursion, or an unresolved indirect call or jump. `--root <symbol>` adds a root
 `--cut <symbol>` treats calls to a function as 0 bytes and noreturn. A cut run prints
 `stack_static=DIAG` and exits non-zero: it is a diagnostic, never a PASS.
 
-STATIC (2026-11-25, release builds of `irq-proof` and `examples/dual-core`): both FAIL with
-`reason=recursion`. The IRQ57 handler can panic (bounds checks), and the panic handler
-(`rp1_rt::status::record_panic`) has its own bounds check on the core index, which can call
-the panic handler again. With `--cut` on the panic handler (its mangled symbol ends in `rust_begin_unwind`):
-H57 = 440 / 448 B, H53 = 8 B, Hhard = 8 B, `S_plat` = 564 / 572 B (DIAG).
+A panic in a handler runs the panic handler on the handler's stack, so the panic path is part
+of the bound and must not panic again: `rp1_rt::status::record_panic` has no bounds check.
+
+STATIC (2026-11-25, release builds, rustc 1.99.1):
+
+| Firmware | `stack_static` | H57 | H53 | Hhard | `S_plat` |
+|---|---|---:|---:|---:|---:|
+| examples/dual-core | PASS | 592 | 8 | 8 | 716 |
+| irq-proof | PASS | 448 | 8 | 8 | 572 |
+| shm-firmware (default) | PASS | 448 | 8 | 8 | 572 |
+| shm-firmware (ring-dma) | PASS | 448 | 8 | 8 | 572 |
+| irq-sweep, pwm-loopback, scmi-starvation | FAIL `unresolved-indirect-call` in `core::fmt::write` | - | - | - | - |
+
+The three FAIL images log a message from their panic handler; `log!` formats through
+`core::fmt::write`, whose calls through the `Write` vtable the tool cannot resolve. Their
+panic handlers are planned to give way to a platform panic handler (HYP); that image must PASS again.
+
+### Verdict (`plat-verify.py`)
+
+`plat-verify.py` takes the ELF and the UART captures of one boot of that ELF, records their
+sha256, runs `stack-paths --size` (through `cargo run` in this repository, or `--stack-paths
+EXE` / `STACK_PATHS`) and prints one row each, PASS, FAIL or INCOMPLETE:
+
+```sh
+python3 lab/plat-verify.py --elf target/thumbv7m-none-eabi/release/irq-proof \
+    --uart0 UART0_LOG --uart10 UART10_LOG
+# stack_static=PASS s_plat=572 ...       static bound (stack-paths)
+# stack_watermark_free=PASS min=N n=N need=512   observed, separate row
+# size=PASS image=N/49152 ...            every budget has room left
+# plat_verify=PASS|FAIL|INCOMPLETE
+```
+
+`stack_watermark_free` is the smallest untouched stack space the firmware reported after its
+load: `IRQ_STACK p0_free= p1_free=` and `p1 shm cmd= ... stack_free=` (irq-proof),
+`RINGDMA_STACK free_bytes=` (ring-dma). It is an observation, not a bound or an overflow
+guard. Give the capture of one boot only; images without watermark lines are INCOMPLETE on
+this row. A row without evidence (no ELF, no capture, no line, the tool did not run) is
+INCOMPLETE, never PASS. Exit status 0 = PASS, 1 = FAIL, 3 = INCOMPLETE. Host tests:
+`python3 lab/test_plat_verify.py`. HW 未検証: no boot of these images has been checked with
+`plat-verify` yet.
 
 ### Platform size (`stack-paths --size`, STATIC)
 
