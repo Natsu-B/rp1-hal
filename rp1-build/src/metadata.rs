@@ -2,7 +2,7 @@ use crate::{
     Result,
     board::{BoardInstance, Kind},
 };
-use rp1_proto::note::ownership_kind;
+use rp1_proto::note::{ShmArea, ShmKind, ShmRegion, Writer, ownership_kind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -207,6 +207,11 @@ pub struct Region<'a> {
     pub sram_offset: u16,
     pub sram_len: u16,
 }
+pub(crate) struct ShmLayout<'a> {
+    pub area: ShmArea,
+    pub regions: Vec<ShmRegion<'a>>,
+}
+
 pub const SCMI_OFFSET: usize = 0x17c0; // Existing scmi_linux.dtb shmem at SRAM + 0xd7c0.
 pub const SRAM_ALLOC_START: usize = rp1_proto::status::END;
 pub const fn align(n: usize, a: usize) -> usize {
@@ -517,7 +522,63 @@ impl Declaration {
     }
     pub fn ddr_size(&self) -> Result<u32> {
         let regions = self.regions()?;
-        let end = regions.last().map_or(65536, |r| r.ddr_offset + r.ddr_len);
-        Ok(align(end as usize, 0x10_0000) as u32)
+        Ok(ddr_size(&regions))
     }
+
+    pub(crate) fn shm_layout(&self) -> Result<ShmLayout<'_>> {
+        let regions = self.regions()?;
+        let area = ShmArea {
+            size: ddr_size(&regions),
+            handoff: rp1_proto::HANDOFF,
+            sram_end: regions
+                .last()
+                .map_or(SRAM_ALLOC_START as u16, |r| r.sram_offset + r.sram_len),
+            phys: rp1_proto::SHM_PHYS,
+        };
+        let regions = regions
+            .into_iter()
+            .map(|r| {
+                let spec = r.spec;
+                let kind = match (spec.direction.as_deref(), spec.writer.as_deref()) {
+                    (Some("rp1-to-linux"), _) => ShmKind::RingToLinux,
+                    (Some("linux-to-rp1"), _) => ShmKind::RingToRp1,
+                    (_, Some("rp1")) => ShmKind::Block {
+                        writer: Writer::Rp1,
+                    },
+                    (_, Some("linux")) => ShmKind::Block {
+                        writer: Writer::Linux,
+                    },
+                    (_, Some("both")) => ShmKind::Block {
+                        writer: Writer::Both,
+                    },
+                    _ => return Err("invalid SHM direction or writer".into()),
+                };
+                Ok(ShmRegion {
+                    kind,
+                    core: if spec.core == "proc0" { 1 } else { 2 },
+                    notify_irq: spec.notify.as_deref() == Some("irq"),
+                    overwrite: spec.overflow.as_deref() == Some("overwrite"),
+                    ddr_offset: r.ddr_offset,
+                    ddr_len: r.ddr_len,
+                    sram_offset: r.sram_offset,
+                    sram_len: r.sram_len,
+                    elem_size: r.ty.size as u32,
+                    depth: spec.depth.unwrap_or(0),
+                    type_id: r.ty.id,
+                    name: &spec.name,
+                    type_name: spec
+                        .message
+                        .as_deref()
+                        .or(spec.block_type.as_deref())
+                        .unwrap(),
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(ShmLayout { area, regions })
+    }
+}
+
+fn ddr_size(regions: &[Region<'_>]) -> u32 {
+    let end = regions.last().map_or(65536, |r| r.ddr_offset + r.ddr_len);
+    align(end as usize, 0x10_0000) as u32
 }

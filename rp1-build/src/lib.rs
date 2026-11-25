@@ -86,7 +86,9 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
             *b = u8::from_str_radix(&git[i * 2..i * 2 + 2], 16)?;
         }
     }
-    let artifacts = generate(&name, &version, &d, declaration_hash, source)?;
+    d.validate()?;
+    let shm = d.shm_layout()?;
+    let artifacts = generate_with_layout(&name, &version, &d, declaration_hash, source, &shm)?;
     fs::create_dir_all(&out)?;
     fs::write(out.join("rp1-app.dts"), &artifacts.dts)?;
     overlay::compile(&out.join("rp1-app.dts"), &out.join("rp1-app.dtbo"))?;
@@ -194,7 +196,18 @@ pub fn generate(
     source: [u8; 20],
 ) -> Result<Artifacts> {
     d.validate()?;
-    let note = wire::descriptor(name, version, d, hash, source)?;
+    generate_with_layout(name, version, d, hash, source, &d.shm_layout()?)
+}
+
+fn generate_with_layout(
+    name: &str,
+    version: &str,
+    d: &metadata::Declaration,
+    hash: [u8; 32],
+    source: [u8; 20],
+    shm: &metadata::ShmLayout<'_>,
+) -> Result<Artifacts> {
+    let note = wire::descriptor_with_layout(name, version, d, hash, source, shm)?;
     let layout = format!(
         "__stack_size0 = {};\n__stack_size1 = {};\n__stack_margin0 = {};\n{}\n{}",
         d.stack_size(0)?,
@@ -203,7 +216,7 @@ pub fn generate(
         include_str!("../../rp1-rt/link.x"),
         include_str!("../../rp1-pac/irq.x")
     );
-    let dts = overlay::dts(d, &note)?;
+    let dts = overlay::dts_with_layout(d, &note, shm)?;
     Ok(Artifacts { note, layout, dts })
 }
 

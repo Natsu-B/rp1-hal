@@ -1,6 +1,6 @@
 use crate::{
     Result,
-    metadata::{Declaration, peripheral_id},
+    metadata::{Declaration, ShmLayout, peripheral_id},
 };
 use rp1_proto::note::*;
 
@@ -30,6 +30,17 @@ pub fn descriptor(
     d: &Declaration,
     hash: [u8; 32],
     source: [u8; 20],
+) -> Result<Vec<u8>> {
+    descriptor_with_layout(name, version, d, hash, source, &d.shm_layout()?)
+}
+
+pub(crate) fn descriptor_with_layout(
+    name: &str,
+    version: &str,
+    d: &Declaration,
+    hash: [u8; 32],
+    source: [u8; 20],
+    shm: &ShmLayout<'_>,
 ) -> Result<Vec<u8>> {
     let mut out = vec![0; 32];
     let mut v = Vec::new();
@@ -112,67 +123,41 @@ pub fn descriptor(
         cores: [core(&d.proc0), core(&d.proc1)],
     };
     tlv(&mut out, LINK, false, &link.encode());
-    let regions = d.regions()?;
-    let sram_end = regions
-        .last()
-        .map_or(crate::metadata::SRAM_ALLOC_START as u32, |r| {
-            u32::from(r.sram_offset) + u32::from(r.sram_len)
-        });
-    v.clear();
-    v.extend(
-        ShmArea {
-            size: d.ddr_size()?,
-            handoff: rp1_proto::HANDOFF,
-            sram_end: sram_end as u16,
-            phys: rp1_proto::SHM_PHYS,
-        }
-        .encode(),
-    );
-    tlv(&mut out, SHM_AREA, true, &v);
-    for r in regions {
-        let spec = r.spec;
+    tlv(&mut out, SHM_AREA, true, &shm.area.encode());
+    for r in &shm.regions {
+        let (kind, direction, writer) = match r.kind {
+            ShmKind::RingToLinux => (1, 1, 0),
+            ShmKind::RingToRp1 => (1, 2, 0),
+            ShmKind::Block { writer } => (
+                3,
+                0,
+                match writer {
+                    Writer::Rp1 => 1,
+                    Writer::Linux => 2,
+                    Writer::Both => 3,
+                },
+            ),
+        };
         v = vec![
-            if spec.kind == "ring" { 1 } else { 3 },
-            if spec.direction.as_deref() == Some("rp1-to-linux") {
-                1
-            } else if spec.kind == "ring" {
-                2
-            } else {
-                0
-            },
-            if spec.core == "proc0" { 1 } else { 2 },
-            if spec.notify.as_deref() == Some("irq") {
-                1
-            } else {
-                0
-            },
+            kind,
+            direction,
+            r.core,
+            u8::from(r.notify_irq),
             1,
-            match spec.writer.as_deref() {
-                Some("rp1") => 1,
-                Some("linux") => 2,
-                Some("both") => 3,
-                _ => 0,
-            },
-            if spec.overflow.as_deref() == Some("overwrite") {
-                2
-            } else {
-                1
-            },
+            writer,
+            if r.overwrite { 2 } else { 1 },
             1,
         ];
         word(&mut v, r.ddr_offset);
         word(&mut v, r.ddr_len);
         short(&mut v, r.sram_offset);
         short(&mut v, r.sram_len);
-        word(&mut v, r.ty.size as u32);
-        word(&mut v, spec.depth.unwrap_or(0));
-        v.extend(r.ty.id.to_le_bytes());
+        word(&mut v, r.elem_size);
+        word(&mut v, r.depth);
+        v.extend(r.type_id.to_le_bytes());
         v.extend(0u64.to_le_bytes());
-        string(&mut v, &spec.name)?;
-        string(
-            &mut v,
-            spec.message.as_ref().or(spec.block_type.as_ref()).unwrap(),
-        )?;
+        string(&mut v, r.name)?;
+        string(&mut v, r.type_name)?;
         tlv(&mut out, SHM_REGION, true, &v);
     }
     out[..8].copy_from_slice(MAGIC);

@@ -1,4 +1,7 @@
-use crate::{Result, metadata::Declaration};
+use crate::{
+    Result,
+    metadata::{Declaration, ShmLayout},
+};
 use std::{path::Path, process::Command};
 
 pub fn compile(source: &Path, destination: &Path) -> Result<()> {
@@ -84,9 +87,12 @@ pub const BOARD_SCMI_ASSIGNED: &[(&str, u32)] =
     &[("rp1_pwm0", 8), ("rp1_pwm1", 9), ("rp1_audio_out", 10)];
 
 pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
-    let regions = d.regions()?;
-    let ddr_end = d.ddr_size()?;
-    let phys = rp1_proto::SHM_PHYS;
+    dts_with_layout(d, note, &d.shm_layout()?)
+}
+
+pub(crate) fn dts_with_layout(d: &Declaration, note: &[u8], shm: &ShmLayout<'_>) -> Result<String> {
+    let ddr_end = shm.area.size;
+    let phys = shm.area.phys;
     let bytes = note
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -178,13 +184,13 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
         "target-path = \"/reserved-memory\"",
         &format!("rp1-shm@{phys:x} {{ no-map; reg = <0 0x{phys:x} 0x{ddr_end:x}>; }};"),
     );
-    for r in regions {
+    for r in &shm.regions {
         let addr = phys + u64::from(r.ddr_offset);
         fragment(
             "target-path = \"/\"",
             &format!(
                 "rp1-{}@{addr:x} {{ compatible = \"generic-uio\"; linux,uio-name = \"rp1:{}\"; reg = <0 0x{addr:x} 0x{:x}>; status = \"okay\"; }};",
-                r.spec.name, r.spec.name, r.ddr_len
+                r.name, r.name, r.ddr_len
             ),
         );
     }
