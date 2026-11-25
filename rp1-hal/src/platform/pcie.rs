@@ -44,6 +44,7 @@ fn word(offset: usize) -> usize {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnableError {
     /// Linux has not supplied the expected request word.
+    /// Returned by rp1-link's generated `try_enable` and probe entries; this module never does.
     NotRequested,
     /// The PERSTn detector is not `Up`: the host reset the endpoint, or a reset would not be
     /// seen. Nothing was written.
