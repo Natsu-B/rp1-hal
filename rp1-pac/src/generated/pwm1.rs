@@ -408,7 +408,7 @@ pub mod fifo_ctrl {
     pub mod level {
         pub type R = crate::FieldReader<u32>;
     }
-    /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. Whether this bit clears itself is unknown.
+    /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. HW (PWM0, clock running, channels idle): a written 1 stayed set and `flush_done` stayed 0, so software writes 0 afterwards. Behavior while channels consume the FIFO is unverified.
     /// Field write behavior: Plain.
     pub mod flush {
         pub type R = crate::BitReader;
@@ -495,7 +495,7 @@ pub mod fifo_ctrl {
         }
     }
     impl AtomicSetW {
-        /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. Whether this bit clears itself is unknown.
+        /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. HW (PWM0, clock running, channels idle): a written 1 stayed set and `flush_done` stayed 0, so software writes 0 afterwards. Behavior while channels consume the FIFO is unverified.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn flush(&mut self) -> flush::ASW<'_> {
@@ -521,7 +521,7 @@ pub mod fifo_ctrl {
         }
     }
     impl AtomicClearW {
-        /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. Whether this bit clears itself is unknown.
+        /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. HW (PWM0, clock running, channels idle): a written 1 stayed set and `flush_done` stayed 0, so software writes 0 afterwards. Behavior while channels consume the FIFO is unverified.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn flush(&mut self) -> flush::ACW<'_> {
@@ -547,7 +547,7 @@ pub mod fifo_ctrl {
         }
     }
     impl AtomicXorW {
-        /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. Whether this bit clears itself is unknown.
+        /// Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. HW (PWM0, clock running, channels idle): a written 1 stayed set and `flush_done` stayed 0, so software writes 0 afterwards. Behavior while channels consume the FIFO is unverified.
         /// Field write behavior: Plain.
         #[inline(always)]
         pub fn flush(&mut self) -> flush::AXW<'_> {

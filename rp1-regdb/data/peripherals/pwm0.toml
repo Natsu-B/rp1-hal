@@ -144,7 +144,7 @@ write_behavior = "plain"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. Whether this bit clears itself is unknown."
+note = "Write 1 to request that queued duty samples be discarded. Wait for `flush_done`, since completion crosses clock domains. HW (PWM0, clock running, channels idle): a written 1 stayed set and `flush_done` stayed 0, so software writes 0 afterwards. Behavior while channels consume the FIFO is unverified."
 [[register.field]]
 id = "flush_done"
 name = "FLUSH_DONE"
