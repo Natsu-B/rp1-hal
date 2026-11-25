@@ -192,6 +192,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fault-inject"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rp1-build",
+ "rp1-hal",
+ "rp1-linux",
+ "rp1-proto",
+ "rp1-rt",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"

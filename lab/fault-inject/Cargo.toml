@@ -1,0 +1,48 @@
+[package]
+name = "fault-inject"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autobins = false
+
+[features]
+firmware = []
+linux = []
+
+[[bin]]
+name = "fault-inject"
+path = "src/firmware.rs"
+required-features = ["firmware"]
+test = false
+bench = false
+
+[[bin]]
+name = "fault-linux"
+path = "src/linux.rs"
+required-features = ["linux"]
+
+[dependencies]
+rp1-proto = { path = "../../rp1-proto" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp1-hal = { path = "../../rp1-hal" }
+rp1-rt = { path = "../../rp1-rt" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+rp1-linux = { path = "../../rp1-linux" }
+
+[build-dependencies]
+rp1-build = { path = "../../rp1-build" }
+
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+log = { sink = "uart0", baudrate = 115200 }
+
+[package.metadata.rp1.proc0]
+timer = ["ALARM0"]
+
+[package.metadata.rp1.proc1]
+timer = ["ALARM1"]
