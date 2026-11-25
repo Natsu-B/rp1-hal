@@ -170,12 +170,12 @@ fn field_name(name: &str) -> Result<String> {
                 format!("SHM name {name:?} cannot be a Rust field; rename this region").into(),
             );
         }
-        "as" | "async" | "await" | "become" | "box" | "break" | "const" | "continue" | "do"
-        | "dyn" | "else" | "enum" | "extern" | "false" | "final" | "fn" | "for" | "gen" | "if"
-        | "impl" | "in" | "let" | "loop" | "macro" | "match" | "mod" | "move" | "mut"
-        | "override" | "priv" | "pub" | "ref" | "return" | "static" | "struct" | "trait"
-        | "true" | "try" | "type" | "typeof" | "unsafe" | "unsized" | "use" | "virtual"
-        | "where" | "while" | "yield" => format!("r#{name}"),
+        "abstract" | "as" | "async" | "await" | "become" | "box" | "break" | "const"
+        | "continue" | "do" | "dyn" | "else" | "enum" | "extern" | "false" | "final" | "fn"
+        | "for" | "gen" | "if" | "impl" | "in" | "let" | "loop" | "macro" | "match" | "mod"
+        | "move" | "mut" | "override" | "priv" | "pub" | "ref" | "return" | "static" | "struct"
+        | "trait" | "true" | "try" | "type" | "typeof" | "unsafe" | "unsized" | "use"
+        | "virtual" | "where" | "while" | "yield" => format!("r#{name}"),
         _ => name.to_owned(),
     };
     Ok(field)

@@ -83,6 +83,16 @@ fn unrepresentable_field_names_point_to_the_declaration() {
     );
 }
 
+#[test]
+fn reserved_field_names_become_raw_identifiers() {
+    for name in [
+        "abstract", "become", "box", "final", "macro", "priv", "try", "yield",
+    ] {
+        assert_eq!(field_name(name).unwrap(), format!("r#{name}"));
+    }
+    assert_eq!(field_name("control").unwrap(), "control");
+}
+
 fn fragment(d: &Declaration) -> (String, Vec<u8>) {
     let shm = d.shm_layout().unwrap();
     let note =
