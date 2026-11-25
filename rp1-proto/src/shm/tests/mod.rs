@@ -3,6 +3,7 @@ extern crate std;
 
 mod block;
 pub(super) mod model;
+mod notify;
 mod overwrite;
 mod ring;
 #[cfg(feature = "unstable-ring-dma")]

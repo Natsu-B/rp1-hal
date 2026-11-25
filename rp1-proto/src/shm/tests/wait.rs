@@ -207,18 +207,13 @@ fn wait_handshake_all_interleavings() {
                 assert_eq!(rx.pop().unwrap(), Some(0));
                 sync();
             }
-            let sched = Sched::new([
-                Path {
-                    shadow: ds as usize,
-                    real: dr as usize,
-                    len: LEN,
-                },
-                Path {
-                    shadow: cs as usize,
-                    real: cr as usize,
-                    len: CONTROL_SIZE,
-                },
-            ]);
+            let sched = Sched::new(
+                2,
+                vec![
+                    Path::new(0, ds, dr, LEN),
+                    Path::new(1, cs, cr, CONTROL_SIZE),
+                ],
+            );
             let mut trace = vec![];
             let notified_now = core::sync::atomic::AtomicBool::new(false);
             let (notified, outcome) = std::thread::scope(|s| {
@@ -240,7 +235,7 @@ fn wait_handshake_all_interleavings() {
                         })
                     })
                 });
-                sched.drive(choose, &mut trace);
+                sched.drive(choose, &mut trace, usize::MAX);
                 (w.join().unwrap(), r.join().unwrap())
             });
             let (notified, landed) = notified;

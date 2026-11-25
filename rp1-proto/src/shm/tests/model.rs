@@ -2,49 +2,111 @@
 //!
 //! Each side's stores into the peer's memory are posted: the writer writes a private copy
 //! of `data` and the reader a private copy of `ctrl` (`shadow`); a store reaches the peer's
-//! copy (`real`) only when it lands. Landing is in order, so a path lands as a whole: either
-//! spontaneously at any point, or when its own side reads back through the same window (a
-//! non-posted read does not pass earlier posted writes). Every load in the ring code is a
-//! scheduling point (`ld` calls [`before_load`]); the two sides run on threads that hand a
-//! single token back and forth (so there is no data race), and a depth-first search over the
-//! choices "run writer / run reader / land data / land ctrl" visits every schedule.
+//! copy (`real`) only when it lands. Every load in the ring code is a scheduling point (`ld`
+//! calls [`before_load`]); the sides (writers and readers of one or more rings) run on
+//! threads that hand a single token around (so there is no data race). When a side parks,
+//! what it stored since it last parked is posted as one snapshot of its shadow. Snapshots
+//! land in order: before a side loads from a path's real copy, any number of the path's
+//! oldest snapshots may land (the only moment where landing can be observed), and a side
+//! reading back through its own window lands all of them (a non-posted read does not pass
+//! earlier posted writes). A depth-first search over these choices and over which side
+//! runs visits every schedule. The doorbell models the Linux -> RP1 notification: a level
+//! that a writer sets and the reader's handler clears.
 extern crate std;
 use std::cell::RefCell;
 use std::sync::{Arc, Condvar, Mutex};
+use std::vec;
 use std::vec::Vec;
 
 /// A posted-write path: what the writing side sees and what the peer sees.
 pub struct Path {
-    pub shadow: usize,
-    pub real: usize,
-    pub len: usize,
+    /// The side whose stores go this way.
+    side: usize,
+    shadow: usize,
+    real: usize,
+    len: usize,
+    /// Snapshots of `shadow` not landed yet, oldest first.
+    posted: Mutex<Vec<Vec<u8>>>,
 }
 impl Path {
-    fn pending(&self) -> bool {
-        // SAFETY: both buffers live for the run; only the token holder touches them.
-        unsafe {
-            std::slice::from_raw_parts(self.shadow as *const u8, self.len)
-                != std::slice::from_raw_parts(self.real as *const u8, self.len)
+    pub fn new(side: usize, shadow: *const u8, real: *const u8, len: usize) -> Self {
+        Self {
+            side,
+            shadow: shadow as usize,
+            real: real as usize,
+            len,
+            posted: Mutex::new(Vec::new()),
         }
     }
-    fn land(&self) {
-        unsafe {
-            core::ptr::copy_nonoverlapping(self.shadow as *const u8, self.real as *mut u8, self.len)
+    fn holds(&self, base: usize, addr: usize) -> bool {
+        (base..base + self.len).contains(&addr)
+    }
+    fn bytes(&self, base: usize) -> &[u8] {
+        // SAFETY: both buffers live for the run; only the token holder touches them.
+        unsafe { std::slice::from_raw_parts(base as *const u8, self.len) }
+    }
+    /// Post what the side stored since the last snapshot.
+    fn post(&self) {
+        let mut posted = self.posted.lock().unwrap();
+        let latest = posted.last().map_or(self.bytes(self.real), |s| &s[..]);
+        if latest != self.bytes(self.shadow) {
+            let snapshot = self.bytes(self.shadow).to_vec();
+            posted.push(snapshot);
         }
+    }
+    fn pending(&self) -> usize {
+        self.posted.lock().unwrap().len()
+    }
+    /// Land the `n` oldest snapshots.
+    fn land(&self, n: usize) {
+        for snapshot in self.posted.lock().unwrap().drain(..n) {
+            unsafe {
+                core::ptr::copy_nonoverlapping(snapshot.as_ptr(), self.real as *mut u8, self.len)
+            }
+        }
+    }
+    /// Land everything stored so far.
+    pub fn land_all(&self) {
+        self.post();
+        self.land(self.pending());
     }
 }
-#[derive(Default)]
+/// Why a parked side may not run yet.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Sleep {
+    No,
+    /// Until every other side has finished.
+    UntilDone,
+    /// Until the doorbell is set (or every other side has finished).
+    Doorbell,
+}
 struct State {
     running: Option<usize>,
-    parked: [bool; 2],
-    /// Asleep: not runnable until the other side is done.
-    asleep: [bool; 2],
-    done: [bool; 2],
+    parked: Vec<bool>,
+    sleep: Vec<Sleep>,
+    done: Vec<bool>,
+    /// The address a parked side loads first when it runs.
+    next_load: Vec<Option<usize>>,
+    /// The doorbell force (protocol P4): a level, set by `raise` and kept until `ack`.
+    doorbell: bool,
+}
+impl State {
+    fn others_done(&self, me: usize) -> bool {
+        (0..self.done.len()).all(|t| t == me || self.done[t])
+    }
+    fn runnable(&self, t: usize) -> bool {
+        self.parked[t]
+            && match self.sleep[t] {
+                Sleep::No => true,
+                Sleep::UntilDone => self.others_done(t),
+                Sleep::Doorbell => self.doorbell || self.others_done(t),
+            }
+    }
 }
 pub struct Sched {
     state: Mutex<State>,
     cv: Condvar,
-    pub paths: [Path; 2],
+    pub paths: Vec<Path>,
 }
 std::thread_local!(static CURRENT: RefCell<Option<(Arc<Sched>, usize)>> = const { RefCell::new(None) });
 
@@ -53,28 +115,42 @@ pub fn before_load(addr: *const u8) {
     let Some((s, me)) = CURRENT.with(|c| c.borrow().clone()) else {
         return;
     };
-    s.park(me);
+    s.park_as(me, Sleep::No, Some(addr as usize));
     for p in &s.paths {
-        if (p.shadow..p.shadow + p.len).contains(&(addr as usize)) {
-            p.land();
+        if p.holds(p.shadow, addr as usize) {
+            p.land_all();
         }
     }
 }
 impl Sched {
-    pub fn new(paths: [Path; 2]) -> Arc<Self> {
+    pub fn new(sides: usize, paths: Vec<Path>) -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State {
+                running: None,
+                parked: vec![false; sides],
+                sleep: vec![Sleep::No; sides],
+                done: vec![false; sides],
+                next_load: vec![None; sides],
+                doorbell: false,
+            }),
             cv: Condvar::new(),
             paths,
         })
     }
-    fn park(&self, me: usize) {
-        self.park_as(me, false);
+    fn post(&self, me: usize) {
+        for p in self.paths.iter().filter(|p| p.side == me) {
+            p.post();
+        }
     }
-    fn park_as(&self, me: usize, asleep: bool) {
+    fn park(&self, me: usize) {
+        self.park_as(me, Sleep::No, None);
+    }
+    fn park_as(&self, me: usize, sleep: Sleep, next_load: Option<usize>) {
+        self.post(me);
         let mut g = self.state.lock().unwrap();
         g.parked[me] = true;
-        g.asleep[me] = asleep;
+        g.sleep[me] = sleep;
+        g.next_load[me] = next_load;
         g.running = None;
         self.cv.notify_all();
         while g.running != Some(me) {
@@ -82,46 +158,86 @@ impl Sched {
         }
         g.parked[me] = false;
     }
-    /// Sleep (inside side `me`) until the other side has finished: a notification
+    /// Sleep (inside side `me`) until every other side has finished: a notification
     /// would wake it, and none can come later.
     pub fn sleep(&self, me: usize) {
-        self.park_as(me, true);
+        self.park_as(me, Sleep::UntilDone, None);
     }
-    /// Run `f` as side `me` (0 = writer, 1 = reader) under the scheduler.
+    /// Sleep (inside side `me`) until the doorbell is set; `false` if every other side
+    /// finished with the doorbell clear, so it can never be set again.
+    pub fn wait_doorbell(&self, me: usize) -> bool {
+        self.park_as(me, Sleep::Doorbell, None);
+        self.state.lock().unwrap().doorbell
+    }
+    /// Set the doorbell (as side `me`, after a scheduling point: the store may come late).
+    pub fn raise(&self, me: usize) {
+        self.park(me);
+        self.state.lock().unwrap().doorbell = true;
+    }
+    /// Clear the doorbell (as side `me`, after a scheduling point like `raise`).
+    pub fn ack(&self, me: usize) {
+        self.park(me);
+        self.state.lock().unwrap().doorbell = false;
+    }
+    /// Run `f` as side `me` under the scheduler.
     pub fn side<R>(self: &Arc<Self>, me: usize, f: impl FnOnce() -> R) -> R {
         CURRENT.with(|c| *c.borrow_mut() = Some((self.clone(), me)));
         self.park(me);
         let r = f();
         CURRENT.with(|c| *c.borrow_mut() = None);
+        self.post(me);
         let mut g = self.state.lock().unwrap();
         g.done[me] = true;
         g.running = None;
         self.cv.notify_all();
         r
     }
-    /// Drive both sides to completion; `choose(n)` picks one of `n` enabled steps.
-    pub fn drive(&self, mut choose: impl FnMut(usize) -> usize, trace: &mut Vec<usize>) {
+    /// Drive every side to completion; `choose(n)` picks one of `n` enabled steps. At most
+    /// `preemptions` times a side is switched away from while it could still run (a bound
+    /// on the search; `usize::MAX` explores every schedule).
+    pub fn drive(
+        &self,
+        mut choose: impl FnMut(usize) -> usize,
+        trace: &mut Vec<usize>,
+        mut preemptions: usize,
+    ) {
+        let mut last = None;
         loop {
             let mut g = self.state.lock().unwrap();
-            while g.running.is_some() || (0..2).any(|t| !g.done[t] && !g.parked[t]) {
+            let sides = g.done.len();
+            while g.running.is_some() || (0..sides).any(|t| !g.done[t] && !g.parked[t]) {
                 g = self.cv.wait(g).unwrap();
             }
-            // 0..2: run that side; 2..4: land that path.
-            let steps: Vec<usize> = (0..2)
-                .filter(|&t| g.parked[t] && !(g.asleep[t] && !g.done[1 - t]))
-                .chain((0..2).filter(|&p| self.paths[p].pending()).map(|p| p + 2))
-                .collect();
-            if (0..2).all(|t| g.done[t]) {
+            if g.done.iter().all(|&d| d) {
                 return;
             }
-            let step = steps[choose(steps.len())];
-            trace.push(step);
-            if step >= 2 {
-                self.paths[step - 2].land();
-            } else {
-                g.running = Some(step);
-                self.cv.notify_all();
+            let mut runnable: Vec<usize> = (0..sides).filter(|&t| g.runnable(t)).collect();
+            let keeps_running = last.filter(|l| runnable.contains(l));
+            if let (Some(l), 0) = (keeps_running, preemptions) {
+                runnable = vec![l];
             }
+            // A step: land some snapshots of the path the side loads from next, then run it.
+            let mut steps: Vec<(usize, usize, usize)> = Vec::new();
+            for &t in &runnable {
+                steps.push((t, 0, 0));
+                let read = g.next_load[t].and_then(|a| {
+                    (0..self.paths.len()).find(|&p| self.paths[p].holds(self.paths[p].real, a))
+                });
+                if let Some(p) = read {
+                    steps.extend((1..=self.paths[p].pending()).map(|n| (t, p, n)));
+                }
+            }
+            let (step, p, n) = steps[choose(steps.len())];
+            // sides..: landed a snapshot of that path.
+            trace.extend(core::iter::repeat_n(sides + p, n));
+            self.paths[p].land(n);
+            trace.push(step);
+            if keeps_running.is_some_and(|l| l != step) {
+                preemptions -= 1;
+            }
+            last = Some(step);
+            g.running = Some(step);
+            self.cv.notify_all();
         }
     }
 }
