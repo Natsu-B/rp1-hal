@@ -287,6 +287,20 @@ class TestVerifyFault(unittest.TestCase):
             self.assertEqual(rows["boot"], INCOMPLETE)
         self.assertEqual(self.run_rows(phase="poweroff", force_at=None)["boot"], INCOMPLETE)
 
+    def test_poweroff_accepts_timestamped_bootloader_link_wait_preamble(self):
+        uart0, uart10 = captures(phase="poweroff")
+        boundary = uart10.index("RPi: BOOTSYS release")
+        preamble = ("\x00\r\n  0.98 RPi: BOOTSYS release VERSION:abc\r\n"
+                    "  1.00 power-on-reset 1\r\n"
+                    "  4.88 NETWORK: wait for link TFTP: 0.0.0.0\r\n")
+        prefix, final_boot = uart10[:boundary], "  0.98 " + uart10[boundary:]
+        for extra, want in (("", PASS), (preamble, PASS),
+                            (preamble + "Boot mode: SD (01)\r\n", INCOMPLETE),
+                            (preamble + "Linux version 6.12\r\n", INCOMPLETE)):
+            rows, _, _ = vf.verify_run("p0-thread-panic", "poweroff", NONCE, uart0,
+                prefix + extra + final_boot, BUNDLE_ID, CLIENT_SHA256, force_at=boundary)
+            self.assertEqual(rows["boot"], want)
+
     def test_poweroff_needs_carrier_and_successful_force_in_same_capture(self):
         _, uart10 = captures(phase="poweroff")
         raw = uart10.encode()

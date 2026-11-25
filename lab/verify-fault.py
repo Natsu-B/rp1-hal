@@ -26,6 +26,7 @@ STAGES = ("BEGIN", "PRE", "REQUEST", "SITE", "STATUS", "TIMER", "PING", "USB", "
 IDENTITY_ROWS = ("identity", "bundle", "client", "boot", "sequence")
 POST_ROWS = ("timer", "peer", "ping", "usb", "scmi", "dmesg", "pcie")
 BOOTSYS = "RPi: BOOTSYS"
+BOOT_LINE = re.compile(r"(?m)^[\x00 \t]*(?:[0-9]+\.[0-9]+[ \t]+)?RPi: BOOTSYS\b")
 SHUTDOWN = re.compile(r"(?m)^\s*\[ *[0-9.]+\] reboot: (Restarting system|Power down)\s*$")
 OPERATING_BOOT = re.compile(r"\[rp1boot\s|Linux version|Run /init|root@|~ #")
 MARKER = re.compile(r"^(?:\[[^\]]*\]\s*)?FAULT_([A-Z]+) (.+)$")
@@ -69,39 +70,43 @@ def reset_modes(text):
 
 
 def poweroff_transition(previous, force_at, final_boot):
-    if force_at is None:
-        return False
     before_force, after_force = previous[:force_at], previous[force_at:]
-    prior, halt_marker, halt = before_force.rpartition(BOOTSYS)
-    if not (halt_marker and SHUTDOWN.findall(prior.rsplit(BOOTSYS, 1)[-1]) == ["Power down"]
+    pre_halt = BOOT_LINE.split(before_force)
+    if len(pre_halt) < 2:
+        return False
+    prior, halt = pre_halt[-2:]
+    if not (SHUTDOWN.findall(prior) == ["Power down"]
             and reset_modes(halt) == ["0"]
             and re.search(r"Halt: power_off: 1[^\n]*\n[\s\S]*?\bPower off\b", halt)
             and not OPERATING_BOOT.search(halt)):
         return False
-    # A force-boot can restart the bootloader while it is still waiting for Ethernet.
-    # Every such prefix must end at link wait, before handoff to the loader or Linux.
-    preambles = after_force.split(BOOTSYS)
+    # A force-boot can restart before Ethernet comes up. The skipped preamble must
+    # end at link wait, before handing off to the loader or Linux.
+    preambles = BOOT_LINE.split(after_force)
     return (not preambles[0].strip("\x00 \t\r\n")
-            and all(reset_modes(boot) == ["1"] and "wait for link" in boot
+            and all(reset_modes(boot) == ["1"]
+                    and "wait for link" in boot.strip("\x00 \t\r\n").splitlines()[-1]
                     and not OPERATING_BOOT.search(boot) for boot in preambles[1:])
             and reset_modes(final_boot) == ["1"])
 
 
 def boot_mode(prefix, force_at):
     """Return the transition immediately preceding the operating boot."""
-    previous, marker, boot = prefix.rpartition(BOOTSYS)
-    modes = reset_modes(boot)
-    if not marker or len(modes) != 1:
+    markers = list(BOOT_LINE.finditer(prefix))
+    if not markers:
         return None
-    shutdowns = SHUTDOWN.findall(previous.rsplit(BOOTSYS, 1)[-1])
+    last = markers[-1]
+    previous, boot = prefix[:last.start()], prefix[last.end():]
+    modes = reset_modes(boot)
+    if len(modes) != 1:
+        return None
+    prior = previous[markers[-2].end():] if len(markers) > 1 else previous
     if modes == ["0"]:
-        return "reboot" if shutdowns == ["Restarting system"] else None
+        return "reboot" if SHUTDOWN.findall(prior) == ["Restarting system"] else None
     if force_at is not None:
         return "poweroff" if poweroff_transition(previous, force_at, boot) else None
     # A poweroff without its capture-side observations cannot count as a cold boot.
-    if SHUTDOWN.search(previous):
-        return None
-    return "cold"
+    return None if SHUTDOWN.search(previous) else "cold"
 
 
 def bundle_firmware(bundle):
@@ -277,7 +282,8 @@ def capture_identity(kind, phase, nonce, uart0, prefix, begin, bundle_id, client
     boot_id = begin.get("boot_id", "")
     identity = (boot.get("nonce") == begin.get("nonce") == nonce and begin.get("kind") == kind
                 and kind in boot.get("kinds", "").split(",") and BOOT_ID.fullmatch(boot_id))
-    banners = BUNDLE.findall(prefix.rsplit(BOOTSYS, 1)[-1]) if BOOTSYS in prefix else []
+    boot_segments = BOOT_LINE.split(prefix)
+    banners = BUNDLE.findall(boot_segments[-1]) if len(boot_segments) > 1 else []
     observed = boot_mode(prefix, force_at)
     expected = phase if phase in ("reboot", "poweroff") else "cold"
     rows = {
