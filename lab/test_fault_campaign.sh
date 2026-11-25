@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 lab=$(cd "$(dirname "$0")" && pwd)
 source "$lab/fault-campaign.sh"
+unset LINUX_STATUS
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 export TRACE="$fixture/trace"
@@ -9,6 +10,7 @@ tools="$fixture/tools"
 mkdir "$tools"
 cat > "$tools/sh.py" <<'PY'
 import os
+import shlex
 import sys
 
 command = sys.argv[3]
@@ -18,6 +20,10 @@ with open(os.environ["TRACE"], "a") as trace:
 # The target shell emits bracketed-paste toggles around command output.
 paste = "\x1b[?2004l" if mode == "bracketed-paste" else ""
 if "findmnt" in command:
+    client = os.environ.get("LINUX_STATUS", "/usr/local/libexec/rp1-lab/linux-status")
+    words = shlex.split(command)
+    dmesg = words.index("dmesg")
+    assert words[dmesg - 3:dmesg] == ["&&", client, "&&"]
     print(paste + "active\nnfs4\nRP1_STATUS epoch=2 pcie=Up scmi=Serving(requests=12)")
     print("RP1_CORE core=0 state=Running\nRP1_CORE core=1 state=" +
           ("Panicked" if mode == "preflight-state" else "Running"))
@@ -57,6 +63,9 @@ with open(os.environ["TRACE"], "a") as trace:
     print(sys.argv[2], file=trace)
 PY
 printf 'print("RELEASED")\n' > "$tools/rpc.py"
+
+if LINUX_STATUS=linux-status preflight "$fixture" 2> "$fixture/path-error"; then exit 1; fi
+grep -Fq 'must be an absolute target path' "$fixture/path-error"
 
 export HOST=192.0.2.1 USB_PORT=3-1 SCMI_N=2
 kinds=(p0-thread-panic)
@@ -105,7 +114,7 @@ if scmi_preflight_ok "$fixture/scmi.log" 2; then exit 1; fi
 export CASE_MODE=success
 RUN="$fixture/success"
 mkdir "$RUN"
-run_case p0-thread-panic cold-1 > "$RUN/case.log"
+LINUX_STATUS="$fixture/staged linux-status" run_case p0-thread-panic cold-1 > "$RUN/case.log"
 
 export CASE_MODE=bracketed-paste
 RUN="$fixture/bracketed-paste"

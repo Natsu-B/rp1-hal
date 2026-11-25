@@ -306,10 +306,12 @@ RP1, but until the link is up Linux cannot reach an RP1 register. The price is t
 (about 0.7 s) must end before Linux releases PERSTn.
 
 Build a boot set with `FIRMWARE_PKG=irq-sweep bash lab/build-rp1boot.sh`.
-Install `linux-status` and place `lab/check-core-status.sh` next to
-`lab/check-sweep.sh` on the target. Run `check-sweep.sh` after the sweep. It
-records the boot value, device-tree status of all swept blocks, and both cores'
-final state. The host decides with
+Stage the [matching Linux status client](#linux-status-client) and place
+`lab/check-core-status.sh` next to `lab/check-sweep.sh` on the target.
+Run `check-sweep.sh` after the sweep. If the matching client was packed in the
+initramfs by `pack-shm.py`, run `LINUX_STATUS=/bin/linux-status sh lab/check-sweep.sh`.
+The checker records the boot value, device-tree status of all swept blocks,
+and both cores' final state. The host decides with
 
 ```sh
 python3 lab/verify-irq.py --sweep --uart0 UART0_CAPTURE [--uart10 UART10_CAPTURE] [--json OUT]
@@ -387,7 +389,8 @@ Both shm-firmware profiles, irq-proof, irq-sweep, pwm-loopback and scmi-starvati
 handler. irq-proof selects `default-panic-handler` explicitly alongside its timed critical section.
 
 irq-sweep, pwm-loopback and scmi-starvation report panics through the link page.
-The sweep verifier also rejects `IRQ_SWEEP_PANIC` in legacy captures. For PWM,
+The sweep verifier also rejects `IRQ_SWEEP_PANIC` in legacy captures. Stage the
+[matching Linux status client](#linux-status-client) before the final check. For PWM,
 run `check-core-status.sh pwm "$NONCE"` after `PWM_DONE`, using `PWM_BOOT`'s
 nonce. For SCMI starvation, run `check-core-status.sh scmi "$NONCE"` after
 `SCMI_STARVE_END`, using `SCMI_STARVE_READY`'s nonce. Require
@@ -629,6 +632,28 @@ boot. `systemctl reboot` resets the whole board (new bootloader banner, rp1boot 
 firmware). `systemctl poweroff` powers down (no UART output, Ethernet link down); the power
 button sequence brings it back.
 
+### Linux status client
+
+Build the client from the same checkout and commit as the firmware.
+
+```sh
+cargo build --locked -p linux-status --target aarch64-unknown-linux-musl --release
+```
+
+For realos, include the resulting `linux-status` in `CLIENT_BIN` when running
+`prepare-rootfs.sh`. It installs the client at
+`/usr/local/libexec/rp1-lab/linux-status` on the target, the default for
+`check-core-status.sh` and `fault-campaign.sh` preflight.
+
+For a one-off check, transfer the client into a private directory on an
+executable target filesystem such as `/tmp`. Verify its SHA-256 against
+the build artifact, set its execute bit, and set `LINUX_STATUS` to its
+absolute target path. Export it on the target for `check-core-status.sh`
+or on the host for `fault-campaign.sh`. Stage the client again after a
+reboot if the scratch directory is gone. The checks fail if the selected
+client cannot run. HW (2026-11-25, realos) observed `/run` mounted with
+`noexec`.
+
 ### Linux-side RP1 devices (`check-linux-devices.sh`)
 
 `build-bootset.sh` takes `CONFIG_EXTRA` (extra config.txt lines, one per line) and `OVERLAYS`
@@ -700,6 +725,7 @@ cargo build --locked --release -p stack-paths
 ```
 
 Install `fault-linux` and `rp1-device-check` on the prepared realos target.
+Stage the [matching Linux status client](#linux-status-client) for campaign preflight.
 Start both UART captures before boot or the Linux shutdown command. Run
 `fault-linux KIND NONCE HOST_IPV4 USB_PORT SCMI_N` from the root UART10 console once
 per boot. Supply the boot nonce from UART0, the host's Ethernet address,

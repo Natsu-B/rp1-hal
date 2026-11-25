@@ -9,7 +9,8 @@
 # Required: ROOTFS (the root file system copy), SCMI_MODULES (directory with the .ko files of
 #           build-scmi-modules.sh).
 # Optional: CONSOLE_TTY (default ttyAMA10), NET_IF (default eth0), CLIENT_BIN (directory of
-#           Linux-side rp1-hal programs, e.g. linux-doorbell, installed to usr/local/bin).
+#           Linux-side rp1-hal programs). linux-status goes to usr/local/libexec/rp1-lab;
+#           other clients go to usr/local/bin.
 set -euo pipefail
 root=$(realpath -e -- "${ROOTFS:?set ROOTFS to the root file system copy}")
 if [[ $root -ef / ]]; then
@@ -121,8 +122,13 @@ if [[ -n ${CLIENT_BIN:-} ]]; then
     shopt -u nullglob
     (( ${#clients[@]} )) || { echo "CLIENT_BIN $CLIENT_BIN has no files" >&2; exit 1; }
     for f in "${clients[@]}"; do
-        install -D -m 0755 "$f" "$root/usr/local/bin/$(basename "$f")"
-        echo "installed usr/local/bin/$(basename "$f")"
+        name=${f##*/}
+        case "$name" in
+            linux-status) dest=usr/local/libexec/rp1-lab/$name ;;
+            *) dest=usr/local/bin/$name ;;
+        esac
+        install -D -m 0755 "$f" "$root/$dest"
+        echo "installed $dest"
     done
 fi
 echo "prepare-rootfs done ($release)"

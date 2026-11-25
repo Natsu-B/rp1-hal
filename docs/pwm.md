@@ -179,7 +179,8 @@ an extended plan, not a claim that all routes, periods or PWM1 have been verifie
    edges. The example repeats 60 rounds (~90 s) across Linux startup and `clk_disable_unused`,
    then prints `PWM_DONE reinitialized=1`; measure the final A=1 kHz/B=500 Hz 50% outputs
    again. In each cold boot, run `lab/check-core-status.sh pwm "$NONCE"` from Linux
-   after `PWM_DONE`, with `linux-status` installed and the nonce from `PWM_BOOT`.
+   after `PWM_DONE`, with the nonce from `PWM_BOOT` and the
+   [matching Linux status client](../lab/README.md#linux-status-client) staged.
    Require both cores to report `Running` and the matching `LAB_FINAL_END` to report
    `result=PASS`. Keep the waveform measurements and UART records for both boots.
 5. Inspect the final DT and reserved GPIOs: Linux PWM0 is disabled, GPIO12/13/22/23 reserved,

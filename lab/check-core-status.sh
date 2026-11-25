@@ -1,6 +1,7 @@
 #!/bin/sh
 # Run on Linux after the matching firmware's workload ends.
 # Usage: check-core-status.sh sweep|pwm|scmi NONCE (UART0's eight hex digits).
+# LINUX_STATUS overrides the absolute path to the build-matched client.
 mode=${1:-}
 case "$mode" in
     sweep) address=0x1f0040c028 ;;
@@ -22,11 +23,18 @@ normalize() {
 }
 expected=${2:-}
 nonce=$(normalize "${expected#0x}") || exit 2
+client=${LINUX_STATUS:-/usr/local/libexec/rp1-lab/linux-status}
+case "$client" in
+    /*) ;;
+    *) printf 'LINUX_STATUS must be an absolute path: %s\n' "$client" >&2; exit 2 ;;
+esac
 result=FAIL
 printf 'LAB_FINAL_BEGIN check=%s nonce=%s\n' "$mode" "$nonce"
-if before=$(nonce_word) && [ "$before" = "$nonce" ]; then
+if [ ! -f "$client" ] || [ ! -x "$client" ]; then
+    printf 'Missing or non-executable linux-status client: %s\n' "$client" >&2
+elif before=$(nonce_word) && [ "$before" = "$nonce" ]; then
     rc=0
-    status=$(linux-status) || rc=$?
+    status=$("$client") || rc=$?
     printf '%s\n' "$status"
     if [ "$rc" = 0 ] && after=$(nonce_word) && [ "$after" = "$nonce" ] &&
         printf '%s\n' "$status" | awk '

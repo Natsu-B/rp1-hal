@@ -94,9 +94,14 @@ install_restore_trap() {
 }
 
 preflight() {
-    local d=$1
+    local d=$1 client=${LINUX_STATUS:-/usr/local/libexec/rp1-lab/linux-status} quoted_client
+    if [[ $client != /* ]]; then
+        printf 'LINUX_STATUS must be an absolute target path: %s\n' "$client" >&2
+        return 2
+    fi
+    printf -v quoted_client '%q' "$client"
     remote_checked "$d" 50 \
-        'systemctl is-active multi-user.target && findmnt -n -o FSTYPE / && linux-status && dmesg | grep -E "arm-scmi.*SCMI Protocol" && (mountpoint -q /sys/kernel/debug || mount -t debugfs debugfs /sys/kernel/debug) && test -r /sys/kernel/debug/clk/uart/clk_rate && test -r /dev/kmsg' \
+        "systemctl is-active multi-user.target && findmnt -n -o FSTYPE / && $quoted_client && dmesg | grep -E 'arm-scmi.*SCMI Protocol' && (mountpoint -q /sys/kernel/debug || mount -t debugfs debugfs /sys/kernel/debug) && test -r /sys/kernel/debug/clk/uart/clk_rate && test -r /dev/kmsg" \
         "$d/preflight.log" &&
         preflight_ok "$d/preflight.log"
 }
