@@ -98,6 +98,29 @@ def transition_inputs(raw):
     return boot, events, stamps
 
 
+HALT = ("[  40.69] reboot: Power down\r\n  0.98 RPi: BOOTSYS release VERSION:abc\r\n"
+        "  1.00 POWER_OFF_ON_HALT: 1 WAIT_FOR_POWER_BUTTON 0 power-on-reset 0\r\n"
+        "  1.02 Halt: power_off: 1\r\n\r\n  1.02 Power off\r\n\x00\r\n")
+
+
+def cold_shutdown_inputs(raw):
+    """boot.py and capture records of a cold force-boot that Linux answered with a halt."""
+    boot = {"kind": "force", "complete": True, "pd_ok": True, "raw_start": 0, "raw_end": len(raw)}
+    events = [
+        {"kind": "esp_command_start", "command": "force-boot", "mono": 1},
+        {"kind": "carrier", "value": "0", "mono": 3},
+        {"kind": "esp_command_end", "command": "force-boot", "rc": 0, "mono": 6},
+        {"kind": "console_sendraw", "text": "( true ); echo END_''12345678 rc=$?\n", "mono": 9},
+    ]
+    final = raw.index(b"RPi: BOOTSYS release", raw.index(b"Power off"))
+    stamps = [
+        {"port": 1, "offset": at, "bytes": 8, "monotonic_ns": when * 10**9}
+        for at, when in ((raw.index(b"reboot: Power down"), 2), (raw.index(b"Power off"), 4),
+                         (final, 5))
+    ]
+    return boot, events, stamps
+
+
 class TestVerifyFault(unittest.TestCase):
     def run_result(self, kind="p0-thread-panic", phase="cold-1", edit=lambda a, b: (a, b), **kwargs):
         uart0, uart10 = edit(*captures(kind, phase))
@@ -241,9 +264,9 @@ class TestVerifyFault(unittest.TestCase):
         def remove_status(a, b):
             b = "\n".join(line for line in b.splitlines() if not line.startswith("FAULT_STATUS"))
             return a, b.replace("received=20 rc=0", "received=19 rc=1")
-        rows, _, diagnostics = self.run_result(edit=remove_status)
+        rows, _, notes = self.run_result(edit=remove_status)
         self.assertTrue(all(rows[row] == INCOMPLETE for row in vf.POST_ROWS))
-        self.assertEqual(diagnostics, {"ping": FAIL})
+        self.assertEqual(notes, {"ping": "measured=FAIL"})
         for edit, options in (
             (lambda a, b: (a, b), {"artifact": FAIL}),
             (lambda a, b: (a.replace(NONCE, "badbaaad"), b), {}),
@@ -311,6 +334,45 @@ class TestVerifyFault(unittest.TestCase):
         self.assertIsNone(vf.force_boundary(raw, boot, [*events[:-1], dict(events[-1], rc=1)], stamps))
         self.assertIsNone(vf.force_boundary(raw, boot, events, stamps[:-1]))
         self.assertIsNone(vf.force_boundary(raw, boot, events, [*stamps[:-1], dict(stamps[-1], monotonic_ns=3)]))
+
+    def test_cold_accepts_halt_caused_by_its_own_force_boot(self):
+        uart0, uart10 = captures(phase="cold-1")
+        uart10 = HALT + uart10
+        raw = uart10.encode()
+        boot, events, stamps = cold_shutdown_inputs(raw)
+
+        def boot_row(boot=boot, events=events, stamps=stamps, text=uart10):
+            at = vf.shutdown_boundary(text.encode(), boot, events, stamps)
+            rows, _, notes = vf.verify_run("p0-thread-panic", "cold-1", NONCE, uart0, text,
+                                           BUNDLE_ID, CLIENT_SHA256, shutdown_at=at)
+            return rows["boot"], notes.get("boot")
+
+        self.assertEqual(boot_row(), (PASS, "detail=cold-via-shutdown"))
+        self.assertEqual(self.run_rows()["boot"], PASS)
+        self.assertNotIn("boot", self.run_result()[2])
+        early = [dict(e, mono=e["mono"] + 10) if e.get("command") == "force-boot" else e
+                 for e in events]
+        commanded = [*events, {"kind": "console_sendraw", "text": "systemctl poweroff\n", "mono": 0.5}]
+        rebooted = [*events, {"kind": "console_sendraw", "text": "systemctl reboot\n", "mono": 9}]
+        failed = [dict(e, rc=1) if e.get("kind") == "esp_command_end" else e for e in events]
+        for name, case in (
+            ("shutdown before force start", dict(events=early)),
+            ("missing stamps", dict(stamps=stamps[1:])),
+            ("no stamps", dict(stamps=[])),
+            ("no force record", dict(events=[])),
+            ("force failed", dict(events=failed)),
+            ("incomplete boot.py record", dict(boot=dict(boot, complete=False))),
+            ("recorded poweroff command", dict(events=commanded)),
+            ("recorded reboot command", dict(events=rebooted)),
+            ("reset mode 0 after halt", dict(text=uart10.replace(
+                "power-on-reset 1", "power-on-reset 0"))),
+            ("no halt banner", dict(text=uart10.replace("Halt: power_off: 1", "Halt"))),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(boot_row(**case), (INCOMPLETE, None))
+        rows, _, _ = vf.verify_run("p0-thread-panic", "cold-1", NONCE, uart0, uart10,
+                                   BUNDLE_ID, CLIENT_SHA256)
+        self.assertEqual(rows["boot"], INCOMPLETE)
 
     def test_static_bound_needs_stack_output_and_768_byte_budget(self):
         for output, rc, want in (

@@ -739,6 +739,15 @@ markers in the same UART10 capture. For poweroff also supply the capture's
 (one directory above `continuous/`). They tie the carrier-low and force-boot
 events to the UART transition.
 
+Cold cells are a force-boot from a running Linux. The power-key press of the
+force-boot can let Linux power down gracefully (`reboot: Power down`, then the
+bootloader's `Halt: power_off: 1` / `Power off`) before the hard cut. Supply the
+same three records for cold captures too. The verifier accepts such a halt as a
+cold boot only when both halt lines are stamped after the force-boot command
+started, the force-boot succeeded, the cell sent no reboot or poweroff command,
+and a `power-on-reset 1` boot follows. It reports the boot row as
+`detail=cold-via-shutdown`. A halt without these records stays INCOMPLETE.
+
 ```sh
 python3 lab/verify-fault.py --elf "$BOOT_SET/rp1.elf" \
     --manifest "$BOOT_SET/manifest.txt" --bundle "$BOOT_SET/rp1-bundle.img" \

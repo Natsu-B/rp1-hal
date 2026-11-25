@@ -28,6 +28,7 @@ POST_ROWS = ("timer", "peer", "ping", "usb", "scmi", "dmesg", "pcie")
 BOOTSYS = "RPi: BOOTSYS"
 BOOT_LINE = re.compile(r"(?m)^[\x00 \t]*(?:[0-9]+\.[0-9]+[ \t]+)?RPi: BOOTSYS\b")
 SHUTDOWN = re.compile(r"(?m)^\s*\[ *[0-9.]+\] reboot: (Restarting system|Power down)\s*$")
+SHUTDOWN_COMMAND = re.compile(r"\b(?:reboot|poweroff|halt|shutdown)\b")
 OPERATING_BOOT = re.compile(r"\[rp1boot\s|Linux version|Run /init|root@|~ #")
 MARKER = re.compile(r"^(?:\[[^\]]*\]\s*)?FAULT_([A-Z]+) (.+)$")
 BUNDLE = re.compile(r"\[rp1boot\s+\d+\] bundle ok: rp1\.bundle=([0-9a-f]{16})\b")
@@ -90,8 +91,11 @@ def poweroff_transition(previous, force_at, final_boot):
             and reset_modes(final_boot) == ["1"])
 
 
-def boot_mode(prefix, force_at):
-    """Return the transition immediately preceding the operating boot."""
+def boot_mode(prefix, force_at, shutdown_at=None):
+    """Return the transition immediately preceding the operating boot.
+
+    force_at marks a commanded poweroff's force-boot; shutdown_at marks the end of a
+    halt that a cold cell's own force-boot caused."""
     markers = list(BOOT_LINE.finditer(prefix))
     if not markers:
         return None
@@ -105,8 +109,12 @@ def boot_mode(prefix, force_at):
         return "reboot" if SHUTDOWN.findall(prior) == ["Restarting system"] else None
     if force_at is not None:
         return "poweroff" if poweroff_transition(previous, force_at, boot) else None
+    if not SHUTDOWN.search(previous):
+        return "cold"
+    if shutdown_at is not None and poweroff_transition(previous, shutdown_at, boot):
+        return "cold-via-shutdown"
     # A poweroff without its capture-side observations cannot count as a cold boot.
-    return None if SHUTDOWN.search(previous) else "cold"
+    return None
 
 
 def bundle_firmware(bundle):
@@ -276,7 +284,8 @@ def overall(values):
     return plat.overall([(v, "") for v in values])
 
 
-def capture_identity(kind, phase, nonce, uart0, prefix, begin, bundle_id, client_sha256, force_at):
+def capture_identity(kind, phase, nonce, uart0, prefix, begin, bundle_id, client_sha256,
+                     force_at, shutdown_at):
     boots = [fields for _, stage, fields in markers(uart0) if stage == "BOOT"]
     boot = boots[0] if len(boots) == 1 else {}
     boot_id = begin.get("boot_id", "")
@@ -284,8 +293,10 @@ def capture_identity(kind, phase, nonce, uart0, prefix, begin, bundle_id, client
                 and kind in boot.get("kinds", "").split(",") and BOOT_ID.fullmatch(boot_id))
     boot_segments = BOOT_LINE.split(prefix)
     banners = BUNDLE.findall(boot_segments[-1]) if len(boot_segments) > 1 else []
-    observed = boot_mode(prefix, force_at)
+    observed = boot_mode(prefix, force_at, shutdown_at)
     expected = phase if phase in ("reboot", "poweroff") else "cold"
+    if observed == "cold-via-shutdown" and expected == "cold":
+        expected = observed
     rows = {
         "identity": PASS if identity else INCOMPLETE,
         "bundle": INCOMPLETE if len(banners) != 1 or bundle_id is None
@@ -293,7 +304,7 @@ def capture_identity(kind, phase, nonce, uart0, prefix, begin, bundle_id, client
         "client": check(begin, ("client_sha256",), lambda digest: digest == client_sha256),
         "boot": INCOMPLETE if observed is None else PASS if observed == expected else FAIL,
     }
-    return rows, boot_id if identity else None, boot
+    return rows, boot_id if identity else None, boot, observed
 
 
 def sequence(kind, nonce, lines, records):
@@ -353,15 +364,18 @@ def judge(kind, data, rates, boot, udf_pc):
 
 
 def verify_run(kind, phase, nonce, uart0, uart10, bundle_id, client_sha256,
-               udf_pc=None, artifact=PASS, force_at=None):
-    """Judge a single nonce-bound invocation, retaining failed measurements behind a gate."""
+               udf_pc=None, artifact=PASS, force_at=None, shutdown_at=None):
+    """Judge a single nonce-bound invocation, retaining failed measurements behind a gate.
+
+    Returns the rows, the Linux boot ID and per-row notes ("measured=FAIL" for a failure
+    hidden behind a gate, "detail=cold-via-shutdown" for a cold boot after a graceful halt)."""
     lines = (uart10 or "").splitlines(keepends=True)
     records = list(markers(uart10))
     begins = [(i, f) for i, s, f in records if s == "BEGIN"]
     start, begin = begins[0] if len(begins) == 1 else (0, {})
     prefix = "".join(lines[:start])
-    rows, boot_id, boot = capture_identity(
-        kind, phase, nonce, uart0, prefix, begin, bundle_id, client_sha256, force_at)
+    rows, boot_id, boot, transition = capture_identity(
+        kind, phase, nonce, uart0, prefix, begin, bundle_id, client_sha256, force_at, shutdown_at)
     rows["sequence"], data, rates = sequence(kind, nonce, lines, records)
     measured = judge(kind, data, rates, boot, udf_pc)
     usable = artifact == PASS and all(rows[name] == PASS for name in IDENTITY_ROWS)
@@ -372,9 +386,11 @@ def verify_run(kind, phase, nonce, uart0, uart10, bundle_id, client_sha256,
         if row in POST_ROWS:
             allowed &= rows["terminal"] == PASS
         rows[row] = verdict if allowed else INCOMPLETE
-    diagnostics = {row: FAIL for row, verdict in measured.items()
-                   if verdict == FAIL and rows[row] != FAIL}
-    return rows, boot_id, diagnostics
+    notes = {row: "measured=FAIL" for row, verdict in measured.items()
+             if verdict == FAIL and rows[row] != FAIL}
+    if transition == "cold-via-shutdown" and rows["boot"] == PASS:
+        notes["boot"] = f"detail={transition}"
+    return rows, boot_id, notes
 
 
 def load_bytes(name, path):
@@ -386,33 +402,45 @@ def load_bytes(name, path):
     return data
 
 
-def force_boundary(raw, boot, events, stamps):
-    """Locate the force command in the same capture after poweroff and carrier loss."""
+def force_record(raw, boot):
+    """The raw10 span boot.py observed around its force-boot, or None."""
     if (not raw or boot.get("kind") != "force" or boot.get("complete") is not True
             or boot.get("pd_ok") is not True):
         return None
     start, end = boot.get("raw_start"), boot.get("raw_end")
-    if type(start) is not int or type(end) is not int or not 0 < start < end <= len(raw):
+    if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(raw):
         return None
-    command, carrier, forced = [], [], []
-    for event in events:
-        if event.get("kind") == "console_sendraw" and event.get("text") == "systemctl poweroff\n":
-            command.append(event)
-        elif event.get("kind") == "carrier":
-            carrier.append(event)
-        elif event.get("command") == "force-boot":
-            forced.append(event)
-    if len(command) != 1 or [e.get("kind") for e in forced] != [
-        "esp_command_start", "esp_command_end",
-    ] or forced[1].get("rc") != 0:
+    return start, end
+
+
+def force_command(events):
+    """Monotonic start and end of the one successful force-boot command, or None."""
+    forced = [event for event in events if event.get("command") == "force-boot"]
+    if [e.get("kind") for e in forced] != ["esp_command_start", "esp_command_end"] \
+            or forced[1].get("rc") != 0:
         return None
     try:
-        shutdown, force, done = (float(e["mono"]) for e in (*command, *forced))
-        states = sorted((float(e["mono"]), e["value"]) for e in carrier
-                        if shutdown < float(e["mono"]) < force)
+        force, done = (float(e["mono"]) for e in forced)
     except (KeyError, TypeError, ValueError):
         return None
-    if not shutdown < force < done or not states or states[-1][1] != "0":
+    return (force, done) if force < done else None
+
+
+def force_boundary(raw, boot, events, stamps):
+    """Locate the force command in the same capture after poweroff and carrier loss."""
+    record, timing = force_record(raw, boot), force_command(events)
+    command = [event for event in events if event.get("kind") == "console_sendraw"
+               and event.get("text") == "systemctl poweroff\n"]
+    if record is None or timing is None or len(command) != 1:
+        return None
+    (start, end), (force, done) = record, timing
+    try:
+        shutdown = float(command[0]["mono"])
+        states = sorted((float(e["mono"]), e["value"]) for e in events
+                        if e.get("kind") == "carrier" and shutdown < float(e["mono"]) < force)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not shutdown < force or not states or states[-1][1] != "0":
         return None
     power_down = raw.rfind(b"reboot: Power down", 0, start)
     halted = raw.rfind(b"Power off", 0, start)
@@ -425,22 +453,47 @@ def force_boundary(raw, boot, events, stamps):
     return len(raw[:start].decode(errors="replace"))
 
 
+def shutdown_boundary(raw, boot, events, stamps):
+    """Locate the end of a graceful halt that a cold cell's own force-boot caused.
+
+    The power key press of force-boot can let Linux power down before the hard cut.
+    The halt counts only when it is stamped after the force command started and the
+    cell sent no shutdown command of its own."""
+    record, timing = force_record(raw, boot), force_command(events)
+    if record is None or timing is None or any(
+            event.get("kind") == "console_sendraw"
+            and SHUTDOWN_COMMAND.search(str(event.get("text", ""))) for event in events):
+        return None
+    (start, end), (force, _) = record, timing
+    power_down = raw.find(b"reboot: Power down", start, end)
+    halted = raw.find(b"Power off", power_down + 1, end)
+    next_boot = raw.find(BOOTSYS.encode(), halted + 1, end)
+    if not 0 <= power_down < halted < next_boot:
+        return None
+    times = [capture_time(stamps, offset) for offset in (power_down, halted, next_boot)]
+    if None in times or not force <= times[0] <= times[1] <= times[2]:
+        return None
+    line_start = raw.rfind(b"\n", 0, next_boot) + 1
+    return len(raw[:line_start].decode(errors="replace"))
+
+
 def capture_time(stamps, offset):
     hits = [record["monotonic_ns"] / 1e9 for record in stamps if record.get("port") == 1
             and record["offset"] <= offset < record["offset"] + record["bytes"]]
     return hits[0] if len(hits) == 1 else None
 
 
-def capture_force_boundary(path, raw):
+def capture_boundary(path, raw, locate):
+    """Apply a boundary locator to the boot.py and capture records next to a uart10.raw."""
     event_data = load_bytes("events", path.with_name("events.jsonl"))
     boot_data = load_bytes("force_boot", path.parent.parent / "boot.json")
     stamp_data = load_bytes("timestamps", path.with_name("timestamps.jsonl"))
     if None in (event_data, boot_data, stamp_data):
         return None
     try:
-        return force_boundary(raw, json.loads(boot_data),
-                              [json.loads(line) for line in event_data.splitlines()],
-                              [json.loads(line) for line in stamp_data.splitlines()])
+        return locate(raw, json.loads(boot_data),
+                      [json.loads(line) for line in event_data.splitlines()],
+                      [json.loads(line) for line in stamp_data.splitlines()])
     except (ValueError, AttributeError, TypeError, KeyError):
         return None
 
@@ -506,15 +559,17 @@ def main(argv):
         path = pathlib.Path(uart10)
         raw = load_bytes("uart10", path)
         text10 = raw.decode(errors="replace") if raw else None
-        force_at = capture_force_boundary(path, raw) if phase == "poweroff" else None
+        force_at = capture_boundary(path, raw, force_boundary) if phase == "poweroff" else None
+        shutdown_at = capture_boundary(path, raw, shutdown_boundary) if phase.startswith("cold") \
+            else None
         irq57_unavailable |= any(s == "BOOT" and f.get("irq57") == "unavailable"
                                   for _, s, f in markers(text0))
-        rows, boot_id, diagnostics = verify_run(
+        rows, boot_id, notes = verify_run(
             kind, phase, nonce, text0, text10, bundle_id, args.client_sha256,
-            udf_pc=udf_pc, artifact=artifact, force_at=force_at)
+            udf_pc=udf_pc, artifact=artifact, force_at=force_at, shutdown_at=shutdown_at)
         value = overall((*rows.values(), artifact))
         for row, verdict in rows.items():
-            detail = " measured=FAIL" if row in diagnostics else ""
+            detail = f" {notes[row]}" if row in notes else ""
             print(f"FAULT_ROW {tag} row={row} result={verdict}{detail}")
         event = "FAULT_DIAG" if kind == "stkerr" else "FAULT_RUN"
         label = " diagnostic=hardfault-psp-stacking-error" if kind == "stkerr" else ""
