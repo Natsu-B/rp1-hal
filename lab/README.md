@@ -672,3 +672,64 @@ Linux-side IRQ delivery observed for I2C2, I2C6, SPI1, Ethernet, and USB. HW (20
 boot, firmware with SCMI on IRQ 57): this checker passes for I2C2, I2C6, SPI1 (16 and 4096 bytes),
 PWM0, Ethernet, and USB, and `rp1-realos-check` passes. The fan row was not verified: the test
 board reads no tach pulses, also with stock RP1 firmware.
+
+## PR-E fault injection (`fault-inject`)
+
+STATIC / 実機未検証. This lab image uses the same RP1 clock authority and
+`platform::init` as the realos firmware. The standard kernel, SCMI modules,
+Ethernet and USB setup are described in [Real Raspberry Pi OS environment](#real-raspberry-pi-os-environment-realos).
+Deploy the lab image in its own realos boot set. It owns timer alarms 0 and 1
+and accepts one request per firmware boot through the link page's lab scratch
+range. The RL v3 status layout is shared with the regular firmware.
+
+```sh
+cargo rp1 build --locked -p fault-inject --bin fault-inject --features firmware \
+    --target thumbv7m-none-eabi --release
+cargo build --locked -p fault-inject --bin fault-linux --features linux \
+    --target aarch64-unknown-linux-musl --release
+cargo build --locked --release -p stack-paths
+```
+
+Install `fault-linux` and `rp1-device-check` on the prepared realos target.
+Start both UART captures before boot or the Linux shutdown command. Run
+`fault-linux KIND NONCE HOST_IPV4 USB_PORT SCMI_N` from the root UART10 console once
+per boot. Supply the boot nonce from UART0, the host's Ethernet address,
+the attached USB port (for example `3-1`), and an SCMI request count from
+1 to 100. The debugfs clock
+`/sys/kernel/debug/clk/uart/clk_rate` must be available. Use a quiet target
+during the SCMI samples so every increase can be attributed to the test.
+
+| Kind | Expected RL v3 result |
+|---|---|
+| `p0-thread-panic`, `p0-isr-panic` | proc0 `Panicked` |
+| `p0-thread-udf`, `p0-isr-udf` | proc0 `Fault`, reason 6, CFSR.UNDEFINSTR |
+| `p1-panic` | proc1 `Panicked`, proc0 stays `Running` |
+| `stkerr` | Diagnostic. Attempts a PSP stacking violation when the MPU is present. Record any fault state and CFSR. |
+| IRQ57 panic | Diagnostic unavailable. IRQ57 belongs to the platform and has no lab injection hook. |
+
+The two 20 Hz, priority-4 timer counters must advance before the request. The
+target core's count must stay fixed over at least one second after its terminal
+record. For proc1 panic the proc0 timer must keep advancing. The target emits
+`FAULT_*` records on UART10 after the terminal observation, including ping
+20/20 over `eth0`, the USB control probe, the SCMI replies and counter delta,
+and the PCIe state. UART0 supplies the pre-injection `FAULT_BOOT` nonce.
+
+Pass the deployed boot-set ELF and manifest to the host verifier. Supply one
+`--run KIND PHASE NONCE UART0 UART10` per capture pair. The nonce is the
+eight-digit hex value from `FAULT_BOOT`. Use `cold-1`, `cold-2`, `reboot` and
+`poweroff` for each of the five required kinds. Keep each pair from a distinct
+boot. For `reboot` and `poweroff`, keep the Linux shutdown and bootloader
+markers in the same UART10 capture. The poweroff phase covers Linux poweroff
+and the boot that follows the observed halt.
+
+```sh
+python3 lab/verify-fault.py --elf "$BOOT_SET/rp1.elf" \
+    --manifest "$BOOT_SET/manifest.txt" --stack-paths target/release/stack-paths \
+    --run p0-thread-panic cold-1 "$NONCE" "$UART0" "$UART10"
+```
+
+The verifier checks the ELF hash, loader bundle ID, nonce and boot identity
+before combining evidence. It prints `FAULT_RUN` per boot, `FAULT_KIND` per
+required kind and `PLAT_VERDICT` for the full matrix and static stack bound.
+Exit 0 is PASS, 1 is FAIL, and 3 is INCOMPLETE. Missing evidence yields
+INCOMPLETE. `FAULT_DIAG` and `PLAT_LOST=INCOMPLETE` are observational.
