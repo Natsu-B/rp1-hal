@@ -27,7 +27,6 @@ mod pinmux;
 pub mod platform;
 pub mod pwm;
 pub mod scmi;
-pub mod shm;
 pub mod spi;
 pub mod timer;
 pub mod uart;

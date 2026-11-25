@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 use rp1_hal::{gpio::Doorbell, log};
+#[cfg(not(feature = "ring-dma"))]
+use rp1_link::RingRx;
+use rp1_link::{Block, OpenError, RingTx, flush_window, notify::HostIrq};
 use rp1_proto::{Error, link};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
@@ -40,6 +43,8 @@ fn bss_check(marker: u32) -> u32 {
 type Sample = [u32; 4];
 type Control = [u32; 16];
 type Bulk = [u32; 262144];
+type Wide64 = [u32; 16];
+type Wide256 = [u32; 64];
 fn now() -> u32 {
     unsafe { (0x400a_c028 as *const u32).read_volatile() }
 }
@@ -132,14 +137,15 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         }
         if !probed && link_read(link::SHM_REQUEST) == 2 {
             probed = true;
-            let area = rp1_hal::shm::lab_map_window(&mut pcie, rp1::SHM_NOTE).unwrap();
-            let words = area.size as usize / 4;
+            let size = rp1::link::__map_for_probe(&mut pcie).unwrap();
+            let words = size as usize / 4;
             let pointer = rp1_proto::SHM_WINDOW as *mut u32;
             let start = now();
             for i in 0..words {
                 unsafe { pointer.add(i).write_volatile(i as u32 ^ 0xa596_c33c) };
             }
-            rp1_hal::shm::complete_posted_writes();
+            // This probe mapped the reservation before Ready.
+            unsafe { rp1_link::generated::flush_mapped_window() };
             let mut errors = 0;
             for i in 0..words {
                 if unsafe { pointer.add(i).read_volatile() } != (i as u32 ^ 0xa596_c33c) {
@@ -148,11 +154,11 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
             }
             log!(
                 "WINDOW bytes={} words={} errors={} us={} first=0x81000000 last=0x{:x}\n",
-                area.size,
+                size,
                 words,
                 errors,
                 now().wrapping_sub(start),
-                rp1_proto::SHM_WINDOW + area.size - 4
+                rp1_proto::SHM_WINDOW + size - 4
             )
             .unwrap();
             unsafe {
@@ -166,7 +172,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         }
         if !attempted && link_read(link::SHM_REQUEST) == 1 {
             attempted = true;
-            let enabled = rp1_hal::shm::enable(&mut pcie, rp1::SHM_NOTE, &rp1::SHM_NOTE_SHA256);
+            let enabled = rp1::link::try_enable(&mut pcie);
             log!("p0 shm enable {:?}\n", enabled).unwrap();
         }
     }
@@ -249,7 +255,14 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut doorbell = Doorbell::new(p.pins.gpio27);
     let mut host_irq = p.host_irq;
     // Linux may ask for an ADC burst before it enables the shm area.
-    while link_read(link::SHM_STATUS) != 1 {
+    let mut init = p.link;
+    let endpoints = loop {
+        match init.try_open() {
+            Ok(endpoints) => break endpoints,
+            Err(OpenError::NotReady(pending)) => init = pending,
+            Err(OpenError::Reset) => panic!("SHM window lost"),
+            Err(OpenError::Attach(error)) => panic!("SHM attach: {error:?}"),
+        }
         service_doorbell(&mut doorbell);
         serve_proc1(
             #[cfg(feature = "adc")]
@@ -257,20 +270,20 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             #[cfg(feature = "spi")]
             spi.as_mut(),
         );
-    }
-    let mut area = unsafe { rp1_hal::shm::Area::attach(rp1::SHM_NOTE, 2) }.unwrap();
-    let mut up = area.ring_tx::<Sample>("up").unwrap();
-    let mut down = area.ring_rx::<Sample>("down").unwrap();
-    let mut latest = area.ring_tx::<Sample>("latest").unwrap();
-    let mut events = area.ring_tx::<Sample>("events").unwrap();
+    };
+    let rp1::link::Proc1Link {
+        mut up,
+        mut down,
+        mut latest,
+        mut events,
+        mut control,
+        mut bulk,
+        ..
+    } = endpoints;
     #[cfg(feature = "ring-dma")]
-    let mut wide64 = area.ring_tx::<ring_dma::Wide64>("wide64").unwrap();
-    #[cfg(feature = "ring-dma")]
-    let mut wide256 = area.ring_tx::<ring_dma::Wide256>("wide256").unwrap();
+    let (mut wide64, mut wide256) = (endpoints.wide64, endpoints.wide256);
     #[cfg(feature = "ring-dma")]
     let mut last_ring_perf = ring_dma_protocol::Perf::default();
-    let mut control = area.block::<Control>("control").unwrap();
-    let mut bulk = area.block::<Bulk>("bulk").unwrap();
     let mut last = 0;
     let mut seen = 0;
     loop {
@@ -343,7 +356,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 let mut writer = unsafe { bulk.begin_write() };
                 writer.fill(0, 262144, |i| i as u32 ^ seed).unwrap();
                 writer.commit();
-                rp1_hal::shm::complete_posted_writes();
+                flush_window();
             }
             4 => {
                 let checked = bulk.read_with(|reader| {
@@ -373,7 +386,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 let t = now();
                 unsafe { scan_write(pointer, 262144, seed) };
                 writer.commit();
-                rp1_hal::shm::complete_posted_writes();
+                flush_window();
                 request[10] = now().wrapping_sub(t);
                 let local = [seed; 4];
                 let t = now();
@@ -490,13 +503,13 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             }
             _ => errors = 1,
         }
-        rp1_hal::shm::complete_posted_writes();
+        flush_window();
         request[4] = 2;
         request[5] = errors;
         request[6] = now().wrapping_sub(start);
         request[7] = if command == 1 { up.dropped() } else { extra };
         unsafe { control.write(&request) };
-        rp1_hal::shm::complete_posted_writes();
+        flush_window();
         #[cfg(feature = "ring-dma")]
         if command == 17 {
             let free = stack.free_bytes();
@@ -553,7 +566,7 @@ const BATCH: usize = 32;
 /// Batched RP1→Linux stream: one `head` store per `push_slice`; the loop itself runs from ISRAM.
 #[cfg(not(feature = "ring-dma"))]
 #[rp1_rt::isram]
-fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u32 {
+fn up_batch(tx: &mut RingTx<Sample>, count: u32, start: u32) -> u32 {
     let mut buf = [[0u32; 4]; BATCH];
     let mut i = 0;
     while i < count {
@@ -578,8 +591,8 @@ fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u3
 // The ring-dma image needs this ISRAM for the command 17 loop; there it runs from shared SRAM.
 #[cfg_attr(not(feature = "ring-dma"), rp1_rt::isram)]
 fn events_stream(
-    tx: &mut rp1_hal::shm::RingTx<Sample>,
-    mut notify: Option<&mut rp1_link::notify::HostIrq>,
+    tx: &mut RingTx<Sample>,
+    mut notify: Option<&mut HostIrq>,
     count: u32,
     seed: u32,
     start: u32,
@@ -621,7 +634,7 @@ fn events_stream(
 /// Batched Linux→RP1 stream: one `tail` store per `pop_into`, every message checked.
 #[cfg(not(feature = "ring-dma"))]
 #[rp1_rt::isram]
-fn down_batch(rx: &mut rp1_hal::shm::RingRx<Sample>, count: u32, start: u32) -> u32 {
+fn down_batch(rx: &mut RingRx<Sample>, count: u32, start: u32) -> u32 {
     let mut buf = [[0u32; 4]; BATCH];
     let mut i = 0;
     let mut errors = 0;
@@ -678,8 +691,8 @@ unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
 #[rp1_rt::isram]
 fn wait_command(
     doorbell: &mut Doorbell,
-    host_irq: &mut rp1_link::notify::HostIrq,
-    control: &rp1_hal::shm::Block<Control>,
+    host_irq: &mut HostIrq,
+    control: &Block<Control>,
     seen: u32,
 ) -> u32 {
     loop {

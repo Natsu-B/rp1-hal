@@ -61,7 +61,7 @@ lab/           実験・診断（公開 API ではない）
 | ISRAM（コアごと） | ISR、ホットループ、実行時の PCIe 状態機械 | `#[isram]`（v0.1 は手で付ける、§3.3） |
 | DSRAM（コアごと） | スタック、既定の `.data` / `.bss`、`#[proc0]` / `#[proc1]` static、atomic、executor 状態 | 普通の static（§5 の検査を受ける） |
 | 共有 SRAM `0xff00..` | 予約 | linker ASSERT |
-| Linux DDR | Linux との共有メモリ（`ring` / `channel` / `block`）。block は「遅くて大きい」外付け RAM としても使う | 宣言 `[[package.metadata.rp1.shm]]`、`Shm::enable` 後のハンドル。api-sketch §4.3 |
+| Linux DDR | Linux との共有メモリ（`ring` / `channel` / `block`）。block は「遅くて大きい」外付け RAM としても使う | 宣言 `[[package.metadata.rp1.shm]]`、`rp1::link` が生成する型付き端点。api-sketch §4.3（STATIC） |
 
 既定の `.data` / `.bss` を DSRAM に置く理由: 依存 crate が static の atomic で RMW をしても壊れない。
 大きなバッファは DSRAM に入らないので明示的に `#[shared]` にする。
@@ -250,7 +250,7 @@ RMW atomic のメソッドは持たない。
     SET/CLR の 2 回の書き込みが別の呼び出しと交ざると（A の SET → Linux が消費 → B の SET は TEST が既に 1 なのでエッジに
     ならない → 両方 CLR）起床が 1 回消えるので、所有は 1 つにする（STATIC、コンパイル失敗の試験あり）。
   - 公開の順序: RP1 の SRAM のデータは `notify_sram`（barrier → パルス）。Linux DDR のデータは同じ窓を
-    `shm::complete_posted_writes` で読み戻してから `notify_sram` を呼ぶ（STATIC）。protocol.md §3。
+    `rp1_link::flush_window` で読み戻してから `notify_sram` を呼ぶ（STATIC）。protocol.md §3。
   - **割り込み源（TIMER アラーム 3）**: vector 29 の源は `TIMER.INTS` bit 3 =（INTR & INTE）| INTF（DOC、RP2040 と同じ形）。
     `host_irq` が宣言上 `TIMER.ALARM3` を所有し（他のコアの `timer = ["ALARM3"]` は E3）、rp1-hal はその INTE/INTF を立てない
     ので源は 0 のまま（INTR は立っても INTE=0 なら出ない。HW: 実行中 INTR=0x3、INTE=0）。前に動いたファームが残した状態に
@@ -340,17 +340,19 @@ VPU firmware（config.txt / cmdline.txt / overlay / initramfs を通常どおり
 
 詳細は api-sketch §4.3。物理アドレスはビルド時にボード表の固定領域から決め、overlay の `reserved-memory`（no-map、連続）と
 shm ごとの `generic-uio` ノードに焼き込む。ローダーはそのアドレスを共有 SRAM のハンドオフ語に書く。
-ゼロ化はファームが `Shm::enable` で行う（ローダーは DDR を触らない）。
+proc0 は生成された `rp1::link::try_enable` で予約領域をゼロ化する（STATIC）。
 
 STATIC（v0.1 実装）: rpi-cm5 は `0x2200_0000`、予約全体は 1..16 MiB。既存の scratch/openamp 予約を拡張しない。
-Linux の PCIe probe/PERSTn 完了後、UIO の link ページで初期化を要求し、proc0 が `rp1_hal::shm::enable(&mut pcie, ..)` で ATU と領域を初期化する。
+Linux の PCIe probe/PERSTn 完了後、UIO の link ページで初期化を要求し、proc0 が `rp1::link::try_enable(&mut pcie)` で ATU と領域を初期化する。
 公開は PERSTn 検出器（IRQ53）が `Up` の間だけで、ATU の設定と `SHM_STATUS = 1` はそれぞれ割り込みを止めた区間で検査してから行う（STATIC、ホスト試験のみ）。
 具体的な API・ローダーの開発用パッチ・検証方法は [lab/README.md](../lab/README.md)。
 HW（2026-10-29、同じ組で cold boot 2 回）: 2 MiB 予約の全語を M3 窓から書いて読み戻し一致、ring は各向き 10^6 件で欠落・破損 0、
 block 1 MiB は両向き全語一致。M3 から DDR: 読み遅延 約 1.32 µs/語、走査読み 約 3.0 MB/s、書き 約 5.9 MB/s。
 ring は RP1→Linux 0.76 MB/s、Linux→RP1 0.35 MB/s（16 byte）で、Linux を止めても M3 側の push 約 20 µs / pop 約 43 µs が律速。
 Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側が遅い原因は未特定（HYP: 共有 SRAM からの命令取得と proc0 のポーリングとの競合）。
-ファームは `Shm::enable` で outbound ATU を設定してからハンドルを返す。PCIe リセットで ATU は消える（HW、2026-09-29）ので v0.1 は cold boot のみ保証。
+各コアは Ready を確認した `p.link.try_open()` から、自分が所有する型付き端点を受け取る（STATIC）。
+端点の配置と DDR ヘッダーに書く note のハッシュはビルド時に決まる。PCIe リセットで ATU は消える（HW、2026-09-29）ため、
+公開した窓の寿命は当該 cold boot に限られる。
 公開後のリセットは IRQ53 が検出して `SHM_STATUS = SHM_WINDOW_LOST` にする（STATIC。検出の経路は実機で起こしていない）。
 
 測ること（最初の縦 1 本で）: M3 からの DDR 読み出し遅延・帯域・書き込み帯域、Linux 側 uncached（UIO）と cached（/dev/mem + DC CIVAC）の読み書き速度、UIO の IRQ 待ち遅延。
@@ -416,5 +418,5 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 | 2026-10-30 | SPI マスターを追加（`peripherals = ["SPI0"]` など、OWNERSHIP 16+n）。bank 0 のマスター SPI0/1/3/5（rpi-cm5。SPI2 の MISO は Linux UART1 の GPIO1、SPI4/7 はスレーブ専用、SPI6/8 は bank 0 外）。クロックは clk_sys（RP1 所有、SCMI で保持・投票しない）を偶数 BAUDR で分周、リセットは CTRL1 bit 10+n。宣言すると overlay が `rp1_spiN` を disabled にし、そのリセットは Linux 用に解除しない。ネイティブ CS は配線せず、`spi::Device` が GPIO を CS にする（`docs/spi.md`） | HW（2026-10-30、cold boot ×2）: 内部ループバックで 1/10/25/50 MHz × 8/12/16 bit 一致、FIFO 64 段、既存の目印も成立 |
 | 2026-11-05 | DMA コントローラーを宣言できるようにする（`dma = {}`、OWNERSHIP 65、ボード表の Linux 必須ブロックから外す）。所有時は `rp1_dma` を無効化し clk_dma を SCMI で保持、`dmas` で `rp1_dma` を使う有効なノードは `pwms` と同じく衝突。`rp1_hal::dma` は単一ブロックの mem-to-mem（ポーリング完了）で、M3 アドレスはデータシートの 40-bit 写像で変換する（SRAM `0xC0_2000_0000`、ATU 窓 `0x80_0000_0000`、ホスト物理 `0x10_0000_0000 + p`） | HW（2026-11-05、cold boot）: SRAM→SRAM と SRAM→Linux DDR（ATU 窓・直接写像の両方）が全語一致。DDR へは 64 KiB ブロックで約 200 MB/s、CPU の posted 書き込みは約 8.5 MB/s（docs/dma.md） |
 | 2026-11-16 | 割り込みの線は、実機で「源を立てるとその線の NVIC pending bit だけが立つ」と確かめたものだけを `IRQ_VERIFIED` に入れて公開する（未確認の線は出さない。`docs/declaration-and-note.md` §1.3.1）。I2C0/2/3・SPI1/3・PWM1・ADC_FIFO を追加。IO_BANK1/2 は届くがピンが Linux のものなので出さない。I2C/SPI の RP1 出力イネーブル `+0x108` はドライバの `enable_interrupt` が開け、`free` / `abort` が閉じる | HW（2026-11、掃引 2 種のイメージで各 2 起動、9 本すべて同じ結果）。`+0x108` 閉で 0/3、開で 3/3（HW） |
-| 2026-11-24 | PERSTn 後のエンドポイント再設定（`cold::EndpointService`、`cold::reconfig`）を削除する。init の後の PERSTn は IRQ53 の検出器が `PLAT_PCIE = Lost` / `SHM_STATUS = SHM_WINDOW_LOST` として報告するだけで、回復は RP1 の再ロード。proc0 のループは何も poll しない | init の後の PERSTn からは回復しない（規則 L1）。再設定は outbound の shm 窓を戻さず、DBI・selector を proc0 のループから書くので `shm::enable` との排他が要った（STATIC）。検出の経路は HW 未確認 |
+| 2026-11-24 | PERSTn 後のエンドポイント再設定（`cold::EndpointService`、`cold::reconfig`）を削除する。init の後の PERSTn は IRQ53 の検出器が `PLAT_PCIE = Lost` / `SHM_STATUS = SHM_WINDOW_LOST` として報告するだけで、回復は RP1 の再ロード。proc0 のループは何も poll しない | init の後の PERSTn からは回復しない（規則 L1）。再設定は outbound の shm 窓を戻さず、DBI・selector を proc0 のループから書くので SHM の窓公開との排他が要った（STATIC）。検出の経路は HW 未確認 |
 | 2026-11-24 | 状態語の `ABI` を `RL` 版 3 にする（`PLAT_PCIE` / `PLAT_SCMI` を版に含める）。解釈は rp1-proto の `PcieState` / `ScmiState` に置き、rp1-hal と rp1-linux が共用する。rp1-linux は版の違うファームをその版を書いたエラーで拒む | 版 2 の読み手は 0x48 / 0x4c を解釈しない。読み手が新しい語を解釈できるかを `ABI` で分かるようにする（STATIC） |

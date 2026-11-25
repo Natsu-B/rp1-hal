@@ -46,6 +46,7 @@ spi0 = { sck = 11, mosi = 10, miso = 9 }
 dma = {}
 host_irq = true
 
+# The generated proc1 link attaches these endpoints once after the window is Ready.
 [[package.metadata.rp1.shm]]
 name = "up"
 kind = "ring"

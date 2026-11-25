@@ -14,9 +14,6 @@ use rp1_link::{
 };
 use rp1_proto::shm::RingTx;
 
-pub type Wide64 = [u32; 16];
-pub type Wide256 = [u32; 64];
-
 /// All words are verified by Linux, including the sequence and inverted last word.
 #[rp1_rt::isram]
 pub fn wide<const W: usize>(m: &mut [u32; W], i: u32) {

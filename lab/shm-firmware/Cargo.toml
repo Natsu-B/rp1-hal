@@ -95,7 +95,7 @@ overflow = "reject"
 notify = "irq"
 
 # Wider RP1 -> Linux rings for the DMA ring producer (rp1_link::ring_dma::RingDma, command 17 with
-# the `ring-dma` feature); declared in every profile.
+# the `ring-dma` feature). The generated proc1 link attaches them in every profile.
 [[package.metadata.rp1.shm]]
 name = "wide64"
 kind = "ring"

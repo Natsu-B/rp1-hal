@@ -106,6 +106,11 @@ on_conflict = "disable"                   # "disable"（既定）| "refuse"。�
   （例 `keep = { uart1 = { tx = 0, rx = 1 }, i2c1 = { sda = 2, scl = 3 } }`）。`keep` から `uart1` を外すと GPIO 0/1 を RP1 に渡せる
   （ビルド時に警告）。
 
+- SHM を宣言するファームは `rp1-link` に依存し、`build.rs` の `configure_with_types` で共有型を登録する（STATIC）。
+  裸の型名はクレートルート、`protocol::Sample` は外部クレート、`crate::types::Sample` はクレート内の型を指す。
+  生成コードは対象型のサイズと `Message::TYPE_ID` を登録値と照合する。各コアの `p.link.try_open()` が返すフィールド名は宣言名
+  （`type` などは `r#type`）。ブロックの書き込みには `writer` で指定した所有権が必要。
+
 HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1、UART1 を Linux、cold boot ×3）: Linux の
 `gpio-reserved-ranges` が所有ピンちょうど `<2 2 8 4 14 2 22 1 27 1>`（I2C1 2/3、SPI0 9..11 と CS 8、log 14/15、GPIO 22、27）になり、
 既存の回帰（shm・doorbell・I2C・SPI・ADC・SCMI）が全て合格。同じ起動で Linux の UART1（ttyAMA1、GPIO 0/1）がホストとの
@@ -118,7 +123,7 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 | インスタンス | `uart0`..`uart4`、`i2c0`..`i2c3`、`spi0`/`spi1`/`spi3`/`spi5`、`adc` | インスタンス全体。信号ごとのピン | IRQ 線、リセットビット、クロック、ラッパー `+0x108`、割り当てたピン |
 | ブロックの一部 | `timer = ["ALARM0".."ALARM3"]` | アラーム単位。タイマーの計数値は全員が読める | 該当 IRQ（26..29） |
 | ピン | `gpio = [..]`、`gpio_irq = [..]` | ピン単位（funcsel、pad、SYS_RIO、イベント選択） | — |
-| RP1 → Linux 割り込み（不安定） | `host_irq = true`（1 コアだけ） | MSI-X vector 29 の `MSIX_CFG.TEST`（`TIMER.ALARM3` も所有） | `HostIrq`（rp1-link の feature `unstable-host-irq`）、overlay の `rp1:irq` UIO |
+| RP1 → Linux 割り込み（不安定） | `host_irq = true`（1 コアだけ） | MSI-X vector 29 の `MSIX_CFG.TEST`（`TIMER.ALARM3` も所有） | `rp1_link::notify::HostIrq`（rp1-link の feature `unstable-host-irq`）、overlay の `rp1:irq` UIO |
 | バンク | 自動 | ピンを 1 本でも持つと、そのバンクの電圧設定は読むだけ | — |
 | システム | `log`、`clock.authority = "rp1"` | RP1 全体（コアに属さない） | UART0 と GPIO 14/15 / クロック生成器 |
 | Linux | `linux.keep`（省略時はボード既定。書くと既定を置き換える） | インスタンスとピン | 宣言できない（E3/E4） |

@@ -203,7 +203,7 @@ fn ring_raw(dma: &mut Dma, data: *mut u32) -> bool {
                 let expected = u32::from_le_bytes(source[i..i + 4].try_into().unwrap());
                 unsafe { destination.add(i).cast::<u32>().write_volatile(!expected) };
             }
-            rp1_hal::shm::complete_posted_writes();
+            rp1_link::flush_window();
             let t = now();
             for _ in 0..1000 {
                 if unsafe { dma.ch1.copy_to_remote(source, destination) }.is_err() {
@@ -211,7 +211,7 @@ fn ring_raw(dma: &mut Dma, data: *mut u32) -> bool {
                 }
             }
             let us = now().wrapping_sub(t);
-            rp1_hal::shm::complete_posted_writes();
+            rp1_link::flush_window();
             let mut bad = 0;
             for i in (0..bytes).step_by(4) {
                 let expected = u32::from_le_bytes(source[i..i + 4].try_into().unwrap());
@@ -282,7 +282,7 @@ pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8
             };
         }
     }
-    rp1_hal::shm::complete_posted_writes();
+    rp1_link::flush_window();
     out[2] = now().wrapping_sub(t);
     // Large blocks: 64 KiB of the SRAM image, 8 times per path (timing only; overwritten below).
     for (slot, base) in [(6usize, atu), (7, direct)] {
@@ -370,7 +370,7 @@ fn canary(data: *mut u32) {
     for w in 0..BIG_BYTES / 4 {
         unsafe { data.add(w).write_volatile(CANARY) };
     }
-    rp1_hal::shm::complete_posted_writes();
+    rp1_link::flush_window();
 }
 /// DDR bytes `1..BIG_BYTES - 1` against BIG: (copied prefix length, canary bytes missing after
 /// the prefix, guard bytes 0 / BIG_BYTES - 1 changed, FNV hash of the whole range).

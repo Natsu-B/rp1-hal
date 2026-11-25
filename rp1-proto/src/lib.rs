@@ -32,10 +32,12 @@ pub mod link {
     /// Example doorbell request/reply words (Linux writes request, proc1 echoes reply).
     pub const DOORBELL_REQUEST: usize = 0x10;
     pub const DOORBELL_REPLY: usize = 0x14;
-    /// Written by proc0 after `Area::enable`: the published DDR generation (even) or 0.
+    /// Written by proc0 when publishing the window: the published DDR generation (even) or 0.
     pub const SHM_GENERATION: usize = 0x18;
     /// 0 = not enabled yet, 1 = ready, `SHM_WINDOW_LOST`, other = error code from enable.
     pub const SHM_STATUS: usize = 0x1c;
+    /// `SHM_STATUS` after successful publication.
+    pub const SHM_READY: u32 = 1;
     /// `SHM_STATUS` after a PCIe reset took the outbound window away.
     pub const SHM_WINDOW_LOST: u32 = 0x10;
     /// Linux requests initialization after PCIe probe; RP1 enables ATU after the final PERSTn.

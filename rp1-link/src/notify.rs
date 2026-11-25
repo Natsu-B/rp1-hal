@@ -70,8 +70,7 @@ impl HostIrq {
     /// SRAM). A barrier orders the SRAM writes before the pulse; Linux reads SRAM through the
     /// same RP1 bus, so nothing else is needed.
     ///
-    /// Not for data in Linux DDR (`shm` rings and blocks): those writes are posted on PCIe and
-    /// may still be in flight after a barrier. Complete the posted writes before calling this.
+    /// For data in Linux DDR, first call [`crate::flush_window`] to drain posted writes.
     #[inline(always)]
     pub fn notify_sram(&mut self) {
         rp1_proto::barrier();

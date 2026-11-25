@@ -402,12 +402,14 @@ dependencies = [
  "object",
  "rp1-dt",
  "rp1-hal",
+ "rp1-link",
  "rp1-pinmux",
  "rp1-proto",
  "serde",
  "sha2",
  "tempfile",
  "toml 0.8.23",
+ "trybuild",
 ]
 
 [[package]]

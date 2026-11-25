@@ -9,6 +9,7 @@
 #![no_std]
 #![no_main]
 use rp1_hal::log;
+use rp1_link::{Block, OpenError, RingRx, RingTx, flush_window, notify::HostIrq};
 use rp1_proto::{Error, link};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
@@ -121,8 +122,7 @@ impl System {
         }
         if !self.attempted && request == 1 {
             self.attempted = true;
-            let enabled =
-                rp1_hal::shm::enable(&mut self.pcie, rp1::SHM_NOTE, &rp1::SHM_NOTE_SHA256);
+            let enabled = rp1::link::try_enable(&mut self.pcie);
             log!("p0 shm enable {:?}\n", enabled).unwrap();
         }
     }
@@ -130,20 +130,21 @@ impl System {
 
 /// shm-linux's whole-window check before it enables the area: pattern every word, read back.
 fn probe_window(pcie: &mut rp1_hal::platform::Pcie) {
-    let area = rp1_hal::shm::lab_map_window(pcie, rp1::SHM_NOTE).unwrap();
-    let words = area.size as usize / 4;
+    let size = rp1::link::__map_for_probe(pcie).unwrap();
+    let words = size as usize / 4;
     let pointer = rp1_proto::SHM_WINDOW as *mut u32;
     for i in 0..words {
         unsafe { pointer.add(i).write_volatile(i as u32 ^ 0xa596_c33c) };
     }
-    rp1_hal::shm::complete_posted_writes();
+    // This probe mapped the reservation before Ready.
+    unsafe { rp1_link::generated::flush_mapped_window() };
     let mut errors = 0;
     for i in 0..words {
         if unsafe { pointer.add(i).read_volatile() } != (i as u32 ^ 0xa596_c33c) {
             errors += 1;
         }
     }
-    log!("WINDOW bytes={} errors={}\n", area.size, errors).unwrap();
+    log!("WINDOW bytes={} errors={}\n", size, errors).unwrap();
     proof::wr(
         rp1_proto::LINK_START as usize + 36,
         if errors == 0 { 1 } else { 2 },
@@ -195,16 +196,23 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
 
     let mut report = REPORT.producer(&mut core);
     let mut host_irq = p.host_irq;
-    // The doorbell works before Linux enables the shm area; so does the report it triggers.
-    while link_read(link::SHM_STATUS) != 1 {
+    // Keep servicing the doorbell and issuing its report before Linux enables the area.
+    let mut init = p.link;
+    let rp1::link::Proc1Link {
+        mut up,
+        mut down,
+        mut latest,
+        mut control,
+        mut bulk,
+    } = loop {
+        match init.try_open() {
+            Ok(endpoints) => break endpoints,
+            Err(OpenError::NotReady(pending)) => init = pending,
+            Err(OpenError::Reset) => panic!("SHM window lost"),
+            Err(OpenError::Attach(error)) => panic!("SHM attach: {error:?}"),
+        }
         after_doorbell(&mut host_irq, &mut report, &stack);
-    }
-    let mut area = unsafe { rp1_hal::shm::Area::attach(rp1::SHM_NOTE, 2) }.unwrap();
-    let mut up = area.ring_tx::<Sample>("up").unwrap();
-    let mut down = area.ring_rx::<Sample>("down").unwrap();
-    let mut latest = area.ring_tx::<Sample>("latest").unwrap();
-    let mut control = area.block::<Control>("control").unwrap();
-    let mut bulk = area.block::<Bulk>("bulk").unwrap();
+    };
     let mut last = 0;
     let mut seen = 0;
     // The command loop of lab/shm-firmware for shm-linux's default suite (commands 1..8, 10..13).
@@ -272,7 +280,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 let mut writer = unsafe { bulk.begin_write() };
                 writer.fill(0, 262144, |i| i as u32 ^ seed).unwrap();
                 writer.commit();
-                rp1_hal::shm::complete_posted_writes();
+                flush_window();
             }
             4 => {
                 let checked = bulk.read_with(|reader| {
@@ -301,7 +309,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 let t = now();
                 unsafe { scan_write(pointer, 262144, seed) };
                 writer.commit();
-                rp1_hal::shm::complete_posted_writes();
+                flush_window();
                 request[10] = now().wrapping_sub(t);
                 let local = [seed; 4];
                 let t = now();
@@ -331,13 +339,13 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             11 | 13 => errors = down_batch(&mut down, count, start),
             _ => errors = 1,
         }
-        rp1_hal::shm::complete_posted_writes();
+        flush_window();
         request[4] = 2;
         request[5] = errors;
         request[6] = now().wrapping_sub(start);
         request[7] = if command == 1 { up.dropped() } else { 0 };
         unsafe { control.write(&request) };
-        rp1_hal::shm::complete_posted_writes();
+        flush_window();
         // The stack figure in the final lines is taken before these commands; this one tells
         // whether the default stack also holds them.
         log!(
@@ -355,7 +363,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
 /// What main does for the doorbell handler: wake Linux's `rp1:irq` waiter after a reply, and
 /// send the report once the 1000 doorbells are in.
 fn after_doorbell(
-    host_irq: &mut rp1_link::notify::HostIrq,
+    host_irq: &mut HostIrq,
     report: &mut rp1_rt::sync::Producer<'_, u32, 8, Proc1, Proc0>,
     stack: &stack::Watermark,
 ) {
@@ -370,11 +378,7 @@ fn after_doorbell(
 /// proc1 idle loop, from ISRAM: until the control block's sequence changes or the report is
 /// due (returns `seen` then). Idle cost is one DDR load, so the `rp1:irq` wake stays prompt.
 #[rp1_rt::isram]
-fn wait_command(
-    host_irq: &mut rp1_link::notify::HostIrq,
-    control: &rp1_hal::shm::Block<Control>,
-    seen: u32,
-) -> u32 {
+fn wait_command(host_irq: &mut HostIrq, control: &Block<Control>, seen: u32) -> u32 {
     loop {
         if proc1::doorbell_served() {
             host_irq.notify_sram();
@@ -389,7 +393,7 @@ fn wait_command(
 const BATCH: usize = 32;
 /// Batched RP1→Linux stream: one `head` store per `push_slice`; the loop itself runs from ISRAM.
 #[rp1_rt::isram]
-fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u32 {
+fn up_batch(tx: &mut RingTx<Sample>, count: u32, start: u32) -> u32 {
     let mut buf = [[0u32; 4]; BATCH];
     let mut i = 0;
     while i < count {
@@ -410,7 +414,7 @@ fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u3
 }
 /// Batched Linux→RP1 stream: one `tail` store per `pop_into`, every message checked.
 #[rp1_rt::isram]
-fn down_batch(rx: &mut rp1_hal::shm::RingRx<Sample>, count: u32, start: u32) -> u32 {
+fn down_batch(rx: &mut RingRx<Sample>, count: u32, start: u32) -> u32 {
     let mut buf = [[0u32; 4]; BATCH];
     let mut i = 0;
     let mut errors = 0;

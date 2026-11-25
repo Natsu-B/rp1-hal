@@ -112,7 +112,7 @@ HW 未確認）。`PCIE_INTE` を bit 1（PERSTn の辺）だけにし、入場�
 窓を失ったとして `SHM_STATUS = SHM_WINDOW_LOST`、`PLAT_PCIE = Lost` を書いて線を止める。回復はしない
 （RP1 の再ロード）。`PCIE_INTS` が 0 の入場が 16 回続くと検出器を止める（`DetectorOff`）。状態は
 `platform::pcie_state()`（両コア）と `Pcie::lost_detail()`（proc0）で読める。
-`shm::enable(&mut pcie, ..)` は検出器が `Up` のときだけ公開し、検査と書き込みを PRIMASK の区間で行うので、
+`rp1::link::try_enable(&mut pcie)` は検出器が `Up` のときだけ公開し、検査と書き込みを PRIMASK の区間で行うので、
 公開と検出が入れ違わない（区間 B の検査の後に始まったリセットは、区間を抜けた直後に IRQ53 が書き換える。STATIC）。
 
 ## 5. まだ無いもの

@@ -1,7 +1,6 @@
 //! Build-time declaration validation and reproducible static artifacts.
 pub use rp1_dt::fdt;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -9,6 +8,7 @@ use std::{
 };
 pub mod board;
 mod declaration;
+mod link;
 pub mod metadata;
 pub mod overlay;
 pub mod wire;
@@ -123,7 +123,7 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
             d.linux.uio_group
         ),
     )?;
-    fs::write(out.join("rp1.rs"), resources(&d, &artifacts.note)?)?;
+    fs::write(out.join("rp1.rs"), resources(&d, &artifacts.note, &shm)?)?;
     println!("cargo:rerun-if-changed={}", path.display());
     println!(
         "cargo:rerun-if-changed={}",
@@ -220,20 +220,25 @@ fn generate_with_layout(
     Ok(Artifacts { note, layout, dts })
 }
 
-fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
+fn resources(
+    d: &metadata::Declaration,
+    note: &[u8],
+    shm: &metadata::ShmLayout<'_>,
+) -> Result<String> {
     let elf_note = wire::elf_note(note);
     let mut s = format!(
         "pub mod rp1 {{\n#[used] #[unsafe(link_section = \".note.rp1\")] static NOTE: [u8;{}] = {:?};\n#[used] #[unsafe(link_section = \".rp1.dtbo\")] static OVERLAY: [u8;include_bytes!(concat!(env!(\"OUT_DIR\"),\"/rp1-app.dtbo\")).len()] = *include_bytes!(concat!(env!(\"OUT_DIR\"),\"/rp1-app.dtbo\"));\n",
         elf_note.len(),
         elf_note
     );
-    let digest: [u8; 32] = Sha256::digest(note).into();
-    s.push_str(&format!(
-        "pub const SHM_NOTE: &[u8] = &{:?};\npub const SHM_NOTE_SHA256: [u8;32] = {:?};\n",
-        note, digest
-    ));
+    if !shm.regions.is_empty() {
+        s.push_str("pub mod link {\n");
+        s.push_str(&link::generate(shm, note)?);
+        s.push_str("}\n");
+    }
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
         let ty = format!("Proc{index}Resources");
+        let has_link = shm.regions.iter().any(|r| usize::from(r.core) == index + 1);
         // Instances come as bundles of their token and pins; `pins` keeps the rest.
         let parts = c
             .instances
@@ -290,6 +295,9 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         if c.host_irq {
             s.push_str("pub host_irq: ::rp1_link::notify::HostIrq,\n");
         }
+        if has_link {
+            s.push_str(&format!("pub link: link::Proc{index}LinkInit,\n"));
+        }
         if index == 0 {
             s.push_str("pub proc1: ::rp1_rt::Proc1Launcher,\n");
             if d.clock.authority == "rp1" {
@@ -325,6 +333,9 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
         }
         if c.host_irq {
             s.push_str("host_irq: unsafe { ::rp1_link::notify::HostIrq::new() },\n");
+        }
+        if has_link {
+            s.push_str(&format!("link: link::Proc{index}LinkInit::new(),\n"));
         }
         if index == 0 {
             s.push_str("proc1: unsafe { ::rp1_rt::Proc1Launcher::new() },\n");
@@ -453,7 +464,7 @@ mod tests {
                 ))
                 .unwrap();
                 d.validate().unwrap();
-                let source = resources(&d, &[]).unwrap();
+                let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
                 assert_eq!(irq_fields(&source, core), expected, "{declaration}");
                 assert_eq!(irq_fields(&source, 1 - core), "");
             }
@@ -464,7 +475,7 @@ mod tests {
                     toml::from_str(&format!("schema=2\n[proc{core}]\ntimer=['ALARM{alarm}']"))
                         .unwrap();
                 d.validate().unwrap();
-                let source = resources(&d, &[]).unwrap();
+                let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
                 assert_eq!(
                     irq_fields(&source, core),
                     format!(
@@ -484,7 +495,7 @@ mod tests {
         )
         .unwrap();
         d.validate().unwrap();
-        let source = resources(&d, &[]).unwrap();
+        let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         for (core, pins) in [(0, &[22][..]), (1, &[26, 27][..])] {
             let mut expected = String::from("pub IO_BANK0: ::rp1_rt::interrupt::Line<0>,\n");
             for pin in pins {
@@ -518,7 +529,7 @@ spi0 = { sck = 11, mosi = 10, miso = 9 }
         )
         .unwrap();
         d.validate().unwrap();
-        let s = resources(&d, &[]).unwrap();
+        let s = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         for field in [
             "pub TIMER_ALARM0: ::rp1_hal::timer::Alarm<0>,",
             "pub i2c1: ::rp1_hal::i2c::Parts<1, 2, 3>,",
@@ -560,7 +571,7 @@ mod pwm_tests {
         let d =
             toml::from_str("schema=2\n[proc0]\npwm0={channel0=12,channel2=18}\n[proc1]\npwm1={}")
                 .unwrap();
-        let s = super::resources(&d, &[]).unwrap();
+        let s = super::resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         for field in [
             "pub pwm0: ::rp1_hal::pwm::Token<0>",
             "pub pwm1: ::rp1_hal::pwm::Token<1>",

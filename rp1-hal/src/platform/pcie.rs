@@ -10,7 +10,10 @@ use super::{
     perstn::{self, PERSTN_EDGE},
 };
 use crate::cold::{LINK, PCIE_INTR, PCIE_MONITOR2};
-use rp1_proto::{Error, barrier, link};
+use rp1_proto::{
+    barrier,
+    link::{self, SHM_READY},
+};
 
 const SELECT: usize = 0x4010_8000;
 /// The SELECT value that maps the outbound ATU registers into the DBI.
@@ -26,7 +29,6 @@ const REGION0_ENABLE: usize = 1;
 const ENDPOINT_UP: u32 = (3 << 16) | LINK;
 const SHM_GENERATION: usize = rp1_proto::LINK_START as usize + link::SHM_GENERATION;
 const SHM_STATUS: usize = rp1_proto::LINK_START as usize + link::SHM_STATUS;
-const SHM_READY: u32 = 1;
 
 fn read(at: usize) -> u32 {
     unsafe { (at as *const u32).read_volatile() }
@@ -41,17 +43,15 @@ fn word(offset: usize) -> usize {
 /// Why the PCIe window transaction did not publish the reservation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnableError {
-    /// The descriptor's note is invalid. Nothing was published (a bad region record is found
-    /// only after region 0 was mapped).
-    Note(Error),
+    /// Linux has not supplied the expected request word.
+    NotRequested,
     /// The PERSTn detector is not `Up`: the host reset the endpoint, or a reset would not be
     /// seen. Nothing was written.
     Detector(PcieState),
-    /// `enable` already published the reservation, or region 0 read back wrong. Nothing was
-    /// written.
+    /// The reservation was already published, or region 0 previously read back wrong.
     Pinned,
     /// A PERSTn edge is latched, the link is down, the DBI selector is in use, the endpoint is
-    /// not enabled or the loader handoff does not match the note. Nothing was written.
+    /// not enabled or the loader handoff does not match the declaration. Nothing was written.
     NotReady,
     /// Region 0 read back differently from what was written. Later calls return `Pinned`.
     Mismatch,
@@ -79,7 +79,7 @@ impl Pcie {
         &mut self,
         phys: u64,
         size: u32,
-        initialize: impl FnOnce() -> Result<u32, EnableError>,
+        initialize: impl FnOnce() -> u32,
     ) -> Result<u32, EnableError> {
         publish(
             &mut Mmio,
@@ -116,10 +116,10 @@ fn publish<I: Io>(
     io: &mut I,
     pinned: &mut bool,
     window: Window,
-    initialize: impl FnOnce(&mut I) -> Result<u32, EnableError>,
+    initialize: impl FnOnce(&mut I) -> u32,
 ) -> Result<u32, EnableError> {
     map_window(io, pinned, window)?;
-    let generation = initialize(io)?;
+    let generation = initialize(io);
     // Section B. IRQ53 cannot run between these checks and the stores.
     io.masked(|io| {
         if io.detector() != PcieState::Up || io.read(PCIE_INTR) & PERSTN_EDGE != 0 {

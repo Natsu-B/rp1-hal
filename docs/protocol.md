@@ -188,7 +188,7 @@ T   payload 8 バイト境界に 0 埋め
 - UIO の IRQ（`uio_pdrv_genirq`）は割り込みのたびに無効化されるので、`read` の後に `write(1)` で再度有効にする。`poll` / `epoll` も使える。
 - RP1 → Linux の割り込み（`rp1:irq`）は合図であってメッセージではない。
   - 公開してから通知する。データが Linux DDR（shm のリング・ブロック）にあるなら、同じ窓の読み戻し
-    （`shm::complete_posted_writes`）で posted 書き込みを完了させてから鳴らす（`HostIrq::notify_sram`）。barrier だけで足りるのは
+    （`rp1_link::flush_window`）で posted 書き込みを完了させてから鳴らす（`HostIrq::notify_sram`）。barrier だけで足りるのは
     RP1 の SRAM（link ページ、共有 SRAM 上の領域）にあるデータだけ（`HostIrq::notify_sram`）。barrier は PCIe の posted 書き込みの
     到着を待たないので、DDR のデータより先に Linux が起きて古い値を読みうる（STATIC）。
   - 失う・まとまる: Linux が vector を有効にする前（最初の `write(1)` の前）のパルスは消える。起床から次の `write(1)` までの
@@ -199,7 +199,7 @@ T   payload 8 バイト境界に 0 埋め
 
 ## 4. 世代番号（RP1 の起動・再起動）
 
-1. `Shm::enable` で RP1 は世代番号を奇数にし、DDR 領域と link ページの自分の担当をゼロ化し、ヘッダーを書き、偶数（前の値 + 2）にする。
+1. 生成された `rp1::link::try_enable` で RP1 は世代番号を奇数にし、DDR 領域と link ページの割当範囲をゼロ化し、ヘッダーを書き、偶数（前の値 + 2）にする（STATIC）。
 2. Linux 側の `open` は、世代番号が偶数であること、note の SHA-256 が一致することを確かめてから使う。
 3. Linux 側は読み取りの前後、書き込みの前に世代番号を見て、変わっていたら `Err(Reset)` を返す。書き込み済みのデータを取り消すことはできない。cold boot 以外の同時リセットからの回復は保証しない。
 4. Linux のプロセスが再起動しても、`tail` は共有メモリに残っているので続きから読める。最初から読み直す `reset` は v0.1 では持たない。

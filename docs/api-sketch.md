@@ -1,7 +1,7 @@
 # API スケッチ（設計 A、2026-10-23 草案）
 
 利用者が書くコードの形を先に決め、ここから crate の公開 API・宣言・検査を逆算する。
-コードはすべて**案**で、まだ存在しない。rp-hal（rp2040-hal）と同じ名前・同じ意味にできるところは合わせる。
+STATIC と付けた箇所以外のコードは設計案。rp-hal（rp2040-hal）と同じ名前・同じ意味にできるところは合わせる。
 
 ## 1. 利用者のワークスペース
 
@@ -132,8 +132,7 @@ fn proc1_main(core: Proc1, p: rp1::Proc1Resources) -> ! {
     let pins = hal::gpio::Pins::new(p.pins);            // 宣言した 22, 27 だけ
     let mut led = pins.gpio22.into_push_pull_output();
     let mut alarm = hal::timer::Alarm::new(p.TIMER_ALARM1);
-    let shm = rp1_link::Shm::enable(p.shm).unwrap();    // §4.3
-    let mut ctl = shm.ctl;                              // Linux との通信路 "ctl"
+    let mut ctl = /* 将来の channel API から取得する "ctl" */;
     let samples = SAMPLES.producer(&core);
 
     let mut period = None;
@@ -205,19 +204,20 @@ BCM2712 側の DDR に連続領域を 1 つ確保し、宣言した `shm` ごと
 | `channel` | 要求と応答（`ring` 2 本 + 通知） | `Channel<Req, Rep>` | `Channel<Req, Rep>` |
 | `block` | 共有メモリブロック（大きな表、トレース、外付け RAM として） | `Block<T>` | `BlockMap<T>` |
 
-M3 側:
+M3 側（STATIC）。proc0 は Linux の公開要求を受けて `rp1::link::try_enable(&mut system.pcie)` を呼ぶ。
+`samples` を所有する proc1 は、生成されたトークンから端点を取得する。
 
 ```rust
-#[entry(proc1)]
-fn proc1_main(core: Proc1, p: rp1::Proc1Resources) -> ! {
-    // PCIe のリンクと outbound ATU が有効になるまでは shm に触れない。enable がそれを確かめてハンドルを返す。
-    let shm = rp1_link::Shm::enable(p.shm).unwrap();
-    let mut samples = shm.samples;               // RingTx<protocol::Sample>
-    let trace = shm.trace;                       // Block<protocol::Trace>
-    samples.push(&protocol::Sample { t: 0, v: 1 }).ok();
-    trace.write(|t| t.count += 1);               // 書き込みは posted で速い。読み出しは PCIe の往復で遅い
-    // ...
-}
+let mut init = p.link;
+let mut endpoints = loop {
+    match init.try_open() {
+        Ok(endpoints) => break endpoints,
+        Err(rp1_link::OpenError::NotReady(pending)) => init = pending,
+        Err(rp1_link::OpenError::Reset) => panic!("SHM window lost"),
+        Err(rp1_link::OpenError::Attach(error)) => panic!("SHM attach: {error:?}"),
+    }
+};
+endpoints.samples.push(&protocol::Sample { t: 0, v: 1 }).ok();
 ```
 
 Linux 側:
@@ -243,7 +243,7 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
 
 #### Linux 側の確保と mmap（DT とユーザープロセスだけ）
 
-- ビルド時に生成し、ローダーが当てる overlay（declaration-and-note.md §3）が `reserved-memory`（`no-map`、連続、2 MiB 境界）を 1 つ足す。物理アドレスはボード表の固定領域。ゼロ化はファームが `Shm::enable` で行う。
+- ビルド時に生成し、ローダーが当てる overlay（declaration-and-note.md §3）が `reserved-memory`（`no-map`、連続、2 MiB 境界）を 1 つ足す。物理アドレスはボード表の固定領域。proc0 は `rp1::link::try_enable` で予約領域をゼロ化する（STATIC）。
   既存の `rp1-ddr-scratch@21000000`（64 KiB、`no-map`）と同じやり方を一般化したもの（HW 実績あり）。
 - overlay が `shm` ごとに `generic-uio` ノードを足す（名前 `rp1:<name>`、領域 + 必要なら IRQ）。`/sys/class/uio/uioN/name` で探す。
   標準カーネル（6.12.75-rpt-rpi-2712）は `CONFIG_UIO=m`、`CONFIG_UIO_PDRV_GENIRQ=m`（設定ファイルで確認、実機の動作は未確認）。
@@ -267,7 +267,7 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
     よって cached を使うには `no-map` を外した予約が要り、RP1 の書き込みと `DC CIVAC` の正しさは未試験。
     RP1 からの PCIe 書き込みが CPU キャッシュとコヒーレントでない前提での保守。速さと正しさを測ってから採用を決める。
 - 順序: RP1 は payload → head を posted 書き込みし、同じ窓への読み出し 1 回で到達を確定してから通知する（既存の SHM 契約）。
-- 世代: 領域の先頭に magic と世代番号を置き、`Shm::enable` 後に RP1 が書く。Linux 側は世代が一致するまで読まない。
+- 世代: 領域の先頭に magic と世代番号を置き、`rp1::link::try_enable` が公開する（STATIC）。Linux 側は世代が一致するまで読まない。
 
 #### 制約
 

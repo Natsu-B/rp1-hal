@@ -139,7 +139,8 @@ M3 `0x81000000+x` translates through ATU region 0 to PCIe `0x1022000000+x`.
 
 The link-page first 64 bytes hold handoff magic/PA/size (offsets 0/4/8/12), existing doorbell
 request/reply (16/20), published generation/status (24/28), and Linux enable request (32).
-SCMI occupies `0x17c0..0x18c0` relative to the link page; allocations skip it and the ABI tail.
+The allocator starts at `0xc0` after the lifecycle words and skips the SCMI region
+`0x17c0..0x18c0`.
 Linux loads `uio.ko`, then `uio_pdrv_genirq.ko of_id=generic-uio`, and runs `lab/check-shm.sh`.
 UIO is polled, or (after shm enable) proc1 also raises MSI-X vector 29 on the `rp1:irq` UIO after
 each doorbell reply (unstable `host_irq = true`, `linux-doorbell <link> <doorbell> N
@@ -147,12 +148,12 @@ each doorbell reply (unstable `host_irq = true`, `linux-doorbell <link> <doorbel
 `missed=`); hwirq58 stays with SCMI's mailbox. No cached mapping, kernel patch or private
 kernel API is used. Device mappings never go through libc memcpy/memset.
 
-RP1 calls `shm::enable(&mut pcie, ..)` once when Linux requests it. It publishes only while the
-PERSTn detector is `Up` and refuses a second call; the lab's whole-window probe maps the window with
-the hidden `shm::lab_map_window` instead. Then one unsafe `Area::attach`
-per owning core. `ring_tx`, `ring_rx` and `block` check the note's type/core/direction and reject
-duplicate endpoint acquisition. Returned low-level block writers require the declared writer
-ownership. Linux `Firmware::open` checks UIO names, physical ranges, note hash and generation;
+STATIC: proc0 calls generated `rp1::link::try_enable(&mut pcie)` once when Linux requests
+publication. It requires the PERSTn detector to be `Up`. The lab uses the hidden
+`rp1::link::__map_for_probe` for its separate, pre-publication window test.
+Each owning core moves its generated `p.link` into `try_open()` to attach its typed fields.
+Pending publication returns the token for retry. Window loss or attachment failure ends
+the wait. Block writes require the declared writer ownership. Linux `Firmware::open` checks UIO names, physical ranges, note hash and generation;
 handles retain mappings and advisory exclusive UIO locks. Other processes must respect those
 locks and must not mmap aliases. Only cold boot is supported; a live PCIe reset invalidates ATU.
 For writer=both the lab command handshake transfers writer ownership; the SeqLock alone does
