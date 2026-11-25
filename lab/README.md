@@ -753,6 +753,13 @@ The target shell wraps command output in bracketed-paste toggles
 sequences before its line-anchored checks and keeps the console text in
 `LOG.raw`.
 
+Do not open the ESP32 control port while the CM5 is halted or powered off.
+Opening the port resets the ESP32. The lab I2C-peer firmware
+(`lab/esp32-i2c-peer`) then asserts at `Wire.begin` on the unpowered CM5 I2C bus
+and boot-loops, so it cannot send force-boot (HW, 2026-11). Recovery needs a physical CM5
+power-on (IO-board power button or supply replug). Do not start a cold cell
+from a halted CM5. Start it from a running Linux.
+
 ```sh
 python3 lab/verify-fault.py --elf "$BOOT_SET/rp1.elf" \
     --manifest "$BOOT_SET/manifest.txt" --bundle "$BOOT_SET/rp1-bundle.img" \
