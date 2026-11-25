@@ -210,7 +210,7 @@ pub(crate) fn stats() -> ScmiStats {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
     let stats = rp1_rt::interrupt::__primask_free(|| {
         // Proc0's Pcie handle guarantees install ran. IRQ57 is masked here.
-        unsafe { (*(&raw const STATE)).assume_init_ref().counters.stats }
+        unsafe { (*(&raw const STATE).cast::<State>()).counters.stats }
     });
     #[cfg(not(all(target_arch = "arm", target_os = "none")))]
     let stats = ScmiStats::default();
@@ -219,7 +219,7 @@ pub(crate) fn stats() -> ScmiStats {
 
 #[rp1_rt::interrupt(proc0, __platform, sram)]
 fn PROC_MISC() {
-    let state = unsafe { (*(&raw mut STATE)).assume_init_mut() };
+    let state = unsafe { &mut *(&raw mut STATE).cast::<State>() };
     handle(&mut state.server, &mut state.counters, &mut Mmio);
 }
 
