@@ -6,12 +6,32 @@
 //! page's [`status`] words (proc0 first starts a new epoch). Before entering main, each
 //! core sets AIRCR.PRIGROUP to 0 (all implemented priority bits select preemption
 //! priority), sets CCR.STKALIGN for 8-byte exception stack alignment, and clears
-//! BASEPRI, FAULTMASK, and finally PRIMASK. Peripheral IRQs remain disabled until
+//! BASEPRI and FAULTMASK. It sets the configurable faults to priority 1 and enables them
+//! before clearing PRIMASK. Peripheral IRQs remain disabled until
 //! explicitly enabled. Unhandled external IRQs mask themselves and update
-//! [`interrupt::unhandled`]. System exceptions stop in the default handler.
+//! [`interrupt::unhandled`].
+//!
+//! # Fault containment
+//!
+//! STATIC / 未検証 on hardware. IRQ53 has priority 0, IRQ57 and MemManage, BusFault
+//! and UsageFault have priority 1, and user IRQs have priorities 2 through 7.
+//!
+//! | Context or fault | Outcome |
+//! | --- | --- |
+//! | proc0 thread or user ISR panic | The planned default panic handler parks the context with IRQ53/57 eligible to run (HYP). |
+//! | proc1 panic | The planned default panic handler records `Panicked` and parks proc1 (HYP). |
+//! | proc0 thread or user ISR with a configurable fault and a valid MSP frame | Records the stacked PC and CFSR and returns to a wait loop in the original context. BASEPRI masks user IRQs before exception return, leaving IRQ53/57 eligible to run. |
+//! | proc1 thread or user ISR with a configurable fault and a valid MSP frame | Records `Fault` for proc1 and parks it. proc0 can continue. |
+//! | Stacking or unstacking error, INVPC, or a PSP frame | Terminal without frame access. Recording is best effort. IRQ53 may still run on proc0, while IRQ57 cannot preempt the priority-1 handler. A broken stack can lock up the core. |
+//! | Imprecise BusFault taken in a containable context | Returns to the same wait loop. The saved CFSR includes IMPRECISERR. The stacked PC and parked context may differ from the cause. |
+//! | Panic in IRQ57 | SCMI would stop while IRQ53 would remain eligible under the planned handler (HYP). |
+//! | Fault in IRQ53/57 or while PRIMASK is set, or HardFault | Terminal on the affected core. HardFault attempts to record CFSR and the stacked PC when stack status and EXC_RETURN allow it. IRQ53/57 cannot preempt it. |
+//! | Infinite loop holding PRIMASK or BASEPRI | No fault containment or watchdog recovery. Linux can detect a stalled heartbeat if configured. |
 use core::{cell::UnsafeCell, marker::PhantomData};
 pub use rp1_macros::{cold, entry, interrupt, isram, proc0, proc1, shared};
 pub use rp1_proto::SharedSafe;
+#[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
+mod fault;
 pub mod interrupt;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod startup;

@@ -117,6 +117,8 @@ pub fn record_fault(exception: u32, pc: u32, cfsr: u32) {
     );
 }
 
+// Let fault callers fold away file-name processing on the exception stack.
+#[inline(always)]
 fn finish(core: u32, state: CoreState, reason: u32, line: u32, aux: u32, file: &str) {
     // A priority-1 fault can preempt a user critical section while STATE is still Running.
     crate::interrupt::__primask_free(|| {
@@ -128,8 +130,14 @@ fn finish(core: u32, state: CoreState, reason: u32, line: u32, aux: u32, file: &
         field(core, s::REASON).store(reason, Relaxed);
         field(core, s::LINE).store(line, Relaxed);
         field(core, s::AUX).store(aux, Relaxed);
-        for (i, w) in s::file_words(file).into_iter().enumerate() {
-            field(core, s::FILE + 4 * i).store(w, Relaxed);
+        if file.is_empty() {
+            for offset in (s::FILE..s::FILE + s::FILE_LEN).step_by(4) {
+                field(core, offset).store(0, Relaxed);
+            }
+        } else {
+            for (i, w) in s::file_words(file).into_iter().enumerate() {
+                field(core, s::FILE + 4 * i).store(w, Relaxed);
+            }
         }
         barrier();
         field(core, s::STATE).store(state.word(), Relaxed);

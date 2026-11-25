@@ -41,23 +41,39 @@ __rp1_setup_exceptions:
     cpsie f
     dsb sy
     isb sy
+    movs r2, #32
+    strb r2, [r1, #12]  // SHPR1: MemManage, BusFault and UsageFault at priority 1.
+    strb r2, [r1, #13]
+    strb r2, [r1, #14]
+    ldr r2, [r1, #24]
+    orr r2, r2, #(7 << 16)
+    str r2, [r1, #24]   // SHCSR: enable the three configurable faults.
+    dsb sy
+    isb sy
     cpsie i
     bx r0
     .size __rp1_setup_exceptions, . - __rp1_setup_exceptions
     .ltorg
 
+    .macro system_exceptions
+    .word __rp1_default
+    .word __rp1_hardfault
+    .rept 3
+    .word __rp1_fault
+    .endr
+    .rept 9
+    .word __rp1_default
+    .endr
+    .endm
+
     .section .vectors.proc0,"a",%progbits
     .word 0x10004000
     .word __rp1_reset0
-    .rept 14
-    .word __rp1_default
-    .endr
+    system_exceptions
     .section .vectors.proc1,"a",%progbits
     .word 0x10004000
     .word __rp1_reset1
-    .rept 14
-    .word __rp1_default
-    .endr
+    system_exceptions
 "#
 );
 
