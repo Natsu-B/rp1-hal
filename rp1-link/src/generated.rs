@@ -17,25 +17,41 @@ pub unsafe fn try_enable(
     sram_ranges: &[(u16, u16)],
     digest: &[u8; 32],
 ) -> Result<u32, EnableError> {
-    if read_link(link::SHM_REQUEST) != 1 {
-        return Err(EnableError::NotRequested);
-    }
-    unsafe {
+    enable_with(read_link(link::SHM_REQUEST), || unsafe {
         pcie.__publish_shm(area.phys, area.size, || {
             initialize(area.size, sram_ranges, digest)
         })
+    })
+}
+
+fn enable_with(
+    request: u32,
+    publish: impl FnOnce() -> Result<u32, EnableError>,
+) -> Result<u32, EnableError> {
+    if request != 1 {
+        return Err(EnableError::NotRequested);
     }
+    publish()
 }
 
 /// # Safety
 /// The area must come from this firmware's validated declaration. Only the proc0 request
 /// handler may map and probe the reservation.
 pub unsafe fn map_probe(pcie: &mut Pcie, area: ShmArea) -> Result<u32, EnableError> {
-    if read_link(link::SHM_REQUEST) != 2 {
+    probe_with(read_link(link::SHM_REQUEST), || {
+        unsafe { pcie.__map_shm_for_probe(area.phys, area.size) }?;
+        Ok(area.size)
+    })
+}
+
+fn probe_with(
+    request: u32,
+    map: impl FnOnce() -> Result<u32, EnableError>,
+) -> Result<u32, EnableError> {
+    if request != 2 {
         return Err(EnableError::NotRequested);
     }
-    unsafe { pcie.__map_shm_for_probe(area.phys, area.size) }?;
-    Ok(area.size)
+    map()
 }
 
 fn read_link(offset: usize) -> u32 {
@@ -152,6 +168,32 @@ pub const fn overflow(region: ShmRegion<'_>) -> Overflow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enable_runs_only_for_request_1() {
+        for request in [0, 2, 3] {
+            assert_eq!(
+                enable_with(request, || panic!("publish without request 1")),
+                Err(EnableError::NotRequested)
+            );
+        }
+        assert_eq!(enable_with(1, || Ok(7)), Ok(7));
+        assert_eq!(
+            enable_with(1, || Err(EnableError::Pinned)),
+            Err(EnableError::Pinned)
+        );
+    }
+
+    #[test]
+    fn probe_maps_only_for_request_2() {
+        for request in [0, 1, 3] {
+            assert_eq!(
+                probe_with(request, || panic!("map without request 2")),
+                Err(EnableError::NotRequested)
+            );
+        }
+        assert_eq!(probe_with(2, || Ok(0x40_0000)), Ok(0x40_0000));
+    }
 
     #[test]
     fn pending_returns_the_token_and_ready_attaches_once() {
