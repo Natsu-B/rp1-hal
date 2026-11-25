@@ -332,7 +332,9 @@ overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ロ
    - 同じグループの `function`（`uart3`、`i2c1`、`alt0` などの名前）が、RP1 所有ではないピンを RP1 所有インスタンスの信号に
      mux する（関数名とピンから `rp1_pinmux::linux_signal` で信号を引く）。同じ入力を複数のピンに選ぶと周辺は論理 OR を見るので
      （RP1 Peripherals §3.1、DOC）、Linux の別ノードが RP1 の I2C・UART・SPI の入力を乱せる。旧形式の数値 `brcm,function`
-     （単一値・ピンごとの配列）は信号を引かず、RP1 所有ではないピンに使われていれば確かめられないものとして拒否する
+     （単一値・ピンごとの配列。Raspberry Pi OS の `spi1-1cs`・`pwm` など）は pinctrl-rp1 の `legacy_fsel_map` と同じ表
+     （`rp1_pinmux::linux_legacy_function`）で関数名に直し、`function` と同じに扱う。表に無い値（そのピンに無い ALT、8 以上）は
+     確かめられないものとして拒否する。以前は数値を翻訳せず拒否していたが、2026-11-17 の利用者の判断でこの扱いに替えた
    - `*-gpio(s)` が `gpio-reserved-ranges` の線を指す、予約線の `gpio-hog`
    - 割り込みの親が rp1_gpio の `interrupts`（親は Linux の `of_irq_find_parent` と同じ規則: 自分か祖先の `interrupt-parent` の
      先、または `#interrupt-cells` を持つ最も近い祖先）、`interrupts-extended` の rp1_gpio の項目が予約線を使う（pinctrl-rp1 は IRQ の
@@ -370,7 +372,7 @@ overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ロ
 | 非 root（gpio グループ）が `/dev/gpiomem0` で IO_BANK0/PADS を直接書く | 防ぐ（既定。HW 2026-10-30: `/dev/gpiomem0` が無い） | `linux.gpiomem = "disable"` でローダーが gpiomem@d0000 を無効化。ページ単位の mmap なのでピン単位では守れない。`"keep"` で残せる |
 | 共有クロック（clk_uart は UART0〜5 共通）を Linux が変える | 条件付き | `clock.authority = "rp1"` なら RP1 が SCMI で変更を拒否できる。`authority = "linux"` で UART0 を RP1、他の UART を Linux が持つ宣言はビルドエラー |
 | 別のノードの pinctrl が、Linux のピンを RP1 所有インスタンスの信号に mux する（`function` 名。STATIC） | 防ぐ（同上） | ローダーの起動時の解決（§3.2） |
-| 同上を旧形式の数値 `brcm,function` で行う | 防ぐ（保守的。数値は翻訳せず、RP1 所有ではないピンへの使用を確かめられないものとして拒否。STATIC） | ビルド時 `cargo rp1 check` の拒否。起動時は `on_conflict` に関わらず停止（`RP1BOOT` が Refused。Linux 側だけを無効化する方式は未実装）。RP1 所有ピンへの数値指定は通常の衝突として扱い、既定では無効化 |
+| 同上を旧形式の数値 `brcm,function` で行う | 防ぐ（同上。数値は pinctrl-rp1 の `legacy_fsel_map` で関数名に直す。STATIC） | ローダーの起動時の解決（§3.2）。RP1 所有ではないピンだけを使う数値指定は受け入れる。表に無い値はビルド時 `cargo rp1 check` で拒否し、起動時は `on_conflict` に関わらず停止（`RP1BOOT` が Refused） |
 | root が `/dev/mem`・`pinctrl` ツールで直接書く、`uio_group` が UIO の `rp1:doorbell`（IO_BANK0 の 16 KiB）を書く | 防がない | DT では不可能（標準カーネルは `STRICT_DEVMEM` 無効）。型や宣言による保護はセキュリティ境界ではない（設計 §1.2） |
 
 同じ考え方は UART0 以外の RP1 専用ブロック（SPI、I2C、PWM など）にも当てはまる。PWM のようにブロック単位で共有されるもの・

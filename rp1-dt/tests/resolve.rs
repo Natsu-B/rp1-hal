@@ -676,18 +676,73 @@ fn dt_defects_unrelated_to_rp1_do_not_stop_the_boot() {
 }
 
 #[test]
-fn legacy_numeric_function_and_malformed_function_refuse_instead_of_passing() {
-    // Review 13: `brcm,function` numbers are not translated, so a group using them on pins RP1
-    // does not own (GPIO7/12 here) is unverifiable; a malformed `function` must not abort.
+fn legacy_numeric_function_on_unowned_pins_is_translated_and_accepted() {
+    // Like Raspberry Pi OS `spi1-1cs` (GPIO19-21 ALT4, GPIO18 output) and `pwm` (GPIO18 ALT5):
+    // pinctrl-rp1 maps them to spi1, gpio and pwm0, none of which RP1 owns here.
+    let groups = "spi1_grp: spi1 { brcm,pins = <19 20 21>; brcm,function = <3>; }; \
+                  cs_grp: cs { brcm,pins = <18>; brcm,function = <1>; }; \
+                  pwm_grp: pwm { brcm,pins = <18 19>; brcm,function = <2 2>; };";
+    let (fdt, note) = fixture(&format!(
+        "&rp1_gpio {{ {groups} }}; / {{ spi-user {{ pinctrl-0 = <&spi1_grp &cs_grp>; }}; \
+         pwm-user {{ pinctrl-0 = <&pwm_grp>; }}; }};"
+    ));
+    assert!(disables(&resolve(&fdt, &note, Policy::default()).unwrap()).is_empty());
+}
+
+#[test]
+fn legacy_numeric_function_conflicts_like_a_function_name() {
+    let user = "/ { user { pinctrl-0 = <&grp>; }; };";
+    for (group, why) in [
+        // An RP1-owned pin conflicts whatever the function.
+        (
+            "brcm,pins = <10>; brcm,function = <1>;",
+            "configures RP1-owned GPIO10",
+        ),
+        // GPIO7 ALT0 is spi0, a signal of the RP1-owned SPI0.
+        (
+            "brcm,pins = <7>; brcm,function = <4>;",
+            "muxes GPIO7 to spi0, a signal of RP1-owned",
+        ),
+    ] {
+        let (fdt, note) = fixture(&format!("&rp1_gpio {{ grp: g {{ {group} }}; }}; {user}"));
+        let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+        let nodes = disables(&plan);
+        assert_eq!(nodes.len(), 1, "{group}");
+        assert_eq!(nodes[0].path, "/user", "{group}");
+        assert!(
+            nodes[0].reasons.iter().any(|r| r.contains(why)),
+            "{:?}",
+            nodes[0].reasons
+        );
+    }
+    // The `pwm` overlay's GPIO18 ALT5 is pwm0: refused when RP1 owns PWM0.
+    let (mut fdt, _) = fixture(&format!(
+        "/ {{ rp1_pwm0: pwm {{ status = \"disabled\"; }}; }}; \
+         &rp1_gpio {{ grp: g {{ brcm,pins = <18>; brcm,function = <2>; }}; }}; {user}"
+    ));
+    let note = descriptor(&[(ownership_kind::BLOCK, 48)]);
+    set(&mut fdt, "/rp1-firmware", "rp1,note", note.clone());
+    let plan = resolve(&fdt, &note, Policy::default()).unwrap();
+    assert!(
+        disables(&plan)
+            .iter()
+            .any(|d| d.reasons.iter().any(|r| r.contains("muxes GPIO18 to pwm0"))),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn unmapped_legacy_function_and_malformed_function_refuse_instead_of_passing() {
+    // pinctrl-rp1 has no ALT1 on GPIO18 and no FSEL 8; a malformed `function` must not abort.
     let user = "/ { user { pinctrl-0 = <&grp>; }; };";
     for (group, why) in [
         (
-            "brcm,pins = <7 12>; brcm,function = <2>;",
-            "legacy numeric brcm,function on GPIO7",
+            "brcm,pins = <18>; brcm,function = <5>;",
+            "legacy brcm,function 5 on GPIO18 has no pinctrl-rp1 function",
         ),
         (
-            "brcm,pins = <7 12>; brcm,function = <2 2>;",
-            "legacy numeric brcm,function on GPIO12",
+            "brcm,pins = <7 12>; brcm,function = <4 8>;",
+            "legacy brcm,function 8 on GPIO12",
         ),
         (
             "function = [01 02]; pins = \"gpio7\";",
@@ -697,6 +752,14 @@ fn legacy_numeric_function_and_malformed_function_refuse_instead_of_passing() {
         let (fdt, note) = fixture(&format!("&rp1_gpio {{ grp: g {{ {group} }}; }}; {user}"));
         refusal(resolve(&fdt, &note, Policy::default()).unwrap(), why);
     }
+    let (fdt, note) = fixture(&format!(
+        "&rp1_gpio {{ grp: g {{ brcm,pins = <7 12 13>; brcm,function = <4 4>; }}; }}; {user}"
+    ));
+    let err = resolve(&fdt, &note, Policy::default()).unwrap_err();
+    assert!(
+        err.contains("brcm,function must have 1 or 3 entries"),
+        "{err}"
+    );
 }
 
 #[test]

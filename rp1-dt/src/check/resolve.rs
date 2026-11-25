@@ -287,6 +287,26 @@ fn cells(fdt: &Fdt, n: usize, name: &str) -> Result<Vec<u32>> {
         .ok_or_else(|| format!("{}: missing or malformed {name}", fdt.path(n)))
 }
 
+/// `(pin, fsel)` for each `brcm,pins` entry of a group with a legacy numeric `brcm,function`
+/// (one value for all pins or one per pin), as pinctrl-rp1's `rp1_pctl_dt_node_to_map` reads
+/// them. Empty without both properties: Linux reads the generic binding then.
+fn legacy_fsels(fdt: &Fdt, g: usize) -> Result<Vec<(u32, u32)>> {
+    if fdt.prop(g, "brcm,pins").is_none() || fdt.prop(g, "brcm,function").is_none() {
+        return Ok(Vec::new());
+    }
+    let pins = cells(fdt, g, "brcm,pins")?;
+    let fsels = cells(fdt, g, "brcm,function")?;
+    match fsels.as_slice() {
+        [fsel] => Ok(pins.into_iter().map(|pin| (pin, *fsel)).collect()),
+        _ if fsels.len() == pins.len() => Ok(pins.into_iter().zip(fsels).collect()),
+        _ => Err(format!(
+            "{}: brcm,function must have 1 or {} entries",
+            fdt.path(g),
+            pins.len()
+        )),
+    }
+}
+
 fn gpio_cells(fdt: &Fdt, n: usize) -> Result<usize> {
     let c = cells(fdt, n, "#gpio-cells")?;
     match c.as_slice() {
@@ -508,6 +528,7 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                                 );
                             }
                         }
+                        let legacy = legacy_fsels(fdt, g)?;
                         if fdt.prop(g, "brcm,pins").is_some() {
                             pins.extend(cells(fdt, g, "brcm,pins")?);
                         }
@@ -551,18 +572,7 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                                 None
                             }
                         };
-                        // Legacy numeric `brcm,function` (single value or per-pin array) is not
-                        // translated; refuse it for pins RP1 does not own (owned pins already
-                        // conflict below).
-                        let numeric = fdt.prop(g, "brcm,function").is_some();
                         for pin in pins {
-                            if numeric && !out.pins.contains(&pin) {
-                                out.unresolved.push(format!(
-                                    "{} {name} -> {}: legacy numeric brcm,function on GPIO{pin} cannot be verified",
-                                    fdt.path(n),
-                                    fdt.path(group)
-                                ));
-                            }
                             if out.pins.contains(&pin) {
                                 out.add(
                                     n,
@@ -574,6 +584,25 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
                                 );
                                 continue;
                             }
+                            // A legacy numeric function replaces `function` for its pin. A value
+                            // the driver cannot map muxes nothing there, but stays unverified.
+                            let function = match legacy.iter().find(|(p, _)| *p == pin) {
+                                None => function,
+                                Some(&(_, fsel)) => match u8::try_from(pin)
+                                    .ok()
+                                    .and_then(|pin| rp1_pinmux::linux_legacy_function(pin, fsel))
+                                {
+                                    Some(f) => Some(f),
+                                    None => {
+                                        out.unresolved.push(format!(
+                                            "{} {name} -> {}: legacy brcm,function {fsel} on GPIO{pin} has no pinctrl-rp1 function",
+                                            fdt.path(n),
+                                            fdt.path(group)
+                                        ));
+                                        continue;
+                                    }
+                                },
+                            };
                             let block = function
                                 .zip(u8::try_from(pin).ok())
                                 .and_then(|(f, pin)| rp1_pinmux::linux_signal(pin, f))

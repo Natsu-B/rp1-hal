@@ -693,9 +693,11 @@ stock RP1 firmware.
 
 `overlays/linux-spi1-pwm0.dts` enables SPI1 (GPIO18–21, spidev) and PWM0 channel 0
 (GPIO12) with pin groups in the string form. The stock `spi1-1cs` and `pwm` overlays use the
-legacy numeric `brcm,pins` / `brcm,function` form, which rp1boot refuses on RP1 GPIOs even
-when the pins are not RP1-owned (`RP1BOOT_LINUX_REFUSED ... legacy numeric brcm,function`,
-HW): the boot stops. `cargo rp1 check --dtb` reports the same.
+legacy numeric `brcm,pins` / `brcm,function` form. rp1boot and `cargo rp1 check --dtb`
+translate it as pinctrl-rp1 does and refuse it only on RP1-owned pins or signals (STATIC).
+Before 2026-11-17 the numeric form was refused on any RP1 GPIO and the boot stopped
+(`RP1BOOT_LINUX_REFUSED`, HW); the user replaced that policy. The stock `pwm` overlay and
+`spi1-1cs` both default to GPIO18, so use them together as `dtoverlay=pwm,pin=12,func=4`.
 
 Pre-fix history (HW, 2026-11-17): I2C2/I2C6 and the 16-byte SPI1 transfer timed out with
 I2C/SPI wrapper `+0x108` bit 0 clear. The 4096-byte SPI1 transfer completed using DMA.
