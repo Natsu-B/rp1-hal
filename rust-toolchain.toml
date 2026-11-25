@@ -1,4 +1,4 @@
 [toolchain]
-channel = "stable"
-components = ["rustfmt", "clippy"]
+channel = "1.99.1"
+components = ["rustfmt", "clippy", "rust-src"]
 targets = ["thumbv7m-none-eabi", "aarch64-unknown-none-softfloat"]
