@@ -1332,7 +1332,7 @@ hardware_write = "state-machine-only"
 verified_read = "official"
 verified_write = "official"
 origin = "official"
-note = "Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Whether reading has side effects is not known. The PAC models reads as FIFO access."
+note = "Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Reads are conservatively classified as FIFO access because their side effects are unverified."
 [register.api]
 read = "public"
 [[register.field]]

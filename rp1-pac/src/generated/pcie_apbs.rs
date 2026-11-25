@@ -117,7 +117,7 @@ impl RegisterBlock {
     pub const fn phy_cr_acc_ctrl(&self) -> &PHY_CR_ACC_CTRL {
         &self.phy_cr_acc_ctrl
     }
-    /// Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Whether reading has side effects is not known. The PAC models reads as FIFO access.
+    /// Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Reads are conservatively classified as FIFO access because their side effects are unverified.
     /// Hardware access: read Fifo; write StateMachineOnly.
     /// State-machine-only register; unrestricted writers are intentionally hidden.
     /// Write API is not exposed because the verified operation semantics are insufficient.
@@ -1522,12 +1522,12 @@ pub mod phy_cr_acc_ctrl {
     }
 }
 
-/// Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Whether reading has side effects is not known. The PAC models reads as FIFO access.
+/// Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Reads are conservatively classified as FIFO access because their side effects are unverified.
 /// Hardware access: read Fifo; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type PHY_CR_ACC_DATA = Reg<phy_cr_acc_data::PHY_CR_ACC_DATA_SPEC>;
-/// Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Whether reading has side effects is not known. The PAC models reads as FIFO access.
+/// Data for indirect PHY accesses: write data in bits 15:0, read data in bits 31:16. Reads are conservatively classified as FIFO access because their side effects are unverified.
 /// Hardware access: read Fifo; write StateMachineOnly.
 /// State-machine-only register; unrestricted writers are intentionally hidden.
 /// Write API is not exposed because the verified operation semantics are insufficient.
