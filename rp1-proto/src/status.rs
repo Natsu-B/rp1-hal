@@ -41,9 +41,10 @@ pub const PLAT_PCIE_DETECTOR_OFF: u32 = 4;
 pub const PLAT_PCIE_OFF_ARM_FAULT: u8 = 1;
 /// `DETECTOR_OFF` reason: 16 IRQ53 entries found no interrupt source.
 pub const PLAT_PCIE_OFF_SPURIOUS_STORM: u8 = 2;
-/// SCMI state in bits 0–7 (one of the `PLAT_SCMI_*` states), with the saturated request count
-/// in bits 16–31 while serving. proc0's platform init writes it until it enables IRQ57, IRQ57
-/// after that. [`ScmiState::from_word`] decodes it.
+/// SCMI state in bits 0–7 (one of the `PLAT_SCMI_*` states). Bits 8–15 are reserved and zero.
+/// Bits 16–31 hold the saturated request count while serving and are zero otherwise. proc0's
+/// platform init writes it until it enables IRQ57, IRQ57 after that. [`ScmiState::from_word`]
+/// decodes it.
 pub const PLAT_SCMI: usize = 0x4c;
 pub const PLAT_SCMI_NOT_STARTED: u32 = 0;
 pub const PLAT_SCMI_SERVING: u32 = 1;
@@ -140,11 +141,12 @@ pub enum ScmiState {
 }
 impl ScmiState {
     pub const fn from_word(word: u32) -> Self {
-        match word {
-            PLAT_SCMI_NOT_STARTED => Self::NotStarted,
-            PLAT_SCMI_QUARANTINED => Self::Quarantined,
-            _ if word & 0xffff == PLAT_SCMI_SERVING => Self::Serving {
-                requests: (word >> 16) as u16,
+        let (state, reserved, high) = (word & 0xff, (word >> 8) & 0xff, word >> 16);
+        match (state, reserved, high) {
+            (PLAT_SCMI_NOT_STARTED, 0, 0) => Self::NotStarted,
+            (PLAT_SCMI_QUARANTINED, 0, 0) => Self::Quarantined,
+            (PLAT_SCMI_SERVING, 0, _) => Self::Serving {
+                requests: high as u16,
             },
             _ => Self::Unknown(word),
         }
@@ -293,7 +295,7 @@ mod tests {
     #[test]
     fn plat_scmi_decodes_strictly() {
         let cases = [
-            (0, ScmiState::NotStarted, "NotStarted"),
+            (PLAT_SCMI_NOT_STARTED, ScmiState::NotStarted, "NotStarted"),
             (
                 PLAT_SCMI_SERVING,
                 ScmiState::Serving { requests: 0 },
@@ -304,13 +306,20 @@ mod tests {
                 ScmiState::Serving { requests: 12 },
                 "Serving(requests=12)",
             ),
+            (
+                PLAT_SCMI_SERVING | 0xffff_0000,
+                ScmiState::Serving { requests: u16::MAX },
+                "Serving(requests=65535)",
+            ),
             (PLAT_SCMI_QUARANTINED, ScmiState::Quarantined, "Quarantined"),
             (3, ScmiState::Unknown(3), "Unknown(0x00000003)"),
-            (0x101, ScmiState::Unknown(0x101), "Unknown(0x00000101)"),
         ];
         for (word, state, text) in cases {
             assert_eq!(ScmiState::from_word(word), state, "{word:#x}");
             assert_eq!(state.to_string(), text);
+        }
+        for word in [0x100, 0x101, 0x102, 0x1_0000, 0x1_0002, 0x1_0101, u32::MAX] {
+            assert_eq!(ScmiState::from_word(word), ScmiState::Unknown(word));
         }
     }
 
