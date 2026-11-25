@@ -288,10 +288,13 @@ fn validate_access(
             ));
         }
         if register.fields.iter().any(|field| {
+            let behavior = field.effective_write_behavior(register);
             !matches!(
-                field.effective_write_behavior(register),
+                behavior,
                 FieldWriteBehavior::Plain | FieldWriteBehavior::ReadOnly
-            )
+            ) && !(field.set_alias_only
+                && behavior == FieldWriteBehavior::Command
+                && field.effective_verified_read(register) == Verification::NotApplicable)
         }) {
             errors.push(format!(
                 "{context} field <register>: operation modify: [MODIFY_MIXED_SEMANTICS] modify forbidden on mixed-semantics register"
@@ -434,6 +437,7 @@ fn validate_access(
 fn has_verified_operation_field(register: &Register, behaviors: &[FieldWriteBehavior]) -> bool {
     register.fields.iter().any(|field| {
         field.api_write == ApiExposure::Public
+            && !field.set_alias_only
             && behaviors.contains(&field.effective_write_behavior(register))
             && field.effective_verified_write(register).permits_write()
     })
@@ -502,13 +506,7 @@ fn validate_atomic(
             "{context}: [ATOMIC_PLAIN_WRITE_ONLY] atomic aliases require plain register write behavior"
         ));
     }
-    let has_typed = exposures
-        .iter()
-        .any(|(_, exposure, _)| *exposure == AtomicExposure::Typed);
-    let has_w1c_field = register.fields.iter().any(|field| {
-        field.effective_write_behavior(register) == FieldWriteBehavior::WriteOneToClear
-    });
-    if has_typed && has_w1c_field {
+    if atomic.has_typed() && register.has_w1c_field() {
         errors.push(format!(
             "{context}: [TYPED_ATOMIC_W1C_FORBIDDEN] typed atomic aliases are forbidden on a register with write-one-to-clear fields"
         ));
@@ -564,7 +562,7 @@ fn validate_atomic(
         };
         let eligible = register.fields.iter().any(|field| {
             field.api_write == ApiExposure::Public
-                && field.effective_write_behavior(register) == FieldWriteBehavior::Plain
+                && field.supports_typed_atomic(register, operation)
                 && field.effective_verified_write(register).permits_write()
                 && field
                     .origin
@@ -574,12 +572,12 @@ fn validate_atomic(
         });
         if !eligible {
             errors.push(format!(
-                "{context} field <none>: operation {operation_name}: [TYPED_ATOMIC_EMPTY_MASK] typed atomic operation has no public, verified plain fields"
+                "{context} field <none>: operation {operation_name}: [TYPED_ATOMIC_EMPTY_MASK] typed atomic operation has no eligible public, verified fields"
             ));
         }
         for field in register.fields.iter().filter(|field| {
             field.api_write == ApiExposure::Public
-                && field.effective_write_behavior(register) == FieldWriteBehavior::Plain
+                && field.supports_typed_atomic(register, operation)
                 && (!field.effective_verified_write(register).permits_write()
                     || field
                         .origin
@@ -588,7 +586,7 @@ fn validate_atomic(
                         == Origin::Inferred)
         }) {
             errors.push(format!(
-                "{context} field {}: operation atomic: [TYPED_ATOMIC_FIELD_UNSAFE] typed atomic fields must be public, plain, verified, and non-inferred",
+                "{context} field {}: operation atomic: [TYPED_ATOMIC_FIELD_UNSAFE] typed atomic fields must be public, verified, and non-inferred",
                 field.name
             ));
         }
@@ -627,6 +625,25 @@ fn validate_fields(
             .or(register.origin)
             .unwrap_or(peripheral.default_origin);
         let behavior = field.effective_write_behavior(register);
+        if field.set_alias_only {
+            if field.width != 1
+                || !matches!(
+                    behavior,
+                    FieldWriteBehavior::Command | FieldWriteBehavior::SelfClearing
+                )
+            {
+                errors.push(format!(
+                    "{field_context}: [SET_ALIAS_ONLY_TRIGGER] set_alias_only requires a one-bit command or self-clearing field"
+                ));
+            }
+            if register.api.reset != ApiExposure::None
+                && register.reset_value.is_some_and(|value| value & mask != 0)
+            {
+                errors.push(format!(
+                    "{field_context}: [SET_ALIAS_ONLY_RESET] a base-address reset write must leave the SET-alias-only bit zero"
+                ));
+            }
+        }
         if field.api_read != ApiExposure::None && register.api.read == ApiExposure::None {
             errors.push(format!(
                 "{field_context}: [FIELD_READ_WITHOUT_REGISTER_READ] readable field belongs to non-readable API register"
@@ -655,7 +672,7 @@ fn validate_fields(
                     "{field_context}: [READ_ONLY_FIELD_WRITER] read-only field cannot expose a writer"
                 ));
             }
-            if !operation_supports_behavior(register, behavior) {
+            if !field_has_write_operation(register, field) {
                 errors.push(format!(
                     "{field_context}: [FIELD_OPERATION_MISSING] no register operation supports {behavior:?}"
                 ));
@@ -691,25 +708,32 @@ fn validate_fields(
     }
 }
 
-fn operation_supports_behavior(register: &Register, behavior: FieldWriteBehavior) -> bool {
-    match behavior {
-        FieldWriteBehavior::Plain => {
-            register.api.modify != ApiExposure::None
-                || [
-                    register.atomic.set,
-                    register.atomic.clear,
-                    register.atomic.xor,
-                ]
-                .into_iter()
-                .any(|exposure| exposure == AtomicExposure::Typed)
-        }
+fn field_has_write_operation(register: &Register, field: &Field) -> bool {
+    if [
+        (CustomViewKind::Set, register.atomic.set),
+        (CustomViewKind::Clear, register.atomic.clear),
+        (CustomViewKind::Xor, register.atomic.xor),
+    ]
+    .into_iter()
+    .any(|(operation, exposure)| {
+        exposure == AtomicExposure::Typed && field.supports_typed_atomic(register, operation)
+    }) {
+        return true;
+    }
+    if field.set_alias_only {
+        return false;
+    }
+    match field.effective_write_behavior(register) {
+        FieldWriteBehavior::Plain => register.api.modify != ApiExposure::None,
         FieldWriteBehavior::WriteOneToClear => register.api.w1c != ApiExposure::None,
         FieldWriteBehavior::WriteOneToSet => register.api.w1s != ApiExposure::None,
         FieldWriteBehavior::WriteOneToToggle => register.api.w1t != ApiExposure::None,
         FieldWriteBehavior::SelfClearing | FieldWriteBehavior::Command => {
             register.api.command != ApiExposure::None
         }
-        FieldWriteBehavior::ReadOnly | FieldWriteBehavior::Inherit => false,
+        FieldWriteBehavior::HardwareMayClear
+        | FieldWriteBehavior::ReadOnly
+        | FieldWriteBehavior::Inherit => false,
     }
 }
 

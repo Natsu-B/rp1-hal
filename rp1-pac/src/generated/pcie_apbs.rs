@@ -62,7 +62,6 @@ impl RegisterBlock {
     }
     /// 64 physical slots are retained for layout; only 61 Linux-visible vectors are publicly indexed. IACK is self-clearing and has no writer.
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
     /// Array layout: 64 physical entries, 61 public entries, stride 0x4 bytes.
     #[inline(always)]
     pub fn msix_cfg(&self, index: usize) -> &MSIX_CFG {
@@ -419,12 +418,10 @@ pub mod control {
 
 /// 64 physical slots are retained for layout; only 61 Linux-visible vectors are publicly indexed. IACK is self-clearing and has no writer.
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
 /// Array layout: 64 physical entries, 61 public entries, stride 0x4 bytes.
 pub type MSIX_CFG = Reg<msix_cfg::MSIX_CFG_SPEC>;
 /// 64 physical slots are retained for layout; only 61 Linux-visible vectors are publicly indexed. IACK is self-clearing and has no writer.
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
 /// Array layout: 64 physical entries, 61 public entries, stride 0x4 bytes.
 pub mod msix_cfg {
     pub struct MSIX_CFG_SPEC;

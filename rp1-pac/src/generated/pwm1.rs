@@ -36,9 +36,8 @@ pub struct RegisterBlock {
 }
 
 impl RegisterBlock {
-    /// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine. Because `set_update` clears itself, the PAC offers no general modify and no safe writer for it; the enables keep their typed SET/CLR/XOR writers.
+    /// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine. Use the SET alias to trigger `set_update` without rewriting the staged enables.
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
     #[inline(always)]
     pub const fn global_ctrl(&self) -> &GLOBAL_CTRL {
         &self.global_ctrl
@@ -184,13 +183,11 @@ impl RegisterBlock {
     }
 }
 
-/// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine. Because `set_update` clears itself, the PAC offers no general modify and no safe writer for it; the enables keep their typed SET/CLR/XOR writers.
+/// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine. Use the SET alias to trigger `set_update` without rewriting the staged enables.
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
 pub type GLOBAL_CTRL = Reg<global_ctrl::GLOBAL_CTRL_SPEC>;
-/// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine. Because `set_update` clears itself, the PAC offers no general modify and no safe writer for it; the enables keep their typed SET/CLR/XOR writers.
+/// Staged enables for the four channels, plus the trigger for a synchronized update of the waveform engine. Use the SET alias to trigger `set_update` without rewriting the staged enables.
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
 pub mod global_ctrl {
     pub struct GLOBAL_CTRL_SPEC;
     impl crate::RegisterSpec for GLOBAL_CTRL_SPEC {
@@ -257,9 +254,9 @@ pub mod global_ctrl {
     }
     /// Write 1 to apply the staged enables, channel control and phase, and `common_range`. Hardware clears the bit. Local range and duty writes do not need it; they apply at the channel's rollover.
     /// Field write behavior: SelfClearing.
-    /// Typed write API is not exposed by register policy.
     pub mod set_update {
         pub type R = crate::BitReader;
+        pub type ASW<'a> = crate::AtomicSetBitWriter<'a, super::AtomicSetW, 31>;
     }
     impl R {
         #[inline(always)]
@@ -307,6 +304,12 @@ pub mod global_ctrl {
         #[inline(always)]
         pub fn chan3_en(&mut self) -> chan3_en::ASW<'_> {
             chan3_en::ASW::new(self)
+        }
+        /// Write 1 to apply the staged enables, channel control and phase, and `common_range`. Hardware clears the bit. Local range and duty writes do not need it; they apply at the channel's rollover.
+        /// Field write behavior: SelfClearing.
+        #[inline(always)]
+        pub fn set_update(&mut self) -> set_update::ASW<'_> {
+            set_update::ASW::new(self)
         }
     }
     impl AtomicClearW {

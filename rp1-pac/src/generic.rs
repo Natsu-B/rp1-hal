@@ -5,7 +5,10 @@ pub trait RegisterSpec {
 }
 
 pub trait Readable: RegisterSpec {}
-pub trait Modifiable: Readable {}
+pub trait Modifiable: Readable {
+    #[doc(hidden)]
+    const MODIFY_CLEAR_MASK: u32 = 0;
+}
 pub trait WriteOneToClear: RegisterSpec {}
 pub trait WriteOneToSet: RegisterSpec {}
 pub trait WriteOneToToggle: RegisterSpec {}
@@ -54,7 +57,7 @@ impl<SPEC: RegisterSpec<Ux = u32>> Reg<SPEC> {
     }
 
     #[inline(always)]
-    unsafe fn write_at_offset(&self, offset: usize, bits: u32) {
+    pub(crate) unsafe fn write_at_offset(&self, offset: usize, bits: u32) {
         unsafe { ptr::write_volatile(self.address().byte_add(offset), bits) };
     }
 }
@@ -77,7 +80,7 @@ impl<SPEC: Modifiable<Ux = u32>> Reg<SPEC> {
             bits,
             _spec: PhantomData,
         };
-        let mut write = W::from_bits(bits);
+        let mut write = W::from_bits(bits & !SPEC::MODIFY_CLEAR_MASK);
         f(&read, &mut write);
         unsafe { ptr::write_volatile(self.address(), write.bits) };
     }

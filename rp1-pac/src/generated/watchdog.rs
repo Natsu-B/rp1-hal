@@ -23,7 +23,6 @@ pub struct RegisterBlock {
 impl RegisterBlock {
     /// ENABLE and countdown were hardware-verified. Pause controls and TRIGGER writes remain unverified.
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
     #[inline(always)]
     pub const fn ctrl(&self) -> &CTRL {
         &self.ctrl
@@ -104,11 +103,9 @@ impl RegisterBlock {
 
 /// ENABLE and countdown were hardware-verified. Pause controls and TRIGGER writes remain unverified.
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
 pub type CTRL = Reg<ctrl::CTRL_SPEC>;
 /// ENABLE and countdown were hardware-verified. Pause controls and TRIGGER writes remain unverified.
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
 pub mod ctrl {
     pub struct CTRL_SPEC;
     impl crate::RegisterSpec for CTRL_SPEC {

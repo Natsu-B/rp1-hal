@@ -76,9 +76,13 @@ APIs are intentionally absent; unsafe raw writes require an explicit TOML
 policy. Known reset-value metadata does not imply a generated `reset()`
 operation.
 
-Field write behavior is also explicit: `plain`, `write-one-to-clear`,
-`write-one-to-set`, `write-one-to-toggle`, `self-clearing`, `command`, or
-`read-only`. Mixed-semantics registers cannot expose general `modify()`.
+Field write behavior is also explicit: `plain`, `hardware-may-clear`,
+`write-one-to-clear`, `write-one-to-set`, `write-one-to-toggle`,
+`self-clearing`, `command`, or `read-only`. A `hardware-may-clear` field
+accepts ordinary writes and can keep its typed atomic writers. It blocks
+`modify()` because hardware can clear the field between the read and write.
+See [the schema notes](SCHEMA.md#register-safety-and-initialization) for the
+write-only SET-alias command exception to the mixed-semantics rule.
 Inferred or write-unverified fields cannot expose safe writers. The field
 and bit writer types can be constructed only inside `rp1-pac`, by the generated
 field methods, so a write closure reaches no bits beyond those methods.
@@ -154,10 +158,16 @@ and end in `_unchecked`.
 Custom windows name each view. PCIe MSI-X uses SET `+0x0800` and CLEAR
 `+0x0c00`; it never inherits native RP1 offsets.
 
-Atomic operations are rejected for command, FIFO, W1C/W1S, self-clearing,
-state-machine-only, unknown, OTP/eFuse, and other unsafe registers.
-Typed atomic writers are also rejected on a plain register that contains any
-write-one-to-clear field, so an alias write cannot touch pending flags.
+All atomic aliases require plain register-level write behavior and are
+forbidden for OTP/eFuse. For a plain register with any write-one-to-clear
+field, the validator rejects typed atomics. Explicitly enabled unsafe raw
+atomics remain available with a warning that the effect on those flags is
+unverified.
+
+A one-bit `command` or `self-clearing` field with `set_alias_only = true`
+can expose a typed trigger through `atomic_set(|w| w.field().set())`. This
+requires `api_write = "public"` on the field and `atomic.set = "typed"` on
+the register.
 
 WATCHDOG offsets `0x0c..0x1c` are Boot ROM proc0/proc1 start-service state,
 not generic scratch memory. They expose no safe writer, modify, reset, typed

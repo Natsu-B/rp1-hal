@@ -196,6 +196,32 @@ fn rejects_modify_and_typed_atomic_on_register_with_w1c_flags() {
 }
 
 #[test]
+fn rejects_modify_on_hardware_cleared_fields() {
+    let mut db = database();
+    validate(&db).unwrap();
+    register_mut(&mut db, "DMA_TICK", "TICK0_EN").api.modify = ApiExposure::Public;
+
+    let errors = validate(&db).unwrap_err().join("\n");
+    assert!(errors.contains("DMA_TICK register TICK0_EN"));
+    assert!(errors.contains("MODIFY_MIXED_SEMANTICS"));
+}
+
+#[test]
+fn set_alias_command_cannot_use_the_base_address() {
+    let mut db = database();
+    let ctrl = register_mut(&mut db, "DMA_TICK", "TICK0_CTRL");
+    ctrl.atomic.set = AtomicExposure::None;
+    ctrl.api.command = ApiExposure::Public;
+    ctrl.api.reset = ApiExposure::Public;
+    ctrl.reset_value = Some(1 << 1);
+
+    let errors = validate(&db).unwrap_err().join("\n");
+    assert!(errors.contains("COMMAND_FIELD_REQUIRED"));
+    assert!(errors.contains("SET_ALIAS_ONLY_RESET"));
+    assert!(errors.contains("FIELD_OPERATION_MISSING"));
+}
+
+#[test]
 fn watchdog_pause_fields_keep_debug_source_bit_mapping() {
     let db = database();
     let watchdog = db

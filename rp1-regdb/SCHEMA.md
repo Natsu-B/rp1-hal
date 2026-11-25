@@ -46,6 +46,18 @@ within their analysis scope. They are not encoded as absent booleans.
 
 ## Register safety and initialization
 
+`hardware-may-clear` is a field write behavior for writable state that
+hardware may clear asynchronously. It participates in typed atomic masks
+like `plain`, and causes the validator to reject register `modify`.
+
+`set_alias_only` defaults to false. It applies to one-bit `command` and
+`self-clearing` fields. A public writer for such a field requires a typed SET
+view and is included only in that view's writer. A write-only SET-alias
+`command` (`verified_read = "not-applicable"`) can coexist with `modify`
+for plain fields. The generated read-modify-write clears the trigger bit
+from the value written to the base address. A reset writer must also leave
+the bit zero.
+
 WATCHDOG `BOOT_MAGIC`, encoded entry, and initial-SP registers are Boot ROM
 start-service state-machine words. They are independent registers rather than
 members of the generic scratch array and cannot expose safe write, modify,

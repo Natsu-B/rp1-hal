@@ -96,14 +96,35 @@ pub mod cs {
     impl crate::Readable for CS_SPEC {}
     pub type R = crate::R<CS_SPEC>;
     impl crate::UnsafeWritable for CS_SPEC {}
-    impl crate::UnsafeAtomicSet for CS_SPEC {
-        const OFFSET: usize = 0x2000;
+    impl crate::Reg<CS_SPEC> {
+        /// The effect of this alias write on this register's write-one-to-clear flags is unverified.
+        ///
+        /// # Safety
+        /// The caller must prove every selected bit is valid for this register and operation.
+        #[inline(always)]
+        pub unsafe fn atomic_set_bits_unchecked(&self, mask: u32) {
+            unsafe { self.write_at_offset(0x2000, mask) }
+        }
     }
-    impl crate::UnsafeAtomicClear for CS_SPEC {
-        const OFFSET: usize = 0x3000;
+    impl crate::Reg<CS_SPEC> {
+        /// The effect of this alias write on this register's write-one-to-clear flags is unverified.
+        ///
+        /// # Safety
+        /// The caller must prove every selected bit is valid for this register and operation.
+        #[inline(always)]
+        pub unsafe fn atomic_clear_bits_unchecked(&self, mask: u32) {
+            unsafe { self.write_at_offset(0x3000, mask) }
+        }
     }
-    impl crate::UnsafeAtomicXor for CS_SPEC {
-        const OFFSET: usize = 0x1000;
+    impl crate::Reg<CS_SPEC> {
+        /// The effect of this alias write on this register's write-one-to-clear flags is unverified.
+        ///
+        /// # Safety
+        /// The caller must prove every selected bit is valid for this register and operation.
+        #[inline(always)]
+        pub unsafe fn atomic_xor_bits_unchecked(&self, mask: u32) {
+            unsafe { self.write_at_offset(0x1000, mask) }
+        }
     }
     /// Power on the ADC and enable its clock.
     /// Field write behavior: Plain.
@@ -240,14 +261,35 @@ pub mod fcs {
     impl crate::Readable for FCS_SPEC {}
     pub type R = crate::R<FCS_SPEC>;
     impl crate::UnsafeWritable for FCS_SPEC {}
-    impl crate::UnsafeAtomicSet for FCS_SPEC {
-        const OFFSET: usize = 0x2000;
+    impl crate::Reg<FCS_SPEC> {
+        /// The effect of this alias write on this register's write-one-to-clear flags is unverified.
+        ///
+        /// # Safety
+        /// The caller must prove every selected bit is valid for this register and operation.
+        #[inline(always)]
+        pub unsafe fn atomic_set_bits_unchecked(&self, mask: u32) {
+            unsafe { self.write_at_offset(0x2000, mask) }
+        }
     }
-    impl crate::UnsafeAtomicClear for FCS_SPEC {
-        const OFFSET: usize = 0x3000;
+    impl crate::Reg<FCS_SPEC> {
+        /// The effect of this alias write on this register's write-one-to-clear flags is unverified.
+        ///
+        /// # Safety
+        /// The caller must prove every selected bit is valid for this register and operation.
+        #[inline(always)]
+        pub unsafe fn atomic_clear_bits_unchecked(&self, mask: u32) {
+            unsafe { self.write_at_offset(0x3000, mask) }
+        }
     }
-    impl crate::UnsafeAtomicXor for FCS_SPEC {
-        const OFFSET: usize = 0x1000;
+    impl crate::Reg<FCS_SPEC> {
+        /// The effect of this alias write on this register's write-one-to-clear flags is unverified.
+        ///
+        /// # Safety
+        /// The caller must prove every selected bit is valid for this register and operation.
+        #[inline(always)]
+        pub unsafe fn atomic_xor_bits_unchecked(&self, mask: u32) {
+            unsafe { self.write_at_offset(0x1000, mask) }
+        }
     }
     /// Write each completed conversion to the FIFO.
     /// Field write behavior: Plain.

@@ -507,6 +507,20 @@ pub struct RegisterAtomic {
     pub xor_view: Option<String>,
 }
 
+impl RegisterAtomic {
+    pub fn has_typed(&self) -> bool {
+        [self.set, self.clear, self.xor].contains(&AtomicExposure::Typed)
+    }
+}
+
+impl Register {
+    pub fn has_w1c_field(&self) -> bool {
+        self.fields.iter().any(|field| {
+            field.effective_write_behavior(self) == FieldWriteBehavior::WriteOneToClear
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Field {
     pub id: String,
@@ -519,6 +533,8 @@ pub struct Field {
     pub api_write: ApiExposure,
     #[serde(default)]
     pub write_behavior: FieldWriteBehavior,
+    #[serde(default)]
+    pub set_alias_only: bool,
     #[serde(default)]
     pub verified_read: Option<Verification>,
     #[serde(default)]
@@ -540,6 +556,16 @@ pub struct EnumValue {
 }
 
 impl Field {
+    pub fn supports_typed_atomic(&self, register: &Register, operation: CustomViewKind) -> bool {
+        if self.set_alias_only {
+            return operation == CustomViewKind::Set;
+        }
+        matches!(
+            self.effective_write_behavior(register),
+            FieldWriteBehavior::Plain | FieldWriteBehavior::HardwareMayClear
+        )
+    }
+
     pub fn effective_verified_read(&self, register: &Register) -> Verification {
         self.verified_read.unwrap_or(register.verified_read)
     }
@@ -572,6 +598,7 @@ pub enum FieldWriteBehavior {
     #[default]
     Inherit,
     Plain,
+    HardwareMayClear,
     WriteOneToClear,
     WriteOneToSet,
     WriteOneToToggle,

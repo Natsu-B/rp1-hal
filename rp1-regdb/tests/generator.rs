@@ -144,6 +144,14 @@ fn resets_ctrl1_has_native_atomic_methods_without_alias_ownership() {
 fn pcie_msix_uses_custom_windows() {
     let (_directory, source) = generated();
     let pcie = fs::read_to_string(source.join("generated/pcie_apbs.rs")).unwrap();
+    let (before_msix, _) = pcie.split_once("pub type MSIX_CFG =").unwrap();
+    assert!(
+        !before_msix
+            .lines()
+            .rev()
+            .take_while(|line| line.starts_with("///"))
+            .any(|line| line.contains("Write API is not exposed"))
+    );
     assert!(pcie.contains("impl crate::TypedAtomicSet for MSIX_CFG_SPEC"));
     assert!(pcie.contains("const OFFSET: usize = 0x800"));
     assert!(pcie.contains("impl crate::TypedAtomicClear for MSIX_CFG_SPEC"));
@@ -180,6 +188,51 @@ fn atomic_writer_vocabulary_is_operation_specific() {
     assert!(resets.contains("crate::AtomicClearBitWriter"));
     assert!(resets.contains("crate::AtomicXorBitWriter"));
     assert!(!resets.contains("pub type AtomicW"));
+}
+
+#[test]
+fn triggers_have_only_a_typed_set_writer() {
+    let (_directory, source) = generated();
+    let dma = fs::read_to_string(source.join("generated/dma_tick.rs")).unwrap();
+    for (module, next, spec) in [
+        ("tick0_ctrl", "pub type TICK1_EN", "TICK0_CTRL_SPEC"),
+        ("tick1_ctrl", "#[cfg(test)]", "TICK1_CTRL_SPEC"),
+    ] {
+        let (_, ctrl) = dma.split_once(&format!("pub mod {module} {{")).unwrap();
+        let (ctrl, _) = ctrl.split_once(next).unwrap();
+        assert!(ctrl.contains(&format!("impl crate::TypedAtomicSet for {spec}")));
+        assert!(ctrl.contains("const OFFSET: usize = 0x2000"));
+        assert!(ctrl.contains("fn disable(&mut self) -> disable::ASW"));
+        assert_eq!(ctrl.matches("fn disable(&mut self)").count(), 1);
+        assert!(ctrl.contains("const MODIFY_CLEAR_MASK: u32 = 0x2"));
+        assert!(ctrl.contains("fn finish_clear(&mut self) -> finish_clear::W"));
+    }
+    for module in ["pwm0", "pwm1"] {
+        let pwm = fs::read_to_string(source.join(format!("generated/{module}.rs"))).unwrap();
+        let (before_ctrl, _) = pwm.split_once("pub type GLOBAL_CTRL =").unwrap();
+        assert!(!before_ctrl.contains("Write API is not exposed"));
+        assert!(pwm.contains("fn set_update(&mut self) -> set_update::ASW"));
+        assert_eq!(pwm.matches("fn set_update(&mut self)").count(), 1);
+        assert!(!pwm.contains("impl crate::Modifiable for GLOBAL_CTRL_SPEC"));
+    }
+}
+
+#[test]
+fn w1c_alias_methods_warn_about_unverified_flag_effects() {
+    let (_directory, source) = generated();
+    for (module, count) in [("adc", 2), ("eth_cfg", 1)] {
+        let peripheral = fs::read_to_string(source.join(format!("generated/{module}.rs"))).unwrap();
+        let warning = "The effect of this alias write on this register's write-one-to-clear flags is unverified.";
+        assert_eq!(peripheral.matches(warning).count(), count * 3);
+        for operation in ["set", "clear", "xor"] {
+            assert_eq!(
+                peripheral
+                    .matches(&format!("pub unsafe fn atomic_{operation}_bits_unchecked"))
+                    .count(),
+                count
+            );
+        }
+    }
 }
 
 #[test]

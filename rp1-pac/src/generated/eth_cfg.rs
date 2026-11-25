@@ -810,14 +810,35 @@ pub mod intr {
     impl crate::ResetValue for INTR_SPEC {
         const RESET_VALUE: u32 = 0x0;
     }
-    impl crate::UnsafeAtomicSet for INTR_SPEC {
-        const OFFSET: usize = 0x2000;
+    impl crate::Reg<INTR_SPEC> {
+        /// The effect of this alias write on this register's write-one-to-clear flags is unverified.
+        ///
+        /// # Safety
+        /// The caller must prove every selected bit is valid for this register and operation.
+        #[inline(always)]
+        pub unsafe fn atomic_set_bits_unchecked(&self, mask: u32) {
+            unsafe { self.write_at_offset(0x2000, mask) }
+        }
     }
-    impl crate::UnsafeAtomicClear for INTR_SPEC {
-        const OFFSET: usize = 0x3000;
+    impl crate::Reg<INTR_SPEC> {
+        /// The effect of this alias write on this register's write-one-to-clear flags is unverified.
+        ///
+        /// # Safety
+        /// The caller must prove every selected bit is valid for this register and operation.
+        #[inline(always)]
+        pub unsafe fn atomic_clear_bits_unchecked(&self, mask: u32) {
+            unsafe { self.write_at_offset(0x3000, mask) }
+        }
     }
-    impl crate::UnsafeAtomicXor for INTR_SPEC {
-        const OFFSET: usize = 0x1000;
+    impl crate::Reg<INTR_SPEC> {
+        /// The effect of this alias write on this register's write-one-to-clear flags is unverified.
+        ///
+        /// # Safety
+        /// The caller must prove every selected bit is valid for this register and operation.
+        #[inline(always)]
+        pub unsafe fn atomic_xor_bits_unchecked(&self, mask: u32) {
+            unsafe { self.write_at_offset(0x1000, mask) }
+        }
     }
     /// 1 while the GEM aggregate interrupt source is active. Read-only level; it cannot be cleared here.
     /// Field write behavior: ReadOnly.

@@ -180,7 +180,10 @@ fn register_docs(out: &mut String, register: &Register, indent: &str) {
         ),
         _ => {}
     }
-    if register.hardware_write != WriteBehavior::None && !register.api.has_safe_write() {
+    if register.hardware_write != WriteBehavior::None
+        && !register.api.has_safe_write()
+        && !register.atomic.has_typed()
+    {
         rustdoc(
             out,
             indent,
@@ -425,7 +428,20 @@ fn register_module(out: &mut String, peripheral: &Peripheral, register: &Registe
         writeln!(out, "    pub type R = crate::R<{spec}>;").unwrap();
     }
     if register.api.modify == ApiExposure::Public {
-        writeln!(out, "    impl crate::Modifiable for {spec} {{}}").unwrap();
+        let clear_mask = register
+            .fields
+            .iter()
+            .filter(|field| field.set_alias_only)
+            .fold(0u32, |mask, field| mask | (1 << field.lsb));
+        if clear_mask == 0 {
+            writeln!(out, "    impl crate::Modifiable for {spec} {{}}").unwrap();
+        } else {
+            writeln!(
+                out,
+                "    impl crate::Modifiable for {spec} {{ const MODIFY_CLEAR_MASK: u32 = {clear_mask:#x}; }}"
+            )
+            .unwrap();
+        }
     }
     if register.api.w1c == ApiExposure::Public {
         writeln!(out, "    impl crate::WriteOneToClear for {spec} {{}}").unwrap();
@@ -520,13 +536,13 @@ fn register_module(out: &mut String, peripheral: &Peripheral, register: &Registe
         generate_command_writer_impl(out, register);
     }
     if has_atomic_set {
-        generate_atomic_writer_impl(out, peripheral, register, "AtomicSetW", "ASW");
+        generate_atomic_writer_impl(out, peripheral, register, CustomViewKind::Set);
     }
     if has_atomic_clear {
-        generate_atomic_writer_impl(out, peripheral, register, "AtomicClearW", "ACW");
+        generate_atomic_writer_impl(out, peripheral, register, CustomViewKind::Clear);
     }
     if has_atomic_xor {
-        generate_atomic_writer_impl(out, peripheral, register, "AtomicXorW", "AXW");
+        generate_atomic_writer_impl(out, peripheral, register, CustomViewKind::Xor);
     }
     writeln!(out, "}}\n").unwrap();
 }
@@ -568,11 +584,23 @@ fn generate_atomic_traits(
             )
             .unwrap();
         }
-        writeln!(
-            out,
-            "    impl crate::{unsafe_trait} for {spec} {{ const OFFSET: usize = {offset:#x}; }}"
-        )
-        .unwrap();
+        if register.has_w1c_field() {
+            let name = match operation {
+                CustomViewKind::Set => "set",
+                CustomViewKind::Clear => "clear",
+                CustomViewKind::Xor => "xor",
+            };
+            writeln!(out, "    impl crate::Reg<{spec}> {{").unwrap();
+            writeln!(out, "        /// The effect of this alias write on this register's write-one-to-clear flags is unverified.").unwrap();
+            writeln!(out, "        ///\n        /// # Safety\n        /// The caller must prove every selected bit is valid for this register and operation.").unwrap();
+            writeln!(out, "        #[inline(always)]\n        pub unsafe fn atomic_{name}_bits_unchecked(&self, mask: u32) {{ unsafe {{ self.write_at_offset({offset:#x}, mask) }} }}\n    }}").unwrap();
+        } else {
+            writeln!(
+                out,
+                "    impl crate::{unsafe_trait} for {spec} {{ const OFFSET: usize = {offset:#x}; }}"
+            )
+            .unwrap();
+        }
     }
 }
 
@@ -630,15 +658,16 @@ fn field_module(
         if has_plain_writer && behavior == FieldWriteBehavior::Plain {
             writer_alias(out, "W", "W", field, spec);
         }
-        if typed_atomic_field(peripheral, register, field) {
-            if register.atomic.set == AtomicExposure::Typed {
-                writer_alias(out, "AtomicSetW", "ASW", field, spec);
-            }
-            if register.atomic.clear == AtomicExposure::Typed {
-                writer_alias(out, "AtomicClearW", "ACW", field, spec);
-            }
-            if register.atomic.xor == AtomicExposure::Typed {
-                writer_alias(out, "AtomicXorW", "AXW", field, spec);
+        for (operation, exposure) in [
+            (CustomViewKind::Set, register.atomic.set),
+            (CustomViewKind::Clear, register.atomic.clear),
+            (CustomViewKind::Xor, register.atomic.xor),
+        ] {
+            if exposure == AtomicExposure::Typed
+                && typed_atomic_field(peripheral, register, field, operation)
+            {
+                let (writer, alias) = atomic_writer_names(operation);
+                writer_alias(out, writer, alias, field, spec);
             }
         }
         match behavior {
@@ -652,7 +681,7 @@ fn field_module(
                 writer_alias(out, "ToggleW", "TW", field, spec)
             }
             FieldWriteBehavior::Command | FieldWriteBehavior::SelfClearing
-                if register.api.command == ApiExposure::Public =>
+                if register.api.command == ApiExposure::Public && !field.set_alias_only =>
             {
                 writer_alias(out, "CommandW", "CMDW", field, spec)
             }
@@ -763,9 +792,14 @@ fn generate_writer_impl(
     writeln!(out, "    }}").unwrap();
 }
 
-fn typed_atomic_field(peripheral: &Peripheral, register: &Register, field: &Field) -> bool {
+fn typed_atomic_field(
+    peripheral: &Peripheral,
+    register: &Register,
+    field: &Field,
+    operation: CustomViewKind,
+) -> bool {
     field.api_write == ApiExposure::Public
-        && field.effective_write_behavior(register) == FieldWriteBehavior::Plain
+        && field.supports_typed_atomic(register, operation)
         && field.effective_verified_write(register).permits_write()
         && field
             .origin
@@ -774,17 +808,25 @@ fn typed_atomic_field(peripheral: &Peripheral, register: &Register, field: &Fiel
             != Origin::Inferred
 }
 
+fn atomic_writer_names(operation: CustomViewKind) -> (&'static str, &'static str) {
+    match operation {
+        CustomViewKind::Set => ("AtomicSetW", "ASW"),
+        CustomViewKind::Clear => ("AtomicClearW", "ACW"),
+        CustomViewKind::Xor => ("AtomicXorW", "AXW"),
+    }
+}
+
 fn generate_atomic_writer_impl(
     out: &mut String,
     peripheral: &Peripheral,
     register: &Register,
-    writer: &str,
-    alias: &str,
+    operation: CustomViewKind,
 ) {
+    let (writer, alias) = atomic_writer_names(operation);
     let fields: Vec<_> = register
         .fields
         .iter()
-        .filter(|field| typed_atomic_field(peripheral, register, field))
+        .filter(|field| typed_atomic_field(peripheral, register, field, operation))
         .collect();
     if fields.is_empty() {
         return;
@@ -804,6 +846,7 @@ fn generate_command_writer_impl(out: &mut String, register: &Register) {
         .iter()
         .filter(|field| {
             field.api_write != ApiExposure::None
+                && !field.set_alias_only
                 && matches!(
                     field.effective_write_behavior(register),
                     FieldWriteBehavior::Command | FieldWriteBehavior::SelfClearing
