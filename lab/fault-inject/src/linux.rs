@@ -1,4 +1,5 @@
 //! Target-side collection. The host verifier judges the UART evidence.
+mod kmsg;
 mod protocol;
 
 use protocol::*;
@@ -194,7 +195,16 @@ fn scmi(tag: &str, monitor: &Monitor, epoch: u32, n: u16) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
+struct Args {
+    kind: Kind,
+    label: String,
+    nonce: u32,
+    host: Ipv4Addr,
+    port: String,
+    n: u16,
+}
+
+fn parse_args() -> Result<Args> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let [label, nonce, host, port, n] = args.as_slice() else {
         return Err(format!(
@@ -222,6 +232,41 @@ fn main() -> Result<()> {
         return Err("invalid USB port".into());
     }
 
+    Ok(Args {
+        kind,
+        label: label.clone(),
+        nonce,
+        host,
+        port: port.clone(),
+        n,
+    })
+}
+
+fn client_sha256() -> Result<String> {
+    // Use this process's exe symlink, including when the deployed file was replaced.
+    let output = Command::new("sha256sum")
+        .arg(format!("/proc/{}/exe", std::process::id()))
+        .output()?;
+    let text = std::str::from_utf8(&output.stdout)?;
+    let digest = text.split_whitespace().next().unwrap_or("");
+    if !output.status.success()
+        || digest.len() != 64
+        || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err("cannot hash fault-linux executable".into());
+    }
+    Ok(digest.to_owned())
+}
+
+fn main() -> Result<()> {
+    let Args {
+        kind,
+        label,
+        nonce,
+        host,
+        port,
+        n,
+    } = parse_args()?;
     let monitor = Monitor::open()?;
     let initial = monitor.status()?;
     let epoch = initial.epoch;
@@ -229,13 +274,19 @@ fn main() -> Result<()> {
     link.check_boot(nonce)?;
     if link.read(REQUEST) != 0
         || link.read(ACK) != 0
+        || link.read(SITE) != 0
         || initial.cores.iter().any(|c| c.state != CoreState::Running)
     {
         return Err("need a fresh boot with both cores Running".into());
     }
     let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     let tag = format!("nonce={nonce:08x} kind={label}");
-    println!("FAULT_BEGIN {tag} boot_id={} epoch={epoch}", boot_id.trim());
+    let sha256 = client_sha256()?;
+    let kernel_log = kmsg::start();
+    println!(
+        "FAULT_BEGIN {tag} boot_id={} epoch={epoch} client_sha256={sha256}",
+        boot_id.trim()
+    );
 
     let core = kind.core();
     if kind != Kind::Stkerr {
@@ -266,6 +317,15 @@ fn main() -> Result<()> {
         sleep(Duration::from_millis(20));
     };
     link.check_boot(nonce)?;
+    let site = link.read(SITE);
+    if site != 0 && site != u32::MAX {
+        println!(
+            "FAULT_SITE {tag} code={} core={} ipsr={}",
+            site >> SITE_KIND_SHIFT,
+            (site >> SITE_CORE_BIT) & 1,
+            site & SITE_IPSR_MASK
+        );
+    }
     let c = &status.cores[core];
     println!(
         "FAULT_STATUS {tag} core={core} ack={} state={:?} reason={} aux=0x{:x} pc_or_line=0x{:x} peer={:?} pcie={} scmi={}",
@@ -296,6 +356,11 @@ fn main() -> Result<()> {
     scmi(&tag, &monitor, epoch, n)?;
     let final_status = same_epoch(&monitor, epoch)?;
     link.check_boot(nonce)?;
-    println!("FAULT_END {tag} pcie={}", final_status.pcie);
+    kmsg::report(&tag, kernel_log);
+    println!(
+        "FAULT_END {tag} pcie={} peer={:?}",
+        final_status.pcie,
+        final_status.cores[1 - core].state
+    );
     Ok(())
 }

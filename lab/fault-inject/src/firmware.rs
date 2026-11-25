@@ -4,7 +4,11 @@
 
 mod protocol;
 
-use core::{arch::asm, cell::RefCell};
+use core::{
+    arch::{asm, naked_asm},
+    cell::RefCell,
+    sync::atomic::{AtomicU32, Ordering::Relaxed},
+};
 use protocol::*;
 use rp1_hal::{
     log,
@@ -18,6 +22,8 @@ use rp1_rt::{
 rp1_rt::bind!();
 
 const PERIOD_US: u32 = 50_000;
+// Ordinary DSRAM static. Each typed entry initializes its own copy before enabling alarms.
+static CORE: AtomicU32 = AtomicU32::new(0);
 static ALARM0: Mutex<RefCell<Option<Alarm<0>>>> = Mutex::new(RefCell::new(None));
 static ALARM1: Mutex<RefCell<Option<Alarm<1>>>> = Mutex::new(RefCell::new(None));
 
@@ -50,8 +56,14 @@ fn tick<const N: u8>(alarm: &Mutex<RefCell<Option<Alarm<N>>>>, offset: usize) {
 fn TIMER_0() {
     tick(&ALARM0, TICKS[0]);
     match Kind::from_word(read(ACK)) {
-        Some(Kind::P0IsrPanic) => panic!("lab proc0 timer ISR panic"),
-        Some(Kind::P0IsrUdf) => udf(),
+        Some(Kind::P0IsrPanic) => {
+            mark_site(Kind::P0IsrPanic);
+            panic!("lab proc0 timer ISR panic");
+        }
+        Some(Kind::P0IsrUdf) => {
+            mark_site(Kind::P0IsrUdf);
+            fault_lab_udf()
+        }
         _ => {}
     }
 }
@@ -65,8 +77,24 @@ fn wait_for_interrupt() {
     unsafe { asm!("wfi", options(nostack, preserves_flags)) };
 }
 
-fn udf() -> ! {
-    unsafe { asm!("udf #0", options(noreturn, nostack)) }
+#[inline(always)]
+fn mark_site(kind: Kind) {
+    let ipsr: u32;
+    unsafe { asm!("mrs {}, IPSR", out(reg) ipsr, options(nostack, preserves_flags)) };
+    write(
+        SITE,
+        ((kind as u32) << SITE_KIND_SHIFT)
+            | (CORE.load(Relaxed) << SITE_CORE_BIT)
+            | (ipsr & SITE_IPSR_MASK),
+    );
+    rp1_proto::barrier();
+}
+
+// The verifier uses this symbol in the deployed ELF to check the stacked PC.
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+extern "C" fn fault_lab_udf() -> ! {
+    naked_asm!("udf #0");
 }
 
 #[repr(align(64))]
@@ -94,6 +122,7 @@ fn stacking_fault(regions: u32) -> ! {
         // XN, AP=0 (no access), 64 bytes, enabled. Other privileged accesses use the default map.
         MPU_RASR.write_volatile((1 << 28) | (5 << 1) | 1);
         MPU_CTRL.write_volatile(0b111); // PRIVDEFENA | HFNMIENA | ENABLE
+        mark_site(Kind::Stkerr);
         asm!(
             "dsb sy",
             "isb sy",
@@ -114,8 +143,9 @@ fn stacking_fault(regions: u32) -> ! {
 
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
+    CORE.store(0, Relaxed);
     // The loader does not clear the scratch words on every boot.
-    for offset in [READY, NONCE, REQUEST, ACK, TICKS[0], TICKS[1]] {
+    for offset in [READY, NONCE, REQUEST, ACK, TICKS[0], TICKS[1], SITE] {
         write(offset, 0);
     }
     rp1_proto::barrier();
@@ -164,8 +194,14 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     write(ACK, kind as u32);
     rp1_proto::barrier();
     match kind {
-        Kind::P0ThreadPanic => panic!("lab proc0 thread panic"),
-        Kind::P0ThreadUdf => udf(),
+        Kind::P0ThreadPanic => {
+            mark_site(Kind::P0ThreadPanic);
+            panic!("lab proc0 thread panic");
+        }
+        Kind::P0ThreadUdf => {
+            mark_site(Kind::P0ThreadUdf);
+            fault_lab_udf()
+        }
         Kind::Stkerr => stacking_fault(regions),
         _ => loop {
             wait_for_interrupt();
@@ -175,6 +211,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
 
 #[entry(proc1)]
 fn main1(_core: Proc1, p: rp1::Proc1Resources) -> ! {
+    CORE.store(1, Relaxed);
     let mut alarm = p.TIMER_ALARM1;
     schedule(&mut alarm);
     alarm.enable_interrupt();
@@ -184,6 +221,7 @@ fn main1(_core: Proc1, p: rp1::Proc1Resources) -> ! {
     irq.enable();
     loop {
         if read(ACK) == Kind::P1Panic as u32 {
+            mark_site(Kind::P1Panic);
             panic!("lab proc1 thread panic");
         }
         wait_for_interrupt();

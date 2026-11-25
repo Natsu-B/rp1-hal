@@ -4,7 +4,11 @@ pub const NONCE: usize = 0x28;
 pub const REQUEST: usize = 0x2c;
 pub const ACK: usize = 0x30;
 pub const TICKS: [usize; 2] = [0x34, 0x38];
+pub const SITE: usize = 0x3c;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"FLT1");
+pub const SITE_IPSR_MASK: u32 = 0x1ff;
+pub const SITE_CORE_BIT: u32 = 9;
+pub const SITE_KIND_SHIFT: u32 = 10;
 pub const ALLOWED: &str = "p0-thread-panic,p0-isr-panic,p0-thread-udf,p0-isr-udf,p1-panic,stkerr";
 
 #[derive(Clone, Copy, PartialEq, Eq)]

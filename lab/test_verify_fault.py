@@ -4,6 +4,8 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import json
+import struct
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -17,9 +19,12 @@ PASS, FAIL, INCOMPLETE = vf.PASS, vf.FAIL, vf.INCOMPLETE
 NONCE = "12ab5678"
 BOOT_ID = "deadbeef-1234-1234-1234-1234567890ab"
 BUNDLE_ID = "0123456789abcdef"
+CLIENT_SHA256 = "c" * 64
+UDF_PC = 0x20001234
 
 
-def captures(kind="p0-thread-panic", phase="cold-1", nonce=NONCE, boot_id=BOOT_ID):
+def captures(kind="p0-thread-panic", phase="cold-1", nonce=NONCE, boot_id=BOOT_ID,
+             bundle_id=BUNDLE_ID):
     code = vf.CODES[kind]
     core = int(kind == "p1-panic")
     state, reason, aux = "Panicked", 0, "0x0"
@@ -28,21 +33,24 @@ def captures(kind="p0-thread-panic", phase="cold-1", nonce=NONCE, boot_id=BOOT_I
     if kind == "stkerr":
         state, reason, aux = "Fault", 3, "0x10010"
 
+    ipsr = 42 if "-isr-" in kind else 0
+    pc = UDF_PC if kind.endswith("udf") else 0
     reset = 0 if phase == "reboot" else 1
     previous = {
         "reboot": "[  42.23] reboot: Restarting system\n",
-        "poweroff": "[  42.23] reboot: Power down\nRPi: BOOTSYS\nHalt: power_off: 1\nPower off\n",
+        "poweroff": "[  42.23] reboot: Power down\nRPi: BOOTSYS\npower-on-reset 0\nHalt: power_off: 1\nPower off\n",
     }.get(phase, "")
     tag = f"nonce={nonce} kind={kind}"
     uart0 = f"\x00FAULT_BOOT nonce={nonce} kinds={','.join(vf.CODES)} stkerr=1 irq57=unavailable\n"
     uart10 = (
         f"{previous}RPi: BOOTSYS release VERSION:abc\n"
         f"  1.00 POWER_OFF_ON_HALT: 1 WAIT_FOR_POWER_BUTTON 0 power-on-reset {reset}\n"
-        f"[rp1boot     253] bundle ok: rp1.bundle={BUNDLE_ID} (3 elements, sha256 in 211 ms)\n"
-        f"FAULT_BEGIN {tag} boot_id={boot_id} epoch=2\n"
+        f"[rp1boot     253] bundle ok: rp1.bundle={bundle_id} (3 elements, sha256 in 211 ms)\n"
+        f"FAULT_BEGIN {tag} boot_id={boot_id} epoch=2 client_sha256={CLIENT_SHA256}\n"
         f"FAULT_PRE {tag} p0_before=25 p0_after=30 p1_before=26 p1_after=31\n"
         f"FAULT_REQUEST {tag} code={code}\n"
-        f"FAULT_STATUS {tag} core={core} ack={code} state={state} reason={reason} aux={aux}"
+        f"FAULT_SITE {tag} code={code} core={core} ipsr={ipsr}\n"
+        f"FAULT_STATUS {tag} core={core} ack={code} state={state} reason={reason} aux={aux} pc_or_line={pc:#x}"
         " peer=Running pcie=Up scmi=Serving(requests=126)\n"
     )
     if kind != "stkerr":
@@ -55,16 +63,51 @@ def captures(kind="p0-thread-panic", phase="cold-1", nonce=NONCE, boot_id=BOOT_I
             f"FAULT_RATE {tag} hz=48000000\n"
             f"FAULT_SCMI {tag} n=2 replies=2 before=126 after=128"
             " scmi_before=Serving(requests=126) scmi_after=Serving(requests=128)\n"
-            f"FAULT_END {tag} pcie=Up\n"
+            f"FAULT_DMESG {tag} scmi_timeouts=0 oops=0 link_errors=0\n"
+            f"FAULT_END {tag} pcie=Up peer=Running\n"
         )
     return uart0, uart10.replace("\n", "\r\n")
 
 
+def make_bundle(elf):
+    kernel = b"synthetic kernel"
+    bundle = bytearray(8192 + len(kernel))
+    struct.pack_into("<8sIIIIQ", bundle, 0, b"RP1BNDL\0", 1, 128, 2, len(bundle), 0)
+    for i, offset, data in ((1, 4096, elf), (2, 8192, kernel)):
+        struct.pack_into("<IIII32s", bundle, 32 + (i - 1) * 48,
+                         i, 0, offset, len(data), hashlib.sha256(data).digest())
+        bundle[offset:offset + len(data)] = data
+    return bytes(bundle), hashlib.sha256(bundle[:128]).hexdigest()
+
+
+def transition_inputs(raw):
+    at = raw.index(b"RPi: BOOTSYS release")
+    boot = {"kind": "force", "complete": True, "pd_ok": True,
+            "raw_start": at, "raw_end": len(raw)}
+    events = [
+        {"kind": "console_sendraw", "text": "systemctl poweroff\n", "mono": 1},
+        {"kind": "carrier", "value": "0", "mono": 4},
+        {"kind": "esp_command_start", "command": "force-boot", "mono": 5},
+        {"kind": "esp_command_end", "command": "force-boot", "rc": 0, "mono": 7},
+    ]
+    stamps = [
+        {"port": 1, "offset": raw.index(anchor), "bytes": len(anchor), "monotonic_ns": when * 10**9}
+        for anchor, when in ((b"reboot: Power down", 2), (b"Power off", 3),
+                             (b"RPi: BOOTSYS release", 6))
+    ]
+    return boot, events, stamps
+
+
 class TestVerifyFault(unittest.TestCase):
-    def run_rows(self, kind="p0-thread-panic", phase="cold-1", edit=lambda a, b: (a, b)):
+    def run_result(self, kind="p0-thread-panic", phase="cold-1", edit=lambda a, b: (a, b), **kwargs):
         uart0, uart10 = edit(*captures(kind, phase))
-        rows, _ = vf.verify_run(kind, phase, NONCE, uart0, uart10, BUNDLE_ID)
-        return rows
+        if phase == "poweroff" and "force_at" not in kwargs:
+            kwargs["force_at"] = uart10.find("RPi: BOOTSYS release")
+        return vf.verify_run(kind, phase, NONCE, uart0, uart10, BUNDLE_ID,
+                             CLIENT_SHA256, udf_pc=UDF_PC, **kwargs)
+
+    def run_rows(self, *args, **kwargs):
+        return self.run_result(*args, **kwargs)[0]
 
     def test_all_kinds_and_boot_phases_pass(self):
         for kind in vf.KINDS:
@@ -91,7 +134,8 @@ class TestVerifyFault(unittest.TestCase):
                 rows = self.run_rows(phase=phase, edit=lambda a, b: (a, b.replace(old, new)))
                 self.assertEqual(rows[row], want)
         uart0, uart10 = captures(phase="reboot")
-        rows, _ = vf.verify_run("p0-thread-panic", "cold-1", NONCE, uart0, uart10, BUNDLE_ID)
+        rows, _, _ = vf.verify_run("p0-thread-panic", "cold-1", NONCE, uart0, uart10,
+                                   BUNDLE_ID, CLIENT_SHA256)
         self.assertEqual(rows["boot"], FAIL)
 
     def test_all_required_evidence_must_be_present(self):
@@ -101,6 +145,7 @@ class TestVerifyFault(unittest.TestCase):
             ("boot", "power-on-reset", "uart10"),
             ("bundle", "bundle ok", "uart10"),
             ("request", "REQUEST", "uart10"),
+            ("site", "SITE", "uart10"),
             ("terminal", "STATUS", "uart10"),
             ("timer_live_before", "PRE", "uart10"),
             ("timer", "TIMER", "uart10"),
@@ -108,6 +153,7 @@ class TestVerifyFault(unittest.TestCase):
             ("usb", "USB", "uart10"),
             ("scmi", "SCMI", "uart10"),
             ("scmi", "RATE", "uart10"),
+            ("dmesg", "DMESG", "uart10"),
             ("pcie", "END", "uart10"),
         )
         for row, marker, stream in cases:
@@ -126,6 +172,7 @@ class TestVerifyFault(unittest.TestCase):
             ("aux=0x10000", "aux=0x0", FAIL),
             ("aux=0x10000", "aux=0x20010000", PASS),
             ("aux=0x10000", "", INCOMPLETE),
+            (f"pc_or_line={UDF_PC:#x}", "pc_or_line=0x1234", FAIL),
         ):
             rows = self.run_rows("p0-isr-udf", edit=lambda a, b: (a, b.replace(old, new)))
             self.assertEqual(rows["terminal"], want)
@@ -135,14 +182,16 @@ class TestVerifyFault(unittest.TestCase):
             ("p0_after=60", "p0_after=40", FAIL),
             ("p0_after=60", "", INCOMPLETE),
             ("peer=Running", "peer=Panicked", FAIL),
+            ("pcie=Up peer=Running", "pcie=Up peer=Panicked", FAIL),
         ):
             rows = self.run_rows("p1-panic", edit=lambda a, b: (a, b.replace(old, new)))
-            self.assertEqual(rows["proc0_continues"], want)
+            self.assertEqual(rows["peer"], want)
 
     def test_irq57_and_stacking_diagnostics(self):
         self.assertEqual(self.run_rows("stkerr")["terminal"], PASS)
         for old, new, want in (
             ("state=Fault", "state=Running", INCOMPLETE),
+            ("reason=3", "reason=6", FAIL),
             ("aux=0x10010", "aux=0x10000", FAIL),
             ("aux=0x10010", "aux=0x11000", PASS),
             ("aux=0x10010", "", INCOMPLETE),
@@ -172,18 +221,90 @@ class TestVerifyFault(unittest.TestCase):
         rows = self.run_rows(edit=edit)
         self.assertEqual((rows["scmi"], rows["usb"]), (INCOMPLETE, INCOMPLETE))
 
-    def test_manifest_requires_matching_elf(self):
-        digest = "c" * 64
-        manifest = f"bundle-id {BUNDLE_ID * 4}\n{digest}  rp1.elf\n"
-        self.assertEqual(vf.manifest_tuple(manifest, digest), (PASS, BUNDLE_ID))
-        self.assertEqual(vf.manifest_tuple(manifest, "a" * 64), (FAIL, BUNDLE_ID))
-        self.assertEqual(vf.manifest_tuple(manifest, None), (INCOMPLETE, None))
-        self.assertEqual(vf.manifest_tuple(None, digest), (INCOMPLETE, None))
+    def test_manifest_requires_matching_deployed_payload_and_header(self):
+        elf = b"ELF A"
+        bundle, bundle_id = make_bundle(elf)
+        a = hashlib.sha256(elf).hexdigest()
+        b = hashlib.sha256(b"ELF B").hexdigest()
+        manifest = f"bundle-id {bundle_id}\n{a}  rp1.elf\n"
+        match = (PASS, bundle_id[:16])
+        self.assertEqual(vf.artifact_identity(manifest, bundle, a), match)
+        # The manifest's ELF hash and the standalone ELF may come from build B.
+        self.assertEqual(vf.artifact_identity(manifest.replace(a, b), bundle, b)[0], FAIL)
+        self.assertEqual(vf.artifact_identity(manifest.replace(bundle_id, "f" * 64), bundle, a)[0], FAIL)
+        self.assertEqual(vf.artifact_identity(manifest, bundle.replace(b"ELF A", b"ELF B"), a)[0], FAIL)
+        self.assertEqual(vf.artifact_identity(manifest, bundle[:-1], a)[0], FAIL)
+        self.assertEqual(vf.artifact_identity(manifest, None, a), (INCOMPLETE, None))
+        self.assertEqual(vf.artifact_identity(None, bundle, a), (INCOMPLETE, None))
+
+    def test_post_terminal_rows_require_status_even_on_measured_failure(self):
+        def remove_status(a, b):
+            b = "\n".join(line for line in b.splitlines() if not line.startswith("FAULT_STATUS"))
+            return a, b.replace("received=20 rc=0", "received=19 rc=1")
+        rows, _, diagnostics = self.run_result(edit=remove_status)
+        self.assertTrue(all(rows[row] == INCOMPLETE for row in vf.POST_ROWS))
+        self.assertEqual(diagnostics, {"ping": FAIL})
+        for edit, options in (
+            (lambda a, b: (a, b), {"artifact": FAIL}),
+            (lambda a, b: (a.replace(NONCE, "badbaaad"), b), {}),
+            (lambda a, b: (a, b.replace(CLIENT_SHA256, "d" * 64)), {}),
+        ):
+            rows = self.run_rows(edit=edit, **options)
+            self.assertTrue(all(rows[row] == INCOMPLETE for row in vf.POST_ROWS))
+
+    def test_counter_history_and_peer_survival(self):
+        for row, old, new, want in (
+            ("timer", "p0_before=40 p0_after=40", "p0_before=0 p0_after=0", FAIL),
+            ("timer", "p0_before=40 p0_after=40", "p0_before=4294967295 p0_after=4294967295", INCOMPLETE),
+            ("timer_live_before", "p1_after=31", "p1_after=0xffffffff", INCOMPLETE),
+            ("scmi", "scmi=Serving(requests=126)", "scmi=Serving(requests=200)", FAIL),
+            ("peer", "peer=Running pcie=Up", "peer=Fault pcie=Up", FAIL),
+            ("peer", "pcie=Up peer=Running", "pcie=Up peer=Panicked", FAIL),
+        ):
+            with self.subTest(row=row, new=new):
+                self.assertEqual(self.run_rows(edit=lambda a, b: (a, b.replace(old, new)))[row], want)
+
+    def test_site_requires_actual_context_and_kind(self):
+        for old, new in (("ipsr=42", "ipsr=0"), ("code=2 core=0", "code=1 core=0"),
+                         ("code=2 core=0", "code=2 core=1")):
+            rows = self.run_rows("p0-isr-panic", edit=lambda a, b: (a, b.replace(old, new)))
+            self.assertEqual((rows["request"], rows["site"], rows["terminal"]), (PASS, FAIL, INCOMPLETE))
+
+    def test_kernel_diagnostics_fail_even_when_other_probes_pass(self):
+        for field in ("scmi_timeouts", "oops", "link_errors"):
+            rows = self.run_rows(edit=lambda a, b: (a, b.replace(f"{field}=0", f"{field}=1")))
+            self.assertEqual(rows["dmesg"], FAIL)
+            self.assertEqual(vf.overall(rows.values()), FAIL)
+        rows = self.run_rows(edit=lambda a, b: (a, b.replace("FAULT_BEGIN",
+                            "arm-scmi: SCMI max-rx-timeout: 30ms\nFAULT_BEGIN")))
+        self.assertEqual(rows["dmesg"], PASS)
+
+    def test_shutdown_must_immediately_precede_operating_boot(self):
+        extra_boot = "RPi: BOOTSYS unrelated\nLinux version 6.12\n"
+        for phase in ("reboot", "poweroff"):
+            rows = self.run_rows(phase=phase, edit=lambda a, b: (a, b.replace(
+                "RPi: BOOTSYS release", extra_boot + "RPi: BOOTSYS release", 1)))
+            self.assertEqual(rows["boot"], INCOMPLETE)
+        self.assertEqual(self.run_rows(phase="poweroff", force_at=None)["boot"], INCOMPLETE)
+
+    def test_poweroff_needs_carrier_and_successful_force_in_same_capture(self):
+        _, uart10 = captures(phase="poweroff")
+        raw = uart10.encode()
+        boot, events, stamps = transition_inputs(raw)
+        self.assertIsNotNone(vf.force_boundary(raw, boot, events, stamps))
+        self.assertIsNone(vf.force_boundary(raw, boot, [], stamps))
+        self.assertIsNone(vf.force_boundary(raw, boot, [events[0], *events[2:]], stamps))
+        self.assertIsNone(vf.force_boundary(raw, boot, [*events[:-1], dict(events[-1], rc=1)], stamps))
+        self.assertIsNone(vf.force_boundary(raw, boot, events, stamps[:-1]))
+        self.assertIsNone(vf.force_boundary(raw, boot, events, [*stamps[:-1], dict(stamps[-1], monotonic_ns=3)]))
 
     def test_static_bound_needs_stack_output_and_768_byte_budget(self):
         for output, rc, want in (
-            ("stack_static=PASS s_plat=580 margin=768", 0, PASS),
-            ("stack_static=PASS s_plat=769 margin=769", 0, FAIL),
+            ("stack_fault_setup=PASS\nstack_static=PASS s_plat=580 margin=768", 0, PASS),
+            ("stack_static=PASS s_plat=572 margin=768", 0, INCOMPLETE),
+            ("stack_fault_setup=PASS\nstack_fault_setup=FAIL\nstack_static=PASS s_plat=580 margin=768", 0, FAIL),
+            ("stack_fault_setup=PASS\nstack_fault_setup=PASS\nstack_static=PASS s_plat=580 margin=768", 0, FAIL),
+            ("stack_fault_setup=PASS\nstack_static=PASS s_plat=769 margin=769", 0, FAIL),
             ("stack_static=FAIL reason=margin s_plat=769 margin=768", 1, FAIL),
             ("stack_static=PASS s_plat=580", 0, INCOMPLETE),
             (None, None, INCOMPLETE),
@@ -197,39 +318,53 @@ class TestVerifyFault(unittest.TestCase):
             elf.write_bytes(b"synthetic ELF")
             manifest = root / "manifest.txt"
             digest = hashlib.sha256(elf.read_bytes()).hexdigest()
-            manifest.write_text(f"bundle-id {BUNDLE_ID * 4}\n{digest}  rp1.elf\n")
-            args = ["--elf", str(elf), "--manifest", str(manifest)]
+            bundle, header = make_bundle(elf.read_bytes())
+            bundle_path = root / "rp1-bundle.img"
+            bundle_path.write_bytes(bundle)
+            manifest.write_text(f"bundle-id {header}\n{digest}  rp1.elf\n")
+            args = ["--elf", str(elf), "--manifest", str(manifest),
+                    "--bundle", str(bundle_path), "--client-sha256", CLIENT_SHA256]
             for i, (kind, phase) in enumerate((k, p) for k in vf.KINDS for p in vf.PHASES):
                 nonce = f"{i + 1:08x}"
-                uart0, uart10 = captures(kind, phase, nonce, f"{BOOT_ID[:-2]}{i:02x}")
-                paths = [root / f"{nonce}-uart{port}.raw" for port in (0, 10)]
+                uart0, uart10 = captures(kind, phase, nonce, f"{BOOT_ID[:-2]}{i:02x}", header[:16])
+                case = root / nonce / "continuous"
+                case.mkdir(parents=True)
+                paths = [case / f"uart{port}.raw" for port in (0, 10)]
                 for path, uart in zip(paths, (uart0, uart10)):
-                    path.write_text(uart)
+                    path.write_bytes(uart.encode())
+                if phase == "poweroff":
+                    boot, events, stamps = transition_inputs(uart10.encode())
+                    (case.parent / "boot.json").write_text(json.dumps(boot))
+                    for name, records in (("events", events), ("timestamps", stamps)):
+                        (case / f"{name}.jsonl").write_text("\n".join(map(json.dumps, records)))
                 args.extend(["--run", kind, phase, nonce, *(str(p) for p in paths)])
             output = io.StringIO()
-            stack = "stack_static=PASS s_plat=580 margin=768"
-            with contextlib.redirect_stdout(output), patch.object(vf.plat, "run_stack_paths",
-                                                                 return_value=(stack, 0)):
+            stack = "stack_fault_setup=PASS\nstack_static=PASS s_plat=580 margin=768"
+            with (contextlib.redirect_stdout(output), patch.object(vf.plat, "run_stack_paths",
+                    return_value=(stack, 0)), patch.object(vf, "udf_address", return_value=UDF_PC)):
                 self.assertEqual(vf.main(args), 0)
             self.assertIn("PLAT_VERDICT=PASS", output.getvalue())
             self.assertIn("PLAT_LOST=INCOMPLETE", output.getvalue())
             self.assertIn("FAULT_DIAG kind=irq57-panic result=INCOMPLETE", output.getvalue())
 
     def test_matrix_requires_every_unique_cell_and_static_pass(self):
-        runs = [(kind, phase, f"{i:08x}", str(i), PASS)
+        runs = [(kind, phase, f"{i:08x}", str(i), PASS, i)
                 for i, (kind, phase) in enumerate((k, p) for k in vf.KINDS for p in vf.PHASES)]
         self.assertEqual(vf.matrix(runs, PASS)[1], PASS)
         self.assertEqual(vf.matrix(runs, FAIL)[1], FAIL)
         self.assertEqual(vf.matrix(runs, INCOMPLETE)[1], INCOMPLETE)
         self.assertEqual(vf.matrix(runs[:-1], PASS)[1], INCOMPLETE)
         self.assertEqual(vf.matrix(runs + [runs[0]], PASS)[1], FAIL)
-        for duplicate_field in (2, 3):
+        for duplicate_field in (3, 5):
             first = list(runs[0])
             first[duplicate_field] = runs[1][duplicate_field]
             self.assertEqual(vf.matrix([first, *runs[1:]], PASS)[1], FAIL)
-        self.assertEqual(vf.matrix(runs + [("stkerr", "cold-1", "a", "b", FAIL)], PASS)[1], PASS)
-        failed = (*runs[0][:4], FAIL)
-        per_kind, verdict = vf.matrix([failed, *runs[1:]], PASS)
+        colliding = (*runs[0][:2], runs[1][2], *runs[0][3:])
+        self.assertEqual(vf.matrix([colliding, *runs[1:]], PASS)[1:], (INCOMPLETE, "duplicate-nonce"))
+        diagnostic = ("stkerr", "cold-1", "a", "b", FAIL, 30)
+        self.assertEqual(vf.matrix(runs + [diagnostic], PASS)[1], PASS)
+        failed = (*runs[0][:4], FAIL, runs[0][5])
+        per_kind, verdict, _ = vf.matrix([failed, *runs[1:]], PASS)
         self.assertEqual((per_kind[vf.KINDS[0]], verdict), (FAIL, FAIL))
 
 
