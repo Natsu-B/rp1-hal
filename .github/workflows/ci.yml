@@ -33,7 +33,9 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y device-tree-compiler binutils-arm-none-eabi
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      # The workspace's default-members are the crates that build for the host; firmware-only
+      # crates such as irq-proof use thumbv7m inline assembly and are left out.
+      - run: cargo clippy --locked --all-targets -- -D warnings
 
   test:
     runs-on: ubuntu-latest
