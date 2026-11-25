@@ -376,9 +376,6 @@ impl Response {
         data[end..end + suffix.len()].copy_from_slice(suffix);
         Self::ok(&data[..end + suffix.len()])
     }
-    pub fn status(&self) -> i32 {
-        self.words[0] as i32
-    }
 }
 
 pub struct Server<'a, H> {
@@ -413,10 +410,6 @@ impl<'a, H: ClockHardware> Server<'a, H> {
     pub const fn holding(mut self, held: u32) -> Self {
         self.held = held;
         self
-    }
-
-    pub fn votes(&self) -> u32 {
-        self.votes
     }
 
     /// Handles one message. `header` is the raw SCMI header word; the transport keeps it as is.
@@ -567,7 +560,7 @@ impl<'a, H: ClockHardware> Server<'a, H> {
 }
 
 /// Mailbox + shared memory access. Separate so the channel logic runs on the host in tests.
-pub trait Transport {
+pub(crate) trait Transport {
     /// Pending request event for this channel; acknowledges it.
     fn take_event(&mut self) -> bool;
     fn read(&mut self, word: usize) -> u32;
@@ -587,7 +580,7 @@ const FREE: u32 = 1;
 const FLAG_INTR: u32 = 1;
 
 /// Zeroes the area and marks the channel free. Linux waits for FREE before its first request.
-pub fn reset_channel(t: &mut impl Transport) {
+pub(crate) fn reset_channel(t: &mut impl Transport) {
     for i in 0..WORDS {
         t.write(i, 0);
     }
@@ -820,10 +813,10 @@ mod tests {
         assert_eq!(req(&mut s, 0x14, 5, &[0, 1, 50_000_000, 0]), [0]);
         assert_eq!(req(&mut s, 0x14, 5, &[1, 1, 50_000_000, 0])[0] as i32, -2);
         assert_eq!(req(&mut s, 0x14, 7, &[1, 1]), [0]);
-        assert_eq!(s.votes(), 2);
+        assert_eq!(s.votes, 2);
         assert_eq!(req(&mut s, 0x14, 7, &[1, 0]), [0]);
         assert_eq!(req(&mut s, 0x14, 7, &[2, 0]), [0]);
-        assert_eq!(s.votes(), 0);
+        assert_eq!(s.votes, 0);
         // Still on after Linux dropped its vote, and no register was written.
         assert_eq!(req(&mut s, 0x14, 3, &[1])[1], 1);
         assert!(s.hw.writes.is_empty());
@@ -839,8 +832,8 @@ mod tests {
         });
         assert_eq!(req(&mut s, 0x14, 6, &[1])[0] as i32, -9);
         assert_eq!(req(&mut s, 0x14, 7, &[1, 1])[0] as i32, -9);
-        assert_eq!(s.votes(), 0);
-        assert_eq!(s.handle(1 << 8, &[]).status(), -10);
+        assert_eq!(s.votes, 0);
+        assert_eq!(s.handle(1 << 8, &[]).words[0] as i32, -10);
         assert_eq!(req(&mut s, 0x14, 6, &[1, 0])[0] as i32, -2);
         assert_eq!(req(&mut s, 0x15, 0, &[])[0] as i32, -1);
     }
@@ -876,7 +869,7 @@ mod tests {
         assert_eq!(req(&mut s, 0x14, 3, &[id::ETH])[1], 0);
         assert_eq!(req(&mut s, 0x14, 7, &[id::ETH, 1]), [0]);
         assert_eq!(req(&mut s, 0x14, 3, &[id::ETH])[1], 1);
-        assert_eq!(s.votes(), 1 << id::ETH);
+        assert_eq!(s.votes, 1 << id::ETH);
         // Rate range: 125 MHz / 255 .. 125 MHz.
         assert_eq!(
             req(&mut s, 0x14, 4, &[id::ETH, 0]),
@@ -905,9 +898,9 @@ mod tests {
             assert_eq!(req(&mut s, 0x14, 5, &[0, id, 50_000_000, 0]), [0]);
             // clk_disable_unused / a consumer's disable: a vote only, the clock stays on.
             assert_eq!(req(&mut s, 0x14, 7, &[id, 1]), [0]);
-            assert_eq!(s.votes(), 1 << id);
+            assert_eq!(s.votes, 1 << id);
             assert_eq!(req(&mut s, 0x14, 7, &[id, 0]), [0]);
-            assert_eq!(s.votes(), 0);
+            assert_eq!(s.votes, 0);
             assert_eq!(req(&mut s, 0x14, 3, &[id])[1], 1);
             assert!(s.hw.writes.is_empty());
             // Other Linux clocks are unaffected.
