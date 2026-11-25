@@ -36,6 +36,9 @@ pub(crate) mod perstn;
 
 pub use crate::cold::ColdError;
 pub use irq::{ScmiState, ScmiStats, scmi_state};
+mod pcie;
+pub use pcie::EnableError;
+
 pub use perstn::{DetectorReport, LostDetail, PcieState, pcie_state};
 
 /// The platform resource: one per image, issued to proc0 only. [`Token::init`] consumes it, so
@@ -57,7 +60,7 @@ pub struct Pcie {
     _proc0: PhantomData<*mut ()>,
     /// [`crate::shm::enable`] published the reservation, or outbound region 0 read back wrong:
     /// the window stays as it is until RP1 is reloaded.
-    pub(crate) shm_pinned: bool,
+    shm_pinned: bool,
 }
 
 impl Pcie {

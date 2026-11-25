@@ -9,16 +9,13 @@ use crate::{
     cold::PCIE_INTF,
     platform::perstn::{self, Word, fake::*},
 };
-use rp1_proto::status;
+use rp1_proto::{SHM_WINDOW, status};
 use std::{vec, vec::Vec};
 
-const AREA: ShmArea = ShmArea {
+const AREA: Window = Window {
     size: 0x10_0000,
-    handoff: rp1_proto::HANDOFF,
-    sram_end: 0,
     phys: rp1_proto::SHM_PHYS,
 };
-const HASH: [u8; 32] = [0x5a; 32];
 /// Region 0 for [`AREA`]: fabric 0x80_0100_0000.. -> PCIe 0x10_2200_0000.
 const AREA_REGION0: [u32; 8] = [
     0,
@@ -59,12 +56,6 @@ impl Io for Fake {
         self.record(Op::Load(Word::State, word));
         PcieState::from_word(word)
     }
-    fn initialize(&mut self, _: &ShmArea, _: &[u8; 32]) -> Result<u32, Error> {
-        for i in 0..FILL_WORDS {
-            perstn::Io::write(self, FILL + 4 * i, 0);
-        }
-        Ok(GENERATION)
-    }
 }
 
 /// After init: the detector armed and `Up`, the loader handoff for [`AREA`], shm not enabled.
@@ -83,7 +74,12 @@ fn armed(delivery: Delivery) -> Fake {
 }
 
 fn enable(f: &mut Fake, pinned: &mut bool) -> Result<u32, EnableError> {
-    publish(f, pinned, &AREA, &HASH)
+    publish(f, pinned, AREA, |f| {
+        for i in 0..FILL_WORDS {
+            perstn::Io::write(f, FILL + 4 * i, 0);
+        }
+        Ok(GENERATION)
+    })
 }
 
 fn thread_ops(f: &Fake) -> Vec<Op> {
@@ -200,7 +196,7 @@ fn enable_is_refused_before_the_window_is_written() {
     let storm = PcieState::DetectorOff {
         reason: status::PLAT_PCIE_OFF_SPURIOUS_STORM,
     };
-    let cases: [(&str, Setup, EnableError); 8] = [
+    let cases: [(&str, Setup, EnableError); 9] = [
         (
             "lost",
             |f, _| {
@@ -246,6 +242,13 @@ fn enable_is_refused_before_the_window_is_written() {
             "no handoff",
             |f, _| {
                 f.registers.insert(word(link::HANDOFF_MAGIC), 0);
+            },
+            EnableError::NotReady,
+        ),
+        (
+            "handoff for another PA",
+            |f, _| {
+                f.registers.insert(word(link::HANDOFF_PHYS_HIGH), 1);
             },
             EnableError::NotReady,
         ),
@@ -383,6 +386,10 @@ fn reset_after_the_section_b_checks_is_reported_right_after_it() {
 fn second_enable_is_refused() {
     let mut f = armed(Delivery::Pulse);
     let mut pinned = false;
+    map_window(&mut f, &mut pinned, AREA).unwrap();
+    assert_eq!(thread_ops(&f), section_a());
+    assert!(!pinned);
+    assert_eq!(f.get(SHM_STATUS), 0);
     enable(&mut f, &mut pinned).unwrap();
     let first = f.trace.len();
     assert_eq!(enable(&mut f, &mut pinned), Err(EnableError::Pinned));
@@ -442,11 +449,11 @@ fn reset_at_any_access_of_enable_ends_window_lost() {
 
 #[test]
 fn region0_translates_the_last_word_of_the_reservation() {
-    let area = ShmArea {
+    let area = Window {
         size: 0x20_0000,
         ..AREA
     };
-    let region = region0(&area);
+    let region = region0(area);
     assert_eq!(region[4], 0x011f_ffff);
     assert_eq!(
         u64::from(region[6]) << 32 | u64::from(region[5]),
