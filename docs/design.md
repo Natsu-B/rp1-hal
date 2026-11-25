@@ -253,8 +253,8 @@ RMW atomic のメソッドは持たない。
     `host_irq` が宣言上 `TIMER.ALARM3` を所有し（他のコアの `timer = ["ALARM3"]` は E3）、rp1-hal はその INTE/INTF を立てない
     ので源は 0 のまま（INTR は立っても INTE=0 なら出ない。HW: 実行中 INTR=0x3、INTE=0）。前に動いたファームが残した状態に
     備え、`HostIrq::new` は INTE bit 3 を落とし（clear alias）、INTF bit 3 を落とし（clear alias）、INTR bit 3 を W1C する
-    （STATIC: rp1-regdb `timer.toml` の INTE/INTF/INTR と atomic clear +0x3000、`device.toml` TIMER_3 = 29。INTF の書き込みは
-    regdb 上 unverified だが HW 2026-11-05 の devmem で 0x8 → 立つ・0 → 解除の plain RW。ARMED の W1C は unverified なので
+    （STATIC: rp1-regdb `timer.toml` の INTE/INTF/INTR と atomic clear +0x3000、`device.toml` TIMER_3 = 29。INTF bit 3 は
+    HW 2026-11-05 の devmem で 0x8 → 立つ・0 → 解除の plain RW。PAC の INTF writer は非公開。ARMED の W1C は unverified なので
     アラーム自体は disarm しない。INTE=0 なら発火しても INTR だけ）。Linux の DT に RP1 hwirq 26..29 の
     利用者は無い（STATIC、標準 DTB + bcm2712d0 + uart1-pi5）。HW（2026-11-05、cold boot 2 回）: Linux から `TIMER.INTF` bit 3 を
     立てると `rp1:irq` が 1 回起床（bit 2 では 0 回）し源の特定を確認、立てたままの間は TEST パルスがエッジにならず 10 回とも

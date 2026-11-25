@@ -98,9 +98,8 @@ impl RegisterBlock {
     pub const fn inte(&self) -> &INTE {
         &self.inte
     }
-    /// Alarm interrupt force. \[Evidence: HardwareReadProven; write semantics remain unverified.\]
-    /// Hardware access: read Plain; write WriteOneToSet.
-    /// Write-one-to-set register; general write and modify APIs are not generated.
+    /// Alarm interrupt force. HW: base-address writes set and cleared bit 3. PAC writes remain hidden.
+    /// Hardware access: read Plain; write Plain.
     /// Write API is not exposed because the verified operation semantics are insufficient.
     #[inline(always)]
     pub const fn intf(&self) -> &INTF {
@@ -485,14 +484,12 @@ pub mod inte {
     }
 }
 
-/// Alarm interrupt force. \[Evidence: HardwareReadProven; write semantics remain unverified.\]
-/// Hardware access: read Plain; write WriteOneToSet.
-/// Write-one-to-set register; general write and modify APIs are not generated.
+/// Alarm interrupt force. HW: base-address writes set and cleared bit 3. PAC writes remain hidden.
+/// Hardware access: read Plain; write Plain.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub type INTF = Reg<intf::INTF_SPEC>;
-/// Alarm interrupt force. \[Evidence: HardwareReadProven; write semantics remain unverified.\]
-/// Hardware access: read Plain; write WriteOneToSet.
-/// Write-one-to-set register; general write and modify APIs are not generated.
+/// Alarm interrupt force. HW: base-address writes set and cleared bit 3. PAC writes remain hidden.
+/// Hardware access: read Plain; write Plain.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 pub mod intf {
     pub struct INTF_SPEC;

@@ -384,11 +384,11 @@ width = 32
 repeat_count = 1
 repeat_stride = 4
 hardware_read = "plain"
-hardware_write = "write-one-to-set"
+hardware_write = "plain"
 verified_read = "hardware"
 verified_write = "unverified"
 origin = "hardware"
-note = "Alarm interrupt force. [Evidence: HardwareReadProven; write semantics remain unverified.]"
+note = "Alarm interrupt force. HW: base-address writes set and cleared bit 3. PAC writes remain hidden."
 [register.api]
 read = "public"
 [[register.field]]
@@ -432,7 +432,7 @@ width = 1
 api_read = "public"
 write_behavior = "plain"
 verified_read = "official"
-verified_write = "official"
+verified_write = "hardware"
 origin = "official"
 note = "Alarm 3 interrupt bit."
 
