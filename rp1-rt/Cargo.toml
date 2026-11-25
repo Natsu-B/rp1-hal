@@ -5,7 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["critical-section-single-core"]
+default = ["critical-section-single-core", "default-panic-handler"]
+default-panic-handler = []
 critical-section-single-core = []
 # Use PRIMASK instead of BASEPRI. Platform IRQ latency and fault continuation are not guaranteed.
 critical-section-primask = ["critical-section-single-core"]

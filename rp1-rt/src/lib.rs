@@ -16,15 +16,22 @@
 //! STATIC / 未検証 on hardware. IRQ53 has priority 0, IRQ57 and MemManage, BusFault
 //! and UsageFault have priority 1, and user IRQs have priorities 2 through 7.
 //!
+//! The default `default-panic-handler` feature installs the panic handler on bare-metal ARM.
+//! It calls [`status::record_panic`], sets BASEPRI to `0x40`, clears PRIMASK, and waits in
+//! a `wfi` loop. Any previously published terminal record is preserved. To supply a custom
+//! handler, set `default-features = false` for rp1-rt and keep `default-panic-handler` disabled
+//! throughout the firmware's dependency graph. Select other features such as
+//! `critical-section-single-core` explicitly as needed.
+//!
 //! | Context or fault | Outcome |
 //! | --- | --- |
-//! | proc0 thread or user ISR panic | The planned default panic handler parks the context with IRQ53/57 eligible to run (HYP). |
-//! | proc1 panic | The planned default panic handler records `Panicked` and parks proc1 (HYP). |
+//! | proc0 thread or user ISR panic | The default panic handler parks the context with IRQ53/57 eligible to run. |
+//! | proc1 panic | The default panic handler attempts to record `Panicked` and parks proc1. proc0 can continue. |
 //! | proc0 thread or user ISR with a configurable fault and a valid MSP frame | Records the stacked PC and CFSR and returns to a wait loop in the original context. BASEPRI masks user IRQs before exception return, leaving IRQ53/57 eligible to run. |
 //! | proc1 thread or user ISR with a configurable fault and a valid MSP frame | Records `Fault` for proc1 and parks it. proc0 can continue. |
 //! | Stacking or unstacking error, INVPC, or a PSP frame | Terminal without frame access. Recording is best effort. IRQ53 may still run on proc0, while IRQ57 cannot preempt the priority-1 handler. A broken stack can lock up the core. |
 //! | Imprecise BusFault taken in a containable context | Returns to the same wait loop. The saved CFSR includes IMPRECISERR. The stacked PC and parked context may differ from the cause. |
-//! | Panic in IRQ57 | SCMI would stop while IRQ53 would remain eligible under the planned handler (HYP). |
+//! | Panic in IRQ57 | The default handler parks at priority 1. SCMI stops and IRQ53 remains eligible to run. |
 //! | Fault in IRQ53/57 or while PRIMASK is set, or HardFault | Terminal on the affected core. HardFault attempts to record CFSR and the stacked PC when stack status and EXC_RETURN allow it. IRQ53/57 cannot preempt it. |
 //! | Infinite loop holding PRIMASK or BASEPRI | No fault containment or watchdog recovery. Linux can detect a stalled heartbeat if configured. |
 use core::{cell::UnsafeCell, marker::PhantomData};

@@ -269,7 +269,7 @@ mod tests {
             ("_RNvCskAvI1dPvZKc_9irq_proof5main0", Owner::User),
             ("_RNvNtCskAvI1dPvZKc_9irq_proof5proc14rp1x", Owner::User),
             ("_RNvNtCskAvI1dPvZKc_9irq_proof4rp1x3run", Owner::User),
-            // The panic handler is the firmware's (`#[panic_handler]`).
+            // The compiler's panic entry symbol is attributed to User by name.
             (
                 "_RNvCs5fGHjzWXRav_7___rustc17rust_begin_unwind",
                 Owner::User,

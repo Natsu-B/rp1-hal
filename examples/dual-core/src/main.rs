@@ -178,11 +178,3 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
 fn increment(value: u32) -> u32 {
     value.wrapping_add(1)
 }
-
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    rp1_rt::status::record_panic(info);
-    loop {
-        rp1_rt::wait_for_event();
-    }
-}

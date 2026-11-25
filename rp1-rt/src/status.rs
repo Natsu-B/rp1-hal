@@ -1,16 +1,22 @@
 //! This firmware's status words on the link page ([`rp1_proto::status`]), for Linux.
 //!
 //! The startup code begins a new `EPOCH` and marks each core running before its `main`. A core
-//! then ends in one terminal state: [`stop`], or a panic handler's [`record_panic`]. The
+//! then ends in one terminal state via [`stop`], [`record_panic`] or [`record_fault`]. The
 //! details (reason, line, file) are written before the state, and a terminal state is never
 //! overwritten, so Linux can trust the details of the first terminal state it reads.
-//! A `#[panic_handler]` calls [`record_panic`] first, then parks the core. A panic before the
+//! The default panic handler calls [`record_panic`] first, then parks the context. A panic before the
 //! startup code marked the core running is not recorded.
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rp1_proto::{
     barrier,
     status::{self as s, CoreState},
 };
+
+#[cfg(all(
+    feature = "default-panic-handler",
+    any(test, all(target_arch = "arm", target_os = "none"))
+))]
+mod panic_handler;
 
 /// This core's number (0 = proc0). `.bss` has one copy per core.
 static CORE: AtomicU32 = AtomicU32::new(0);
@@ -103,6 +109,10 @@ pub fn record_panic(info: &core::panic::PanicInfo<'_>) {
     let (file, line) = info.location().map_or(("", 0), |l| (l.file(), l.line()));
     #[cfg(not(feature = "panic-location"))]
     let (file, line, _) = ("", 0, info);
+    record_panic_details(file, line);
+}
+
+fn record_panic_details(file: &str, line: u32) {
     finish(CORE.load(Relaxed), CoreState::Panicked, 0, line, 0, file);
 }
 /// Report a fault: its exception number, stacked PC and CFSR. For a fault handler.
@@ -152,12 +162,12 @@ mod tests {
     use std::{sync::Mutex, thread, time::Duration};
 
     /// The host page is one static: tests that use it run one at a time.
-    static PAGE_LOCK: Mutex<()> = Mutex::new(());
+    pub(super) static PAGE_LOCK: Mutex<()> = Mutex::new(());
 
-    fn read(core: u32, offset: usize) -> u32 {
+    pub(super) fn read(core: u32, offset: usize) -> u32 {
         field(core, offset).load(Relaxed)
     }
-    fn file(core: u32) -> std::string::String {
+    pub(super) fn file(core: u32) -> std::string::String {
         let words = core::array::from_fn(|i| read(core, s::FILE + 4 * i));
         let mut bytes = [0; s::FILE_LEN];
         let n = s::file_bytes(&words, &mut bytes);

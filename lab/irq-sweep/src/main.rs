@@ -96,14 +96,3 @@ fn main1(_core: Proc1, _p: rp1::Proc1Resources) -> ! {
         rp1_rt::wait_for_event();
     }
 }
-
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    rp1_rt::status::record_panic(info);
-    // A literal message: the log path formats nothing that could panic again. It may wait for
-    // the other core's message, so the state is recorded first.
-    let _ = log!("IRQ_SWEEP_PANIC\n");
-    loop {
-        rp1_rt::wait_for_event();
-    }
-}

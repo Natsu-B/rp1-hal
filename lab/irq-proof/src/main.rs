@@ -458,11 +458,3 @@ unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
         unsafe { pointer.add(i).write_volatile(i as u32 ^ seed) };
     }
 }
-
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    rp1_rt::status::record_panic(info);
-    loop {
-        rp1_rt::wait_for_event();
-    }
-}

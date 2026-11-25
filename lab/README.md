@@ -334,13 +334,13 @@ S_plat = max(H57, Hfault) + H53 + Hhard + 3 · F          (the platform's share)
 stack0 = user + roundup(S_plat, 256)                     (user: declared, default 2 KiB)
 ```
 
-`Hfault` is the deepest of the MemManage, BusFault and UsageFault handlers. They are rp1-rt's
-default handler while the configurable faults are disabled, so `Hfault` stays below `H57`.
-`Hhard` is the default HardFault handler. An NMI handler other than the default one would add
+`Hfault` is the deepest of the MemManage, BusFault and UsageFault handlers, which share
+rp1-rt's configurable fault stub. `Hhard` is the bound of rp1-rt's HardFault path.
+An NMI handler other than the default one would add
 `Hnmi + F` on top; the platform enables no NMI source (HYP), so the default handler in the NMI
 slot is not counted. The platform bounds only `S_plat`; the user part `T + Σ H_p` has no bound
 here. rp1-build's `PLATFORM_STACK_MARGIN` (768 B) is that roundup for the largest `S_plat` of
-this workspace's firmware (716 B, STATIC 2026-11-25). rp1-build adds it to proc0's user stack,
+this workspace's firmware (732 B, STATIC 2026-11-25). rp1-build adds it to proc0's user stack,
 declared or default, and gives it to the linker as `__stack_margin0`: proc0's default stack is
 2816 B, and `stack = { proc0 = "1KiB" }` gives 1792 B.
 
@@ -374,25 +374,31 @@ recursion, or an unresolved indirect call or jump. `--root <symbol>` adds a root
 `--cut <symbol>` treats calls to a function as 0 bytes and noreturn. A cut run prints
 `stack_static=DIAG` and exits non-zero: it is a diagnostic, never a PASS.
 
-A panic in a handler runs the panic handler on the handler's stack, so the panic path is part
-of the bound and must not panic again: `rp1_rt::status::record_panic` has no bounds check.
+A panic in an interrupt handler runs on that handler's stack, so the panic path is part of
+the bound. The default rp1-rt handler records `Panicked` in the link page if the core was
+running, sets BASEPRI to `0x40`, clears PRIMASK and waits in a `wfi` loop (STATIC / HW 未検証).
+Both shm-firmware profiles, irq-proof, irq-sweep, pwm-loopback and scmi-starvation use this
+handler. irq-proof selects `default-panic-handler` explicitly alongside its timed critical section.
 
-STATIC baseline before configurable fault support (2026-11-25, release builds, rustc 1.99.1):
+irq-sweep, pwm-loopback and scmi-starvation report panics through the link page. The sweep
+verifier still rejects `IRQ_SWEEP_PANIC` in older captures. It requires `IRQ_SWEEP_END`,
+`PLAT_INIT ok=1` and `IRQ_SWEEP_BOOT` to accept a sweep. For a panic after those markers,
+read the proc0 state from the link page.
+
+STATIC (2026-11-25, release builds, rustc 1.99.1, bytes):
 
 | Firmware | `stack_static` | H57 | H53 | Hhard | Hfault | Hnmi | `S_plat` |
 |---|---|---:|---:|---:|---:|---:|---:|
-| examples/dual-core | PASS | 592 | 8 | 8 | 8 | none | 716 |
-| irq-proof | PASS | 448 | 8 | 8 | 8 | none | 572 |
-| shm-firmware (default) | PASS | 448 | 8 | 8 | 8 | none | 572 |
-| shm-firmware (ring-dma) | PASS | 448 | 8 | 8 | 8 | none | 572 |
-| irq-sweep, pwm-loopback, scmi-starvation | FAIL `unresolved-indirect-call` in `core::fmt::write` | - | - | - | - | - | - |
+| examples/dual-core | PASS | 592 | 8 | 24 | 56 | none | 732 |
+| irq-proof | PASS | 440 | 8 | 24 | 56 | none | 580 |
+| irq-sweep | PASS | 440 | 8 | 24 | 56 | none | 580 |
+| pwm-loopback | PASS | 440 | 8 | 24 | 56 | none | 580 |
+| scmi-starvation | PASS | 440 | 8 | 24 | 56 | none | 580 |
+| shm-firmware (default) | PASS | 440 | 8 | 24 | 56 | none | 580 |
+| shm-firmware (ring-dma) | PASS | 440 | 8 | 24 | 56 | none | 580 |
 
-Each baseline image had `stack0=2816` and `margin=768` from the ELF, and the default handler
-in the fault and NMI vectors.
-
-The three FAIL images log a message from their panic handler; `log!` formats through
-`core::fmt::write`, whose calls through the `Write` vtable the tool cannot resolve. Their
-panic handlers are planned to give way to a platform panic handler (HYP); that image must PASS again.
+Each image has `stack0=2816` and `margin=768`. Removing panic-time formatting resolved the
+`core::fmt::write` indirect-call failures in irq-sweep, pwm-loopback and scmi-starvation.
 
 ### Verdict (`plat-verify.py`)
 
@@ -404,7 +410,7 @@ repository's commit and a dirty flag) and prints one row each, PASS, FAIL or INC
 ```sh
 python3 lab/plat-verify.py --elf target/thumbv7m-none-eabi/release/irq-proof \
     --uart0 UART0_LOG --uart10 UART10_LOG
-# stack_static=PASS s_plat=572 ...       static bound (stack-paths)
+# stack_static=PASS s_plat=580 ...       static bound (stack-paths)
 # stack_watermark_free=PASS p0_min=N p1_min=N n=N need=512 stack0=N   observed, separate row
 # size=PASS image=N/49152 ...            every budget has room left
 # plat_verify=PASS|FAIL|INCOMPLETE
@@ -437,22 +443,23 @@ cargo run -p stack-paths -- <firmware.elf> --size
 includes the platform `margin` (both from the ELF), and `dsram_freeN = 8192 - dsram_static - stackN`. Owners
 come from symbol names: platform = `rp1_rt`, `rp1_hal`, `rp1_proto`, `rp1_pac`, `__rp1_*`,
 the vector tables, the reset code and the `rp1` module that rp1-build generates; runtime =
-`core` and compiler-builtins; user = the firmware crate (its panic handler included);
+`core` and compiler-builtins; user = the firmware crate and other named symbols;
 unattributed = anonymous constants, literal pools and padding. LTO inlines platform code into
 user functions (for example `platform::init` into `main`), so the platform figure is a lower
-bound and the user figure an upper bound.
+bound and the user figure an upper bound. The compiler's panic entry symbol is attributed to
+user code by name, including when rp1-rt supplies the handler.
 
 STATIC (2026-11-25, rustc 1.99.1, release `cargo rp1 build`; bytes):
 
 | Firmware | Image / 49152 | SRAM free | ISRAM / 8192 | Platform code | Runtime code | User code | Unattributed | stack0 (margin) / stack1 | DSRAM free p0 / p1 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| examples/dual-core | 26816 | 22336 | 808 | 11082 | 6202 | 5990 | 3264 | 2816 (768) / 2048 | 5264 / 6032 |
-| irq-proof | 43536 | 5616 | 3876 | 16366 | 6374 | 15942 | 4514 | 2816 (768) / 2048 | 5104 / 5872 |
-| irq-sweep | 27088 | 22064 | 0 | 7824 | 4746 | 10704 | 3606 | 2816 (768) / 2048 | 5296 / 6064 |
-| pwm-loopback | 18000 | 31152 | 8 | 7940 | 2892 | 5344 | 1594 | 2816 (768) / 2048 | 5304 / 6072 |
-| scmi-starvation | 15952 | 33200 | 220 | 6996 | 2696 | 4346 | 1704 | 2816 (768) / 2048 | 5288 / 6056 |
-| shm-firmware (default) | 43752 | 5400 | 3348 | 17224 | 9110 | 12748 | 4404 | 2816 (768) / 6144 | 5288 / 1960 |
-| shm-firmware (ring-dma) | 44608 | 4544 | 7728 | 20072 | 5622 | 10820 | 3712 | 2816 (768) / 6144 | 5288 / 1960 |
+| examples/dual-core | 27200 | 21952 | 1136 | 11290 | 6202 | 6176 | 3260 | 2816 (768) / 2048 | 5264 / 6032 |
+| irq-proof | 43768 | 5384 | 4224 | 16604 | 6374 | 15936 | 4514 | 2816 (768) / 2048 | 5104 / 5872 |
+| irq-sweep | 27400 | 21752 | 316 | 8018 | 4746 | 10832 | 3590 | 2816 (768) / 2048 | 5296 / 6064 |
+| pwm-loopback | 18304 | 30848 | 324 | 8134 | 2892 | 5472 | 1578 | 2816 (768) / 2048 | 5304 / 6072 |
+| scmi-starvation | 16264 | 32888 | 536 | 7190 | 2696 | 4482 | 1688 | 2816 (768) / 2048 | 5288 / 6056 |
+| shm-firmware (default) | 44096 | 5056 | 3664 | 17418 | 9110 | 12902 | 4402 | 2816 (768) / 6144 | 5288 / 1960 |
+| shm-firmware (ring-dma) | 44944 | 4208 | 8044 | 20266 | 5622 | 10974 | 3712 | 2816 (768) / 6144 | 5288 / 1960 |
 
 Data and bss are below 130 B per owner in every image except ring-dma's 4136 B of user
 `.shared` data. The stack margin lives in DSRAM, so the SRAM images did not grow with it.
