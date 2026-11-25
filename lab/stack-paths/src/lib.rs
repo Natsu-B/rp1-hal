@@ -38,6 +38,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod exceptions;
+mod returns;
 pub mod size;
 
 /// Exception entry frame: 32 B of state plus 4 B of alignment padding, no FPU (contract §5.5).
@@ -259,6 +260,10 @@ impl Program {
     /// Diagnostic only, never a proof: like [`Program::bound`], but a call or tail call to a
     /// function in `cut` counts 0 bytes and does not return.
     pub fn bound_cut(&self, address: u32, cut: &HashSet<u32>) -> Result<Bound, Fail> {
+        self.analyze(address, cut, false)
+    }
+
+    fn analyze(&self, address: u32, cut: &HashSet<u32>, startup: bool) -> Result<Bound, Fail> {
         let f = *self.by_start.get(&(address & !1)).ok_or_else(|| Fail {
             reason: "unknown-root",
             at: format!("0x{address:08x}"),
@@ -268,6 +273,7 @@ impl Program {
             done: HashMap::new(),
             active: Vec::new(),
             cut,
+            startup,
         }
         .function(f)
     }
@@ -288,6 +294,7 @@ struct Analyzer<'a> {
     done: HashMap<usize, Bound>,
     active: Vec<usize>,
     cut: &'a HashSet<u32>,
+    startup: bool,
 }
 
 impl Analyzer<'_> {
@@ -345,6 +352,9 @@ impl Analyzer<'_> {
                 Some(old) if old == d => continue,
                 Some(_) => return Err(fail("sp-mismatch")),
                 None => depth[i - func.start] = Some(d),
+            }
+            if self.startup && p.insns[i].changes_startup_mask() {
+                return Err(fail("fault-startup-mask"));
             }
             let e = resolved_effect(p, func, &targets, i).map_err(fail)?;
             if e.conditional && e.push != 0 && !matches!(e.flow, Flow::Return) {

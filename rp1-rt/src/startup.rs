@@ -28,8 +28,8 @@ __rp1_reset1:
     .type __rp1_setup_exceptions,%function
     .thumb_func
 __rp1_setup_exceptions:
-    bl __rp1_initialize
-    // r0 is the selected main; keep it intact through exception setup.
+    // Finish exception setup before entering the reachable Rust initialization path.
+    // r0 is the core ID; keep it intact until __rp1_initialize selects main.
     ldr r1, =0xe000ed0c
     ldr r2, =0x05fa0000
     str r2, [r1]       // AIRCR: group all implemented priority bits for preemption.
@@ -50,6 +50,7 @@ __rp1_setup_exceptions:
     str r2, [r1, #24]   // SHCSR: enable the three configurable faults.
     dsb sy
     isb sy
+    bl __rp1_initialize
     cpsie i
     bx r0
     .size __rp1_setup_exceptions, . - __rp1_setup_exceptions

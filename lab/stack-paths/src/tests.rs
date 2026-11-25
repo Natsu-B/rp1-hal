@@ -51,9 +51,8 @@ const EXCEPTIONS: &str = "+00000400 <__rp1_reset0>:
  414: movs r0, #1
  416: b.n 418 <__rp1_setup_exceptions>
 00000418 <__rp1_setup_exceptions>:
- 418: bl 2000 <__rp1_initialize>
- 41c: ldr r1, [pc, #60]
- 41e: ldr r2, [pc, #64]
+ 418: ldr r1, [pc, #64]
+ 41a: ldr r2, [pc, #68]
  420: str r2, [r1, #0]
  422: ldr r2, [r1, #8]
  424: orr.w r2, r2, #512  @ 0x200
@@ -72,6 +71,7 @@ const EXCEPTIONS: &str = "+00000400 <__rp1_reset0>:
  448: str r2, [r1, #24]
  44a: dsb sy
  44e: isb sy
+ 450: bl 2000 <__rp1_initialize>
  452: cpsie i
  454: bx r0
  456: movs r0, r0
@@ -157,6 +157,105 @@ fn p2e_checks_exc_return_provenance_and_the_rust_path() {
             "{from} -> {to}"
         );
     }
+}
+
+#[test]
+fn p2e_rejects_balanced_returns_with_wrong_pc_or_overwritten_lr() {
+    for (body, expected) in [
+        (
+            "1200: push {r0, r1}\n 1202: pop {r0, pc}",
+            "fault-return-address",
+        ),
+        ("1200: mov lr, r0\n 1202: bx lr", "fault-return-address"),
+        ("1200: str r1, [sp, #4]\n 1202: bx lr", "fault-exception-lr"),
+        (
+            "1200: push {lr}\n 1202: strb r0, [sp, #1]\n 1204: pop {pc}",
+            "fault-return-address",
+        ),
+        (
+            "1200: push {lr}\n 1202: bl 3000 <leaf>\n 1206: pop {pc}",
+            "fault-return-address",
+        ),
+        ("1200: bl 3002 <leaf+0x2>\n 1204: bx lr", "bad-call-target"),
+        (
+            "1200: bl 3100 <clean>\n 1204: bx lr",
+            "fault-return-address",
+        ),
+    ] {
+        let mut source = EXCEPTIONS.replace("1200: push {r4, lr}\n 1202: pop {r4, pc}", body);
+        // The callee can clobber the caller's saved LR through a pointer alias.
+        source.push_str("00003000 <leaf>:\n 3000: mov r2, sp\n 3002: str r0, [r2]\n 3004: bx lr\n00003100 <clean>:\n 3100: bx lr\n");
+        let p = Program::parse(&source);
+        assert_eq!(
+            p.check_exceptions(EXCEPTION_VECTORS).unwrap_err().reason,
+            expected,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn p2e_checks_return_addresses_through_nested_and_tail_calls() {
+    let source = EXCEPTIONS.replace(
+        "1202: pop {r4, pc}",
+        "1202: bl 3000 <callee>\n 1206: pop {r4, lr}\n 120a: b 3100 <tail>",
+    ) + "00003000 <callee>:\n 3000: push {lr}\n 3002: ldr pc, [sp], #4\n"
+        + "00003100 <tail>:\n 3100: bx lr\n";
+    Program::parse(&source)
+        .check_exceptions(EXCEPTION_VECTORS)
+        .unwrap();
+    let wrong = source.replace("3100: bx lr", "3100: mov lr, r0\n 3102: bx lr");
+    assert_eq!(
+        Program::parse(&wrong)
+            .check_exceptions(EXCEPTION_VECTORS)
+            .unwrap_err()
+            .reason,
+        "fault-return-address"
+    );
+}
+
+#[test]
+fn hardfault_stub_passes_msp_and_lr_and_cannot_return() {
+    for (from, to, reason) in [
+        ("1000: mov r0, sp", "1000: bx lr", "hardfault-entry"),
+        ("1002: mov r1, lr", "1002: mov r1, r2", "hardfault-entry"),
+        ("1400: wfe", "1400: bx lr", "hardfault-returns"),
+    ] {
+        let p = Program::parse(&EXCEPTIONS.replace(from, to));
+        assert_eq!(
+            p.check_exceptions(EXCEPTION_VECTORS).unwrap_err().reason,
+            reason
+        );
+    }
+}
+
+#[test]
+fn startup_rejects_reachable_early_unmask_through_initialization_calls() {
+    for early in ["cpsie i", "cpsie if", "msr PRIMASK, r0"] {
+        let direct = EXCEPTIONS.replace("2000: bx lr", &format!("2000: {early}\n 2002: bx lr"));
+        assert_eq!(
+            Program::parse(&direct)
+                .check_exceptions(EXCEPTION_VECTORS)
+                .unwrap_err()
+                .reason,
+            "fault-startup-mask"
+        );
+        let called = EXCEPTIONS.replace(
+            "2000: bx lr",
+            &format!("2000: push {{lr}}\n 2002: bl 2100 <init_child>\n 2006: pop {{pc}}\n00002100 <init_child>:\n 2100: {early}\n 2102: bx lr"),
+        );
+        assert_eq!(
+            Program::parse(&called)
+                .check_exceptions(EXCEPTION_VECTORS)
+                .unwrap_err()
+                .reason,
+            "fault-startup-mask"
+        );
+    }
+    let unreachable = EXCEPTIONS.to_owned() + " 2002: cpsie i\n";
+    Program::parse(&unreachable)
+        .check_exceptions(EXCEPTION_VECTORS)
+        .unwrap();
 }
 
 #[test]

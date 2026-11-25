@@ -2,6 +2,7 @@
 //! stack analysis tracks SP, but does not track the contents of LR or SCB register writes.
 
 use super::{Fail, Insn, Program, immediate, target};
+use std::collections::HashSet;
 
 const FAULT: &str = "__rp1_fault";
 const HARDFAULT: &str = "__rp1_hardfault";
@@ -29,6 +30,7 @@ impl Program {
             self.check_reset(reset, core)?;
         }
         self.check_fault_entry()?;
+        self.check_hardfault_entry()?;
         self.check_fault_setup()
     }
 
@@ -61,6 +63,21 @@ impl Program {
         }
         if !self.bound(target(&call.args).unwrap())?.returns {
             return Err(failure("fault-rust-no-return", rust));
+        }
+        self.check_return_address(target(&call.args).unwrap())
+    }
+
+    fn check_hardfault_entry(&self) -> Result<(), Fail> {
+        let fail = || failure("hardfault-entry", HARDFAULT);
+        let [frame, lr, branch] = self.prefix(HARDFAULT).ok_or_else(fail)?;
+        if !(frame.is("mov", "r0, sp")
+            && lr.is("mov", "r1, lr")
+            && self.to(branch, "b", "rp1_hardfault"))
+        {
+            return Err(fail());
+        }
+        if self.bound(target(&branch.args).unwrap())?.returns {
+            return Err(failure("hardfault-returns", "rp1_hardfault"));
         }
         Ok(())
     }
@@ -102,12 +119,13 @@ impl Program {
             ("str", "r2, [r1, #24]"),
             ("dsb", "sy"),
             ("isb", "sy"),
-            ("cpsie", "i"),
-            ("bx", "r0"),
         ];
         let fail = || failure("fault-startup-order", SETUP);
-        let [init, aircr, value, body @ ..] = self.prefix::<23>(SETUP).ok_or_else(fail)?;
+        let [aircr, value, body @ .., init, unmask, main] =
+            self.prefix::<23>(SETUP).ok_or_else(fail)?;
         if self.to(init, "bl", "__rp1_initialize")
+            && unmask.is("cpsie", "i")
+            && main.is("bx", "r0")
             && self.literal(aircr, "r1") == Some(0xe000_ed0c)
             && self.literal(value, "r2") == Some(0x05fa_0000)
             && body
@@ -115,7 +133,12 @@ impl Program {
                 .zip(sequence)
                 .all(|(x, (op, args))| x.is(op, args))
         {
-            Ok(())
+            let init = target(&init.args).unwrap();
+            if self.analyze(init, &HashSet::new(), true)?.returns {
+                Ok(())
+            } else {
+                Err(fail())
+            }
         } else {
             Err(fail())
         }
@@ -136,7 +159,7 @@ impl Program {
                 .is_some_and(|a| target(&insn.args) == Some(a))
     }
 
-    fn literal(&self, insn: &Insn, reg: &str) -> Option<u32> {
+    pub(super) fn literal(&self, insn: &Insn, reg: &str) -> Option<u32> {
         let (dest, operand) = insn.args.split_once(", ")?;
         if insn.op != "ldr" || dest != reg {
             return None;
@@ -152,6 +175,20 @@ impl Program {
 }
 
 impl Insn {
+    pub(super) fn changes_startup_mask(&self) -> bool {
+        self.op.starts_with("cpsie")
+            || (self.op.starts_with("msr")
+                && matches!(
+                    self.args
+                        .split(',')
+                        .next()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "primask" | "faultmask" | "basepri" | "basepri_max" | "control"
+                ))
+    }
+
     fn is(&self, op: &str, args: &str) -> bool {
         self.op == op && self.args.eq_ignore_ascii_case(args)
     }
