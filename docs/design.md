@@ -82,6 +82,8 @@ PCIe を 2〜200 µs 空けても書き・読みの時間は変わらない（AS
 **ライブラリの既定（v0.1 以降、STATIC + HW）**: 次を `#[isram]` で ISRAM に置く。冷たい経路は `#[rp1_rt::cold]`（`.text.cold`、共有 SRAM）に分ける。
 - `rp1-proto`: `RingTx::push` / `push_slice`、`RingRx::pop` / `pop_into`（feature `isram`、既定で有効。ホストでは何もしない）
 - `rp1-hal`: SCMI（IRQ57）と PERSTn 検出器（IRQ53）は proc0 の割り込みで処理し、ハンドラは共有 SRAM に配置する。proc0 のループで poll するものは無い（STATIC）
+  - [`platform::Token::init`](../rp1-hal/src/platform.rs) の手順 6 で、SCMI サーバーとゼロ初期化した計数を proc0 の DSRAM にまとめて置く。
+    手順 9 で `PLAT_SCMI` を `Serving`（要求数 0）にしてから IRQ57 を有効にする（STATIC）。
 - 使う側のホットループ（例: lab の proc0 `idle0`、proc1 `wait_command`、バッチ送受信）は手で `#[isram]`。配列の `==` は `memcmp`（共有 SRAM）を呼ぶので避ける
 
 **v0.2（自動配置、実装済み・STATIC。shm-firmware の最終ビルドで HW）**: `cargo rp1 build <cargo build の引数>` が 2 段リンクする。

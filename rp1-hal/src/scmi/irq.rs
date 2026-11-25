@@ -58,8 +58,8 @@ pub struct ScmiStats {
     pub max_serve_clean_us: u32,
 }
 
-#[derive(Clone, Copy, Default)]
-pub(crate) struct Counters {
+#[derive(Default)]
+struct Counters {
     stats: ScmiStats,
     streak: u8,
 }
@@ -68,8 +68,6 @@ pub(crate) trait Io: Registers {
     fn set_priority(&mut self, value: u8);
     fn publish(&mut self, word: u32);
     fn barrier(&mut self);
-    fn counters(&mut self) -> Counters;
-    fn set_counters(&mut self, counters: Counters);
     /// IRQ53's entry count ([`crate::platform::perstn`]).
     fn entries53(&mut self) -> u32;
 }
@@ -106,7 +104,6 @@ fn pend_if_event(io: &mut impl Io) {
 }
 
 pub(crate) fn enable(io: &mut impl Io) {
-    io.set_counters(Counters::default());
     io.publish(SERVING);
     io.barrier();
 
@@ -121,11 +118,10 @@ pub(crate) fn enable(io: &mut impl Io) {
     pend_if_event(io);
 }
 
-fn handle(server: &mut Server<'_, impl ClockHardware>, io: &mut impl Io) {
+fn handle(server: &mut Server<'_, impl ClockHardware>, c: &mut Counters, io: &mut impl Io) {
     let entries53 = io.entries53();
     let start = io.read(TIMER_RAWL);
     let served = super::serve(server, &mut Mailbox(io));
-    let mut c = io.counters();
     match served {
         Served::Request => {
             c.stats.requests = c.stats.requests.saturating_add(1);
@@ -146,7 +142,6 @@ fn handle(server: &mut Server<'_, impl ClockHardware>, io: &mut impl Io) {
         c.stats.max_serve_clean_us = c.stats.max_serve_clean_us.max(elapsed);
     }
     c.stats.max_serve_all_us = c.stats.max_serve_all_us.max(elapsed);
-    io.set_counters(c);
     if c.streak >= MAX_EMPTY_STREAK {
         io.write(ICER, IRQ_BIT);
         io.publish(QUARANTINED);
@@ -159,10 +154,14 @@ fn handle(server: &mut Server<'_, impl ClockHardware>, io: &mut impl Io) {
     pend_if_event(io);
 }
 
-// These statics are proc0-local DSRAM. Only init accesses SERVER before ISER and only IRQ57
-// accesses it after ISER. Thread readers mask interrupts while copying COUNTERS.
-static mut SERVER: MaybeUninit<Server<'static, Rp1Clocks>> = MaybeUninit::uninit();
-static mut COUNTERS: MaybeUninit<Counters> = MaybeUninit::uninit();
+struct State {
+    server: Server<'static, Rp1Clocks>,
+    counters: Counters,
+}
+
+// Proc0-local DSRAM. Init writes it before ISER, then IRQ57 owns it. Proc0 thread readers
+// mask interrupts while copying the stats.
+static mut STATE: MaybeUninit<State> = MaybeUninit::uninit();
 
 pub(crate) struct Mmio;
 
@@ -185,12 +184,6 @@ impl Io for Mmio {
     fn barrier(&mut self) {
         rp1_proto::barrier();
     }
-    fn counters(&mut self) -> Counters {
-        unsafe { (&raw const COUNTERS).read().assume_init() }
-    }
-    fn set_counters(&mut self, counters: Counters) {
-        unsafe { (&raw mut COUNTERS).write(MaybeUninit::new(counters)) };
-    }
     fn entries53(&mut self) -> u32 {
         crate::platform::perstn::entries()
     }
@@ -206,13 +199,19 @@ fn prepare_server<H: ClockHardware>(io: &mut impl Io, clocks: H, held: u32) -> S
 /// have exclusive use of mailbox channel 0, its shared memory, and the
 /// Linux-owned clock generators on RP1.
 pub(crate) unsafe fn install(held: u32) {
-    let server = prepare_server(&mut Mmio, Rp1Clocks { _private: () }, held);
-    unsafe { (&raw mut SERVER).write(MaybeUninit::new(server)) };
+    let state = State {
+        server: prepare_server(&mut Mmio, Rp1Clocks { _private: () }, held),
+        counters: Counters::default(),
+    };
+    unsafe { (&raw mut STATE).write(MaybeUninit::new(state)) };
 }
 
 pub(crate) fn stats() -> ScmiStats {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
-    let stats = rp1_rt::interrupt::__primask_free(|| Mmio.counters().stats);
+    let stats = rp1_rt::interrupt::__primask_free(|| {
+        // Proc0's Pcie handle guarantees install ran. IRQ57 is masked here.
+        unsafe { (*(&raw const STATE)).assume_init_ref().counters.stats }
+    });
     #[cfg(not(all(target_arch = "arm", target_os = "none")))]
     let stats = ScmiStats::default();
     stats
@@ -220,9 +219,8 @@ pub(crate) fn stats() -> ScmiStats {
 
 #[rp1_rt::interrupt(proc0, __platform, sram)]
 fn PROC_MISC() {
-    let server = &raw mut SERVER;
-    let server = unsafe { (*server).assume_init_mut() };
-    handle(server, &mut Mmio);
+    let state = unsafe { (*(&raw mut STATE)).assume_init_mut() };
+    handle(&mut state.server, &mut state.counters, &mut Mmio);
 }
 
 #[cfg(test)]

@@ -13,13 +13,13 @@
 //!    is written to the SCMI channel or the endpoint.
 //! 5. Quiesce: endpoint clock, LTSSM enable dropped and read back, then the link is read again
 //!    and must be down.
-//! 6. The SCMI channel is cleared and the server set up. Linux needs the link to write the
-//!    channel, and the link cannot come up while LTSSM enable is 0 (DesignWare
+//! 6. The SCMI channel is cleared and the server installed with zeroed counters. Linux needs
+//!    the link to write the channel, and the link cannot come up while LTSSM enable is 0 (DesignWare
 //!    `app_ltssm_enable`, HYP on RP1), so nothing writes the channel while it is cleared.
 //!    Requests that arrive before IRQ57 is enabled wait in the mailbox.
 //! 7. Endpoint bring-up: PERSTn wait (up to 20 s), core alive, DBI, LTSSM enable, link.
 //! 8. SYSCFG reset released.
-//! 9. Enable SCMI on proc0 IRQ57.
+//! 9. Publish SCMI Serving with zero requests, then enable proc0 IRQ57.
 //! 10. Arm the PERSTn detector on proc0 IRQ53 ([`perstn`]). A forced PCIe interrupt source
 //!     leaves it off (`DetectorOff`), and init still succeeds.
 //! 11. Return. Init writes no handler state and no status word after the ISER of its line:

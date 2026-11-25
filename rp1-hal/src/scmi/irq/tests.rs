@@ -22,7 +22,6 @@ enum Op {
     Read(usize, u32),
     Write(usize, u32),
     Barrier,
-    Counters,
     /// IRQ57's read of IRQ53's entry count, and the index of the access boundary it passed.
     Entries53 {
         value: u32,
@@ -208,7 +207,9 @@ impl FakeRp1 {
             self.pending = false;
             let interrupted = core::mem::replace(&mut self.context, Context::Irq);
             let mut server = self.server.take().unwrap();
-            handle(&mut server, self);
+            let mut counters = core::mem::take(&mut self.counters);
+            handle(&mut server, &mut counters, self);
+            self.counters = counters;
             self.server = Some(server);
             self.context = interrupted;
             if !matches!(self.delivery, Delivery::Pulse) && self.level() {
@@ -282,14 +283,6 @@ impl Io for FakeRp1 {
         self.boundary();
         self.bus.borrow_mut().record(self.context, Op::Barrier);
     }
-    fn counters(&mut self) -> Counters {
-        self.counters
-    }
-    fn set_counters(&mut self, counters: Counters) {
-        self.boundary();
-        self.bus.borrow_mut().record(self.context, Op::Counters);
-        self.counters = counters;
-    }
     fn entries53(&mut self) -> u32 {
         self.boundary();
         let op = Op::Entries53 {
@@ -316,11 +309,13 @@ fn pending_channel_is_served_once_and_other_channels_survive() {
         .into_iter()
         .filter_map(|(context, op)| (context == Context::Init).then_some(op))
         .collect();
-    let step9 = init.iter().position(|op| *op == Op::Counters).unwrap();
+    let step9 = init
+        .iter()
+        .position(|op| *op == Op::Write(STATUS_WORD, SERVING))
+        .unwrap();
     assert_eq!(
         init[step9..],
         [
-            Op::Counters,
             Op::Write(STATUS_WORD, SERVING),
             Op::Barrier,
             Op::Read(PROC_GATE, 0x8000),
