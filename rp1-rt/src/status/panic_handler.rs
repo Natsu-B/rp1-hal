@@ -1,12 +1,12 @@
-trait Registers {
-    fn write_basepri(&mut self, mask: u32);
+trait PanicCpu {
+    fn write_basepri(&mut self, mask: u8);
     fn enable_interrupts(&mut self);
     fn wait(&mut self) -> !;
 }
 
 // Avoid an extra frame on the interrupt stack when a handler panics.
 #[inline(always)]
-fn handle(regs: &mut impl Registers, record: impl FnOnce()) -> ! {
+fn handle(regs: &mut impl PanicCpu, record: impl FnOnce()) -> ! {
     record();
     // Open priority 1 even if the caller had set BASEPRI to 0x20.
     regs.write_basepri(2 << 5);
@@ -16,23 +16,24 @@ fn handle(regs: &mut impl Registers, record: impl FnOnce()) -> ! {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod hardware {
-    use super::Registers;
-    use core::{arch::asm, panic::PanicInfo};
+    use super::PanicCpu;
+    use crate::cpu;
+    use core::panic::PanicInfo;
 
     struct CortexM;
 
-    impl Registers for CortexM {
-        fn write_basepri(&mut self, mask: u32) {
-            unsafe { asm!("msr BASEPRI, {}", in(reg) mask, options(nostack, preserves_flags)) };
+    impl PanicCpu for CortexM {
+        fn write_basepri(&mut self, mask: u8) {
+            cpu::set_basepri(mask);
         }
 
         fn enable_interrupts(&mut self) {
-            unsafe { asm!("cpsie i", options(nostack, preserves_flags)) };
+            cpu::enable_interrupts();
         }
 
         fn wait(&mut self) -> ! {
             loop {
-                unsafe { asm!("wfi", options(nomem, nostack, preserves_flags)) };
+                cpu::wfi();
             }
         }
     }
@@ -47,16 +48,17 @@ mod hardware {
 mod tests {
     extern crate std;
 
-    use super::Registers;
+    use super::PanicCpu;
     use crate::status::{
         CoreState, finish, record_panic_details, s, start,
         tests::{PAGE_LOCK, file, read},
+        write_file,
     };
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     struct Fake {
         expected_words: [u32; 4],
-        basepri: u32,
+        basepri: u8,
         primask: bool,
     }
 
@@ -64,8 +66,8 @@ mod tests {
         [s::STATE, s::REASON, s::LINE, s::AUX].map(|offset| read(0, offset))
     }
 
-    impl Registers for Fake {
-        fn write_basepri(&mut self, mask: u32) {
+    impl PanicCpu for Fake {
+        fn write_basepri(&mut self, mask: u8) {
             assert_eq!(words(), self.expected_words);
             assert_eq!(self.basepri, 0x20);
             assert!(self.primask);
@@ -93,7 +95,9 @@ mod tests {
         ] {
             start(0);
             if expected_words[0] == CoreState::Fault.word() {
-                finish(0, CoreState::Fault, 6, 42, 7, "first.rs");
+                finish(0, CoreState::Fault, 6, 42, 7, |core| {
+                    write_file(core, "first.rs")
+                });
             }
             let mut regs = Fake {
                 expected_words,

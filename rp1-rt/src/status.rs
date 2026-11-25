@@ -94,7 +94,14 @@ fn timer_us() -> u32 {
 
 /// Report a deliberate stop with `code`, then park this core in `wait_for_event`.
 pub fn stop(code: u32) -> ! {
-    finish(CORE.load(Relaxed), CoreState::Stopped, code, 0, 0, "");
+    finish(
+        CORE.load(Relaxed),
+        CoreState::Stopped,
+        code,
+        0,
+        0,
+        clear_file,
+    );
     loop {
         crate::wait_for_event();
     }
@@ -108,13 +115,34 @@ pub fn record_panic(info: &core::panic::PanicInfo<'_>) {
     #[cfg(feature = "panic-location")]
     let (file, line) = info.location().map_or(("", 0), |l| (l.file(), l.line()));
     #[cfg(not(feature = "panic-location"))]
-    let (file, line, _) = ("", 0, info);
+    {
+        let _ = info;
+        finish(CORE.load(Relaxed), CoreState::Panicked, 0, 0, 0, clear_file);
+    }
+    #[cfg(feature = "panic-location")]
     record_panic_details(file, line);
 }
 
+#[cfg(any(test, feature = "panic-location"))]
 fn record_panic_details(file: &str, line: u32) {
-    finish(CORE.load(Relaxed), CoreState::Panicked, 0, line, 0, file);
+    finish(
+        CORE.load(Relaxed),
+        CoreState::Panicked,
+        0,
+        line,
+        0,
+        |core| write_file(core, file),
+    );
 }
+
+#[cfg(any(test, feature = "panic-location"))]
+#[inline]
+fn write_file(core: u32, file: &str) {
+    for (i, word) in s::file_words(file).into_iter().enumerate() {
+        field(core, s::FILE + 4 * i).store(word, Relaxed);
+    }
+}
+
 /// Report a fault: its exception number, stacked PC and CFSR. For a fault handler.
 pub fn record_fault(exception: u32, pc: u32, cfsr: u32) {
     finish(
@@ -123,32 +151,40 @@ pub fn record_fault(exception: u32, pc: u32, cfsr: u32) {
         exception,
         pc,
         cfsr,
-        "",
+        clear_file,
     );
 }
 
-// Let fault callers fold away file-name processing on the exception stack.
 #[inline(always)]
-fn finish(core: u32, state: CoreState, reason: u32, line: u32, aux: u32, file: &str) {
+fn clear_file(core: u32) {
+    // Write the fixed fields directly without a temporary file buffer on the fault stack.
+    const { assert!(s::FILE_LEN == 20) };
+    field(core, s::FILE).store(0, Relaxed);
+    field(core, s::FILE + 4).store(0, Relaxed);
+    field(core, s::FILE + 8).store(0, Relaxed);
+    field(core, s::FILE + 12).store(0, Relaxed);
+    field(core, s::FILE + 16).store(0, Relaxed);
+}
+#[inline(always)]
+fn finish(
+    core: u32,
+    state: CoreState,
+    reason: u32,
+    line: u32,
+    aux: u32,
+    write_file: impl FnOnce(u32),
+) {
     // A priority-1 fault can preempt a user critical section while STATE is still Running.
     crate::interrupt::__primask_free(|| {
         if field(core, s::STATE).load(Relaxed) != CoreState::Running.word() {
             return;
         }
         #[cfg(test)]
-        crate::interrupt::test_primask::interrupt_point();
+        crate::interrupt::test_model::interrupt_point(); // Model preemption after checking STATE.
         field(core, s::REASON).store(reason, Relaxed);
         field(core, s::LINE).store(line, Relaxed);
         field(core, s::AUX).store(aux, Relaxed);
-        if file.is_empty() {
-            for offset in (s::FILE..s::FILE + s::FILE_LEN).step_by(4) {
-                field(core, offset).store(0, Relaxed);
-            }
-        } else {
-            for (i, w) in s::file_words(file).into_iter().enumerate() {
-                field(core, s::FILE + 4 * i).store(w, Relaxed);
-            }
-        }
+        write_file(core);
         barrier();
         field(core, s::STATE).store(state.word(), Relaxed);
         barrier();
@@ -198,27 +234,26 @@ mod tests {
         let _page = PAGE_LOCK.lock().unwrap();
         start(0);
         start(1);
-        finish(
-            1,
-            CoreState::Panicked,
-            0,
-            42,
-            0,
-            "lab/irq-proof/src/proc1.rs",
-        );
+        finish(1, CoreState::Panicked, 0, 42, 0, |core| {
+            write_file(core, "lab/irq-proof/src/proc1.rs")
+        });
         assert_eq!(read(1, s::STATE), CoreState::Panicked.word());
         assert_eq!((read(1, s::REASON), read(1, s::LINE)), (0, 42));
         assert_eq!(file(1), "q-proof/src/proc1.rs");
         // A later stop, panic or fault on the same core changes nothing.
-        finish(1, CoreState::Stopped, 5, 0, 0, "");
-        finish(1, CoreState::Fault, 3, 0x2000_0401, 0x100, "");
+        finish(1, CoreState::Stopped, 5, 0, 0, |core| write_file(core, ""));
+        finish(1, CoreState::Fault, 3, 0x2000_0401, 0x100, |core| {
+            write_file(core, "")
+        });
         assert_eq!(read(1, s::STATE), CoreState::Panicked.word());
         assert_eq!(
             (read(1, s::LINE), file(1).as_str()),
             (42, "q-proof/src/proc1.rs")
         );
         // The other core is independent.
-        finish(0, CoreState::Fault, 3, 0x2000_0401, 0x100, "");
+        finish(0, CoreState::Fault, 3, 0x2000_0401, 0x100, |core| {
+            write_file(core, "")
+        });
         let fault = [s::STATE, s::REASON, s::LINE, s::AUX].map(|o| read(0, o));
         assert_eq!(fault, [CoreState::Fault.word(), 3, 0x2000_0401, 0x100]);
         assert_eq!(file(0), "");
@@ -226,7 +261,7 @@ mod tests {
 
     #[test]
     fn finish_defers_fault_preemption_until_first_details_are_published() {
-        use crate::interrupt::test_primask::preempt_at_next_point;
+        use crate::interrupt::test_model::preempt_at_next_point;
         use core::sync::atomic::AtomicBool;
 
         static FAULT_RAN: AtomicBool = AtomicBool::new(false);
@@ -245,7 +280,9 @@ mod tests {
                 record_fault(6, 0x2000_0401, 0x100);
                 FAULT_RAN.store(true, Relaxed);
             });
-            finish(0, CoreState::Panicked, 5, 42, 7, "first.rs");
+            finish(0, CoreState::Panicked, 5, 42, 7, |core| {
+                write_file(core, "first.rs")
+            });
             assert!(FAULT_RAN.load(Relaxed));
             check_first_record();
         });

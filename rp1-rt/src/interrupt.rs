@@ -83,7 +83,10 @@ mod mask;
 #[doc(hidden)]
 pub use mask::__primask_free;
 #[cfg(test)]
-pub(crate) use mask::test_primask;
+pub(crate) use mask::test_model;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[doc(hidden)]
+pub use mask::{__basepri_acquire, __basepri_release};
 
 /// Critical section for user contexts on this core; see the module docs.
 pub use critical_section::{CriticalSection, Mutex, with as free};

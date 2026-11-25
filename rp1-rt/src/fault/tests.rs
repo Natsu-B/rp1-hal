@@ -35,7 +35,7 @@ impl Fake {
     }
 }
 
-impl Registers for Fake {
+impl FaultCpu for Fake {
     fn cfsr(&self) -> u32 {
         self.events.borrow_mut().push(ReadCfsr);
         self.cfsr
@@ -66,8 +66,8 @@ impl Registers for Fake {
         self.events.borrow_mut().push(ClearCfsr(bits));
     }
 
-    fn write_basepri(&self, mask: u32) {
-        self.events.borrow_mut().push(Basepri(mask));
+    fn write_basepri(&self, mask: u8) {
+        self.events.borrow_mut().push(Basepri(mask.into()));
     }
 
     fn sync(&self) {

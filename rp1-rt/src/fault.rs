@@ -1,46 +1,53 @@
 const STACK_ERRORS: u32 = (1 << 4) | (1 << 3) | (1 << 12) | (1 << 11);
 const INVPC: u32 = 1 << 18;
 
-trait Registers {
+const FRAME_PC: usize = 6;
+const FRAME_XPSR: usize = 7;
+
+trait FaultCpu {
     fn cfsr(&self) -> u32;
     fn ipsr(&self) -> u32;
     fn read_frame(&self, index: usize) -> u32;
     fn write_frame(&self, index: usize, value: u32);
     fn record(&self, exception: u32, pc: u32, cfsr: u32);
     fn clear_cfsr(&self, bits: u32);
-    fn write_basepri(&self, mask: u32);
+    fn write_basepri(&self, mask: u8);
     fn sync(&self);
     fn stop(&self) -> !;
 }
 
-fn configurable_fault(regs: &impl Registers, park: u32) {
+fn configurable_fault(regs: &impl FaultCpu, park: u32) {
     let cfsr = regs.cfsr();
     if cfsr & (STACK_ERRORS | INVPC) != 0 {
         terminal(regs, cfsr);
     }
-    let pc = regs.read_frame(6);
+    let pc = regs.read_frame(FRAME_PC);
     regs.record(regs.ipsr(), pc, cfsr);
     regs.clear_cfsr(cfsr);
-    regs.write_frame(6, park & !1);
-    regs.write_frame(7, (regs.read_frame(7) & 0x3ff) | (1 << 24));
+    regs.write_frame(FRAME_PC, park & !1);
+    // Keep IPSR[8:0] and the stack alignment flag in bit 9. Set Thumb state.
+    regs.write_frame(
+        FRAME_XPSR,
+        (regs.read_frame(FRAME_XPSR) & 0x3ff) | (1 << 24),
+    );
     regs.write_basepri(2 << 5);
     regs.sync();
 }
 
-fn psp_fault(regs: &impl Registers) -> ! {
+fn psp_fault(regs: &impl FaultCpu) -> ! {
     terminal(regs, regs.cfsr())
 }
 
-fn terminal(regs: &impl Registers, cfsr: u32) -> ! {
+fn terminal(regs: &impl FaultCpu, cfsr: u32) -> ! {
     regs.record(regs.ipsr(), 0, cfsr);
     regs.stop()
 }
 
 #[inline(always)]
-fn hardfault(regs: &impl Registers, exc_return: u32) -> ! {
+fn hardfault(regs: &impl FaultCpu, exc_return: u32) -> ! {
     let cfsr = regs.cfsr();
     let pc = if cfsr & STACK_ERRORS == 0 && exc_return & 4 == 0 {
-        regs.read_frame(6)
+        regs.read_frame(FRAME_PC)
     } else {
         0
     };
@@ -50,8 +57,9 @@ fn hardfault(regs: &impl Registers, exc_return: u32) -> ! {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod hardware {
-    use super::Registers;
-    use core::arch::{asm, global_asm, naked_asm};
+    use super::FaultCpu;
+    use crate::cpu;
+    use core::arch::{global_asm, naked_asm};
 
     global_asm!(
         r#"
@@ -94,15 +102,13 @@ __rp1_hardfault:
     // The frame pointer may be invalid until CFSR and EXC_RETURN have been checked.
     struct Fault(*mut [u32; 8]);
 
-    impl Registers for Fault {
+    impl FaultCpu for Fault {
         fn cfsr(&self) -> u32 {
             unsafe { CFSR.read_volatile() }
         }
 
         fn ipsr(&self) -> u32 {
-            let ipsr;
-            unsafe { asm!("mrs {}, IPSR", out(reg) ipsr, options(nostack, preserves_flags)) };
-            ipsr
+            cpu::ipsr()
         }
 
         fn read_frame(&self, index: usize) -> u32 {
@@ -121,12 +127,12 @@ __rp1_hardfault:
             unsafe { CFSR.write_volatile(bits) };
         }
 
-        fn write_basepri(&self, mask: u32) {
-            unsafe { asm!("msr BASEPRI, {}", in(reg) mask, options(nostack, preserves_flags)) };
+        fn write_basepri(&self, mask: u8) {
+            cpu::set_basepri(mask);
         }
 
         fn sync(&self) {
-            unsafe { asm!("dsb sy", "isb sy", options(nostack, preserves_flags)) };
+            cpu::sync();
         }
 
         fn stop(&self) -> ! {
