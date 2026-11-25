@@ -306,7 +306,7 @@ RMW atomic のメソッドは持たない。
     suppressed-irq は眠り 13 回のうち再確認で拾った 12 回、最長の待ち 10.07 ms。
   - ホストのテスト: `wait_handshake_all_interleavings` は posted 書き込み（相手側のコピーへの着地が遅れる）をモデル化し、
     push + `wake_needed` と `wait_with` の全インターリーブを列挙する。再確認・どちらかの読み戻しを外すと失敗する。
-- **DMA で書くリング（`shm::RingDma`、不安定: feature `unstable-ring-dma`）**: スロットの像を共有 SRAM に並べて DMA で 1〜2 ブロック。
+- **DMA で書くリング（`rp1_link::ring_dma::RingDma`、不安定: feature `rp1-link/unstable-ring-dma`）**: スロットの像を共有 SRAM に並べて DMA で 1〜2 ブロック。
   `SlotCopy` 成功は全書き込みが後続 CPU 窓ストアと共通の順序点へ受理済みという契約で、成功後に barrier → `head`（STATIC）。
   Channel は bit30（NonPosted_LastWrite_En）と AW_CACHE=0 を設定するが、最終 AXI 応答から共通 PCIe 順序点までの連鎖は HYP。
   値比較では全語の順序を保証できないため、旧 last-word guard は廃止。copy 失敗時は `head` を変えず RingTx を fenced にし、

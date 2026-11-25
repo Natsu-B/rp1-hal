@@ -162,7 +162,7 @@ T   payload 8 バイト境界に 0 埋め
   ただし通知（MSI-X など別経路）が書き込みより先に着く恐れがあるので、通知の前に同じ窓へ 1 回読み出しをして到達を確定する
   （既存の SHM 契約: payload → barrier → 同じ窓の読み出し → barrier → 通知、HW 実績あり）。
 - Linux → RP1: Linux の BAR2 への書き込みは Device 属性で発行順。M3 はローカル SRAM を読む。
-- RP1 → Linux を DMA で書く場合（`RingTx::push_slice_staged`、rp1-hal `shm::RingDma`、不安定 feature `unstable-ring-dma`、dma.md「DMA ring producer」）:
+- RP1 → Linux を DMA で書く場合（`RingTx::push_slice_staged`、`rp1_link::ring_dma::RingDma`、不安定 feature `rp1-link/unstable-ring-dma`、dma.md「DMA ring producer」）:
   スロットの像（seq・長さ・payload・0 埋め）を共有 SRAM に並べ、DMA が 1 ブロック（折り返すなら 2 ブロック）で読み手のスロットへ写す。
   `SlotCopy` の成功は全書き込みが後続 CPU 窓ストアと共通の順序点へ受理済みで、後続ストアが追い越さない契約。
   各ブロック成功後に barrier → `head` を書く。Channel は bit30（NonPosted_LastWrite_En）と AW_CACHE=0 を明示する（STATIC）。

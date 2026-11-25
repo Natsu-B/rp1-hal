@@ -22,8 +22,8 @@ cargo rp1 build -p shm-firmware --target thumbv7m-none-eabi --release \
 cargo build -p shm-linux --target aarch64-unknown-linux-musl --release --features sram-profile
 ```
 
-Both DMA features below (`dma`, `ring-dma`) enable rp1-hal's feature `unstable-ring-dma`
-(`SlotCopy`, `RingDma`; docs/dma.md).
+Both DMA features below (`dma`, `ring-dma`) enable rp1-link's feature `unstable-ring-dma`
+(`SlotCopy`, `rp1_link::ring_dma::RingDma`; docs/dma.md).
 
 The `dma` feature (not default) adds the DMA proof (`src/dma_proof.rs`, proc1 declares
 `dma = {}` in every profile, so Linux's `rp1_dma` is always disabled in the lab): at boot an

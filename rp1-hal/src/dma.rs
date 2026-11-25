@@ -337,9 +337,9 @@ impl<const N: u8> Channel<N> {
 pub const RING_TIMEOUT_US: u32 = 10_000;
 
 /// A channel moves staged ring slots into the reader's memory for
-/// [`rp1_proto::shm::RingTx::push_slice_staged`] (see `shm::RingDma`): blocking like
-/// [`Channel::copy`] (blocks of [`RING_TIMEOUT_US`], stopped before return on error), without
-/// the clk_dma check (the SCMI server holds the clock of a declared controller).
+/// [`rp1_proto::shm::RingTx::push_slice_staged`] (see rp1-link's `ring_dma::RingDma`): blocking
+/// like [`Channel::copy`] (blocks of [`RING_TIMEOUT_US`], stopped before return on error),
+/// without the clk_dma check (the SCMI server holds the clock of a declared controller).
 ///
 /// SAFETY: returns only after every block finished or was stopped (`copy_blocking`), and writes
 /// nothing but `dst..dst + src.len()`. All blocks set bit30 and AW_CACHE=0; the assumed
