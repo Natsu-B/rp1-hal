@@ -137,7 +137,7 @@ fn probe_window(pcie: &mut rp1_hal::platform::Pcie) {
         unsafe { pointer.add(i).write_volatile(i as u32 ^ 0xa596_c33c) };
     }
     // This probe mapped the reservation before Ready.
-    unsafe { rp1_link::generated::flush_mapped_window() };
+    unsafe { rp1_link::__flush_probe_window() };
     let mut errors = 0;
     for i in 0..words {
         if unsafe { pointer.add(i).read_volatile() } != (i as u32 ^ 0xa596_c33c) {

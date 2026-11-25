@@ -38,3 +38,14 @@ pub fn flush_window() {
         unsafe { generated::flush_mapped_window() };
     }
 }
+
+/// Drain posted writes through the window that the lab probe (`rp1::link::__map_for_probe`)
+/// mapped before Ready.
+///
+/// # Safety
+/// The probe must have mapped the window in this cold boot.
+#[doc(hidden)]
+#[inline]
+pub unsafe fn __flush_probe_window() {
+    unsafe { generated::flush_mapped_window() };
+}
