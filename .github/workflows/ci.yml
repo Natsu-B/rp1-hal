@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+# rustup installs the toolchain in rust-toolchain.toml (channel, components, targets)
+# on the first cargo call, so no job names a Rust version itself.
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup show active-toolchain
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y device-tree-compiler binutils-arm-none-eabi
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      # The workspace's default-members are the crates that build for the host; firmware-only
+      # crates such as irq-proof use thumbv7m inline assembly and are left out.
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y device-tree-compiler binutils-arm-none-eabi
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      # Includes the trybuild UI tests and rp1-build's no_local_paths check.
+      - run: cargo test --locked --workspace
+
+  # The firmware configurations of lab/README.md's size tables. `cargo rp1 build` fails when
+  # an image exceeds the 49,152 B shared SRAM image or the 8,192 B ISRAM budget.
+  firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { package: dual-core }
+          - { package: pwm-loopback }
+          - { package: irq-proof }
+          - { package: irq-sweep }
+          - { package: scmi-starvation }
+          - { package: shm-firmware, name: default }
+          - { package: shm-firmware, name: none, features: --no-default-features }
+          - { package: shm-firmware, name: i2c, features: --no-default-features --features i2c }
+          - { package: shm-firmware, name: adc, features: --no-default-features --features adc }
+          - { package: shm-firmware, name: spi, features: --no-default-features --features spi }
+          - { package: shm-firmware, name: sram-profile, features: --no-default-features --features sram-profile }
+          - { package: shm-firmware, name: dma, features: --no-default-features --features dma }
+          - { package: shm-firmware, name: ring-dma, features: --no-default-features --features ring-dma }
+    name: firmware (${{ matrix.package }}${{ matrix.name && format(' {0}', matrix.name) || '' }})
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y device-tree-compiler binutils-arm-none-eabi
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: firmware
+          save-if: ${{ matrix.package == 'shm-firmware' && matrix.name == 'default' }}
+      - name: cargo rp1 build
+        run: cargo rp1 build --locked -p ${{ matrix.package }} --target thumbv7m-none-eabi --release ${{ matrix.features }}
+      - name: cargo rp1 check
+        run: cargo rp1 check target/thumbv7m-none-eabi/release/${{ matrix.package }}
+
+  # Host fixture tests of the lab scripts; none of them touches hardware.
+  lab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y python3-serial
+      - name: python tests
+        run: for t in lab/test_*.py; do echo "== $t"; python3 "$t"; done
+      - name: shell tests
+        run: for t in lab/test_*.sh; do echo "== $t"; bash "$t"; done
