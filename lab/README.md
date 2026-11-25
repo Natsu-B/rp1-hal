@@ -209,7 +209,8 @@ open while it reads, because closing it shuts the PL011 down and drops received 
 and left on both cores, the `+0x108` wrapper of the DesignWare blocks, the user interrupt
 section, the default handler and `log!` from a handler. HW (2026-11-14, cold boot ×2): the
 proof and its regressions passed on the image as first built; later changes to the image and
-its checker are STATIC until the next run. Its system part is `shm-firmware`'s without the
+its checker are STATIC until the next run. `IRQ_MASKED` now measures BASEPRI sections
+(STATIC). Its system part is `shm-firmware`'s without the
 I2C/ADC/SPI proofs (same owners and the rings `shm-linux` uses), so the SHM, doorbell and UART1
 regressions run in the same boot. The doorbell is answered by proc1's `IO_BANK0` handler; main
 code never answers it. Both stacks are the defaults, which the proof measures (proc0 2 KiB + the
@@ -304,15 +305,17 @@ sweep runs before the image brings the PCIe endpoint up. `rp1boot` starts Linux 
 RP1, but until the link is up Linux cannot reach an RP1 register. The price is that the sweep
 (about 0.7 s) must end before Linux releases PERSTn.
 
-Build a boot set with `FIRMWARE_PKG=irq-sweep bash lab/build-rp1boot.sh`. On the Linux console
-run `lab/check-sweep.sh` (the boot value and the swept blocks' device-tree status). The host
-decides with
+Build a boot set with `FIRMWARE_PKG=irq-sweep bash lab/build-rp1boot.sh`.
+Install `linux-status` and place `lab/check-core-status.sh` next to
+`lab/check-sweep.sh` on the target. Run `check-sweep.sh` after the sweep. It
+records the boot value, device-tree status of all swept blocks, and both cores'
+final state. The host decides with
 
 ```sh
 python3 lab/verify-irq.py --sweep --uart0 UART0_CAPTURE [--uart10 UART10_CAPTURE] [--json OUT]
 ```
 
-which checks one boot (the last, or `--nonce HEX`). PASS means every table line was routed by
+which checks one boot (the last, or `--nonce HEX`). A measurement PASS means every table line was routed by
 its expected stimulus: `result=ROUTED exit=left` with `wrap0:0/3,wrap1:3/3` for I2C and SPI,
 `force:3/3,real:3/3` for the ADC and `force:3/3` for PWM1 and the banks, borne out by its
 `IRQ_SWEEP_TRIAL` lines (all trials in order, the source raised, the target bit clear before the
@@ -320,7 +323,10 @@ stimulus and after the deassert, no other new pending bit, the same hit counts).
 (`NOT_ROUTED`, `OTHER_LINE`, `NEW_PENDING`, `SKIP`, `ABORT`) fails and is named. The frame must
 hold as well: lines in table order with the boot's nonce, both enable words 0, and
 `IRQ_SWEEP_END` before a `PLAT_INIT ok=1` line with a fresh PERSTn wait. It prints
-`IRQ_SWEEP_VERDICT=PASS|FAIL`; `--json` writes the per-line results.
+`IRQ_SWEEP_MEASUREMENTS=PASS|FAIL` and `IRQ_SWEEP_VERDICT=PASS|FAIL|INCOMPLETE`.
+A verdict PASS requires the matching UART10 check and both cores `Running`.
+With UART0 alone, successful measurements produce an INCOMPLETE verdict (exit 3).
+`--json` writes the per-line results.
 
 ## Platform stack and size checks (`stack-paths`, `plat-verify`, STATIC)
 
@@ -380,10 +386,13 @@ running, sets BASEPRI to `0x40`, clears PRIMASK and waits in a `wfi` loop (STATI
 Both shm-firmware profiles, irq-proof, irq-sweep, pwm-loopback and scmi-starvation use this
 handler. irq-proof selects `default-panic-handler` explicitly alongside its timed critical section.
 
-irq-sweep, pwm-loopback and scmi-starvation report panics through the link page. The sweep
-verifier still rejects `IRQ_SWEEP_PANIC` in older captures. It requires `IRQ_SWEEP_END`,
-`PLAT_INIT ok=1` and `IRQ_SWEEP_BOOT` to accept a sweep. For a panic after those markers,
-read the proc0 state from the link page.
+irq-sweep, pwm-loopback and scmi-starvation report panics through the link page.
+The sweep verifier also rejects `IRQ_SWEEP_PANIC` in legacy captures. For PWM,
+run `check-core-status.sh pwm "$NONCE"` after `PWM_DONE`, using `PWM_BOOT`'s
+nonce. For SCMI starvation, run `check-core-status.sh scmi "$NONCE"` after
+`SCMI_STARVE_END`, using `SCMI_STARVE_READY`'s nonce. Require
+`LAB_FINAL_END` with `result=PASS` and both cores `Running` in the captured
+Linux output. These checks are STATIC until the next hardware run.
 
 STATIC (2026-11-25, release builds, rustc 1.99.1, bytes):
 
@@ -698,38 +707,49 @@ the attached USB port (for example `3-1`), and an SCMI request count from
 1 to 100. The debugfs clock
 `/sys/kernel/debug/clk/uart/clk_rate` must be available. Use a quiet target
 during the SCMI samples so every increase can be attributed to the test.
+Before the matrix, verify on one boot that N clock reads increment SCMI's
+request count by N. Cached reads cannot establish this evidence.
 
 | Kind | Expected RL v3 result |
 |---|---|
 | `p0-thread-panic`, `p0-isr-panic` | proc0 `Panicked` |
 | `p0-thread-udf`, `p0-isr-udf` | proc0 `Fault`, reason 6, CFSR.UNDEFINSTR |
 | `p1-panic` | proc1 `Panicked`, proc0 stays `Running` |
-| `stkerr` | Diagnostic. Attempts a PSP stacking violation when the MPU is present. Record any fault state and CFSR. |
+| `stkerr` | HardFault diagnostic with a PSP stacking error. Requires an MPU, reason 3, a stacking-error CFSR bit and PC 0. |
 | IRQ57 panic | Diagnostic unavailable. IRQ57 belongs to the platform and has no lab injection hook. |
 
 The two 20 Hz, priority-4 timer counters must advance before the request. The
 target core's count must stay fixed over at least one second after its terminal
-record. For proc1 panic the proc0 timer must keep advancing. The target emits
-`FAULT_*` records on UART10 after the terminal observation, including ping
-20/20 over `eth0`, the USB control probe, the SCMI replies and counter delta,
-and the PCIe state. UART0 supplies the pre-injection `FAULT_BOOT` nonce.
+record. For proc1 panic the proc0 timer must keep advancing. The peer must
+remain `Running` at both the terminal observation and the final sample.
+The firmware publishes the stimulus kind, core and IPSR immediately before
+the injection. The target reports that site, ping 20/20 over `eth0`, the
+USB control probe, the SCMI replies and counter delta, PCIe state, and
+`FAULT_DMESG` counts from the invocation's kernel log window. UART0 supplies
+the pre-injection `FAULT_BOOT` nonce.
 
-Pass the deployed boot-set ELF and manifest to the host verifier. Supply one
+Pass the deployed boot-set ELF, bundle, manifest and fault-linux SHA-256 to
+the host verifier. Supply one
 `--run KIND PHASE NONCE UART0 UART10` per capture pair. The nonce is the
 eight-digit hex value from `FAULT_BOOT`. Use `cold-1`, `cold-2`, `reboot` and
 `poweroff` for each of the five required kinds. Keep each pair from a distinct
 boot. For `reboot` and `poweroff`, keep the Linux shutdown and bootloader
-markers in the same UART10 capture. The poweroff phase covers Linux poweroff
-and the boot that follows the observed halt.
+markers in the same UART10 capture. For poweroff also supply the capture's
+`continuous/events.jsonl`, `continuous/timestamps.jsonl` and `boot.json`
+(one directory above `continuous/`). They tie the carrier-low and force-boot
+events to the UART transition.
 
 ```sh
 python3 lab/verify-fault.py --elf "$BOOT_SET/rp1.elf" \
-    --manifest "$BOOT_SET/manifest.txt" --stack-paths target/release/stack-paths \
+    --manifest "$BOOT_SET/manifest.txt" --bundle "$BOOT_SET/rp1-bundle.img" \
+    --client-sha256 "$FAULT_LINUX_SHA256" --stack-paths target/release/stack-paths \
     --run p0-thread-panic cold-1 "$NONCE" "$UART0" "$UART10"
 ```
 
-The verifier checks the ELF hash, loader bundle ID, nonce and boot identity
-before combining evidence. It prints `FAULT_RUN` per boot, `FAULT_KIND` per
+The verifier checks the bundle firmware payload against the ELF, the header
+ID against the loader banner, the client hash, the nonce and the boot
+identity before combining evidence. A UDF observation must report the
+linked stimulus address as its stacked PC. It prints `FAULT_RUN` per boot, `FAULT_KIND` per
 required kind and `PLAT_VERDICT` for the full matrix and static stack bound.
-Exit 0 is PASS, 1 is FAIL, and 3 is INCOMPLETE. Missing evidence yields
-INCOMPLETE. `FAULT_DIAG` and `PLAT_LOST=INCOMPLETE` are observational.
+Exit 0 is PASS, 1 is FAIL, and 3 is INCOMPLETE. Missing evidence or a
+nonce collision across distinct captures needs a fresh capture. `FAULT_DIAG` and `PLAT_LOST=INCOMPLETE` are observational.
