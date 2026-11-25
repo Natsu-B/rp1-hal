@@ -76,14 +76,6 @@ pub mod uio {
 /// UIO node (edge-triggered).
 pub mod irq {
     pub const VECTOR: u32 = 29;
-    /// The TIMER alarm whose interrupt is `VECTOR`; `host_irq` owns it.
-    pub const TIMER_ALARM: u32 = 3;
-    /// PCIE_APBS `MSIX_CFG(VECTOR)` in the RP1 address space, and its set / clear aliases
-    /// (the same 0x800 / 0xc00 aliases Linux's rp1 driver uses for ENABLE / IACK).
-    pub const MSIX_CFG: u32 = 0x4010_8008 + 4 * VECTOR;
-    pub const MSIX_CFG_SET: u32 = MSIX_CFG + 0x800;
-    pub const MSIX_CFG_CLR: u32 = MSIX_CFG + 0xc00;
-    pub const MSIX_CFG_TEST: u32 = 1 << 1;
 }
 
 /// rpi-cm5 board table: Linux DDR reservation for `shm`. 2 MiB aligned, above the PoC

@@ -20,8 +20,6 @@ pub mod clocks;
 pub mod cold;
 pub mod dma;
 pub mod gpio;
-#[cfg(feature = "unstable-host-irq")]
-pub mod host_irq;
 pub mod i2c;
 pub mod linux_blocks;
 pub mod logging;

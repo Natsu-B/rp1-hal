@@ -184,7 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         gpio.write(0x2114, 1 << 27);
         let start = Instant::now();
         if let Some(irq) = irq.as_mut() {
-            // A wake is a hint (edges can be lost or merged, rp1_hal::host_irq): re-check the
+            // A wake is a hint (edges can be lost or merged, rp1_link::notify): re-check the
             // reply after every wake and after every bounded wait, never sleep on one edge.
             loop {
                 let woke = irq.wait(RECHECK_MS)?;

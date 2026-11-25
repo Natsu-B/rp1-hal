@@ -17,8 +17,14 @@
 //! - pulses while the UIO is disabled (between a wake and the next `write(1)`) merge into one
 //!   pending wake (lazy disable);
 //! - an asserted TIMER alarm 3 interrupt would swallow pulses (above).
-use crate::write;
-use rp1_proto::irq;
+use rp1_proto::{irq::VECTOR, shm::RingTx};
+
+/// PCIE_APBS MSIX_CFG(VECTOR), with the set and clear aliases.
+const MSIX_CFG: usize = 0x4010_8008 + 4 * VECTOR as usize;
+const MSIX_CFG_SET: usize = MSIX_CFG + 0x800;
+const MSIX_CFG_CLR: usize = MSIX_CFG + 0xc00;
+const MSIX_CFG_TEST: u32 = 1 << 1;
+const TIMER0_VECTOR: u32 = 26;
 
 // rp1-regdb `timer.toml`: TIMER at 0x400a_c000, atomic clear alias at +0x3000;
 // INTS = (INTR & INTE) | INTF; INTS bit N is alarm N's interrupt (device.toml: TIMER_N = 26 + N).
@@ -33,7 +39,7 @@ const TIMER_INTE: usize = TIMER_BASE + 0x38;
 /// devmem) writing 0x8 forced bit 3 and writing 0 released it, i.e. plain RW. The atomic clear
 /// alias clears bit 3 without touching the other alarms' bits under plain-RW semantics.
 const TIMER_INTF: usize = TIMER_BASE + 0x3c;
-const ALARM_BIT: u32 = 1 << irq::TIMER_ALARM;
+const ALARM_BIT: u32 = 1 << (VECTOR - TIMER0_VECTOR);
 
 /// Sole right to raise the RP1 -> Linux interrupt. The generated resources give it to the core
 /// that declares `host_irq = true`; there is exactly one. Exclusive ownership keeps the
@@ -65,28 +71,18 @@ impl HostIrq {
     /// same RP1 bus, so nothing else is needed.
     ///
     /// Not for data in Linux DDR (`shm` rings and blocks): those writes are posted on PCIe and
-    /// may still be in flight after a barrier. Use [`HostIrq::notify_ddr`].
+    /// may still be in flight after a barrier. Complete the posted writes before calling this.
     #[inline(always)]
     pub fn notify_sram(&mut self) {
         rp1_proto::barrier();
         self.pulse();
     }
 
-    /// Wake Linux about data written to Linux DDR through the shm window. Completes the posted
-    /// writes first (`shm::complete_posted_writes`: a readback through the same window), so
-    /// Linux cannot be woken before its data arrives. The `Area` proves `shm::enable` ran, so
-    /// the window is mapped.
-    #[inline(always)]
-    pub fn notify_ddr(&mut self, _area: &crate::shm::Area<'_>) {
-        crate::shm::complete_posted_writes();
-        self.pulse();
-    }
-
     /// Wake Linux's reader of an RP1 -> Linux ring declared `notify = "irq"`, if it sleeps; call
     /// after `push` / `push_slice` (once per batch is enough). Returns whether it pulsed.
     ///
-    /// [`RingTx::wake_needed`](crate::shm::RingTx::wake_needed) reads `head` back through the
-    /// shm window (completing the posted slot and `head` writes, like `notify_ddr`), then reads
+    /// [`RingTx::wake_needed`](RingTx::wake_needed) reads `head` back through the
+    /// shm window (completing the posted slot and `head` writes), then reads
     /// the reader's sleep counter from the link page: it pulses only for a sleep not yet
     /// notified, so a reader that keeps up costs no interrupts and a sleeping one gets one
     /// (protocol.md §2.3). The readback is one PCIe round trip per call.
@@ -95,7 +91,7 @@ impl HostIrq {
     /// reader finds the data only at its next bounded re-check (`rp1_linux::RECHECK`, 10 ms,
     /// counted in Linux's `WaitStats::late`). [`HostIrq::push_slice_notify`] does both steps.
     #[inline(always)]
-    pub fn notify_ring<T: rp1_proto::Message>(&mut self, ring: &mut crate::shm::RingTx<T>) -> bool {
+    pub fn notify_ring<T: rp1_proto::Message>(&mut self, ring: &mut RingTx<T>) -> bool {
         if ring.wake_needed() {
             self.pulse();
             true
@@ -111,54 +107,60 @@ impl HostIrq {
     #[inline(always)]
     pub fn push_slice_notify<T: rp1_proto::Message>(
         &mut self,
-        ring: &mut crate::shm::RingTx<T>,
+        ring: &mut RingTx<T>,
         values: &[T],
     ) -> (usize, bool) {
         let n = ring.push_slice(values);
         (n, self.notify_ring(ring))
     }
 
-    /// [`crate::shm::RingDma::push_slice`] followed by [`HostIrq::notify_ring`] (also after
+    /// [`crate::ring_dma::RingDma::push_slice`] followed by [`HostIrq::notify_ring`] (also after
     /// an error or a full ring: the reader may have armed meanwhile). The DMA path has already
     /// completed the copy under the SlotCopy ordering contract before publishing `head`;
     /// Channel's AXI-to-PCIe ordering chain remains HYP (docs/dma.md). The notification reads
     /// `head` back; it does not verify the payload or establish that ordering chain.
-    /// Accepts any blocking [`SlotCopy`](crate::shm::SlotCopy), including channel wrappers.
+    /// Accepts any blocking [`SlotCopy`](crate::ring_dma::SlotCopy), including channel wrappers.
     #[cfg(feature = "unstable-ring-dma")]
     #[inline(always)]
-    pub fn push_slice_dma_notify<T: rp1_proto::Message, C: crate::shm::SlotCopy>(
+    pub fn push_slice_dma_notify<T: rp1_proto::Message, C: crate::ring_dma::SlotCopy>(
         &mut self,
-        dma: &mut crate::shm::RingDma<'_>,
-        ring: &mut crate::shm::RingTx<T>,
+        dma: &mut crate::ring_dma::RingDma<'_>,
+        ring: &mut RingTx<T>,
         copy: &mut C,
         values: &[T],
-    ) -> (Result<usize, crate::shm::Staged<C::Error>>, bool) {
+    ) -> (Result<usize, crate::ring_dma::Staged<C::Error>>, bool) {
         let n = dma.push_slice(ring, copy, values);
         (n, self.notify_ring(ring))
     }
 
-    /// [`crate::shm::RingDma::push_with`] then [`HostIrq::notify_ring`], including on full
+    /// [`crate::ring_dma::RingDma::push_with`] then [`HostIrq::notify_ring`], including on full
     /// rings and errors. Uses the same ordering and notification contract as
-    /// [`HostIrq::push_slice_dma_notify`]. See the [callback contract](crate::shm::RingTx::push_with).
+    /// [`HostIrq::push_slice_dma_notify`]. See the [callback contract](RingTx::push_with).
     #[cfg(feature = "unstable-ring-dma")]
     #[inline(always)]
-    pub fn push_with_dma_notify<T: rp1_proto::Message, C: crate::shm::SlotCopy>(
+    pub fn push_with_dma_notify<T: rp1_proto::Message, C: crate::ring_dma::SlotCopy>(
         &mut self,
-        dma: &mut crate::shm::RingDma<'_>,
-        ring: &mut crate::shm::RingTx<T>,
+        dma: &mut crate::ring_dma::RingDma<'_>,
+        ring: &mut RingTx<T>,
         copy: &mut C,
         count: usize,
         fill: impl FnMut(usize, &mut T),
-    ) -> (Result<usize, crate::shm::Staged<C::Error>>, bool) {
+    ) -> (Result<usize, crate::ring_dma::Staged<C::Error>>, bool) {
         let n = dma.push_with(ring, copy, count, fill);
         (n, self.notify_ring(ring))
     }
 
     #[inline(always)]
     fn pulse(&mut self) {
-        write(irq::MSIX_CFG_SET as usize, irq::MSIX_CFG_TEST);
-        write(irq::MSIX_CFG_CLR as usize, irq::MSIX_CFG_TEST);
+        write(MSIX_CFG_SET, MSIX_CFG_TEST);
+        write(MSIX_CFG_CLR, MSIX_CFG_TEST);
     }
+}
+
+#[inline(always)]
+fn write(address: usize, value: u32) {
+    unsafe { (address as *mut u32).write_volatile(value) };
+    rp1_proto::barrier();
 }
 
 #[cfg(test)]
@@ -167,9 +169,20 @@ mod tests {
 
     #[test]
     fn timer_registers_match_the_pac() {
-        assert_eq!(crate::pac::TIMER::PTR as usize, TIMER_BASE);
+        use rp1_hal::pac::{TIMER, generated::timer::RegisterBlock};
+
+        // A zeroed register block keeps the test's references in mapped host memory.
+        let block = unsafe { core::mem::zeroed::<RegisterBlock>() };
+        let base = &raw const block as usize;
+        let addresses = [
+            block.intr() as *const _ as usize,
+            block.inte() as *const _ as usize,
+            block.intf() as *const _ as usize,
+        ];
+        let offsets = addresses.map(|address| address - base);
+        assert_eq!(TIMER::PTR as usize, TIMER_BASE);
         assert_eq!(
-            pac_offsets!(timer: intr, inte, intf).map(|offset| TIMER_BASE + offset),
+            offsets.map(|offset| TIMER_BASE + offset),
             [TIMER_INTR, TIMER_INTE, TIMER_INTF]
         );
     }
@@ -178,7 +191,8 @@ mod tests {
     /// `device.toml`: TIMER_3 = 29).
     #[test]
     fn takes_over_the_vector_source() {
-        assert_eq!(crate::pac::Interrupt::TIMER_3 as u32, irq::VECTOR);
+        assert_eq!(rp1_hal::pac::Interrupt::TIMER_0 as u32, TIMER0_VECTOR);
+        assert_eq!(rp1_hal::pac::Interrupt::TIMER_3 as u32, VECTOR);
         assert_eq!(ALARM_BIT, 1 << 3);
     }
 }

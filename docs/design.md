@@ -245,12 +245,12 @@ RMW atomic のメソッドは持たない。
   源を RP1 が握れる vector 29（TIMER アラーム 3、2026-11-05 に vector 57 から変更）を使い、proc1 が TEST を SET/CLR エイリアス（0x800/0xc00、Linux の rp1 ドライバと同じ）でパルスし、
   Linux は rp1 ノードの子の generic-uio（`rp1:irq`、`interrupts = <29 1>` 立ち上がりエッジ）で受ける。hwirq58・rp1-mailbox・SCMI
   には触れない（serial@34000 は probe、UART1 送受信も合格）。
-  - 使い方: 宣言でちょうど 1 コアが `host_irq = true` を書き、rp1-hal の feature `unstable-host-irq` を有効にする。その
+  - 使い方: 宣言でちょうど 1 コアが `host_irq = true` を書き、rp1-link の feature `unstable-host-irq` を有効にする。その
     コアのリソースに `HostIrq` が 1 つだけ入り、overlay に `rp1:irq` が加わる。`notify_*` は `&mut self` を取る:
     SET/CLR の 2 回の書き込みが別の呼び出しと交ざると（A の SET → Linux が消費 → B の SET は TEST が既に 1 なのでエッジに
     ならない → 両方 CLR）起床が 1 回消えるので、所有は 1 つにする（STATIC、コンパイル失敗の試験あり）。
-  - 公開の順序: RP1 の SRAM のデータは `notify_sram`（barrier → パルス）。Linux DDR のデータは `notify_ddr`（同じ窓の読み戻し
-    `shm::complete_posted_writes` → パルス。`shm::Area` を要求して shm が有効なことを示す）。protocol.md §3。
+  - 公開の順序: RP1 の SRAM のデータは `notify_sram`（barrier → パルス）。Linux DDR のデータは同じ窓を
+    `shm::complete_posted_writes` で読み戻してから `notify_sram` を呼ぶ（STATIC）。protocol.md §3。
   - **割り込み源（TIMER アラーム 3）**: vector 29 の源は `TIMER.INTS` bit 3 =（INTR & INTE）| INTF（DOC、RP2040 と同じ形）。
     `host_irq` が宣言上 `TIMER.ALARM3` を所有し（他のコアの `timer = ["ALARM3"]` は E3）、rp1-hal はその INTE/INTF を立てない
     ので源は 0 のまま（INTR は立っても INTE=0 なら出ない。HW: 実行中 INTR=0x3、INTE=0）。前に動いたファームが残した状態に

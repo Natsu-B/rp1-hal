@@ -288,7 +288,7 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
             s.push_str(&format!("pub {name}: {field_ty},\n"));
         }
         if c.host_irq {
-            s.push_str("pub host_irq: ::rp1_hal::host_irq::HostIrq,\n");
+            s.push_str("pub host_irq: ::rp1_link::notify::HostIrq,\n");
         }
         if index == 0 {
             s.push_str("pub proc1: ::rp1_rt::Proc1Launcher,\n");
@@ -324,7 +324,7 @@ fn resources(d: &metadata::Declaration, note: &[u8]) -> Result<String> {
             s.push_str(&format!("{name}: {init},\n"));
         }
         if c.host_irq {
-            s.push_str("host_irq: unsafe { ::rp1_hal::host_irq::HostIrq::new() },\n");
+            s.push_str("host_irq: unsafe { ::rp1_link::notify::HostIrq::new() },\n");
         }
         if index == 0 {
             s.push_str("proc1: unsafe { ::rp1_rt::Proc1Launcher::new() },\n");

@@ -9,7 +9,7 @@ use protocol::{
     GENERATE_DMA, Perf,
 };
 const BASELINE_BATCH_CAPACITY: [u32; 3] = [32, 32, 8];
-/// The firmware's `rp1_hal::shm::RingDma::DEFAULT_THRESHOLD` (staged bytes that go by DMA).
+/// The firmware's `rp1_link::ring_dma::RingDma::DEFAULT_THRESHOLD` (staged bytes that go by DMA).
 const DMA_THRESHOLD: usize = 256;
 use crate::{Control, response, sample};
 use rp1_linux::{BlockMap, Firmware, Irq, Result, RingRx};

@@ -153,7 +153,7 @@ T   payload 8 バイト境界に 0 埋め
 - 再起動: 読み手の attach は `waiting` を読み、奇数（前の読み手が眠ったまま終わった）なら偶数へ進める。書き手の attach は「通知済み」を
   持たない状態から始めるので、眠っている読み手には次の呼び出しで通知する。
 - 再確認で取り消した眠り（3. で空でなかった）の奇数値を書き手がその前に読んでいれば、通知は出る。その起床は後で空振りになる（許容）。
-- 代償: 通知を使う push（またはバッチ）ごとに PCIe の読み出し往復 1 回（`head` の読み戻し）。`notify_ddr` の読み戻しを兼ねる。
+- 代償: 通知を使う push（またはバッチ）ごとに PCIe の読み出し往復 1 回（`head` の読み戻し）。この読み戻しで posted 書き込みも完了する。
 - HW（2026-11-05、cold boot 3 回）: 10^6 件で欠落・破損・見直しでの拾い 0。数値は design.md §6.2。
 
 ### 2.4 順序の根拠と未確認点
@@ -179,7 +179,7 @@ T   payload 8 バイト境界に 0 埋め
 |---|---|---|
 | Linux → proc1 | GPIO INTF の SET 別名（`IO_BANK0 + 0x2114`、BAR1 経由）に書く。proc1 の ISRAM 上の ISR が受ける | 往復 p50 4.1 µs（HW、ポーリング側） |
 | Linux → proc0 | mailbox（SYSCFG PROC_EVENTS）。ch0 は SCMI が使うので ch1 以降 | 配送は HW。遅延は未測定 |
-| RP1 → Linux | ポーリング（link の返答語）。または不安定機能（`host_irq = true`）として MSI-X vector 29（TIMER アラーム 3）の TEST パルス → `rp1:irq` UIO の IRQ（`rp1_hal::host_irq::HostIrq`、design.md §6.2）。hwirq58 は rp1-mailbox/SCMI が専有したまま | 共有は不可（HW、-EBUSY）。mailbox/SCMI を外せば UIO で受けられ、往復 p50 71 µs（M3 の SCMI 処理込み）、通知ごとに空振り起床 1 回（HW 2026-10-28） |
+| RP1 → Linux | ポーリング（link の返答語）。または不安定機能（`host_irq = true`）として MSI-X vector 29（TIMER アラーム 3）の TEST パルス → `rp1:irq` UIO の IRQ（`rp1_link::notify::HostIrq`、design.md §6.2）。hwirq58 は rp1-mailbox/SCMI が専有したまま | 共有は不可（HW、-EBUSY）。mailbox/SCMI を外せば UIO で受けられ、往復 p50 71 µs（M3 の SCMI 処理込み）、通知ごとに空振り起床 1 回（HW 2026-10-28） |
 | どちらでも | 通知なし（`notify = "poll"`）。受け手がポーリング | — |
 
 - 通知は「相手の `waiting` が奇数で、まだ通知していない値のときだけ」送る（毎回は送らない。§2.3）。RP1 → Linux のリングでは `notify = "irq"` を宣言し、生産側のコアが `host_irq = true` を持つこと（rp1-build が検査）。RP1 は `HostIrq::notify_ring`（または push と通知を 1 回で行う `HostIrq::push_slice_notify`。呼び忘れても誤りにはならず、Linux は 10 ms の再確認で拾う）、Linux は `rp1_linux::Irq` と `RingRx::wait`。`rp1:irq` は全 irq リングで 1 本なので、`RingRx::wait` は自分のリングしか arm しない（眠っている間、他のリングの書き手は通知しない）。複数のリングを 1 スレッドで待つときは `Irq::wait_any`（全リングを arm → 全リングを再確認 → 1 回眠る）。Linux → RP1 のリングはドアベルかポーリング（`notify = "irq"` は不可）。
@@ -188,7 +188,7 @@ T   payload 8 バイト境界に 0 埋め
 - UIO の IRQ（`uio_pdrv_genirq`）は割り込みのたびに無効化されるので、`read` の後に `write(1)` で再度有効にする。`poll` / `epoll` も使える。
 - RP1 → Linux の割り込み（`rp1:irq`）は合図であってメッセージではない。
   - 公開してから通知する。データが Linux DDR（shm のリング・ブロック）にあるなら、同じ窓の読み戻し
-    （`shm::complete_posted_writes`）で posted 書き込みを完了させてから鳴らす（`HostIrq::notify_ddr`）。barrier だけで足りるのは
+    （`shm::complete_posted_writes`）で posted 書き込みを完了させてから鳴らす（`HostIrq::notify_sram`）。barrier だけで足りるのは
     RP1 の SRAM（link ページ、共有 SRAM 上の領域）にあるデータだけ（`HostIrq::notify_sram`）。barrier は PCIe の posted 書き込みの
     到着を待たないので、DDR のデータより先に Linux が起きて古い値を読みうる（STATIC）。
   - 失う・まとまる: Linux が vector を有効にする前（最初の `write(1)` の前）のパルスは消える。起床から次の `write(1)` までの

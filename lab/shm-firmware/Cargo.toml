@@ -16,12 +16,13 @@ adc = ["dep:embedded-hal-0-2", "dep:nb"]
 spi = ["dep:embedded-hal"]
 sram-profile = []
 # DMA proof (command 16). Its raw ring copies call `SlotCopy`, hence the unstable feature.
-dma = ["rp1-hal/unstable-ring-dma"]
+dma = ["rp1-link/unstable-ring-dma"]
 # DMA ring producer proof (command 17); a focused image: `--no-default-features --features ring-dma`.
-ring-dma = ["rp1-hal/unstable-ring-dma"]
+ring-dma = ["rp1-link/unstable-ring-dma"]
 
 [dependencies]
-rp1-hal = { path = "../../rp1-hal", features = ["unstable-host-irq"] }
+rp1-hal = { path = "../../rp1-hal" }
+rp1-link = { path = "../../rp1-link", features = ["unstable-host-irq"] }
 rp1-rt = { path = "../../rp1-rt" }
 rp1-proto = { path = "../../rp1-proto" }
 embedded-hal = { version = "1", optional = true }
@@ -81,7 +82,7 @@ direction = "rp1-to-linux"
 depth = 16
 overflow = "overwrite"
 
-# RP1 -> Linux ring with interrupt notification (rp1_hal::host_irq::HostIrq::notify_ring,
+# RP1 -> Linux ring with interrupt notification (rp1_link::notify::HostIrq::notify_ring,
 # rp1_linux::RingRx::wait); proc1 declares host_irq, as notify = "irq" requires.
 [[package.metadata.rp1.shm]]
 name = "events"
@@ -93,7 +94,7 @@ depth = 256
 overflow = "reject"
 notify = "irq"
 
-# Wider RP1 -> Linux rings for the DMA ring producer (rp1_hal::shm::RingDma, command 17 with
+# Wider RP1 -> Linux rings for the DMA ring producer (rp1_link::ring_dma::RingDma, command 17 with
 # the `ring-dma` feature); declared in every profile.
 [[package.metadata.rp1.shm]]
 name = "wide64"

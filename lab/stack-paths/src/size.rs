@@ -16,8 +16,8 @@ const DSRAM: (u64, u32) = (0x1000_2000, 8 * 1024);
 /// The C library functions that compiler-builtins provides.
 const MEM_FUNCTIONS: [&str; 4] = ["memcpy", "memmove", "memset", "memcmp"];
 
-/// Crates whose code is the platform (rp1-hal and its runtime, protocol and register crates).
-const PLATFORM_CRATES: [&str; 4] = ["rp1_rt", "rp1_hal", "rp1_proto", "rp1_pac"];
+/// Crates whose code is the platform, including the firmware-side Linux link.
+const PLATFORM_CRATES: [&str; 5] = ["rp1_rt", "rp1_hal", "rp1_link", "rp1_proto", "rp1_pac"];
 /// Crates of the Rust toolchain.
 const RUNTIME_CRATES: [&str; 3] = ["core", "compiler_builtins", "alloc"];
 

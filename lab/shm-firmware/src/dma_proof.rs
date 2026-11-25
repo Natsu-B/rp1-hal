@@ -18,12 +18,12 @@
 #![cfg_attr(not(feature = "dma"), allow(unused_imports))]
 use crate::rp1;
 use core::cell::UnsafeCell;
-#[cfg(feature = "dma")]
-use rp1_hal::shm::SlotCopy;
 use rp1_hal::{
     dma::{BusAddr, Channel, Dma, Error, Stopped},
     log,
 };
+#[cfg(feature = "dma")]
+use rp1_link::ring_dma::SlotCopy;
 
 #[cfg(feature = "dma")]
 pub const WORDS: usize = 256;

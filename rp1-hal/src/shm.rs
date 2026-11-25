@@ -1,8 +1,6 @@
 //! Reader-local SPSC rings and DDR blocks in the Linux reservation, reached through PCIe
 //! outbound region 0. Each core takes its endpoints from an [`Area`] after proc0 calls
 //! [`enable`]. Recovery after a host reset requires reloading RP1.
-#[cfg(feature = "unstable-ring-dma")]
-mod ring_dma;
 
 pub use crate::platform::EnableError;
 use crate::platform::Pcie;
@@ -10,11 +8,6 @@ pub use rp1_proto::shm::{Block, BlockReader, BlockWriter, Overflow, RingRx, Ring
 use rp1_proto::{
     Error, Message, SHM_WINDOW, barrier, link,
     note::{Note, SHM_AREA, SHM_REGION, ShmArea, ShmKind, ShmRegion},
-};
-#[cfg(feature = "unstable-ring-dma")]
-pub use {
-    ring_dma::RingDma,
-    rp1_proto::shm::{SlotCopy, Staged},
 };
 
 fn read(at: usize) -> u32 {

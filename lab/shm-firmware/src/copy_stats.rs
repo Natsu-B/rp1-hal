@@ -1,5 +1,5 @@
 //! Lab-only copier invocation accounting and optional timing.
-use rp1_hal::shm::SlotCopy;
+use rp1_link::ring_dma::SlotCopy;
 
 #[derive(Default)]
 pub struct CopyStats {

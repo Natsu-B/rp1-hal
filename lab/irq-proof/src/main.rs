@@ -355,7 +355,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
 /// What main does for the doorbell handler: wake Linux's `rp1:irq` waiter after a reply, and
 /// send the report once the 1000 doorbells are in.
 fn after_doorbell(
-    host_irq: &mut rp1_hal::host_irq::HostIrq,
+    host_irq: &mut rp1_link::notify::HostIrq,
     report: &mut rp1_rt::sync::Producer<'_, u32, 8, Proc1, Proc0>,
     stack: &stack::Watermark,
 ) {
@@ -371,7 +371,7 @@ fn after_doorbell(
 /// due (returns `seen` then). Idle cost is one DDR load, so the `rp1:irq` wake stays prompt.
 #[rp1_rt::isram]
 fn wait_command(
-    host_irq: &mut rp1_hal::host_irq::HostIrq,
+    host_irq: &mut rp1_link::notify::HostIrq,
     control: &rp1_hal::shm::Block<Control>,
     seen: u32,
 ) -> u32 {

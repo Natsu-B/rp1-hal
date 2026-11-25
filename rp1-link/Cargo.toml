@@ -1,0 +1,19 @@
+[package]
+name = "rp1-link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Manual RP1 -> Linux notification on MSI-X vector 29.
+unstable-host-irq = []
+# Unstable DMA producer and its HAL channel implementation (docs/dma.md).
+unstable-ring-dma = ["rp1-proto/unstable-ring-dma", "rp1-hal/unstable-ring-dma"]
+
+[dependencies]
+rp1-hal = { path = "../rp1-hal" }
+rp1-proto = { path = "../rp1-proto" }
+rp1-rt = { path = "../rp1-rt", default-features = false }
+
+[dev-dependencies]
+trybuild = "1"

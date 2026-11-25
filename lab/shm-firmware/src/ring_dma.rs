@@ -7,11 +7,12 @@ use crate::{
     copy_stats::{CopyStats, TimedCopy},
     dma_proof,
 };
-use rp1_hal::{
-    dma::Dma,
-    host_irq::HostIrq,
-    shm::{RingDma, RingTx, SlotCopy},
+use rp1_hal::dma::Dma;
+use rp1_link::{
+    notify::HostIrq,
+    ring_dma::{RingDma, SlotCopy},
 };
+use rp1_proto::shm::RingTx;
 
 pub type Wide64 = [u32; 16];
 pub type Wide256 = [u32; 64];

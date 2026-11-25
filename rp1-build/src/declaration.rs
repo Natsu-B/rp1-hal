@@ -266,7 +266,7 @@ pub struct Core {
     pub gpio: Vec<u8>,
     pub gpio_irq: Vec<u8>,
     pub timer: Vec<String>,
-    /// `host_irq = true`: this core owns the RP1 -> Linux interrupt (`rp1_hal::host_irq`,
+    /// `host_irq = true`: this core owns the RP1 -> Linux interrupt (`rp1_link::notify`,
     /// unstable) and the overlay adds the `rp1:irq` UIO node.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub host_irq: bool,
@@ -409,15 +409,16 @@ impl Declaration {
         }
         // The host interrupt's MSI-X vector is TIMER alarm 3's: an unmasked alarm 3 would hold
         // the vector's source high and swallow the pulses (`rp1_proto::irq`).
+        const TIMER0_VECTOR: u32 = 26;
+        const HOST_ALARM: u32 = rp1_proto::irq::VECTOR - TIMER0_VECTOR;
         for (owner, core) in [("proc0", &self.proc0), ("proc1", &self.proc1)] {
-            let alarm = format!("timer.ALARM{}", rp1_proto::irq::TIMER_ALARM);
+            let alarm = format!("timer.ALARM{HOST_ALARM}");
             if core.host_irq
                 && let Some(previous) = blocks.insert(alarm, format!("{owner}.host_irq"))
             {
                 return Err(format!(
-                    "E3: TIMER.ALARM{} is declared by {previous} but {owner}.host_irq owns it \
-                     (its interrupt is the host interrupt's MSI-X vector)",
-                    rp1_proto::irq::TIMER_ALARM
+                    "E3: TIMER.ALARM{HOST_ALARM} is declared by {previous} but {owner}.host_irq owns it \
+                     (its interrupt is the host interrupt's MSI-X vector)"
                 )
                 .into());
             }

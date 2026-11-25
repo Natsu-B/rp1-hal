@@ -1,6 +1,7 @@
 //! The DMA ring producer: RP1 -> Linux batches copied into Linux DDR by a DMA channel.
-use super::{RingTx, SlotCopy, Staged};
-use rp1_proto::Message;
+use rp1_hal::dma;
+pub use rp1_proto::shm::{SlotCopy, Staged};
+use rp1_proto::{Message, shm::RingTx};
 
 /// Moves RP1 → Linux ring batches into Linux DDR by DMA ([`RingTx::push_slice_staged`]):
 /// the slot images are staged in a shared-SRAM buffer and copied by a channel of the
@@ -19,8 +20,8 @@ impl<'s> RingDma<'s> {
     pub const DEFAULT_THRESHOLD: usize = 256;
     /// `stage` must be shared SRAM (`#[unsafe(link_section = ".shared")]`) and 8-byte aligned;
     /// its size bounds one DMA batch ([`RingTx::staged_capacity`]).
-    pub fn new(stage: &'s mut [u8]) -> Result<Self, crate::dma::Error> {
-        use crate::dma::{BusAddr, Error};
+    pub fn new(stage: &'s mut [u8]) -> Result<Self, dma::Error> {
+        use dma::{BusAddr, Error};
         let start = stage.as_ptr() as usize;
         let sram = BusAddr::SRAM..BusAddr::SRAM + 0x1_0000;
         if stage.is_empty() || !start.is_multiple_of(8) {
@@ -100,7 +101,7 @@ impl<'s> RingDma<'s> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shm::Overflow;
+    use rp1_proto::shm::Overflow;
 
     #[repr(align(8))]
     struct Mem([u8; 1024]);
@@ -185,7 +186,7 @@ mod tests {
         #[repr(align(8))]
         struct Mem([u8; 2048]);
         // Channel contains only (). The CPU path must not access DMA registers.
-        let mut channel = unsafe { core::mem::zeroed::<crate::dma::Channel<1>>() };
+        let mut channel = unsafe { core::mem::zeroed::<dma::Channel<1>>() };
         for (stage_len, threshold) in [
             (256, RingDma::DEFAULT_THRESHOLD), // smaller than one 264-byte slot
             (256, 0),                          // even "always DMA" must make progress
@@ -237,7 +238,7 @@ mod tests {
             threshold: RingDma::DEFAULT_THRESHOLD,
         };
         // Overwrite must use the CPU even when one staged slot reaches the DMA threshold.
-        let mut channel = unsafe { core::mem::zeroed::<crate::dma::Channel<1>>() };
+        let mut channel = unsafe { core::mem::zeroed::<dma::Channel<1>>() };
         assert_eq!(
             helper.push_slice(&mut ring, &mut channel, &[[42; 64]; 3]),
             Ok(3)
@@ -254,7 +255,7 @@ mod tests {
     #[test]
     fn ring_dma_stage_must_be_aligned_shared_sram() {
         use super::RingDma;
-        use crate::dma::Error;
+        use dma::Error;
         // Host memory is not DMAC-visible; a stage is checked before any use.
         #[repr(align(8))]
         struct S([u8; 64]);

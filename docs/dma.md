@@ -174,12 +174,12 @@ attributed to the shorter bursts (HYP: not isolated from the other changes of th
 
 ## DMA ring producer (RP1 → Linux)
 
-Unstable: behind the cargo feature `unstable-ring-dma` (rp1-hal; it enables the same feature of
-rp1-proto, where `SlotCopy` and `RingTx::push_*_staged` live). The ordering chain below is HYP
+Unstable: behind the cargo feature `rp1-link/unstable-ring-dma` (STATIC). It enables
+the rp1-hal channel implementation and the staged ring methods in rp1-proto. The ordering chain below is HYP
 and the hardware campaign after the review fixes FAILED (sections below). Default builds
 contain none of it; Linux needs nothing, the wire format is the CPU ring's.
 
-`rp1_hal::shm::RingDma` moves batches of a `reject` RP1 → Linux ring into Linux DDR by DMA.
+`rp1_link::ring_dma::RingDma` moves batches of a `reject` RP1 → Linux ring into Linux DDR by DMA.
 The wire format is unchanged: a ring can mix DMA and CPU batches, and the Linux reader is the
 same (STATIC: rp1-proto tests).
 

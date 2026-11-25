@@ -1,4 +1,4 @@
-//! Review (irq-path) major 1: notification needs exclusive ownership of the one HostIrq.
+//! Notification requires exclusive ownership of the generated HostIrq.
 #![cfg(feature = "unstable-host-irq")]
 #[test]
 fn host_irq_needs_exclusive_ownership() {

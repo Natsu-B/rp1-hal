@@ -1,5 +1,5 @@
 // Safe code cannot make a second HostIrq (one owner of the RP1 -> Linux interrupt).
-use rp1_hal::host_irq::HostIrq;
+use rp1_link::notify::HostIrq;
 fn second() -> HostIrq {
     HostIrq::new()
 }

@@ -81,7 +81,7 @@ peripheral proofs. A profile-enabled client with a default firmware gets a comma
 it must not be reported as a successful profile. A disabled command 9 follows the existing
 unknown-command path (`errors=1`); it never touches the bulk scratch or starts SysTick.
 
-STATIC: every image keeps the `host_irq = true` declaration (rp1-hal feature
+STATIC: every image keeps the `host_irq = true` declaration (rp1-link feature
 `unstable-host-irq`): it is part of the default lab profile, not a cargo feature of
 `shm-firmware`, because the declaration (and the `rp1:irq` overlay node) is metadata that
 features cannot select. Its code is the `notify_sram()` call in proc1's ISRAM command loop.
@@ -453,7 +453,7 @@ cargo run -p stack-paths -- <firmware.elf> --size
 
 `image` is the shared-SRAM image (`__image_end`, as `cargo rp1 build` reports it), `stack0`
 includes the platform `margin` (both from the ELF), and `dsram_freeN = 8192 - dsram_static - stackN`. Owners
-come from symbol names: platform = `rp1_rt`, `rp1_hal`, `rp1_proto`, `rp1_pac`, `__rp1_*`,
+come from symbol names: platform = `rp1_rt`, `rp1_hal`, `rp1_link`, `rp1_proto`, `rp1_pac`, `__rp1_*`,
 the vector tables, the reset code and the `rp1` module that rp1-build generates; runtime =
 `core` and compiler-builtins; user = the firmware crate and other named symbols;
 unattributed = anonymous constants, literal pools and padding. LTO inlines platform code into

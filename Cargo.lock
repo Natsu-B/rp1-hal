@@ -265,6 +265,7 @@ dependencies = [
  "embedded-hal 1.0.0",
  "rp1-build",
  "rp1-hal",
+ "rp1-link",
  "rp1-proto",
  "rp1-rt",
 ]
@@ -427,6 +428,16 @@ dependencies = [
  "embedded-io",
  "nb 1.1.0",
  "rp1-pac",
+ "rp1-proto",
+ "rp1-rt",
+ "trybuild",
+]
+
+[[package]]
+name = "rp1-link"
+version = "0.1.0"
+dependencies = [
+ "rp1-hal",
  "rp1-proto",
  "rp1-rt",
  "trybuild",
@@ -638,6 +649,7 @@ dependencies = [
  "nb 1.1.0",
  "rp1-build",
  "rp1-hal",
+ "rp1-link",
  "rp1-proto",
  "rp1-rt",
 ]

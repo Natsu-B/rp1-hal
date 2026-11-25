@@ -579,7 +579,7 @@ fn up_batch(tx: &mut rp1_hal::shm::RingTx<Sample>, count: u32, start: u32) -> u3
 #[cfg_attr(not(feature = "ring-dma"), rp1_rt::isram)]
 fn events_stream(
     tx: &mut rp1_hal::shm::RingTx<Sample>,
-    mut notify: Option<&mut rp1_hal::host_irq::HostIrq>,
+    mut notify: Option<&mut rp1_link::notify::HostIrq>,
     count: u32,
     seed: u32,
     start: u32,
@@ -678,7 +678,7 @@ unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
 #[rp1_rt::isram]
 fn wait_command(
     doorbell: &mut Doorbell,
-    host_irq: &mut rp1_hal::host_irq::HostIrq,
+    host_irq: &mut rp1_link::notify::HostIrq,
     control: &rp1_hal::shm::Block<Control>,
     seen: u32,
 ) -> u32 {

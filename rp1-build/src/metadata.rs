@@ -407,7 +407,7 @@ impl Declaration {
                     }
                     match r.notify.as_deref() {
                         None | Some("poll") => {}
-                        // The producing core raises `rp1:irq` (rp1_hal::host_irq), so it must own
+                        // The producing core raises `rp1:irq` (rp1_link::notify), so it must own
                         // the host interrupt. Linux -> RP1 keeps the doorbell or polling.
                         Some("irq") => {
                             if r.direction.as_deref() != Some("rp1-to-linux") {
