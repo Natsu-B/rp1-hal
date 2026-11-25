@@ -1,6 +1,9 @@
 //! PWM0 loopback: GPIO12 -> GPIO22 and GPIO13 -> GPIO23 (inputs only). See docs/pwm.md.
 #![no_std]
 #![no_main]
+#[path = "../../status-nonce.rs"]
+mod status_nonce;
+
 use embedded_hal::{digital::InputPin, pwm::SetDutyCycle};
 use rp1_hal::{
     gpio::{Input, Pin},
@@ -13,7 +16,8 @@ rp1_rt::bind!();
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let sys = rp1::platform::init(&mut core, p.platform).unwrap();
-    log!("PWM_BOOT PLAT_INIT ok=1 {}\n", sys.report).unwrap();
+    let nonce = status_nonce::publish(&sys.report);
+    log!("PWM_BOOT nonce={nonce:08x} PLAT_INIT ok=1 {}\n", sys.report).unwrap();
     p.proc1.launch(&mut core).unwrap();
     loop {
         rp1_rt::wait_for_event();

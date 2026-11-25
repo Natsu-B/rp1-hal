@@ -5,7 +5,7 @@
 # Linux nodes, which must exist and be disabled. Ends with exactly one
 # `SWEEP_CHECK_RESULT=PASS|FAIL`, then `SWEEP_CHECK_END`. The host decides with
 # lab/verify-irq.py --sweep.
-export PATH=/bin
+export PATH=/bin:/usr/local/bin
 busybox --install -s /bin
 FAILED=
 fail() { echo "CHECK_FAIL $1"; FAILED="$FAILED $1"; }
@@ -26,7 +26,8 @@ uname -a
 # The firmware keeps its boot value in the link page (+0x28): UART0's `IRQ_SWEEP_BOOT boot=`,
 # not the `nonce=` of its marker lines. It is printed under check-irq.sh's label so that
 # verify-irq.py ties the console to the boot the same way for both images.
-echo IRQ_NONCE=$(busybox devmem 0x1f0040c028 32)
+boot=$(busybox devmem 0x1f0040c028 32) || fail nonce
+echo "IRQ_NONCE=$boot"
 dt_disabled I2C0 i2c@70000
 dt_disabled I2C2 i2c@78000
 dt_disabled I2C3 i2c@7c000
@@ -36,6 +37,7 @@ dt_disabled PWM1 pwm@9c000
 dt_disabled ADC adc@c8000
 grep rp1 /proc/interrupts
 dmesg | grep -E 'SError|abort|fault|WARN'
+sh "$(dirname "$0")/check-core-status.sh" sweep "$boot" || fail core_status
 if [ -z "$FAILED" ]; then
     echo SWEEP_CHECK_RESULT=PASS
 else

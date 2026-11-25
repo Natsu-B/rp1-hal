@@ -286,6 +286,10 @@ def sweep_uart10(boot=BOOT):
  16.42 usb_max_current_enable default 0 max-current 3000
 SWEEP_CHECK_BEGIN
 IRQ_NONCE=0x{boot.upper()}
+LAB_FINAL_BEGIN check=sweep nonce={boot}
+RP1_CORE core=0 state=Running reason=0
+RP1_CORE core=1 state=Running reason=0
+LAB_FINAL_END check=sweep nonce={boot} result=PASS
 SWEEP_CHECK_RESULT=PASS
 SWEEP_CHECK_END
 """
@@ -411,7 +415,7 @@ class VerifySweep(unittest.TestCase):
             u0.write_bytes(sweep_uart0().encode())
             u10.write_bytes(sweep_uart10().encode())
             args = ["--sweep", "--uart0", str(u0), "--json", str(out)]
-            self.assertEqual(v.main(args), 0)
+            self.assertEqual(v.main(args), 3)
             self.assertEqual(v.main(args + ["--uart10", str(u10)]), 0)
             summary = json.loads(out.read_text())
             self.assertEqual(summary["verdict"], "PASS")
@@ -421,6 +425,17 @@ class VerifySweep(unittest.TestCase):
             self.assertEqual(json.loads(out.read_text())["verdict"], "FAIL")
             u0.write_bytes(sweep_uart0(results={41: edited(41, (-1, "result=ROUTED", "result=NOT_ROUTED"))}).encode())
             self.assertEqual(v.main(args), 1)
+
+    def test_sweep_requires_nonce_bound_final_running_status(self):
+        for edit in (
+            lambda text: text.replace("core=0 state=Running", "core=0 state=Panicked"),
+            lambda text: text.replace("core=1 state=Running", "core=1 state=Fault"),
+            lambda text: text.replace(f"check=sweep nonce={BOOT}", "check=sweep nonce=00000001"),
+            lambda text: "\n".join(l for l in text.splitlines() if not l.startswith("LAB_FINAL")),
+        ):
+            failures, _ = v.verify_uart10(edit(sweep_uart10()), BOOT, v.UART10_SWEEP,
+                                          final_check="sweep")
+            self.assertTrue(failures)
 
     def test_table_matches_the_firmware_source(self):
         import re

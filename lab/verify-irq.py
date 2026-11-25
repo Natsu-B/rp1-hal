@@ -31,9 +31,9 @@ after the deassert, no other new pending bit, and the same hit counts. Any other
 too: every line with the boot's nonce, no line enabled in the NVIC, and the whole sweep before
 the PCIe link came up (`PLAT_INIT ok=1` after `IRQ_SWEEP_END`, with a fresh PERSTn wait). --json
 writes the per-line results.
-UART10 is optional with --sweep; if given, the Linux side (`check-sweep.sh`) must have passed
-in the boot that printed the firmware's boot value.
-Exit 0 = PASS, 1 = FAIL, 2 = usage error.
+UART0 supplies the sweep measurements. The healthy-run verdict also needs the Linux side
+(`check-sweep.sh`) with both cores Running, bound to the same boot value.
+Exit 0 = PASS, 1 = FAIL, 2 = usage error, 3 = sweep measurements pass but Linux evidence is missing.
 """
 import argparse
 import json
@@ -226,7 +226,7 @@ UART10_POWER = [
 UART10_FORBIDDEN = [r"\bCHECK_FAIL\b", r"\bIRQ_CHECK_RESULT=FAIL\b", r"Kernel panic", r"\bSError\b"]
 
 
-def verify_uart10(text, nonce, steps):
+def verify_uart10(text, nonce, steps, final_check=None):
     """Returns (failures, info) for the boot of a UART10 capture that printed `nonce`, where
     the Linux side must have printed `steps` in order."""
     def printed(boot):
@@ -253,10 +253,32 @@ def verify_uart10(text, nonce, steps):
         line = next((l for l in matching[0] if re.search(pattern, l)), None)
         if line is not None:
             failures.append(f"UART10 failure marker: {line.strip()[:160]}")
+    if final_check:
+        failures += verify_final_cores(boot, final_check, nonce)
     rtt = re.search(r"\bdoorbell rtt n=1000 .*", boot)
     if rtt:
         info.append(rtt.group(0).strip())
     return failures, info
+
+
+def verify_final_cores(boot, check, nonce):
+    tag = f"check={check} nonce={nonce}"
+    begin, end = f"LAB_FINAL_BEGIN {tag}", f"LAB_FINAL_END {tag} result=PASS"
+    starts = list(re.finditer(r"\bLAB_FINAL_BEGIN\b[^\r\n]*", boot))
+    ends = list(re.finditer(r"\bLAB_FINAL_END\b[^\r\n]*", boot))
+    if (len(starts) != 1 or len(ends) != 1 or starts[0][0].strip() != begin
+            or ends[0][0].strip() != end or starts[0].end() >= ends[0].start()):
+        return ["UART10: missing or invalid final nonce-bound status"]
+    status = boot[starts[0].end():ends[0].start()]
+    cores = re.findall(r"\bRP1_CORE core=(\d+) state=(\S+)", status)
+    if sorted(cores) != [("0", "Running"), ("1", "Running")]:
+        return [f"UART10: expected both cores Running at final status, got {cores}"]
+    if re.search(r"\bRP1_CORE core=\d+ state=(?:Panicked|Fault)\b", boot):
+        return ["UART10: terminal core state"]
+    result = boot.find("SWEEP_CHECK_RESULT=")
+    if result != -1 and result < ends[0].end():
+        return ["UART10: final status must precede the sweep check result"]
+    return []
 
 
 # The sweep table of lab/irq-sweep: IRQ number -> block. Nothing else may be swept; the lines
@@ -446,6 +468,7 @@ def verify_sweep(text, nonce=None):
         failures.append("UART0: no `PLAT_INIT` line after the sweep")
     if summary["boot"] is None:
         failures.append("UART0: no IRQ_SWEEP_BOOT")
+    # Legacy captures had a UART0 panic marker.
     if re.search(r"\bIRQ_SWEEP_PANIC\b", "\n".join(boot)):
         failures.append("UART0: IRQ_SWEEP_PANIC")
     return failures, summary
@@ -454,8 +477,10 @@ def verify_sweep(text, nonce=None):
 def main_sweep(a):
     failures, summary = verify_sweep(read_text(a.uart0), a.nonce)
     boot = summary["boot"]
+    measurements = "FAIL" if failures else "PASS"
+    print(f"IRQ_SWEEP_MEASUREMENTS={measurements}")
     if a.uart10 and boot is not None and number("0x" + boot) is not None:
-        more, _ = verify_uart10(read_text(a.uart10), boot, UART10_SWEEP)
+        more, _ = verify_uart10(read_text(a.uart10), boot, UART10_SWEEP, final_check="sweep")
         failures += more
     elif a.uart10:
         failures.append("UART10: not checked, the firmware printed no boot value")
@@ -463,14 +488,14 @@ def main_sweep(a):
         print("INFO irq={irq} block={block} result={result} reason={reason} hits={hits}".format(**record))
     for line in failures:
         print(f"FAIL {line}")
-    summary["verdict"] = "FAIL" if failures else "PASS"
+    summary["verdict"] = "FAIL" if failures else "PASS" if a.uart10 else "INCOMPLETE"
     summary["failures"] = failures
     if a.json:
         with open(a.json, "w") as f:
             json.dump(summary, f, indent=2)
             f.write("\n")
     print(f"IRQ_SWEEP_VERDICT={summary['verdict']} nonce={summary['nonce']} boot={boot}")
-    return 1 if failures else 0
+    return {"PASS": 0, "FAIL": 1, "INCOMPLETE": 3}[summary["verdict"]]
 
 
 def main(argv):

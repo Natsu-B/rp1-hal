@@ -2,6 +2,9 @@
 #![no_std]
 #![no_main]
 
+#[path = "../../status-nonce.rs"]
+mod status_nonce;
+
 use core::{
     mem::MaybeUninit,
     sync::atomic::{AtomicU32, Ordering::Relaxed},
@@ -106,7 +109,9 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         ACK.write_volatile(0);
     }
     rp1_proto::barrier();
-    log!("SCMI_STARVE_READY\n").unwrap();
+    let nonce = status_nonce::publish(&sys.report);
+    p.proc1.launch(&mut core).unwrap();
+    log!("SCMI_STARVE_READY nonce={nonce:08x}\n").unwrap();
     while unsafe { TRIGGER.read_volatile() } != START {
         core::hint::spin_loop();
     }
