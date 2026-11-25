@@ -1,8 +1,17 @@
 # Bash functions used by the fault containment hardware procedure.
 
+# The target shell wraps command output in bracketed-paste toggles (ESC[?2004l / ESC[?2004h),
+# which break line-anchored checks. Only those two sequences are removed; "$log.raw" keeps
+# the console text unchanged.
+strip_paste_toggles() {
+    sed 's/\x1b\[?2004[hl]//g'
+}
+
 remote_checked() {
-    local dir=$1 timeout=$2 command=$3 log=$4 marker
-    if ! python3 "$tools/sh.py" "$dir" "$timeout" "( $command )" | tee "$log"; then
+    local dir=$1 timeout=$2 command=$3 log=$4 marker rc=0
+    python3 "$tools/sh.py" "$dir" "$timeout" "( $command )" > "$log.raw" || rc=$?
+    strip_paste_toggles < "$log.raw" | tee "$log" || return
+    if (( rc )); then
         printf 'Console command did not complete\n' >&2
         return 75
     fi

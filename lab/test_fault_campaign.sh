@@ -15,8 +15,10 @@ command = sys.argv[3]
 mode = os.environ["CASE_MODE"]
 with open(os.environ["TRACE"], "a") as trace:
     print(command, file=trace)
+# The target shell emits bracketed-paste toggles around command output.
+paste = "\x1b[?2004l" if mode == "bracketed-paste" else ""
 if "findmnt" in command:
-    print("active\nnfs4\nRP1_STATUS epoch=2 pcie=Up scmi=Serving(requests=12)")
+    print(paste + "active\nnfs4\nRP1_STATUS epoch=2 pcie=Up scmi=Serving(requests=12)")
     print("RP1_CORE core=0 state=Running\nRP1_CORE core=1 state=" +
           ("Panicked" if mode == "preflight-state" else "Running"))
     print("arm-scmi: SCMI Protocol")
@@ -28,6 +30,8 @@ else:
     print("FAULT_END nonce=12ab5678 kind=p0-thread-panic pcie=Up peer=Running")
     rc = 42 if mode == "collect-rc" else 0
 print(f"END_1234abcd rc={rc}")
+if paste:
+    print("\x1b[?2004hroot@target:~# ")
 PY
 cat > "$tools/phase.sh" <<'SH'
 #!/usr/bin/env bash
@@ -102,6 +106,15 @@ export CASE_MODE=success
 RUN="$fixture/success"
 mkdir "$RUN"
 run_case p0-thread-panic cold-1 > "$RUN/case.log"
+
+export CASE_MODE=bracketed-paste
+RUN="$fixture/bracketed-paste"
+mkdir "$RUN"
+run_case p0-thread-panic cold-1 > "$RUN/case.log"
+log="$RUN/p0-thread-panic-cold-1/preflight.log"
+grep -q $'\e\\[?2004l' "$log.raw"
+if grep -q $'\e' "$log"; then exit 1; fi
+grep -qx 'active' "$log"
 
 export T="$fixture/tftp"
 mkdir "$T"

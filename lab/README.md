@@ -748,6 +748,11 @@ started, the force-boot succeeded, the cell sent no reboot or poweroff command,
 and a `power-on-reset 1` boot follows. It reports the boot row as
 `detail=cold-via-shutdown`. A halt without these records stays INCOMPLETE.
 
+The target shell wraps command output in bracketed-paste toggles
+(`ESC[?2004l` / `ESC[?2004h`). `lab/fault-campaign.sh` removes only these two
+sequences before its line-anchored checks and keeps the console text in
+`LOG.raw`.
+
 ```sh
 python3 lab/verify-fault.py --elf "$BOOT_SET/rp1.elf" \
     --manifest "$BOOT_SET/manifest.txt" --bundle "$BOOT_SET/rp1-bundle.img" \
