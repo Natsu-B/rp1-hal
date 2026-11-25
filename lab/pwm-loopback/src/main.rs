@@ -13,8 +13,12 @@ use rp1_hal::{
 use rp1_rt::{Proc0, Proc1, entry};
 rp1_rt::bind!();
 
+// Throwaway: 40 KiB of read-only data pushes the image past the 49,152 B budget.
+static PAD: [u8; 40960] = [0xa5; 40960];
+
 #[entry(proc0)]
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
+    core::hint::black_box(&PAD);
     let sys = rp1::platform::init(&mut core, p.platform).unwrap();
     let nonce = status_nonce::publish(&sys.report);
     log!("PWM_BOOT nonce={nonce:08x} PLAT_INIT ok=1 {}\n", sys.report).unwrap();
