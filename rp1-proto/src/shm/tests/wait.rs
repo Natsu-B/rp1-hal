@@ -1,5 +1,6 @@
 //! The sleep/notify handshake, including the exhaustive interleaving check.
 use super::{Mem, mem};
+use crate::Error;
 use crate::shm::access::{ld, st};
 use crate::shm::*;
 extern crate std;
@@ -256,4 +257,81 @@ fn wait_handshake_all_interleavings() {
         });
         assert!(runs > 10, "runs={runs}");
     }
+}
+
+/// `reader_asleep` has no "already notified" memory: it sees every sleep, also across the
+/// counter wrap. `wake_needed` on the same sleeps misses exactly the one that reuses the
+/// value it notified last (2^31 sleeps ago; the unnotified ones in between are simulated by
+/// moving the counter).
+#[test]
+fn reader_asleep_sees_every_sleep_across_the_wrap() {
+    let (mut data, mut ctrl) = wait_pair(2);
+    let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+    unsafe { st(c, WAITING, u32::MAX - 3) };
+    let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+    let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+    assert!(!tx.reader_asleep());
+    // One notified sleep with the value u32::MAX - 2, then 2^31 - 1 unnotified ones.
+    assert!(rx.prepare_wait());
+    assert!(tx.wake_needed());
+    rx.finish_wait();
+    unsafe { st(c, WAITING, u32::MAX - 3) };
+    let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+    // Sleeps u32::MAX - 2, u32::MAX, 1, 3.
+    let (mut asleep, mut woken) = (0, 0);
+    for _ in 0..4 {
+        assert!(rx.prepare_wait());
+        asleep += usize::from(tx.reader_asleep());
+        woken += usize::from(tx.wake_needed());
+        rx.finish_wait();
+        assert!(!tx.reader_asleep());
+    }
+    assert_eq!(unsafe { ld(c, WAITING) }, 4);
+    assert_eq!(asleep, 4);
+    assert_eq!(
+        woken, 3,
+        "wake_needed misses the sleep that reuses u32::MAX - 2"
+    );
+}
+
+#[test]
+fn drain_stops_at_the_budget_without_arming() {
+    let (mut data, mut ctrl) = wait_pair(4);
+    let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+    let mut tx = unsafe { RingTx::<u32>::attach(d, 224, c, 128, 4, Overflow::Reject) }.unwrap();
+    let mut rx = unsafe { RingRx::<u32>::attach(d, 224, c, 128, 4, Overflow::Reject) }.unwrap();
+    let mut got = vec![];
+    // Exactly `max` messages: all passed, `More`, not armed.
+    assert_eq!(tx.push_slice(&[1, 2]), 2);
+    assert_eq!(rx.drain(2, |v| got.push(v)), Ok(Progress::More));
+    assert_eq!(got, [1, 2]);
+    assert!(!tx.reader_asleep());
+    // The next call finds the ring empty and arms it.
+    assert_eq!(rx.drain(2, |v| got.push(v)), Ok(Progress::Idle));
+    assert!(tx.reader_asleep());
+    // It marks the reader awake first; `max = 0` passes one message.
+    assert_eq!(tx.push_slice(&[3, 4]), 2);
+    assert_eq!(rx.drain(0, |v| got.push(v)), Ok(Progress::More));
+    assert_eq!(got, [1, 2, 3]);
+    assert!(!tx.reader_asleep());
+    // Fewer than `max`: everything, then armed.
+    assert_eq!(rx.drain(16, |v| got.push(v)), Ok(Progress::Idle));
+    assert_eq!(got, [1, 2, 3, 4]);
+    assert!(tx.reader_asleep());
+}
+
+#[test]
+fn drain_reports_corruption_unarmed() {
+    let (mut data, mut ctrl) = wait_pair(4);
+    let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+    let mut tx = unsafe { RingTx::<u32>::attach(d, 224, c, 128, 4, Overflow::Reject) }.unwrap();
+    let mut rx = unsafe { RingRx::<u32>::attach(d, 224, c, 128, 4, Overflow::Reject) }.unwrap();
+    assert_eq!(rx.drain(1, |_| unreachable!()), Ok(Progress::Idle));
+    assert_eq!(tx.push_slice(&[1, 2]), 2);
+    // The second slot's sequence number is wrong.
+    unsafe { st(d, CONTROL_SIZE + 16, 7) };
+    let mut got = vec![];
+    assert_eq!(rx.drain(4, |v| got.push(v)), Err(Error::Corrupt));
+    assert_eq!(got, [1]);
+    assert!(!tx.reader_asleep());
 }

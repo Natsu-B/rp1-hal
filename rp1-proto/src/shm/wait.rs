@@ -1,7 +1,7 @@
 //! The sleep/notify handshake on a ring's `waiting` counter (protocol.md §2.3).
 use super::access::{ld, st};
 use super::{HEAD, RingRx, RingTx, WAITING};
-use crate::{Message, barrier};
+use crate::{Error, Message, barrier};
 
 /// Result of one [`RingRx::wait_with`] step.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -12,6 +12,16 @@ pub enum Wait {
     Woken,
     /// The reader slept until the sleeper's bound without a notification.
     Timeout,
+}
+
+/// What a [`RingRx::drain`] call left behind.
+#[must_use = "on `More` the ring is not armed: drain again (or raise the doorbell)"]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Progress {
+    /// Empty and armed: the next message makes the writer notify.
+    Idle,
+    /// The budget was used up. Messages may remain and the ring is NOT armed.
+    More,
 }
 
 impl<T: Message> RingTx<T> {
@@ -42,6 +52,17 @@ impl<T: Message> RingTx<T> {
         }
         self.woken = waiting;
         true
+    }
+    /// Whether the reader sleeps now: [`Self::wake_needed`] without the "already notified"
+    /// memory, so it is `true` for every odd `waiting` value, also across the counter wrap.
+    /// For a level-type notification (the doorbell force), where notifying again while it is
+    /// set costs nothing. Same readback of `head` first, same cost.
+    pub fn reader_asleep(&self) -> bool {
+        barrier();
+        let _ = unsafe { ld(self.data, HEAD) };
+        barrier();
+        let waiting = unsafe { ld(self.ctrl, WAITING) };
+        waiting & 1 != 0
     }
 }
 
@@ -87,6 +108,29 @@ impl<T: Message> RingRx<T> {
         let woke = sleep();
         self.finish_wait();
         if woke { Wait::Woken } else { Wait::Timeout }
+    }
+    /// Mark the reader awake, pass up to `max` messages to `f` (`max = 0` counts as 1), then
+    /// arm and re-check: [`Progress::Idle`] when the ring is empty and armed. When the budget
+    /// runs out first, returns [`Progress::More`] without arming, so writers do not notify.
+    /// For a handler of a level-type notification (protocol.md §3). On an error the ring
+    /// is not armed.
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
+    pub fn drain(&mut self, max: u32, mut f: impl FnMut(T)) -> Result<Progress, Error> {
+        self.finish_wait();
+        let mut budget = max.max(1);
+        loop {
+            while budget > 0 {
+                let Some(value) = self.pop()? else { break };
+                f(value);
+                budget -= 1;
+            }
+            if budget == 0 {
+                return Ok(Progress::More);
+            }
+            if self.prepare_wait() {
+                return Ok(Progress::Idle);
+            }
+        }
     }
 }
 

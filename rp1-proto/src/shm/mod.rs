@@ -31,7 +31,7 @@ pub use header::{Header, HeaderInit};
 pub use ring::{Overflow, RingRx, RingTx};
 #[cfg(feature = "unstable-ring-dma")]
 pub use staged::{SlotCopy, Staged};
-pub use wait::{Wait, Waiter, wait_any_with};
+pub use wait::{Progress, Wait, Waiter, wait_any_with};
 
 /// DDR region header (one per reservation, at offset 0).
 pub const HEADER_SIZE: usize = 64;
