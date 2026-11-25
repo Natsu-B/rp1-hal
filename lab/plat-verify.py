@@ -125,7 +125,7 @@ def size_row(output):
 
 def overall(rows):
     values = [v for v, _ in rows]
-    if all(v == PASS for v in values):
+    if values and all(v == PASS for v in values):
         return PASS
     return FAIL if FAIL in values else INCOMPLETE
 

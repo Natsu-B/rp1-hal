@@ -154,5 +154,10 @@ class Main(unittest.TestCase):
         self.assertIn("plat_verify=FAIL", out)
 
 
+class TestEmptyOverall(unittest.TestCase):
+    def test_no_rows_are_incomplete(self):
+        self.assertEqual(v.overall([]), v.INCOMPLETE)
+
+
 if __name__ == "__main__":
     unittest.main()
