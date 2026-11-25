@@ -382,16 +382,16 @@ notify="{notify}"
         assert_eq!(d.validate().is_ok(), ok, "notify={notify}");
     }
 }
-/// `notify = "irq"` needs the host interrupt on the producing core and the RP1 -> Linux
-/// direction; everything else is a build error naming the fix.
+/// `notify = "irq"` needs the host interrupt on the producing core (RP1 -> Linux) or a
+/// doorbell on the reading core (Linux -> RP1); otherwise it is a build error naming the fix.
 #[test]
-fn notify_irq_requires_host_irq_on_the_producing_core() {
-    let decl = |host_irq_core: &str, core: &str, direction: &str| -> Declaration {
+fn notify_irq_requires_host_irq_or_doorbell_on_the_ring_core() {
+    let decl = |owner: &str, key: &str, core: &str, direction: &str| -> Declaration {
         toml::from_str(&format!(
             r#"
 schema = 2
-[{host_irq_core}]
-host_irq = true
+[{owner}]
+{key}
 [[shm]]
 name="events"
 kind="ring"
@@ -404,16 +404,29 @@ notify="irq"
         ))
         .unwrap()
     };
-    decl("proc1", "proc1", "rp1-to-linux").validate().unwrap();
-    decl("proc0", "proc0", "rp1-to-linux").validate().unwrap();
-    let e = decl("proc0", "proc1", "rp1-to-linux")
+    let host_irq = "host_irq = true";
+    decl("proc1", host_irq, "proc1", "rp1-to-linux")
+        .validate()
+        .unwrap();
+    decl("proc0", host_irq, "proc0", "rp1-to-linux")
+        .validate()
+        .unwrap();
+    let e = decl("proc0", host_irq, "proc1", "rp1-to-linux")
         .validate()
         .unwrap_err();
     assert!(e.to_string().contains("proc1.host_irq = true"), "{e}");
-    let e = decl("proc1", "proc1", "linux-to-rp1")
+    decl("proc1", "doorbell = 27", "proc1", "linux-to-rp1")
         .validate()
-        .unwrap_err();
-    assert!(e.to_string().contains("only for rp1-to-linux"), "{e}");
+        .unwrap();
+    decl("proc0", "doorbell = 26", "proc0", "linux-to-rp1")
+        .validate()
+        .unwrap();
+    for (owner, key) in [("proc1", host_irq), ("proc0", "doorbell = 27")] {
+        let e = decl(owner, key, "proc1", "linux-to-rp1")
+            .validate()
+            .unwrap_err();
+        assert!(e.to_string().contains("requires proc1.doorbell"), "{e}");
+    }
 }
 #[test]
 fn shm_names_of_builtin_uio_nodes_are_rejected() {
@@ -505,6 +518,31 @@ fn link_record_carries_host_irq_and_heartbeat() {
     assert_eq!(link.cores[1].host_irq_vector, Some(29));
     assert_eq!(link.cores[1].heartbeat_ms, None);
     assert_eq!([record.value[4], record.value[8]], [0xff, 0xff]);
+}
+#[test]
+fn doorbell_is_in_link_and_claims_its_pin_and_the_irq_bank() {
+    let d: Declaration =
+        toml::from_str("schema=2\n[proc0]\ndoorbell=26\n[proc1]\ngpio=[22]\ngpio_irq=[22]")
+            .unwrap();
+    let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
+    let note = Note::parse(&a.note).unwrap();
+    let link = Link::parse(note.get(LINK).unwrap().value).unwrap();
+    assert_eq!(link.cores.map(|c| c.doorbell), [Some(26), None]);
+    let claims = note.get(rp1_proto::note::OWNERSHIP).unwrap().value;
+    let claims: Vec<_> = claims[4..].chunks(4).map(|c| (c[0], c[1], c[2])).collect();
+    for claim in [
+        (ownership_kind::PIN, 1, 26),
+        (ownership_kind::GPIO_IRQ_BANK, 1, 0),
+        (ownership_kind::PIN, 2, 22),
+        (ownership_kind::GPIO_IRQ_BANK, 2, 0),
+    ] {
+        assert!(claims.contains(&claim), "{claim:?} in {claims:?}");
+    }
+    assert!(
+        a.dts.contains("gpio-reserved-ranges = <22 1 26 1>;"),
+        "{}",
+        a.dts
+    );
 }
 #[test]
 fn note_is_deterministic_and_rejects_corruption() {

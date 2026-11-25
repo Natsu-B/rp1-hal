@@ -270,6 +270,10 @@ pub struct Core {
     /// unstable) and the overlay adds the `rp1:irq` UIO node.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub host_irq: bool,
+    /// `doorbell = N`: Linux interrupts this core by setting the `PROCn_INTF` force bit of
+    /// bank-0 pin N (note LINK). Claims the pin; it is not also a `gpio`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doorbell: Option<u8>,
     /// `heartbeat = { period_ms = N }`: this core calls `rp1_rt::status::beat` at least every
     /// N ms, so Linux may judge it stalled (note LINK).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -302,6 +306,9 @@ impl Core {
         if let Some(v) = values.remove("host_irq") {
             core.host_irq = field(v, format!("{owner}.host_irq"))?;
         }
+        if let Some(v) = values.remove("doorbell") {
+            core.doorbell = Some(field(v, format!("{owner}.doorbell"))?);
+        }
         if let Some(v) = values.remove("heartbeat") {
             let heartbeat: Heartbeat = field(v, format!("{owner}.heartbeat"))?;
             if heartbeat.period_ms == 0 {
@@ -318,6 +325,7 @@ impl Core {
     /// All owned pins in ascending order.
     pub fn pins(&self) -> Vec<u8> {
         let mut pins = self.gpio.clone();
+        pins.extend(self.doorbell);
         for (name, instance) in &self.instances {
             pins.extend(instance.pins(name).into_iter().map(|(_, p)| p));
         }
@@ -427,6 +435,10 @@ impl Declaration {
             for pin in &core.gpio {
                 validate_pin(*pin)?;
                 claim_pin(&mut pins, *pin, format!("{owner}.gpio"))?;
+            }
+            if let Some(pin) = core.doorbell {
+                validate_pin(pin)?;
+                claim_pin(&mut pins, pin, format!("{owner}.doorbell"))?;
             }
             // Each listed pin becomes one generated field, so a repeat must fail here like a
             // repeated `gpio` pin rather than as uncompilable generated code.

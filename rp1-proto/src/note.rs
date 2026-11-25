@@ -388,8 +388,8 @@ impl<'a> ShmRegion<'a> {
 }
 
 /// LINK (non-critical, one per note): what each core declared for the link page. The status
-/// words are at `crate::status::EPOCH`. Per core: a byte reserved for a doorbell pin (0xff),
-/// the host interrupt vector (0 = none), the heartbeat period in ms (0 = none).
+/// words are at `crate::status::EPOCH`. Per core: the doorbell pin (0xff = none), the host
+/// interrupt vector (0 = none), the heartbeat period in ms (0 = none).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Link {
     /// proc0, proc1.
@@ -397,6 +397,8 @@ pub struct Link {
 }
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LinkCore {
+    /// Bank-0 pin whose `PROCn_INTF` force bit Linux sets to interrupt this core.
+    pub doorbell: Option<u8>,
     /// MSI-X vector this core raises towards Linux.
     pub host_irq_vector: Option<u8>,
     /// Declared `heartbeat.period_ms`.
@@ -412,12 +414,19 @@ impl Link {
         {
             return Err(Error::Invalid);
         }
-        let core = |b: &[u8]| LinkCore {
-            host_irq_vector: (b[1] != 0).then_some(b[1]),
-            heartbeat_ms: Some(u16::from_le_bytes([b[2], b[3]])).filter(|ms| *ms != 0),
+        let core = |b: &[u8]| {
+            Ok(LinkCore {
+                doorbell: match b[0] {
+                    0xff => None,
+                    pin @ 0..=27 => Some(pin),
+                    _ => return Err(Error::Invalid),
+                },
+                host_irq_vector: (b[1] != 0).then_some(b[1]),
+                heartbeat_ms: Some(u16::from_le_bytes([b[2], b[3]])).filter(|ms| *ms != 0),
+            })
         };
         Ok(Self {
-            cores: [core(&v[4..8]), core(&v[8..12])],
+            cores: [core(&v[4..8])?, core(&v[8..12])?],
         })
     }
     pub fn encode(&self) -> [u8; LINK_LEN] {
@@ -425,7 +434,7 @@ impl Link {
         v[0] = 1;
         v[2..4].copy_from_slice(&(crate::status::EPOCH as u16).to_le_bytes());
         for (b, c) in v[4..].as_chunks_mut::<4>().0.iter_mut().zip(&self.cores) {
-            b[0] = 0xff;
+            b[0] = c.doorbell.unwrap_or(0xff);
             b[1] = c.host_irq_vector.unwrap_or(0);
             b[2..].copy_from_slice(&c.heartbeat_ms.unwrap_or(0).to_le_bytes());
         }
@@ -527,16 +536,21 @@ mod tests {
                     ..LinkCore::default()
                 },
                 LinkCore {
+                    doorbell: Some(27),
                     host_irq_vector: Some(29),
                     heartbeat_ms: None,
                 },
             ],
         };
         let v = link.encode();
-        assert_eq!(v, [1, 0, 0x40, 0, 0xff, 0, 0xe8, 3, 0xff, 29, 0, 0]);
+        assert_eq!(v, [1, 0, 0x40, 0, 0xff, 0, 0xe8, 3, 27, 29, 0, 0]);
         assert_eq!(Link::parse(&v), Ok(link));
+        assert_eq!(Link::parse(&v).unwrap().cores[0].doorbell, None);
         let mut bad = v;
         bad[2] = 0x50;
+        assert_eq!(Link::parse(&bad), Err(Error::Invalid));
+        let mut bad = v;
+        bad[8] = 28;
         assert_eq!(Link::parse(&bad), Err(Error::Invalid));
         assert_eq!(Link::parse(&v[..11]), Err(Error::Invalid));
     }

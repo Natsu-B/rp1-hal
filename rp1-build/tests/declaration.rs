@@ -206,6 +206,31 @@ fn gpio_irq_pin_twice() {
     );
 }
 #[test]
+fn doorbell_owns_its_pin() {
+    let d = parse("[proc0]\ndoorbell=26\n[proc1]\ndoorbell=27");
+    d.validate().unwrap();
+    assert_eq!((d.proc0.doorbell, d.proc1.doorbell), (Some(26), Some(27)));
+    error(
+        "[proc1]\ngpio=[27]\ndoorbell=27",
+        &[
+            "E1",
+            "GPIO 27 is claimed by both proc1.gpio and proc1.doorbell",
+        ],
+    );
+    error(
+        "[proc0]\ndoorbell=27\n[proc1]\ndoorbell=27",
+        &[
+            "E1",
+            "GPIO 27 is claimed by both proc0.doorbell and proc1.doorbell",
+        ],
+    );
+    error(
+        "[proc1]\ndoorbell=27\ngpio_irq=[27]",
+        &["E5", "gpio_irq 27 is not in proc1.gpio"],
+    );
+    error("[proc1]\ndoorbell=54", &["E2", "GPIO 54 is out of range"]);
+}
+#[test]
 fn unknown_keys_and_hardware_cs_are_rejected() {
     error(
         "[proc1]\nuart9={tx=4,rx=5}",

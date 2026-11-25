@@ -71,7 +71,7 @@ pub(crate) fn descriptor_with_layout(
             claims.extend([kind, core]);
             short(&mut claims, id);
         }
-        if !c.gpio_irq.is_empty() {
+        if !c.gpio_irq.is_empty() || c.doorbell.is_some() {
             claims.extend([ownership_kind::GPIO_IRQ_BANK, core]);
             short(&mut claims, 0);
         }
@@ -116,6 +116,7 @@ pub(crate) fn descriptor_with_layout(
     string(&mut v, "linux_2712.img")?;
     tlv(&mut out, BOOT, true, &v);
     let core = |c: &crate::metadata::Core| LinkCore {
+        doorbell: c.doorbell,
         host_irq_vector: c.host_irq.then_some(rp1_proto::irq::VECTOR as u8),
         heartbeat_ms: c.heartbeat.map(|h| h.period_ms),
     };

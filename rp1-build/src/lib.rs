@@ -245,9 +245,11 @@ fn resources(
             .iter()
             .map(|(name, instance)| instance_resource(name, instance))
             .collect::<Result<Vec<_>>>()?;
+        // The doorbell pin's force bit belongs to the doorbell, not to a `Pin`.
         let pins: Vec<u8> = c
             .pins()
             .into_iter()
+            .filter(|p| Some(*p) != c.doorbell)
             .filter(|p| !parts.iter().any(|(_, _, used)| used.contains(p)))
             .collect();
         s.push_str(&format!("pub struct Proc{index}Pins {{\n"));
@@ -257,7 +259,7 @@ fn resources(
         let lines: Vec<_> = board::IRQ_VERIFIED
             .iter()
             .filter(|line| match line.owner {
-                board::IrqOwner::GpioBank0 => !c.gpio_irq.is_empty(),
+                board::IrqOwner::GpioBank0 => !c.gpio_irq.is_empty() || c.doorbell.is_some(),
                 board::IrqOwner::Alarm(alarm) => c.timer.contains(&format!("ALARM{alarm}")),
                 // By block, not name: the ADC's line is ADC_FIFO.
                 board::IrqOwner::Instance(_) => c.instances.keys().any(|key| {
@@ -509,6 +511,28 @@ mod tests {
             }
             assert_eq!(irq_fields(&source, core), expected);
         }
+    }
+
+    #[test]
+    fn doorbell_adds_one_bank_line_and_no_pin_resource() {
+        let d: metadata::Declaration =
+            toml::from_str("schema=2\n[proc1]\ngpio=[22]\ngpio_irq=[22]\ndoorbell=27").unwrap();
+        d.validate().unwrap();
+        let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
+        assert_eq!(
+            irq_fields(&source, 1),
+            "pub IO_BANK0: ::rp1_rt::interrupt::Line<0>,\n\
+             pub gpio22: ::rp1_hal::gpio::PinIrq<22, 1>,\n"
+        );
+        assert!(!source.contains("gpio27"), "{source}");
+        let d: metadata::Declaration = toml::from_str("schema=2\n[proc0]\ndoorbell=26").unwrap();
+        d.validate().unwrap();
+        let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
+        assert_eq!(
+            irq_fields(&source, 0),
+            "pub IO_BANK0: ::rp1_rt::interrupt::Line<0>,\n"
+        );
+        assert!(!source.contains("gpio26"), "{source}");
     }
 
     #[test]

@@ -407,23 +407,28 @@ impl Declaration {
                     }
                     match r.notify.as_deref() {
                         None | Some("poll") => {}
-                        // The producing core raises `rp1:irq` (rp1_link::notify), so it must own
-                        // the host interrupt. Linux -> RP1 keeps the doorbell or polling.
+                        // RP1 -> Linux: the producing core raises `rp1:irq`, so it must own the
+                        // host interrupt. Linux -> RP1: Linux raises the owning core's doorbell.
                         Some("irq") => {
-                            if r.direction.as_deref() != Some("rp1-to-linux") {
-                                return Err("notify=irq is only for rp1-to-linux rings \
-                                            (linux-to-rp1 uses the doorbell or polling)"
-                                    .into());
-                            }
                             let owner = if r.core == "proc0" {
                                 &self.proc0
                             } else {
                                 &self.proc1
                             };
-                            if !owner.host_irq {
+                            if r.direction.as_deref() == Some("rp1-to-linux") && !owner.host_irq {
                                 return Err(format!(
                                     "notify=irq on ring {} requires {}.host_irq = true \
                                      (the producing core raises rp1:irq)",
+                                    r.name, r.core
+                                )
+                                .into());
+                            }
+                            if r.direction.as_deref() == Some("linux-to-rp1")
+                                && owner.doorbell.is_none()
+                            {
+                                return Err(format!(
+                                    "notify=irq on ring {} requires {}.doorbell \
+                                     (Linux raises the reading core's doorbell)",
                                     r.name, r.core
                                 )
                                 .into());
