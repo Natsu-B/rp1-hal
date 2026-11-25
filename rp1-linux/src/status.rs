@@ -115,7 +115,7 @@ impl Monitor {
         let cores = [0, 1].map(|core| self.core(s::BLOCKS[core]));
         let shm = match read(link::SHM_STATUS) {
             0 => ShmState::NotEnabled,
-            1 => ShmState::Ready,
+            link::SHM_READY => ShmState::Ready,
             link::SHM_WINDOW_LOST => ShmState::WindowLost,
             code => ShmState::Error(code),
         };

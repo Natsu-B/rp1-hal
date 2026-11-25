@@ -161,7 +161,7 @@ impl Firmware {
         }
         link.write(rp1_proto::link::SHM_REQUEST, 1);
         let start = Instant::now();
-        while link.read(rp1_proto::link::SHM_STATUS) != 1 {
+        while link.read(rp1_proto::link::SHM_STATUS) != rp1_proto::link::SHM_READY {
             if start.elapsed() > Duration::from_secs(10) {
                 return Err("shm initialization timed out".into());
             }
