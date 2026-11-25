@@ -169,6 +169,64 @@ pub fn linux_signal(pin: u8, function: &str) -> Option<Signal> {
     row.iter().copied().find(|s| linux_family(*s, function))
 }
 
+/// The pinmux function name Linux's pinctrl-rp1 gives a legacy numeric `brcm,function` (a
+/// BCM2835 FSEL: 0 input, 1 output, 4..7 ALT0..ALT3, 3 ALT4, 2 ALT5) on `pin`, as its
+/// `rp1_pctl_legacy_map_func` does with `legacy_fsel_map`. Input and output are `gpio` on
+/// every pin; `None` where the driver has no function or rejects the value.
+///
+/// ```
+/// use rp1_pinmux::linux_legacy_function;
+/// assert_eq!(linux_legacy_function(19, 3), Some("spi1"));
+/// assert_eq!(linux_legacy_function(18, 2), Some("pwm0"));
+/// assert_eq!(linux_legacy_function(18, 1), Some("gpio"));
+/// assert_eq!(linux_legacy_function(18, 5), None);
+/// ```
+pub fn linux_legacy_function(pin: u8, fsel: u32) -> Option<&'static str> {
+    let alt = match fsel {
+        0 | 1 => return Some("gpio"),
+        2 => 5,
+        3 => 4,
+        4..=7 => fsel as usize - 4,
+        _ => return None,
+    };
+    LEGACY_ALT
+        .get(usize::from(pin))
+        .map(|row| row[alt])
+        .filter(|name| !name.is_empty())
+}
+
+/// pinctrl-rp1's `legacy_fsel_map` rows: the functions of BCM2835 ALT0..ALT5 on GPIO0..27.
+const LEGACY_ALT: [[&str; 6]; 28] = [
+    ["i2c0", "", "dpi", "spi2", "uart1", ""],
+    ["i2c0", "", "dpi", "spi2", "uart1", ""],
+    ["i2c1", "", "dpi", "spi2", "uart1", ""],
+    ["i2c1", "", "dpi", "spi2", "uart1", ""],
+    ["gpclk0", "", "dpi", "spi3", "uart2", "i2c2"],
+    ["gpclk1", "", "dpi", "spi3", "uart2", "i2c2"],
+    ["gpclk2", "", "dpi", "spi3", "uart2", "i2c3"],
+    ["spi0", "", "dpi", "spi3", "uart2", "i2c3"],
+    ["spi0", "", "dpi", "", "uart3", "i2c0"],
+    ["spi0", "", "dpi", "", "uart3", "i2c0"],
+    ["spi0", "", "dpi", "", "uart3", "i2c1"],
+    ["spi0", "", "dpi", "", "uart3", "i2c1"],
+    ["pwm0", "", "dpi", "spi5", "uart4", "i2c2"],
+    ["pwm0", "", "dpi", "spi5", "uart4", "i2c2"],
+    ["uart0", "", "dpi", "spi5", "uart4", ""],
+    ["uart0", "", "dpi", "spi5", "uart4", ""],
+    ["", "", "dpi", "uart0", "spi1", ""],
+    ["", "", "dpi", "uart0", "spi1", ""],
+    ["i2s0", "", "dpi", "", "spi1", "pwm0"],
+    ["i2s0", "", "dpi", "", "spi1", "pwm0"],
+    ["i2s0", "", "dpi", "", "spi1", "gpclk0"],
+    ["i2s0", "", "dpi", "", "spi1", "gpclk1"],
+    ["sd0", "", "dpi", "", "", "i2c3"],
+    ["sd0", "", "dpi", "", "", "i2c3"],
+    ["sd0", "", "dpi", "", "", "spi2"],
+    ["sd0", "", "dpi", "", "", "spi3"],
+    ["sd0", "", "dpi", "", "", "spi5"],
+    ["sd0", "", "dpi", "", "", ""],
+];
+
 /// Whether Linux names `signal`'s function family `name` (it groups roles, not signals).
 fn linux_family(signal: Signal, name: &str) -> bool {
     let numbered = |prefix: &str, n: u8, suffix: &str| {

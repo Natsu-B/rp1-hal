@@ -264,4 +264,29 @@ fn linux_names_match_the_driver_source_when_provided() {
         .filter(|row| row[0].parse::<usize>().is_ok_and(|pin| pin < 28))
         .collect();
     assert_eq!(derived, linux_rows());
+
+    // `LEGACY_MAP(n, alt0, .., alt5)` rows against `rp1_pinmux::linux_legacy_function`.
+    let legacy: Vec<Vec<String>> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("LEGACY_MAP("))
+        .map(|row| {
+            row.trim_end_matches(',')
+                .trim_end_matches(')')
+                .split(',')
+                .map(|f| f.trim().to_string())
+                .collect()
+        })
+        .collect();
+    assert_eq!(legacy.len(), 28);
+    for row in legacy {
+        let pin: u8 = row[0].parse().unwrap();
+        for (alt, fsel) in [4, 5, 6, 7, 3, 2].into_iter().enumerate() {
+            let want = (row[alt + 1] != "_").then_some(row[alt + 1].as_str());
+            assert_eq!(
+                rp1_pinmux::linux_legacy_function(pin, fsel),
+                want,
+                "GPIO{pin} ALT{alt}"
+            );
+        }
+    }
 }
