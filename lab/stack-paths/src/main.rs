@@ -2,7 +2,8 @@
 //! handlers and `S_plat` (contract §5.5). The roots are proc0's IRQ57, IRQ53, HardFault,
 //! MemManage, BusFault, UsageFault and NMI vectors, plus any `--root`. Exits non-zero unless every root has a bound, `S_plat`
 //! fits in the image's platform margin (`__stack_margin0`, which rp1-build adds to proc0's
-//! stack) and proc0's stack (`__stack_size0`) is larger than that margin.
+//! stack), proc0's stack (`__stack_size0`) is larger than that margin, and both cores
+//! pass the configurable fault vector, entry and startup checks (P2e/P5).
 //! `--size` first prints the image's size report ([`stack_paths::size`]).
 //! `--cut <symbol>` (diagnostic) counts calls to that function as 0 bytes and noreturn; the
 //! result is then `stack_static=DIAG`, never PASS, and the exit status is non-zero.
@@ -71,14 +72,19 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             println!("{line}");
         }
     }
-    let vectors = file
-        .section_by_name(".vectors")
-        .ok_or("missing .vectors")?
-        .data()?;
-    let vector = |slot: usize| -> Result<u32, String> {
-        let b = vectors
-            .get(slot * 4..slot * 4 + 4)
-            .ok_or("short vector table")?;
+    let section = file.section_by_name(".vectors").ok_or("missing .vectors")?;
+    let vectors = section.data()?;
+    let vector = |core: usize, slot: usize| -> Result<u32, String> {
+        let base = u64::from(symbol(if core == 0 {
+            "__vectors0"
+        } else {
+            "__vectors1"
+        })?);
+        let offset = base
+            .checked_sub(section.address())
+            .ok_or("invalid vector base")?;
+        let start = usize::try_from(offset).map_err(|_| "vector offset out of range")? + slot * 4;
+        let b = vectors.get(start..start + 4).ok_or("short vector table")?;
         Ok(u32::from_le_bytes(b.try_into().unwrap()))
     };
     let objdump = std::env::var_os("RP1_OBJDUMP").unwrap_or_else(|| "arm-none-eabi-objdump".into());
@@ -90,6 +96,17 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
     }
     let program = Program::parse(&String::from_utf8(out.stdout)?);
+    let mut exception_vectors = [[0; 7]; 2];
+    for (core, words) in exception_vectors.iter_mut().enumerate() {
+        for (slot, word) in words.iter_mut().enumerate() {
+            *word = vector(core, slot)?;
+        }
+    }
+    if let Err(f) = program.check_exceptions(exception_vectors) {
+        println!("stack_static=FAIL reason={} at={}", f.reason, f.at);
+        return Ok(false);
+    }
+    println!("stack_fault_setup=PASS");
 
     let mut cut = std::collections::HashSet::new();
     for name in &cut_names {
@@ -101,7 +118,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     }
     let mut roots = Vec::new();
     for (slot, label) in VECTORS {
-        roots.push((vector(slot)?, label));
+        roots.push((vector(0, slot)?, label));
     }
     for name in &extra {
         let address = program
@@ -110,6 +127,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         roots.push((address, "extra"));
     }
     let mut bytes = Vec::new();
+    let mut failure = None;
     for &(address, label) in &roots {
         let name = program.name_at(address).unwrap_or("?");
         match program.bound_cut(address, &cut) {
@@ -118,24 +136,27 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 bytes.push(b.bytes);
             }
             Err(f) => {
-                println!(
-                    "stack_static=FAIL reason={} at={} root={name}",
-                    f.reason, f.at
-                );
-                return Ok(false);
+                failure.get_or_insert_with(|| {
+                    format!(
+                        "stack_static=FAIL reason={} at={} root={name}",
+                        f.reason, f.at
+                    )
+                });
             }
         }
+    }
+    if let Some(line) = failure {
+        println!("{line}");
+        return Ok(false);
     }
     // NMI preempts every other handler, so a real NMI handler adds its bound and one frame. The
     // default handler there is not counted: the platform enables no NMI source (HYP).
     let default = stack_paths::size::symbol(&file, DEFAULT_HANDLER).ok();
-    let nmi = (default.map(|a| a & !1) != Some(u64::from(vector(2)? & !1))).then_some(bytes[6]);
+    let nmi = (default.map(|a| a & !1) != Some(u64::from(vector(0, 2)? & !1))).then_some(bytes[6]);
     let handlers = Handlers {
         h57: bytes[0],
         h53: bytes[1],
         hhard: bytes[2],
-        // MemManage, BusFault and UsageFault, whichever handler they hold: with the default
-        // handler (the configurable faults disabled) this is at most H57, so S_plat stays.
         hfault: bytes[3].max(bytes[4]).max(bytes[5]),
         hnmi: nmi,
     };

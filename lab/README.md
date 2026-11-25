@@ -349,6 +349,9 @@ declared or default, and gives it to the linker as `__stack_margin0`: proc0's de
 `stack-paths` is a host tool. It disassembles a firmware ELF with `arm-none-eabi-objdump`
 (`RP1_OBJDUMP` overrides it) and bounds the stack use of the proc0 platform roots, which it
 takes from the vector table: IRQ57, IRQ53, HardFault, MemManage, BusFault, UsageFault and NMI.
+It also checks both cores' fault vectors and reset paths (P2e/P5). A passing check verifies
+that the fault stub restores its saved EXC_RETURN and entry SP after the ordinary Rust call,
+and that startup sets CCR.STKALIGN before enabling the faults and clearing PRIMASK.
 It reads proc0's stack and its
 platform margin from the ELF (`__stack_size0`, `__stack_margin0`), prints `S_plat` and fails
 when `S_plat` exceeds the margin, or the margin leaves no user stack (`reason=proc0-stack`). An
@@ -357,6 +360,7 @@ ELF without `__stack_margin0` (built before rp1-build had it) is an error (exit 
 ```sh
 cargo rp1 build -p irq-proof --target thumbv7m-none-eabi --release
 cargo run -p stack-paths -- target/thumbv7m-none-eabi/release/irq-proof
+# stack_fault_setup=PASS
 # stack root=<symbol> vector=<slot> bytes=N   (one line per root)
 # stack_static=PASS s_plat=N h57=N h53=N hhard=N hfault=N hnmi=none margin=768 stack0=2816
 # stack_static=FAIL reason=<code> at=<symbol+offset> root=<symbol>        (exit status 1)
@@ -373,7 +377,7 @@ recursion, or an unresolved indirect call or jump. `--root <symbol>` adds a root
 A panic in a handler runs the panic handler on the handler's stack, so the panic path is part
 of the bound and must not panic again: `rp1_rt::status::record_panic` has no bounds check.
 
-STATIC (2026-11-25, release builds, rustc 1.99.1):
+STATIC baseline before configurable fault support (2026-11-25, release builds, rustc 1.99.1):
 
 | Firmware | `stack_static` | H57 | H53 | Hhard | Hfault | Hnmi | `S_plat` |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -383,8 +387,8 @@ STATIC (2026-11-25, release builds, rustc 1.99.1):
 | shm-firmware (ring-dma) | PASS | 448 | 8 | 8 | 8 | none | 572 |
 | irq-sweep, pwm-loopback, scmi-starvation | FAIL `unresolved-indirect-call` in `core::fmt::write` | - | - | - | - | - | - |
 
-Every image has `stack0=2816` and `margin=768` from the ELF, and the default handler in the
-fault and NMI vectors.
+Each baseline image had `stack0=2816` and `margin=768` from the ELF, and the default handler
+in the fault and NMI vectors.
 
 The three FAIL images log a message from their panic handler; `log!` formats through
 `core::fmt::write`, whose calls through the `Write` vtable the tool cannot resolve. Their

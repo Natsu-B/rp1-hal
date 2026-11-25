@@ -1,4 +1,4 @@
-//! K1 (contract §10.1 PR-D): synthetic `objdump -d --no-show-raw-insn` fragments.
+//! Contract §10.1 K1, P2e and P5: synthetic `objdump -d --no-show-raw-insn` fragments.
 
 use super::*;
 
@@ -32,6 +32,162 @@ fn fails(functions: &[(&str, u32, &[&str])], reason: &str, at: &str) {
 }
 
 const LEAF: (&str, u32, &[&str]) = ("leaf", 0x3000, &["push {r4, lr}", "pop {r4, pc}"]);
+
+const EXCEPTION_VECTORS: [[u32; 7]; 2] = [
+    [0, 0x401, 0, 0x1001, 0x1101, 0x1101, 0x1101],
+    [0, 0x40d, 0, 0x1001, 0x1101, 0x1101, 0x1101],
+];
+
+const EXCEPTIONS: &str = "+00000400 <__rp1_reset0>:
+ 400: cpsid i
+ 402: ldr r0, [pc, #84]  @ (458 <__rp1_setup_exceptions+0x40>)
+ 404: msr MSP, r0
+ 408: movs r0, #0
+ 40a: b.n 418 <__rp1_setup_exceptions>
+0000040c <__rp1_reset1>:
+ 40c: cpsid i
+ 40e: ldr r0, [pc, #72]  @ (458 <__rp1_setup_exceptions+0x40>)
+ 410: msr MSP, r0
+ 414: movs r0, #1
+ 416: b.n 418 <__rp1_setup_exceptions>
+00000418 <__rp1_setup_exceptions>:
+ 418: bl 2000 <__rp1_initialize>
+ 41c: ldr r1, [pc, #60]
+ 41e: ldr r2, [pc, #64]
+ 420: str r2, [r1, #0]
+ 422: ldr r2, [r1, #8]
+ 424: orr.w r2, r2, #512  @ 0x200
+ 428: str r2, [r1, #8]
+ 42a: movs r2, #0
+ 42c: msr BASEPRI, r2
+ 430: cpsie f
+ 432: dsb sy
+ 436: isb sy
+ 43a: movs r2, #32
+ 43c: strb r2, [r1, #12]
+ 43e: strb r2, [r1, #13]
+ 440: strb r2, [r1, #14]
+ 442: ldr r2, [r1, #24]
+ 444: orr.w r2, r2, #458752  @ 0x70000
+ 448: str r2, [r1, #24]
+ 44a: dsb sy
+ 44e: isb sy
+ 452: cpsie i
+ 454: bx r0
+ 456: movs r0, r0
+ 458: .word 0x10004000
+ 45c: .word 0xe000ed0c
+ 460: .word 0x05fa0000
+00001000 <__rp1_hardfault>:
+ 1000: mov r0, sp
+ 1002: mov r1, lr
+ 1004: b.w 1400 <rp1_hardfault>
+00001100 <__rp1_fault>:
+ 1100: tst.w lr, #4
+ 1104: bne.n 1114 <__rp1_fault_terminal>
+ 1106: mov r0, sp
+ 1108: push {r0, lr}
+ 110a: bl 1200 <rp1_fault_rust>
+ 110e: ldmia.w sp!, {r0, lr}
+ 1112: bx lr
+00001114 <__rp1_fault_terminal>:
+ 1114: b.w 1300 <rp1_fault_terminal>
+00001200 <rp1_fault_rust>:
+ 1200: push {r4, lr}
+ 1202: pop {r4, pc}
+00001300 <rp1_fault_terminal>:
+ 1300: wfe
+ 1302: b.n 1300 <rp1_fault_terminal>
+00001400 <rp1_hardfault>:
+ 1400: wfe
+ 1402: b.n 1400 <rp1_hardfault>
+00002000 <__rp1_initialize>:
+ 2000: bx lr
+";
+
+#[test]
+fn p2e_fault_vectors_and_return() {
+    let p = Program::parse(EXCEPTIONS);
+    p.check_exceptions(EXCEPTION_VECTORS).unwrap();
+    assert_eq!(
+        p.bound(0x1101).unwrap(),
+        Bound {
+            bytes: 16,
+            returns: true
+        }
+    );
+    for core in 0..2 {
+        for slot in 3..7 {
+            let mut wrong = EXCEPTION_VECTORS;
+            wrong[core][slot] &= !1;
+            assert_eq!(
+                p.check_exceptions(wrong).unwrap_err().reason,
+                "exception-vector"
+            );
+        }
+    }
+}
+
+#[test]
+fn p2e_checks_exc_return_provenance_and_the_rust_path() {
+    for (from, to, reason) in [
+        ("tst.w lr, #4", "tst.w lr, #8", "fault-entry"),
+        ("bne.n 1114", "beq.n 1114", "fault-entry"),
+        ("bl 1200", "b.w 1200", "fault-entry"),
+        ("push {r0, lr}", "push {r0, r1, lr}", "fault-entry"),
+        (
+            "ldmia.w sp!, {r0, lr}",
+            "ldmia.w sp!, {r0, r1}",
+            "fault-entry",
+        ),
+        (
+            "1112: bx lr",
+            "1110: mov lr, r0\n 1112: bx lr",
+            "fault-entry",
+        ),
+        ("pop {r4, pc}", "bx lr", "unbalanced-return"),
+        ("pop {r4, pc}", "blx r4", "unresolved-indirect-call"),
+        ("pop {r4, pc}", "b.n 1202", "fault-rust-no-return"),
+        ("wfe\n 1302:", "bx lr\n 1302:", "fault-terminal-returns"),
+    ] {
+        let p = Program::parse(&EXCEPTIONS.replacen(from, to, 1));
+        assert_eq!(
+            p.check_exceptions(EXCEPTION_VECTORS).unwrap_err().reason,
+            reason,
+            "{from} -> {to}"
+        );
+    }
+}
+
+#[test]
+fn p5_checks_fault_priority_enables_and_write_order_on_both_cores() {
+    for (from, to) in [
+        ("#32", "#64"), // SHPR1 priority.
+        ("strb r2, [r1, #12]", "strb r2, [r1, #15]"),
+        ("strb r2, [r1, #13]", "strb r2, [r1, #15]"),
+        ("strb r2, [r1, #14]", "strb r2, [r1, #15]"),
+        ("#458752", "#196608"), // Missing a SHCSR enable bit.
+        ("0xe000ed0c", "0xe000ed08"),
+        ("orr.w r2, r2, #512", "orr.w r2, r2, #256"),
+        ("428: str r2, [r1, #8]", "428: cpsie i"), // PRIMASK cleared early.
+        ("42a: movs r2, #0", "42a: str r2, [r1, #24]"),
+        ("428: str r2, [r1, #8]", "428: str r2, [r1, #24]"), // Faults before STKALIGN.
+    ] {
+        let p = Program::parse(&EXCEPTIONS.replacen(from, to, 1));
+        assert_eq!(
+            p.check_exceptions(EXCEPTION_VECTORS).unwrap_err().reason,
+            "fault-startup-order"
+        );
+    }
+    let p = Program::parse(&EXCEPTIONS.replace("416: b.n 418", "416: b.n 2000"));
+    assert_eq!(
+        p.check_exceptions(EXCEPTION_VECTORS).unwrap_err(),
+        Fail {
+            reason: "fault-reset-path",
+            at: "__rp1_reset1".into()
+        }
+    );
+}
 
 #[test]
 fn nested_calls_add_frames() {
