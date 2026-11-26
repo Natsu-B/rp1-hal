@@ -1,4 +1,4 @@
-use crate::{Error, poll, write};
+use crate::{Error, gpio, poll, write};
 use core::{
     fmt::{self, Write},
     sync::atomic::{AtomicBool, AtomicU32, Ordering, compiler_fence},
@@ -52,8 +52,8 @@ impl Logger {
         let uart_hz = crate::clocks::uart_hz().ok_or(Error::Precondition)?;
         write(0x4001_7004, 1 << 19);
         for pin in [14, 15] {
-            write(0x400d_0004 + pin * 8, 4);
-            write(0x400f_0004 + pin * 4, 0x46);
+            write(gpio::ctrl(pin), 4);
+            write(gpio::pad(pin), 0x46);
         }
         // The bring-up fails on the baud rate or on one of its bounded waits.
         crate::uart::start(

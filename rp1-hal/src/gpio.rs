@@ -15,7 +15,7 @@ pub enum Event {
 const IRQRESET: u32 = 1 << 28;
 const SET: usize = 0x2000;
 const CLR: usize = 0x3000;
-const fn ctrl(n: u8) -> usize {
+pub(crate) const fn ctrl(n: u8) -> usize {
     0x400d_0004 + n as usize * 8
 }
 const fn inte(core: u8) -> usize {
@@ -74,12 +74,13 @@ impl<const N: u8, const CORE: u8> PinIrq<N, CORE> {
     }
 }
 
-/// Pull resistors for a bank-0 pad.
+/// Pull resistors for a bank-0 pad, encoded as PADS_BANK0 bits PUE (3) and PDE (2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pull {
     None = 0,
     Up = 8,
     Down = 4,
+    /// Enables both PUE and PDE to hold the last driven level.
     BusKeep = 12,
 }
 
@@ -102,9 +103,13 @@ pub enum SlewRate {
 /// Electrical settings of a bank-0 pad.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PadConfig {
+    /// Pull resistor or bus keeper setting.
     pub pull: Pull,
+    /// Output drive strength.
     pub drive: DriveStrength,
+    /// Output slew rate.
     pub slew: SlewRate,
+    /// Enables Schmitt-trigger input hysteresis.
     pub schmitt: bool,
 }
 
@@ -145,7 +150,7 @@ impl PadConfig {
     }
 }
 
-const fn pad(n: u8) -> usize {
+pub(crate) const fn pad(n: u8) -> usize {
     0x400f_0004 + n as usize * 4
 }
 
@@ -188,14 +193,14 @@ impl<const N: u8> Pin<N> {
         Self { _mode: PhantomData }
     }
     /// Selects function `fsel` with the pad output disabled (`OD | idle`) while the mux switches,
-    /// then sets the pad to `pad` (PADS_BANK0: OD 7, IE 6, DRIVE 5:4, PUE 3, PDE 2, SCHMITT 1,
+    /// then writes `pad_bits` (PADS_BANK0: OD 7, IE 6, DRIVE 5:4, PUE 3, PDE 2, SCHMITT 1,
     /// SLEWFAST 0).
-    pub(crate) fn into_alternate(self, fsel: u8, idle: u32, pad: u32) -> Pin<N, Alternate> {
+    pub(crate) fn into_alternate(self, fsel: u8, idle: u32, pad_bits: u32) -> Pin<N, Alternate> {
         write(0x4001_7004, 1 << 19);
-        write(0x400f_0004 + N as usize * 4, 0x80 | idle);
+        write(pad(N), 0x80 | idle);
         write(0x400e_3004, 1 << N);
-        write(0x400d_0004 + N as usize * 8, u32::from(fsel));
-        write(0x400f_0004 + N as usize * 4, pad);
+        write(ctrl(N), u32::from(fsel));
+        write(pad(N), pad_bits);
         Pin { _mode: PhantomData }
     }
     /// Routes the pin as a GPIO output with the default pad settings.
