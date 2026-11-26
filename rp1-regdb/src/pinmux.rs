@@ -110,7 +110,7 @@ pub fn generate_hal(bank: &Bank0, output: &Path) -> Result<()> {
 }
 
 /// The rp1-hal pin trait and instance of a bank-0 signal name, e.g. `UART2_TX` →
-/// `"uart::Tx<2>"`; `None` for signals the HAL does not route.
+/// `"uart::TxPin<2>"`; `None` for signals the HAL does not route.
 fn hal_route(name: &str) -> Option<String> {
     if let Some(channel) = name.strip_prefix("PWM0[").and_then(|s| s.strip_suffix(']')) {
         let channel: u8 = channel.parse().ok()?;
@@ -120,8 +120,8 @@ fn hal_route(name: &str) -> Option<String> {
     let family = block.trim_end_matches(|c: char| c.is_ascii_digit());
     let n: u8 = block[family.len()..].parse().ok()?;
     let route = match (family, role) {
-        ("UART", "TX") => "uart::Tx",
-        ("UART", "RX") => "uart::Rx",
+        ("UART", "TX") => "uart::TxPin",
+        ("UART", "RX") => "uart::RxPin",
         ("I2C", "SDA") => "i2c::Sda",
         ("I2C", "SCL") => "i2c::Scl",
         ("SPI", _) if n == 4 => return None,

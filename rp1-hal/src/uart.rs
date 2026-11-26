@@ -9,6 +9,8 @@ use crate::{
     scmi::Registers,
 };
 use core::fmt;
+use fugit::{HertzU32, MicrosDurationU32};
+use rp1_rt::interrupt::free;
 
 macro_rules! offsets {
     ($($name:ident = $field:ident),* $(,)?) => {$(const $name: usize = core::mem::offset_of!(RegisterBlock, $field);)*};
@@ -41,16 +43,18 @@ const fn reset_bit(n: u8) -> u32 {
 /// Bound of the two waits of the bring-up (reset done, transmitter idle).
 const START_TIMEOUT_US: u32 = 10_000;
 /// [`Uart::set_read_timeout`] until changed.
-pub const DEFAULT_READ_TIMEOUT_US: u32 = 100_000;
+pub const DEFAULT_READ_TIMEOUT: MicrosDurationU32 = MicrosDurationU32::millis(100);
 /// Bit times for a full TX FIFO to leave the line: 32 queued characters and the one being
 /// shifted, 10 bits each at 8N1.
 const FULL_FIFO_BITS: u64 = 330;
+const RX_READY: u32 = int::RX | int::RT;
+const RX_INTERRUPTS: u32 = RX_READY | int::FE | int::PE | int::BE | int::OE;
 
 /// Bound of the TX waits (room in the FIFO, drain) at `baud`. Without flow control the
 /// transmitter drains at the baud rate whatever the peer does, so the bound follows from it:
 /// twice a full FIFO, plus 1 ms for a core stalled by the other core or a handler. A bound
 /// set by the caller for reads would cut `free` short and make its `abort` fallback truncate.
-fn tx_bound_us(baud: fugit::HertzU32) -> u32 {
+fn tx_bound_us(baud: HertzU32) -> u32 {
     let full_fifo_us = (FULL_FIFO_BITS * 1_000_000).div_ceil(u64::from(baud.raw()));
     u32::try_from(2 * full_fifo_us + 1_000).unwrap_or(u32::MAX)
 }
@@ -60,11 +64,11 @@ mod sealed {
     impl<const N: u8> Pin for crate::gpio::Pin<N> {}
 }
 /// TX route of UART N; `FUNC` is the GPIO function select (`crate::pinmux`).
-pub trait Tx<const N: u8>: sealed::Pin {
+pub trait TxPin<const N: u8>: sealed::Pin {
     const FUNC: u8;
 }
 /// RX route of UART N.
-pub trait Rx<const N: u8>: sealed::Pin {
+pub trait RxPin<const N: u8>: sealed::Pin {
     const FUNC: u8;
 }
 /// Pad while the mux switches (output disabled) and for RX: input enable, pull-up (line idle),
@@ -125,10 +129,24 @@ pub struct Token<const N: u8> {
 }
 /// A configured UART that owns its TX and RX pins.
 pub struct Uart<const N: u8, const TX: u8, const RX: u8> {
-    _tx: Pin<TX, Alternate>,
-    _rx: Pin<RX, Alternate>,
-    read_timeout_us: u32,
-    tx_bound_us: u32,
+    tx: Tx<N, TX>,
+    rx: Rx<N, RX>,
+}
+
+/// The transmitter and routed TX pin of UART N.
+///
+/// Can be held in a core-local interrupt mutex. Keep both halves on the owning core.
+pub struct Tx<const N: u8, const PIN: u8> {
+    pin: Pin<PIN, Alternate>,
+    bound_us: u32,
+}
+
+/// The receiver and routed RX pin of UART N.
+///
+/// Can be held in a core-local interrupt mutex. Keep both halves on the owning core.
+pub struct Rx<const N: u8, const PIN: u8> {
+    pin: Pin<PIN, Alternate>,
+    timeout: MicrosDurationU32,
 }
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {
@@ -164,11 +182,11 @@ impl<const N: u8> Token<N> {
         tx: Pin<TX>,
         rx: Pin<RX>,
         clocks: &Clocks,
-        baud: fugit::HertzU32,
+        baud: HertzU32,
     ) -> Result<Uart<N, TX, RX>, crate::InitError<Parts<N, TX, RX>, Error>>
     where
-        Pin<TX>: Tx<N>,
-        Pin<RX>: Rx<N>,
+        Pin<TX>: TxPin<N>,
+        Pin<RX>: RxPin<N>,
     {
         let started = if clocks.still_current() {
             start(&mut Mmio, N, clocks.uart(), baud)
@@ -177,10 +195,14 @@ impl<const N: u8> Token<N> {
         };
         match started {
             Ok(()) => Ok(Uart {
-                _tx: tx.into_alternate(<Pin<TX> as Tx<N>>::FUNC, IDLE_PAD, TX_PAD),
-                _rx: rx.into_alternate(<Pin<RX> as Rx<N>>::FUNC, IDLE_PAD, IDLE_PAD),
-                read_timeout_us: DEFAULT_READ_TIMEOUT_US,
-                tx_bound_us: tx_bound_us(baud),
+                tx: Tx {
+                    pin: tx.into_alternate(<Pin<TX> as TxPin<N>>::FUNC, IDLE_PAD, TX_PAD),
+                    bound_us: tx_bound_us(baud),
+                },
+                rx: Rx {
+                    pin: rx.into_alternate(<Pin<RX> as RxPin<N>>::FUNC, IDLE_PAD, IDLE_PAD),
+                    timeout: DEFAULT_READ_TIMEOUT,
+                },
             }),
             Err(error) => Err(crate::InitError {
                 error,
@@ -205,13 +227,16 @@ impl<const N: u8> Token<N> {
 ///     rx: unsafe { Pin::new() },
 /// };
 /// fn bring_up(uart2: Parts<2, 4, 5>, clocks: &Clocks) -> Result<Uart<2, 4, 5>, Error> {
-///     Ok(uart2.init(clocks, 115_200.Hz())?)
+///     let mut uart = uart2.init(clocks, 115_200.Hz())?;
+///     embedded_io::Write::write_all(&mut uart, b"hello")?;
+///     let _ = uart.read_byte()?;
+///     Ok(uart)
 /// }
 /// ```
 pub struct Parts<const N: u8, const TX: u8, const RX: u8>
 where
-    Pin<TX>: Tx<N>,
-    Pin<RX>: Rx<N>,
+    Pin<TX>: TxPin<N>,
+    Pin<RX>: RxPin<N>,
 {
     pub token: Token<N>,
     pub tx: Pin<TX>,
@@ -219,14 +244,14 @@ where
 }
 impl<const N: u8, const TX: u8, const RX: u8> Parts<N, TX, RX>
 where
-    Pin<TX>: Tx<N>,
-    Pin<RX>: Rx<N>,
+    Pin<TX>: TxPin<N>,
+    Pin<RX>: RxPin<N>,
 {
     /// [`Token::init`] with the declared pins.
     pub fn init(
         self,
         clocks: &Clocks,
-        baud: fugit::HertzU32,
+        baud: HertzU32,
     ) -> Result<Uart<N, TX, RX>, crate::InitError<Parts<N, TX, RX>, Error>> {
         self.token.init(self.tx, self.rx, clocks, baud)
     }
@@ -238,8 +263,8 @@ where
 pub(crate) fn start(
     io: &mut impl Hardware,
     n: u8,
-    clock: fugit::HertzU32,
-    baud: fugit::HertzU32,
+    clock: HertzU32,
+    baud: HertzU32,
 ) -> Result<(), Error> {
     let (integer, fraction) = divisors(clock, baud)?;
     io.write(RESETS_CLR1, reset_bit(n));
@@ -345,68 +370,178 @@ fn release(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<(), Error> 
 fn hold_in_reset(io: &mut impl Hardware, n: u8) {
     io.write(RESETS_SET1, reset_bit(n));
 }
-/// Sets or clears `bits` in UART `n`'s interrupt mask (IMSC).
+fn mask_interrupts(n: u8, bits: u32, on: bool) {
+    // PL011 has one IMSC register shared by TX and RX, with no set/clear aliases.
+    free(|_| set_mask(&mut Mmio, n, bits, on));
+}
+
 fn set_mask(io: &mut impl Hardware, n: u8, bits: u32, on: bool) {
     let imsc = io.read(base(n) + IMSC);
     io.write(base(n) + IMSC, if on { imsc | bits } else { imsc & !bits });
 }
-pub fn divisors(clock: fugit::HertzU32, baud: fugit::HertzU32) -> Result<(u32, u32), Error> {
-    if baud.raw() == 0 {
+/// Returns the integer and fractional PL011 divisors for the requested baud rate.
+pub fn divisors(clock: HertzU32, baud: HertzU32) -> Result<(u32, u32), Error> {
+    let baud = u64::from(baud.raw());
+    if baud == 0 {
         return Err(Error::Invalid);
     }
-    let scaled = (u64::from(clock.raw()) * 4 + u64::from(baud.raw()) / 2) / u64::from(baud.raw());
+    let scaled = (u64::from(clock.raw()) * 4 + baud / 2) / baud;
     if !(64..=(65535 * 64 + 63)).contains(&scaled) {
         return Err(Error::Invalid);
     }
     Ok(((scaled / 64) as u32, (scaled % 64) as u32))
 }
-impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
-    /// How long, in microseconds of the 1 MHz timer, [`embedded_io::Read`] waits for the peer
-    /// to send a byte. [`DEFAULT_READ_TIMEOUT_US`] after `init`; 0 makes a read a poll. The TX
-    /// waits ([`Uart::write`], [`Uart::flush`], [`Uart::free`]) are not affected: they are
-    /// bounded by twice the time a full TX FIFO takes at the configured baud rate, plus 1 ms.
-    pub fn set_read_timeout(&mut self, timeout: fugit::MicrosDurationU32) {
-        self.read_timeout_us = timeout.ticks();
-    }
-    /// Queues a prefix of `bytes` for transmission and returns its length, as
-    /// [`embedded_io::Write::write`]: waits for room in the TX FIFO for the first byte, then
-    /// takes what fits without waiting again. [`Error::Timeout`] means that nothing was
-    /// queued, so the same `bytes` can be written again without duplicating data. Queued is
-    /// not transmitted: [`Uart::flush`] waits for the line.
+impl<const N: u8, const PIN: u8> Tx<N, PIN> {
+    /// Queues as many bytes as fit, waiting up to the TX bound for room for the first byte.
+    /// On timeout no bytes were queued.
     pub fn write(&mut self, bytes: &[u8]) -> Result<usize, Error> {
-        write(&mut Mmio, N, bytes, self.tx_bound_us)
+        write(&mut Mmio, N, bytes, self.bound_us)
     }
-    /// The next received character, `None` if the RX FIFO is empty. A character received with
-    /// an error is dropped and the error returned in its place.
+
+    /// Waits for all queued bytes to leave the shift register. Transmission continues on timeout.
+    pub fn flush(&mut self) -> Result<(), Error> {
+        wait(&mut Mmio, base(N) + FR, FR_BUSY, 0, self.bound_us)
+    }
+
+    /// Unmasks the TX FIFO threshold interrupt. The NVIC line is `irq.UARTn`.
+    pub fn enable_interrupt(&mut self) {
+        mask_interrupts(N, int::TX, true);
+    }
+
+    /// Masks the TX interrupt.
+    pub fn disable_interrupt(&mut self) {
+        mask_interrupts(N, int::TX, false);
+    }
+
+    /// Pending unmasked TX interrupt, as a [PL011 interrupt bit](int).
+    pub fn interrupt_status(&self) -> u32 {
+        pending_interrupts(&mut Mmio, N, int::TX)
+    }
+
+    /// Clears the TX interrupt bit selected by `mask`.
+    pub fn clear_interrupt(&mut self, mask: u32) {
+        clear_interrupts(&mut Mmio, N, int::TX, mask);
+    }
+}
+
+impl<const N: u8, const PIN: u8> Rx<N, PIN> {
+    /// Sets the wait for [`embedded_io::Read`], initially [`DEFAULT_READ_TIMEOUT`].
+    /// Pass zero to poll.
+    pub fn set_read_timeout(&mut self, timeout: MicrosDurationU32) {
+        self.timeout = timeout;
+    }
+
+    /// Pops one character or returns `None` if the FIFO is empty. A character received
+    /// with an error is discarded and the error is returned.
     pub fn read_byte(&mut self) -> Result<Option<u8>, Error> {
         read_byte(&mut Mmio, N)
     }
-    /// Waits until everything queued has left the shift register (BUSY clear).
-    /// [`Error::Timeout`] leaves the rest in transmission; flushing again continues the wait.
+
+    /// Unmasks the RX FIFO threshold, receive timeout and receive error interrupts.
+    /// The NVIC line is `irq.UARTn`.
+    pub fn enable_interrupt(&mut self) {
+        mask_interrupts(N, RX_INTERRUPTS, true);
+    }
+
+    /// Masks the receive interrupts.
+    pub fn disable_interrupt(&mut self) {
+        mask_interrupts(N, RX_INTERRUPTS, false);
+    }
+
+    /// Pending unmasked receive interrupts, as [PL011 interrupt bits](int).
+    pub fn interrupt_status(&self) -> u32 {
+        pending_interrupts(&mut Mmio, N, RX_INTERRUPTS)
+    }
+
+    /// Clears the receive interrupt bits selected by `mask`.
+    pub fn clear_interrupt(&mut self, mask: u32) {
+        clear_interrupts(&mut Mmio, N, RX_INTERRUPTS, mask);
+    }
+}
+
+fn pending_interrupts(io: &mut impl Registers, n: u8, direction: u32) -> u32 {
+    io.read(base(n) + MIS) & direction
+}
+
+fn clear_interrupts(io: &mut impl Registers, n: u8, direction: u32, mask: u32) {
+    io.write(base(n) + ICR, direction & mask);
+}
+
+impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
+    /// Splits the UART into independently owned halves. Dropping a half leaves the UART running.
+    ///
+    /// Place a half in a core-local mutex before enabling its NVIC line:
+    ///
+    /// ```no_run
+    /// use core::cell::RefCell;
+    /// use rp1_hal::uart::{Rx, Tx, Uart};
+    /// use rp1_rt::interrupt::{Mutex, free};
+    ///
+    /// static RX: Mutex<RefCell<Option<Rx<2, 5>>>> = Mutex::new(RefCell::new(None));
+    ///
+    /// fn install_rx(uart: Uart<2, 4, 5>) -> Tx<2, 4> {
+    ///     let (tx, mut rx) = uart.split();
+    ///     rx.enable_interrupt();
+    ///     free(|cs| RX.borrow_ref_mut(cs).replace(rx));
+    ///     tx
+    /// }
+    /// ```
+    pub fn split(self) -> (Tx<N, TX>, Rx<N, RX>) {
+        (self.tx, self.rx)
+    }
+
+    /// Reunites the halves of UART N without changing its configuration.
+    pub fn join(tx: Tx<N, TX>, rx: Rx<N, RX>) -> Self {
+        Self { tx, rx }
+    }
+
+    /// See [`Rx::set_read_timeout`]. TX has its own bound based on the baud rate.
+    pub fn set_read_timeout(&mut self, timeout: MicrosDurationU32) {
+        self.rx.set_read_timeout(timeout);
+    }
+
+    /// See [`Tx::write`].
+    pub fn write(&mut self, bytes: &[u8]) -> Result<usize, Error> {
+        self.tx.write(bytes)
+    }
+
+    /// See [`Rx::read_byte`].
+    pub fn read_byte(&mut self) -> Result<Option<u8>, Error> {
+        self.rx.read_byte()
+    }
+
+    /// See [`Tx::flush`].
     pub fn flush(&mut self) -> Result<(), Error> {
-        wait(&mut Mmio, base(N) + FR, FR_BUSY, 0, self.tx_bound_us)
+        self.tx.flush()
     }
-    /// Unmasks the receive interrupts: RX FIFO at its trigger level, and receive timeout so a
-    /// short message is not left below the level. The NVIC line is `irq.UARTn` in the generated
-    /// resources.
+
+    /// Unmasks the RX FIFO threshold and receive timeout interrupts.
+    /// The NVIC line is `irq.UARTn` in the generated resources.
     pub fn enable_rx_interrupt(&mut self) {
-        set_mask(&mut Mmio, N, int::RX | int::RT, true);
+        mask_interrupts(N, RX_READY, true);
     }
+
+    /// Masks the RX FIFO threshold and receive timeout interrupts.
     pub fn disable_rx_interrupt(&mut self) {
-        set_mask(&mut Mmio, N, int::RX | int::RT, false);
+        mask_interrupts(N, RX_READY, false);
     }
-    /// Unmasks the interrupt raised when the TX FIFO drops to its trigger level.
+
+    /// See [`Tx::enable_interrupt`].
     pub fn enable_tx_interrupt(&mut self) {
-        set_mask(&mut Mmio, N, int::TX, true);
+        self.tx.enable_interrupt();
     }
+
+    /// See [`Tx::disable_interrupt`].
     pub fn disable_tx_interrupt(&mut self) {
-        set_mask(&mut Mmio, N, int::TX, false);
+        self.tx.disable_interrupt();
     }
-    /// Pending unmasked interrupts (MIS), as [`int`](crate::pac::pl011::int) bits.
+
+    /// Pending unmasked interrupts (MIS), as [PL011 interrupt bits](int).
     pub fn interrupt_status(&self) -> u32 {
         Mmio.read(base(N) + MIS)
     }
-    /// Clears the [`int`](crate::pac::pl011::int) bits in `mask`. RX and RT also clear by
+
+    /// Clears the [PL011 interrupt bits](int) in `mask`. RX and RT also clear by
     /// draining the FIFO, TX by refilling it.
     pub fn clear_interrupt(&mut self, mask: u32) {
         Mmio.write(base(N) + ICR, mask);
@@ -414,8 +549,8 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
 }
 impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX>
 where
-    Pin<TX>: Tx<N>,
-    Pin<RX>: Rx<N>,
+    Pin<TX>: TxPin<N>,
+    Pin<RX>: RxPin<N>,
 {
     /// Waits for the transmitter to drain ([`Uart::flush`]), then holds the UART in its reset
     /// (interrupts masked, disabled, FIFOs emptied) and gives back the token and the (still
@@ -440,7 +575,14 @@ where
     /// }
     /// ```
     pub fn free(self) -> Result<Parts<N, TX, RX>, crate::FreeError<Self, Error>> {
-        match release(&mut Mmio, N, self.tx_bound_us) {
+        self.free_with(&mut Mmio)
+    }
+
+    fn free_with(
+        self,
+        io: &mut impl Hardware,
+    ) -> Result<Parts<N, TX, RX>, crate::FreeError<Self, Error>> {
+        match release(io, N, self.tx.bound_us) {
             Ok(()) => Ok(self.into_parts()),
             Err(error) => Err(crate::FreeError {
                 driver: self,
@@ -460,17 +602,45 @@ where
     fn into_parts(self) -> Parts<N, TX, RX> {
         Parts {
             token: Token { _private: () },
-            tx: self._tx.release(),
-            rx: self._rx.release(),
+            tx: self.tx.pin.release(),
+            rx: self.rx.pin.release(),
         }
     }
 }
-/// Formatting stops at the first [`Error::Timeout`]; what was queued before it stays queued.
-/// `Uart` also implements [`embedded_io::Write`], which has its own `write_fmt`: with both
-/// traits in scope, `write!(uart, ..)` is ambiguous, so import only the one meant.
-impl<const N: u8, const TX: u8, const RX: u8> fmt::Write for Uart<N, TX, RX> {
+/// Formatting stops at the first timeout. When using `write!`, import only one of
+/// [`fmt::Write`] and [`embedded_io::Write`], since both provide `write_fmt`.
+impl<const N: u8, const PIN: u8> fmt::Write for Tx<N, PIN> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         embedded_io::Write::write_all(self, s.as_bytes()).map_err(|_| fmt::Error)
+    }
+}
+impl<const N: u8, const PIN: u8> embedded_io::ErrorType for Tx<N, PIN> {
+    type Error = Error;
+}
+impl<const N: u8, const PIN: u8> embedded_io::Write for Tx<N, PIN> {
+    fn write(&mut self, b: &[u8]) -> Result<usize, Error> {
+        Tx::write(self, b)
+    }
+    fn flush(&mut self) -> Result<(), Error> {
+        Tx::flush(self)
+    }
+}
+impl<const N: u8, const PIN: u8> embedded_io::ErrorType for Rx<N, PIN> {
+    type Error = Error;
+}
+/// Reads at most one byte per call. Returns [`Error::Timeout`] if no byte arrives in time.
+impl<const N: u8, const PIN: u8> embedded_io::Read for Rx<N, PIN> {
+    fn read(&mut self, b: &mut [u8]) -> Result<usize, Error> {
+        let Some(first) = b.first_mut() else {
+            return Ok(0);
+        };
+        *first = read_wait(&mut Mmio, N, self.timeout.ticks())?;
+        Ok(1)
+    }
+}
+impl<const N: u8, const TX: u8, const RX: u8> fmt::Write for Uart<N, TX, RX> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.tx.write_str(s)
     }
 }
 impl<const N: u8, const TX: u8, const RX: u8> embedded_io::ErrorType for Uart<N, TX, RX> {
@@ -478,21 +648,15 @@ impl<const N: u8, const TX: u8, const RX: u8> embedded_io::ErrorType for Uart<N,
 }
 impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Write for Uart<N, TX, RX> {
     fn write(&mut self, b: &[u8]) -> Result<usize, Error> {
-        Uart::write(self, b)
+        self.tx.write(b)
     }
     fn flush(&mut self) -> Result<(), Error> {
-        Uart::flush(self)
+        self.tx.flush()
     }
 }
-/// One byte per call. [`Error::Timeout`] if none arrives within [`Uart::set_read_timeout`];
-/// receive errors as in [`Uart::read_byte`].
 impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Read for Uart<N, TX, RX> {
     fn read(&mut self, b: &mut [u8]) -> Result<usize, Error> {
-        let Some(first) = b.first_mut() else {
-            return Ok(0);
-        };
-        *first = read_wait(&mut Mmio, N, self.read_timeout_us)?;
-        Ok(1)
+        self.rx.read(b)
     }
 }
 #[cfg(test)]
@@ -768,10 +932,25 @@ mod tests {
         let stopped = [(RESETS_SET1, 1 << 28)];
         let mut f = Fake::new();
         f.busy = true;
-        assert_eq!(release(&mut f, N, 5_000), Err(Error::Timeout));
+        let tx = Tx {
+            pin: unsafe { Pin::<4>::new() }.assume(),
+            bound_us: 5_000,
+        };
+        let rx = Rx {
+            pin: unsafe { Pin::<5>::new() }.assume(),
+            timeout: DEFAULT_READ_TIMEOUT,
+        };
+        let uart = match Uart::<N, 4, 5>::join(tx, rx).free_with(&mut f) {
+            Err(e) => {
+                assert_eq!(e.error, Error::Timeout);
+                e.driver
+            }
+            Ok(_) => panic!("released a busy UART"),
+        };
         assert!(f.writes.is_empty());
+        let (tx, rx) = uart.split();
         f.busy = false;
-        assert_eq!(release(&mut f, N, 5_000), Ok(()));
+        let _: Parts<N, 4, 5> = Uart::join(tx, rx).free_with(&mut f).unwrap();
         assert_eq!(f.writes, stopped);
 
         let mut f = Fake::new();
@@ -810,10 +989,21 @@ mod tests {
     #[test]
     fn interrupt_mask_updates_keep_the_other_bits() {
         let mut f = Fake::new();
-        set_mask(&mut f, N, int::RX | int::RT, true);
+        let b = base(N);
+        set_mask(&mut f, N, RX_INTERRUPTS, true);
         set_mask(&mut f, N, int::TX, true);
-        set_mask(&mut f, N, int::RX | int::RT, false);
-        assert_eq!(f.regs[&(base(N) + IMSC)], int::TX);
+        assert_eq!(f.regs[&(b + IMSC)], RX_INTERRUPTS | int::TX);
+        f.regs.insert(b + MIS, int::TX | int::OE | int::RX);
+        assert_eq!(
+            pending_interrupts(&mut f, N, RX_INTERRUPTS),
+            int::OE | int::RX
+        );
+        assert_eq!(pending_interrupts(&mut f, N, int::TX), int::TX);
+        clear_interrupts(&mut f, N, RX_INTERRUPTS, int::TX | int::OE);
+        clear_interrupts(&mut f, N, int::TX, u32::MAX);
+        assert_eq!(f.writes[2..], [(b + ICR, int::OE), (b + ICR, int::TX)]);
+        set_mask(&mut f, N, RX_INTERRUPTS, false);
+        assert_eq!(f.regs[&(b + IMSC)], int::TX);
     }
     /// The TX bound covers a full FIFO at the slowest baud rate with a divisor and does not
     /// depend on the read timeout.

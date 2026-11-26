@@ -152,7 +152,7 @@ const fn pad(n: u8) -> usize {
 pub struct Unconfigured;
 pub struct Input;
 pub struct Output;
-/// Muxed to the peripheral signal named by a driver's pin trait (for example [`crate::uart::Tx`]),
+/// Muxed to the peripheral signal named by a driver's pin trait (for example [`crate::uart::TxPin`]),
 /// with the function select from the bank-0 pin table.
 pub struct Alternate;
 pub struct Pin<const N: u8, Mode = Unconfigured> {

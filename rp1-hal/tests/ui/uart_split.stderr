@@ -1,0 +1,37 @@
+error[E0308]: mismatched types
+ --> tests/ui/uart_split.rs:4:28
+  |
+4 |     let _ = Uart::join(tx, rx);
+  |             ----------     ^^ expected `2`, found `3`
+  |             |
+  |             arguments to this function are incorrect
+  |
+  = note: expected struct `Rx<2, _>`
+             found struct `Rx<3, 9>`
+note: associated function defined here
+ --> src/uart.rs
+  |
+  |     pub fn join(tx: Tx<N, TX>, rx: Rx<N, RX>) -> Self {
+  |            ^^^^
+
+error[E0599]: no method named `free` found for struct `Rx<N, PIN>` in the current scope
+ --> tests/ui/uart_split.rs:8:16
+  |
+8 |     let _ = rx.free();
+  |                ^^^^ method not found in `Rx<2, 5>`
+
+error[E0382]: use of moved value: `uart`
+  --> tests/ui/uart_split.rs:13:13
+   |
+11 | fn reuse(uart: Uart<2, 4, 5>) {
+   |          ---- move occurs because `uart` has type `rp1_hal::uart::Uart<2, 4, 5>`, which does not implement the `Copy` trait
+12 |     let _ = uart.split();
+   |                  ------- `uart` moved due to this method call
+13 |     let _ = uart.free();
+   |             ^^^^ value used here after move
+   |
+note: `rp1_hal::uart::Uart::<N, TX, RX>::split` takes ownership of the receiver `self`, which moves `uart`
+  --> src/uart.rs
+   |
+   |     pub fn split(self) -> (Tx<N, TX>, Rx<N, RX>) {
+   |                  ^^^^

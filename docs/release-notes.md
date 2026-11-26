@@ -16,3 +16,6 @@ STATIC
   in `Timer::delay`, `Uart::set_read_timeout` and the DMA wait APIs.
 - Proc0 gets its clocks from `rp1::platform::init`. Proc1 uses
   `Clocks::wait_from_proc0(&core, timeout)`. Pass `0.micros()` for a single attempt.
+- `Uart::split` gives a `Tx` and `Rx` for use in main and an ISR on the owning core.
+  Each half exposes its own IRQ status and mask operations. Use `Uart::join` before
+  calling `free` or `abort`. The pin route traits are now `TxPin` and `RxPin`.

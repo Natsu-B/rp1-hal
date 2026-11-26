@@ -119,33 +119,33 @@ impl spi::Sck<3> for Pin<7> {
 impl spi::Sck<5> for Pin<15> {
     const FUNC: u8 = 8;
 }
-impl uart::Rx<0> for Pin<15> {
+impl uart::RxPin<0> for Pin<15> {
     const FUNC: u8 = 4;
 }
-impl uart::Rx<1> for Pin<1> {
+impl uart::RxPin<1> for Pin<1> {
     const FUNC: u8 = 2;
 }
-impl uart::Rx<2> for Pin<5> {
+impl uart::RxPin<2> for Pin<5> {
     const FUNC: u8 = 2;
 }
-impl uart::Rx<3> for Pin<9> {
+impl uart::RxPin<3> for Pin<9> {
     const FUNC: u8 = 2;
 }
-impl uart::Rx<4> for Pin<13> {
+impl uart::RxPin<4> for Pin<13> {
     const FUNC: u8 = 2;
 }
-impl uart::Tx<0> for Pin<14> {
+impl uart::TxPin<0> for Pin<14> {
     const FUNC: u8 = 4;
 }
-impl uart::Tx<1> for Pin<0> {
+impl uart::TxPin<1> for Pin<0> {
     const FUNC: u8 = 2;
 }
-impl uart::Tx<2> for Pin<4> {
+impl uart::TxPin<2> for Pin<4> {
     const FUNC: u8 = 2;
 }
-impl uart::Tx<3> for Pin<8> {
+impl uart::TxPin<3> for Pin<8> {
     const FUNC: u8 = 2;
 }
-impl uart::Tx<4> for Pin<12> {
+impl uart::TxPin<4> for Pin<12> {
     const FUNC: u8 = 2;
 }
