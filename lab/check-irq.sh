@@ -83,7 +83,8 @@ i=0
 while [ $i -lt 50 ]; do
     /bin/shm-linux down-irq --stream-only 100000000 &
     pid=$!
-    usleep $((5000 + RANDOM % 195000))
+    # ash's 15-bit RANDOM tops out at 32767.
+    usleep $((5000 + RANDOM * 195000 / 32767))
     kill -9 "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
     i=$((i + 1))
