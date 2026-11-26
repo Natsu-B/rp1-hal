@@ -6,9 +6,9 @@
 //! half `h` is the firmware pattern with word 0 = `k | h << 16`. A canary left anywhere means a
 //! copy went missing or landed elsewhere. Prints the RP1 timings (`DMA_DDR_LINUX`) and
 //! `DMA_DDR_PASS` only when RP1 reported no error and every word matches.
-use crate::{Bulk, Control, expired, request};
-use rp1_linux::{Firmware, Result};
-use rp1_proto::Error;
+use crate::{Bulk, Control, Result, expired, request};
+use rp1_linux::{Error, Firmware};
+use rp1_proto as proto;
 
 const CANARY: u32 = 0xdead_beef;
 const WORDS: usize = 256;
@@ -40,7 +40,7 @@ pub fn main() -> Result<()> {
     let report = loop {
         match ctrl.read() {
             Ok(w) if w[0] == 16 && w[4] == 2 => break w,
-            Ok(_) | Err(Error::NotReady) => {}
+            Ok(_) | Err(Error::Proto(proto::Error::NotReady)) => {}
             Err(e) => return Err(e.into()),
         }
         expired(start)?;
@@ -72,7 +72,7 @@ pub fn main() -> Result<()> {
                 }
             }
         }
-        Ok::<_, Error>((bad, canary, first))
+        Ok::<_, proto::Error>((bad, canary, first))
     })??;
     println!("DMA_DDR_VERIFY words=262144 bad={bad} canary_left={canary} first_bad={first:x?}");
     if bad == 0 && report[5] == 0 {

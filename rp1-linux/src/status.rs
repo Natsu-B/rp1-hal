@@ -1,8 +1,8 @@
 //! The firmware's status words on the link page (`rp1_proto::status`), written by rp1-rt.
-use super::{Mapping, NOTE, Result};
+use super::{Error, Mapping, NOTE, Result};
 pub use rp1_proto::status::{CoreState, PcieState, ScmiState};
 use rp1_proto::{
-    Error, barrier, link,
+    self as proto, barrier, link,
     note::{LINK, Link, Note},
     status as s,
 };
@@ -76,9 +76,7 @@ impl Monitor {
     pub(crate) fn new(link: Rc<Mapping>, note: &[u8]) -> Result<Self> {
         // Without the record the words at 0x40.. are not status words, or are stale ones (the
         // loader does not clear them).
-        let record = Note::parse(note)?
-            .get(LINK)
-            .ok_or("this firmware has no status words (no LINK note record)")?;
+        let record = Note::parse(note)?.get(LINK).ok_or(Error::Unknown)?;
         Ok(Self {
             link,
             heartbeat_ms: Link::parse(record.value)?.cores.map(|c| c.heartbeat_ms),
@@ -87,9 +85,10 @@ impl Monitor {
 
     /// One read of the status words.
     ///
-    /// `Err(NotReady)` unless the ABI word matches and `EPOCH` is even and unchanged across the
-    /// read (no firmware restart in between; never started looks the same). A firmware with
-    /// another version of this layout is an error that names both versions. The details of a
+    /// `Err(Proto(NotReady))` unless the ABI word matches and `EPOCH` is even and unchanged
+    /// across the read (no firmware restart in between; never started looks the same).
+    /// `Err(LinkDown)` when the ABI word reads all ones, `Err(Abi)` for a firmware with another
+    /// version of this layout. The details of a
     /// core are final when its state is terminal. The two cores, their beats, the shm words and
     /// the platform words are not one snapshot.
     pub fn status(&self) -> Result<Status> {
@@ -97,20 +96,15 @@ impl Monitor {
         let epoch = read(s::EPOCH);
         let abi = read(s::ABI);
         if abi == u32::MAX {
-            return Err("BAR2 reads 0xffffffff: PCIe link down".into());
+            return Err(Error::LinkDown);
         }
-        if let Some(version) = s::abi_version(abi)
-            && version != s::ABI_VERSION
+        if let Some(firmware) = s::abi_version(abi)
+            && firmware != s::ABI_VERSION
         {
-            return Err(format!(
-                "the firmware's status words are RL v{version}, this rp1-linux reads v{}: \
-                 build the firmware and rp1-linux from the same tree",
-                s::ABI_VERSION
-            )
-            .into());
+            return Err(Error::Abi { firmware });
         }
         if abi != s::ABI_VALUE || !epoch.is_multiple_of(2) {
-            return Err(Error::NotReady.into());
+            return Err(proto::Error::NotReady.into());
         }
         let cores = [0, 1].map(|core| self.core(s::BLOCKS[core]));
         let shm = match read(link::SHM_STATUS) {
@@ -124,7 +118,7 @@ impl Monitor {
         let scmi = ScmiState::from_word(read(s::PLAT_SCMI));
         barrier();
         if read(s::EPOCH) != epoch {
-            return Err(Error::NotReady.into());
+            return Err(proto::Error::NotReady.into());
         }
         Ok(Status {
             epoch,
@@ -198,7 +192,7 @@ fn judge(
         sleep(interval);
         let after = read()?;
         if after.epoch != before.epoch {
-            return Err(Error::Reset.into());
+            return Err(proto::Error::Reset.into());
         }
         if let Some(down) = down(&after) {
             return Ok(down);
@@ -250,7 +244,7 @@ mod tests {
     fn status_needs_the_abi_and_an_even_epoch() {
         let m = monitor([None; 2]);
         let not_ready =
-            |m: &Monitor| m.status().unwrap_err().downcast_ref() == Some(&Error::NotReady);
+            |m: &Monitor| matches!(m.status(), Err(Error::Proto(proto::Error::NotReady)));
         assert_eq!(m.status().unwrap().epoch, 6);
         m.link.write(s::EPOCH, 7);
         assert!(not_ready(&m));
@@ -258,7 +252,7 @@ mod tests {
         m.link.write(s::ABI, 0);
         assert!(not_ready(&m));
         m.link.write(s::ABI, u32::MAX);
-        assert!(m.status().unwrap_err().to_string().contains("link down"));
+        assert!(matches!(m.status(), Err(Error::LinkDown)));
     }
 
     /// An RL v2 firmware (no platform words) is named as such, not reported as not ready.
@@ -266,7 +260,9 @@ mod tests {
     fn status_names_another_abi_version() {
         let m = monitor([None; 2]);
         m.link.write(s::ABI, s::abi_value(2));
-        let error = m.status().unwrap_err().to_string();
+        let error = m.status().unwrap_err();
+        assert!(matches!(error, Error::Abi { firmware: 2 }), "{error:?}");
+        let error = error.to_string();
         assert!(
             error.contains("RL v2") && error.contains("reads v3"),
             "{error}"

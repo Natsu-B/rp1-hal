@@ -1,8 +1,9 @@
-use rp1_linux::{BlockMap, Firmware, Result};
+use rp1_linux::{BlockMap, Error, Firmware};
 mod dma;
 mod ring_dma;
 mod ring_irq;
-use rp1_proto::Error;
+use rp1_proto as proto;
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 use std::time::{Duration, Instant};
 type Control = [u32; 16];
 type Bulk = [u32; 262144];
@@ -40,7 +41,7 @@ fn response(ctrl: &BlockMap<Control>, id: u32, start: Instant) -> Result<Control
                 }
                 return Ok(words);
             }
-            Ok(_) | Err(Error::NotReady) => {}
+            Ok(_) | Err(Error::Proto(proto::Error::NotReady)) => {}
             Err(e) => return Err(e.into()),
         }
         expired(start)?;
@@ -53,11 +54,11 @@ fn verify_bulk(bulk: &BlockMap<Bulk>, seed: u32) -> Result<()> {
             reader.read_words(at, &mut words)?;
             for (i, v) in words.iter().enumerate() {
                 if *v != (at + i) as u32 ^ seed {
-                    return Err(Error::Corrupt);
+                    return Err(proto::Error::Corrupt);
                 }
             }
         }
-        Ok::<_, Error>(())
+        Ok::<_, proto::Error>(())
     })??;
     Ok(())
 }
@@ -207,7 +208,7 @@ fn main() -> Result<()> {
     while sent < count {
         match down.push(&sample(sent)) {
             Ok(()) => sent += 1,
-            Err(Error::Full) => {}
+            Err(Error::Proto(proto::Error::Full)) => {}
             Err(e) => return Err(e.into()),
         }
         expired(start)?;
@@ -272,7 +273,7 @@ fn main() -> Result<()> {
                 lost += k;
                 expected += k;
             }
-            Ok(None) | Err(Error::NotReady) => {}
+            Ok(None) | Err(Error::Proto(proto::Error::NotReady)) => {}
             Err(e) => return Err(e.into()),
         }
         expired(start)?;

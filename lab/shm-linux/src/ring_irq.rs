@@ -15,8 +15,8 @@
 //! - `suppressed-irq` (command 15 with an irq consumer, a short paced stream): no pulses, the
 //!   data is found by the re-check (`late > 0`), and no single wait exceeds
 //!   `RECHECK + 40 ms` (bounded recovery; 40 ms is scheduling slack).
-use crate::{Control, request, response, sample};
-use rp1_linux::{Firmware, Irq, RECHECK, Result};
+use crate::{Control, Result, request, response, sample};
+use rp1_linux::{Firmware, Irq, RECHECK};
 use std::time::{Duration, Instant};
 
 fn cpu_seconds() -> f64 {

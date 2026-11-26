@@ -3,7 +3,7 @@ mod kmsg;
 mod protocol;
 
 use protocol::*;
-use rp1_linux::{CoreState, Monitor, Result, ScmiState, Status};
+use rp1_linux::{CoreState, Monitor, ScmiState, Status};
 use std::{
     fs::{self, File, OpenOptions},
     io,
@@ -15,6 +15,8 @@ use std::{
     thread::sleep,
     time::{Duration, Instant},
 };
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const MAP_LEN: usize = 0x4000;
 const CLK_RATE: &str = "/sys/kernel/debug/clk/uart/clk_rate";

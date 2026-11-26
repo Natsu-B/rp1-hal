@@ -11,9 +11,9 @@ use protocol::{
 const BASELINE_BATCH_CAPACITY: [u32; 3] = [32, 32, 8];
 /// The firmware's `rp1_link::ring_dma::RingDma::DEFAULT_THRESHOLD` (staged bytes that go by DMA).
 const DMA_THRESHOLD: usize = 256;
-use crate::{Control, response, sample};
-use rp1_linux::{BlockMap, Firmware, Irq, Result, RingRx};
-use rp1_proto::Error;
+use crate::{Control, Result, response, sample};
+use rp1_linux::{BlockMap, Error, Firmware, Irq, RingRx};
+use rp1_proto as proto;
 use std::time::{Duration, Instant};
 
 /// Same as lab/shm-firmware `ring_dma::wide`.
@@ -125,7 +125,7 @@ fn one<const W: usize>(
                         corrupt += 1;
                     }
                 }
-                Err(Error::Corrupt | Error::Invalid) => {
+                Err(Error::Proto(proto::Error::Corrupt | proto::Error::Invalid)) => {
                     if seen.first(index) {
                         stale += 1;
                     }
@@ -136,7 +136,7 @@ fn one<const W: usize>(
         }
         let (n, error) = rx.pop_into_report(&mut buf);
         match error {
-            Some(Error::Corrupt | Error::Invalid) => {
+            Some(Error::Proto(proto::Error::Corrupt | proto::Error::Invalid)) => {
                 if seen.first(rx.tail()) {
                     stale += 1;
                 }

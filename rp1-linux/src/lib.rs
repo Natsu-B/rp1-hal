@@ -1,6 +1,6 @@
 //! Uncached UIO mappings. Only aligned volatile words ever touch Device memory.
 use rp1_proto::{
-    Error, Message, barrier,
+    self as proto, Message, barrier,
     note::{Note, SHM_AREA, SHM_REGION, ShmArea, ShmKind, ShmRegion, Writer},
     shm, uio,
 };
@@ -14,8 +14,9 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+mod error;
 mod status;
+pub use error::{Error, Result};
 pub use status::{CoreState, CoreStatus, Health, Monitor, PcieState, ScmiState, ShmState, Status};
 
 /// The firmware's note as the loader put it in the boot DT.
@@ -56,7 +57,7 @@ impl Mapping {
             return Err(std::io::Error::last_os_error().into());
         }
         Ok(Rc::new(Self {
-            base: NonNull::new(pointer.cast()).ok_or("null mmap")?,
+            base: NonNull::new(pointer.cast()).ok_or_else(|| Error::setup("mmap returned null"))?,
             len,
             _file: file,
         }))
@@ -84,7 +85,10 @@ fn find_uio(name: &str) -> Result<PathBuf> {
         }
     }
     if matches.len() != 1 {
-        return Err(format!("expected one UIO named {name}, found {}", matches.len()).into());
+        return Err(Error::setup(format!(
+            "expected one UIO named {name}, found {}",
+            matches.len()
+        )));
     }
     Ok(matches.remove(0))
 }
@@ -93,18 +97,21 @@ fn find_mapping(name: &str, phys: u64, len: usize) -> Result<PathBuf> {
     let path = find_uio(name)?;
     let hex = |field: &str| -> Result<u64> {
         let text = fs::read_to_string(path.join("maps/map0").join(field))?;
-        Ok(u64::from_str_radix(
-            text.trim().trim_start_matches("0x"),
-            16,
-        )?)
+        u64::from_str_radix(text.trim().trim_start_matches("0x"), 16)
+            .map_err(|_| Error::setup(format!("UIO {name} {field} is not hex: {text:?}")))
     };
     if hex("addr")? != phys || hex("size")? != len as u64 || hex("offset")? != 0 {
-        return Err(format!("UIO {name} mapping differs from note/board table").into());
+        return Err(Error::setup(format!(
+            "UIO {name} mapping differs from note/board table"
+        )));
     }
     Ok(path)
 }
 fn dev_path(sys: &Path) -> Result<PathBuf> {
-    Ok(Path::new("/dev").join(sys.file_name().ok_or("invalid UIO path")?))
+    let name = sys
+        .file_name()
+        .ok_or_else(|| Error::setup("invalid UIO path"))?;
+    Ok(Path::new("/dev").join(name))
 }
 /// Open `/dev/uioN` for a sysfs entry, with an exclusive non-blocking `flock` (one owner).
 fn open_exclusive(sys: &Path) -> Result<File> {
@@ -131,8 +138,9 @@ struct Session {
     _link: Rc<Mapping>,
 }
 impl Session {
-    fn check(&self) -> std::result::Result<(), Error> {
-        self.header.check()
+    /// The shared memory is still the one this session opened.
+    fn check(&self) -> Result<()> {
+        Ok(self.header.check()?)
     }
 }
 
@@ -150,20 +158,24 @@ impl Firmware {
     pub fn open() -> Result<Self> {
         let bytes = fs::read(NOTE)?;
         let note = Note::parse(&bytes)?;
-        let area = ShmArea::parse(note.get(SHM_AREA).ok_or(Error::Invalid)?.value)?;
+        let area = ShmArea::parse(note.get(SHM_AREA).ok_or(proto::Error::Invalid)?.value)?;
         let link = Mapping::open(&format!("rp1:{}", uio::LINK), rp1_proto::LINK_PHYS, 0x4000)?;
-        if link.read(rp1_proto::link::HANDOFF_MAGIC) != rp1_proto::link::MAGIC
+        let magic = link.read(rp1_proto::link::HANDOFF_MAGIC);
+        if magic == u32::MAX {
+            return Err(Error::LinkDown);
+        }
+        if magic != rp1_proto::link::MAGIC
             || link.read(rp1_proto::link::HANDOFF_PHYS_LOW) != area.phys as u32
             || link.read(rp1_proto::link::HANDOFF_PHYS_HIGH) != (area.phys >> 32) as u32
             || link.read(rp1_proto::link::HANDOFF_SIZE) != area.size
         {
-            return Err("loader handoff differs from note".into());
+            return Err(Error::setup("loader handoff differs from note"));
         }
         link.write(rp1_proto::link::SHM_REQUEST, 1);
         let start = Instant::now();
         while link.read(rp1_proto::link::SHM_STATUS) != rp1_proto::link::SHM_READY {
             if start.elapsed() > Duration::from_secs(10) {
-                return Err("shm initialization timed out".into());
+                return Err(Error::Timeout);
             }
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -178,7 +190,7 @@ impl Firmware {
                     .filter(|r| r.kind == SHM_REGION)
                     .count() as u32
         {
-            return Err(Error::Mismatch.into());
+            return Err(proto::Error::Mismatch.into());
         }
         let session = Rc::new(Session {
             header,
@@ -196,7 +208,7 @@ impl Firmware {
     fn region<T: Message>(&self, name: &str) -> Result<ShmRegion<'_>> {
         self.session.check()?;
         if self.taken.contains(name) {
-            return Err("endpoint already taken".into());
+            return Err(Error::Busy);
         }
         let note = Note::parse(&self.note)?;
         let r = note
@@ -204,23 +216,23 @@ impl Firmware {
             .filter_map(std::result::Result::ok)
             .filter(|r| r.kind == SHM_REGION)
             .map(|r| ShmRegion::parse(r.value))
-            .collect::<std::result::Result<Vec<_>, _>>()?
+            .collect::<std::result::Result<Vec<_>, proto::Error>>()?
             .into_iter()
             .find(|r| r.name == name)
-            .ok_or("unknown shm name")?;
+            .ok_or(Error::Unknown)?;
         // notify=irq is valid only on RP1 -> Linux rings (rp1-build checks it; refuse others).
         if r.type_id != T::TYPE_ID
             || r.elem_size as usize != std::mem::size_of::<T>()
             || (r.notify_irq && r.kind != ShmKind::RingToLinux)
         {
-            return Err(Error::Mismatch.into());
+            return Err(proto::Error::Mismatch.into());
         }
         Ok(r)
     }
     pub fn ring_rx<T: Message>(&mut self, name: &str) -> Result<RingRx<T>> {
         let r = self.region::<T>(name)?;
         if r.kind != ShmKind::RingToLinux {
-            return Err(Error::Mismatch.into());
+            return Err(proto::Error::Mismatch.into());
         }
         let map = Mapping::open(
             &format!("rp1:{name}"),
@@ -251,7 +263,7 @@ impl Firmware {
     pub fn ring_tx<T: Message>(&mut self, name: &str) -> Result<RingTx<T>> {
         let r = self.region::<T>(name)?;
         if r.kind != ShmKind::RingToRp1 {
-            return Err(Error::Mismatch.into());
+            return Err(proto::Error::Mismatch.into());
         }
         let map = Mapping::open(
             &format!("rp1:{name}"),
@@ -278,7 +290,7 @@ impl Firmware {
     pub fn block<T: Message>(&mut self, name: &str) -> Result<BlockMap<T>> {
         let r = self.region::<T>(name)?;
         let ShmKind::Block { writer } = r.kind else {
-            return Err(Error::Mismatch.into());
+            return Err(proto::Error::Mismatch.into());
         };
         let map = Mapping::open(
             &format!("rp1:{name}"),
@@ -427,7 +439,7 @@ impl Irq {
             let mut waiters = rings
                 .iter_mut()
                 .map(|r| r.waiter())
-                .collect::<std::result::Result<Vec<_>, Error>>()?;
+                .collect::<Result<Vec<_>>>()?;
             if deadline.is_some_and(|d| Instant::now() >= d) {
                 return Ok(waiters.iter().any(|w| w.available() != 0));
             }
@@ -448,12 +460,12 @@ impl Irq {
 /// A [`RingRx`] of any message type, for [`Irq::wait_any`].
 pub trait IrqRing {
     /// Check the session and that the ring is `notify = "irq"`; the ring's wait handle.
-    fn waiter(&mut self) -> std::result::Result<&mut dyn shm::Waiter, Error>;
+    fn waiter(&mut self) -> Result<&mut dyn shm::Waiter>;
 }
 impl<T: Message> IrqRing for RingRx<T> {
-    fn waiter(&mut self) -> std::result::Result<&mut dyn shm::Waiter, Error> {
+    fn waiter(&mut self) -> Result<&mut dyn shm::Waiter> {
         if !self.notify_irq {
-            return Err(Error::Invalid);
+            return Err(proto::Error::Invalid.into());
         }
         self.session.check()?;
         Ok(&mut self.inner)
@@ -490,21 +502,18 @@ pub struct RingRx<T> {
     session: Rc<Session>,
 }
 impl<T: Message> RingRx<T> {
-    pub fn pop(&mut self) -> std::result::Result<Option<T>, Error> {
+    pub fn pop(&mut self) -> Result<Option<T>> {
         self.session.check()?;
         let r = self.inner.pop()?;
         self.session.check()?;
         Ok(r)
     }
     /// Newest published slot and its index, without consuming it (reject rings only).
-    #[allow(clippy::type_complexity)]
-    pub fn newest(
-        &self,
-    ) -> std::result::Result<Option<(u32, std::result::Result<T, Error>)>, Error> {
+    pub fn newest(&self) -> Result<Option<(u32, Result<T>)>> {
         self.session.check()?;
         let r = self.inner.newest()?;
         self.session.check()?;
-        Ok(r)
+        Ok(r.map(|(index, value)| (index, value.map_err(Error::from))))
     }
     pub fn tail(&self) -> u32 {
         self.inner.tail()
@@ -515,10 +524,11 @@ impl<T: Message> RingRx<T> {
             return (0, Some(e));
         }
         let (n, error) = self.inner.pop_into_report(out);
+        let error = error.map(Error::from);
         (n, error.or_else(|| self.session.check().err()))
     }
     /// Batch form of [`RingRx::pop`]: one `tail` store per call (`rp1_proto::shm::RingRx::pop_into`).
-    pub fn pop_into(&mut self, out: &mut [T]) -> std::result::Result<usize, Error> {
+    pub fn pop_into(&mut self, out: &mut [T]) -> Result<usize> {
         self.session.check()?;
         let n = self.inner.pop_into(out)?;
         self.session.check()?;
@@ -532,14 +542,14 @@ impl<T: Message> RingRx<T> {
         self.inner.available()
     }
     /// Block until messages are available or `timeout` passes (`None`: no deadline); returns
-    /// whether some are. For rings declared `notify = "irq"` (otherwise `Error::Invalid`).
+    /// whether some are. For rings declared `notify = "irq"` (otherwise `Proto(Invalid)`).
     ///
     /// Handshake (protocol.md §2.3): arm the sleep counter, read it back, re-check `head`, and
     /// only then sleep on `irq`; RP1 drains `head` before it samples the counter. Each sleep
     /// is bounded by [`RECHECK`], because a wake is only a hint.
     pub fn wait(&mut self, irq: &mut Irq, timeout: Option<Duration>) -> Result<bool> {
         if !self.notify_irq {
-            return Err(Error::Invalid.into());
+            return Err(proto::Error::Invalid.into());
         }
         self.session.check()?;
         let start = Instant::now();
@@ -601,12 +611,12 @@ pub struct RingTx<T> {
     session: Rc<Session>,
 }
 impl<T: Message> RingTx<T> {
-    pub fn push(&mut self, value: &T) -> std::result::Result<(), Error> {
+    pub fn push(&mut self, value: &T) -> Result<()> {
         self.session.check()?;
-        self.inner.push(value)
+        Ok(self.inner.push(value)?)
     }
     /// Batch form of [`RingTx::push`]: one `head` store per call (`rp1_proto::shm::RingTx::push_slice`).
-    pub fn push_slice(&mut self, values: &[T]) -> std::result::Result<usize, Error> {
+    pub fn push_slice(&mut self, values: &[T]) -> Result<usize> {
         self.session.check()?;
         Ok(self.inner.push_slice(values))
     }
@@ -621,25 +631,22 @@ pub struct BlockMap<T> {
     session: Rc<Session>,
 }
 impl<T: Message> BlockMap<T> {
-    pub fn read(&self) -> std::result::Result<T, Error> {
+    pub fn read(&self) -> Result<T> {
         self.session.check()?;
         let r = self.inner.read()?;
         self.session.check()?;
         Ok(r)
     }
-    pub fn read_with<R>(
-        &self,
-        f: impl FnOnce(&shm::BlockReader<'_, T>) -> R,
-    ) -> std::result::Result<R, Error> {
+    pub fn read_with<R>(&self, f: impl FnOnce(&shm::BlockReader<'_, T>) -> R) -> Result<R> {
         self.session.check()?;
         let r = self.inner.read_with(f)?;
         self.session.check()?;
         Ok(r)
     }
-    pub fn write(&mut self, value: &T) -> std::result::Result<(), Error> {
+    pub fn write(&mut self, value: &T) -> Result<()> {
         self.session.check()?;
         if self.writer != Writer::Linux {
-            return Err(Error::Invalid);
+            return Err(proto::Error::Invalid.into());
         }
         unsafe {
             self.inner.write(value);
@@ -648,10 +655,10 @@ impl<T: Message> BlockMap<T> {
     }
     /// # Safety
     /// For writer=both, the caller must exclude the RP1 writer for the entire section.
-    pub unsafe fn begin_write(&mut self) -> std::result::Result<shm::BlockWriter<'_, T>, Error> {
+    pub unsafe fn begin_write(&mut self) -> Result<shm::BlockWriter<'_, T>> {
         self.session.check()?;
         if self.writer == Writer::Rp1 {
-            return Err(Error::Invalid);
+            return Err(proto::Error::Invalid.into());
         }
         Ok(unsafe { self.inner.begin_write() })
     }
@@ -695,12 +702,12 @@ mod tests {
         let mut init = unsafe { shm::HeaderInit::begin(header.ptr(), 0) };
         init.write(&sha, 1, 0);
         init.publish();
+        let (data, ctrl) = (anon(4096), anon(4096));
         let session = Rc::new(Session {
             header: unsafe { shm::Header::open(header.ptr(), &sha) }.unwrap(),
             _map: header.clone(),
             _link: header.clone(),
         });
-        let (data, ctrl) = (anon(4096), anon(4096));
         let len = shm::CONTROL_SIZE + 4 * shm::slot_size(4);
         let ow = shm::Overflow::Reject;
         let inner = unsafe { shm::RingRx::attach(data.ptr(), len, ctrl.ptr(), 128, 4, ow) };
@@ -752,7 +759,7 @@ mod tests {
         r.header.write(12, 1); // RP1 re-initializes the region
         let t = Instant::now();
         let e = r.rx.wait(&mut irq, None).unwrap_err();
-        assert_eq!(e.downcast_ref::<Error>(), Some(&Error::Reset));
+        assert!(matches!(e, Error::Proto(proto::Error::Reset)), "{e:?}");
         assert!(t.elapsed() < Duration::from_secs(5));
     }
 
