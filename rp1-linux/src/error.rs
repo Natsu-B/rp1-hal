@@ -19,7 +19,7 @@ pub enum Error {
     Busy,
     /// The firmware's note has no such endpoint (or, for status, no LINK record).
     Unknown,
-    /// The core that serves the endpoint is no longer running.
+    /// The core that serves the endpoint (0 = proc0) stopped, panicked or faulted.
     PeerDown {
         core: u8,
         state: CoreState,

@@ -1,7 +1,8 @@
 //! `shm-linux ring-irq [count]`: the `events` ring (notify = "irq") against a polling consumer.
 //! Each run streams `count` messages from RP1 (command 14 notifies after every batch with
 //! `RingTx::flush`, 15 does not) and checks every one. The consumer either
-//! busy-polls or pops until empty and then sleeps in `RingRx::wait` on `rp1:irq`. Prints one
+//! busy-polls (`RingRx::try_recv_into`) or receives with `RingRx::recv_into`, which sleeps on
+//! `rp1:irq` while the ring is empty. Prints one
 //! `RINGIRQ` line per run (measured missing/corrupt, throughput, consumer CPU from getrusage,
 //! wakes, `check=`) and `RINGIRQ_PASS` only if every run's check holds:
 //!
@@ -16,7 +17,7 @@
 //!   data is found by the re-check (`late > 0`), and no single wait exceeds
 //!   `RECHECK + 40 ms` (bounded recovery; 40 ms is scheduling slack).
 use crate::{Control, READY, Result, request, response, sample};
-use rp1_linux::{Firmware, Irq, RECHECK};
+use rp1_linux::{Firmware, RECHECK};
 use std::time::{Duration, Instant};
 
 fn cpu_seconds() -> f64 {
@@ -50,7 +51,6 @@ pub fn main(count: u32) -> Result<()> {
     let mut events = fw.ring_rx::<[u32; 4]>("events")?;
     let mut ctrl = fw.block::<Control>("control")?;
     drop(fw);
-    let mut irq = Irq::open()?;
     // (name, command, batch, gap_us, irq, spin_us)
     let run = |name, command, batch, gap_us, irq, spin_us| Run {
         name,
@@ -87,7 +87,6 @@ pub fn main(count: u32) -> Result<()> {
         let id = 100 + k as u32;
         events.set_spin(Duration::from_micros(run.spin_us));
         let stats0 = events.wait_stats();
-        let wakes0 = irq.wakes();
         let cpu0 = cpu_seconds();
         let count = run.count.unwrap_or(count);
         let start = request(
@@ -101,7 +100,14 @@ pub fn main(count: u32) -> Result<()> {
         let mut polls_empty = 0u64;
         let mut max_wait = Duration::ZERO;
         while got < count {
-            let n = events.pop_into(&mut buf)?;
+            let n = if run.irq {
+                let t = Instant::now();
+                let n = events.recv_into(&mut buf, Some(Duration::from_secs(1)))?;
+                max_wait = max_wait.max(t.elapsed());
+                n
+            } else {
+                events.try_recv_into(&mut buf)?
+            };
             for s in &buf[..n] {
                 if *s != sample(got) {
                     if corrupt == 0 {
@@ -111,14 +117,8 @@ pub fn main(count: u32) -> Result<()> {
                 }
                 got += 1;
             }
-            if n == 0 {
-                if run.irq {
-                    let t = Instant::now();
-                    events.wait(&mut irq, Some(Duration::from_secs(1)))?;
-                    max_wait = max_wait.max(t.elapsed());
-                } else {
-                    polls_empty += 1;
-                }
+            if n == 0 && !run.irq {
+                polls_empty += 1;
             }
             if start.elapsed() > Duration::from_secs(180) {
                 break;
@@ -134,7 +134,6 @@ pub fn main(count: u32) -> Result<()> {
             s.woken - stats0.woken,
             s.late - stats0.late,
         );
-        let wakes = irq.wakes() - wakes0;
         let pulses = report[7];
         let check = if missing != 0 || corrupt != 0 {
             "FAIL(messages)"
@@ -158,8 +157,8 @@ pub fn main(count: u32) -> Result<()> {
         println!(
             "RINGIRQ name={} n={got} missing={missing} corrupt={corrupt} batch={} gap_us={} spin_us={} \
              seconds={seconds:.6} MBps={:.3} cpu_s={cpu:.3} cpu_pct={:.1} rp1_us={} pulses={pulses} \
-             wakes={wakes} wakes_per_msg={:.6} sleeps={sleeps} woken={woken} rechecks={} late={late} \
-             max_wait_us={} empty_polls={polls_empty} uio_events={} check={check}",
+             wakes_per_msg={:.6} sleeps={sleeps} woken={woken} rechecks={} late={late} \
+             max_wait_us={} empty_polls={polls_empty} check={check}",
             run.name,
             run.batch,
             run.gap_us,
@@ -167,10 +166,9 @@ pub fn main(count: u32) -> Result<()> {
             count as f64 * 16.0 / seconds / 1e6,
             100.0 * cpu / seconds,
             report[6],
-            wakes as f64 / count as f64,
+            woken as f64 / count as f64,
             s.rechecks - stats0.rechecks,
             max_wait.as_micros(),
-            irq.event_count(),
         );
         // Let a trailing pulse land before the next run's counters start.
         std::thread::sleep(Duration::from_millis(50));

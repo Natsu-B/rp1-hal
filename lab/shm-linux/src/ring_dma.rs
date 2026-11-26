@@ -12,7 +12,7 @@ const BASELINE_BATCH_CAPACITY: [u32; 3] = [32, 32, 8];
 /// The firmware's `rp1_link::ring_dma::RingDma::DEFAULT_THRESHOLD` (staged bytes that go by DMA).
 const DMA_THRESHOLD: usize = 256;
 use crate::{Control, READY, Result, response, sample};
-use rp1_linux::{BlockMap, Error, Firmware, Irq, RingRx};
+use rp1_linux::{BlockMap, Error, Firmware, RingRx};
 use rp1_proto as proto;
 use std::time::{Duration, Instant};
 
@@ -89,11 +89,9 @@ struct Res {
     perf: Perf,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn one<const W: usize>(
     rx: &mut RingRx<[u32; W]>,
     ctrl: &mut BlockMap<Control>,
-    irq: &mut Irq,
     ring: u32,
     id: u32,
     run: &Run,
@@ -134,7 +132,7 @@ fn one<const W: usize>(
                 _ => {}
             }
         }
-        let (n, error) = rx.pop_into_report(&mut buf);
+        let (n, error) = rx.try_recv_into_report(&mut buf);
         match error {
             Some(Error::Proto(proto::Error::Corrupt | proto::Error::Invalid)) => {
                 if seen.first(rx.tail()) {
@@ -160,7 +158,7 @@ fn one<const W: usize>(
             got += 1;
         }
         if n == 0 && run.irq && stale == 0 {
-            rx.wait(irq, Some(Duration::from_secs(1)))?;
+            rx.wait(Some(Duration::from_secs(1)))?;
         }
         if start.elapsed() > Duration::from_secs(180) {
             break;
@@ -462,7 +460,6 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
     let mut w256 = fw.ring_rx::<[u32; 64]>("wide256")?;
     let mut ctrl = fw.block::<Control>("control")?;
     drop(fw);
-    let mut irq = Irq::open()?;
     let names = ["events", "wide64", "wide256"];
     let sizes = [16.0, 64.0, 256.0];
     let mut failed = Vec::new();
@@ -484,9 +481,9 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
                 ..*run
             };
             let res = match *ring {
-                0 => one(&mut events, &mut ctrl, &mut irq, 0, id, &prime, 1)?,
-                1 => one(&mut w64, &mut ctrl, &mut irq, 1, id, &prime, 1)?,
-                _ => one(&mut w256, &mut ctrl, &mut irq, 2, id, &prime, 1)?,
+                0 => one(&mut events, &mut ctrl, 0, id, &prime, 1)?,
+                1 => one(&mut w64, &mut ctrl, 1, id, &prime, 1)?,
+                _ => one(&mut w256, &mut ctrl, 2, id, &prime, 1)?,
             };
             if res.got != 1 || res.corrupt != 0 || res.stale != 0 || res.report[5] != 0 {
                 return Err("odd-head priming failed".into());
@@ -510,19 +507,18 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
                 _ => w256.tail(),
             }
         );
-        let (stats0, wakes0, cpu0) = (
+        let (stats0, cpu0) = (
             match ring {
                 0 => events.wait_stats(),
                 1 => w64.wait_stats(),
                 _ => w256.wait_stats(),
             },
-            irq.wakes(),
             cpu_seconds(),
         );
         let res = match ring {
-            0 => one(&mut events, &mut ctrl, &mut irq, ring, id, run, n)?,
-            1 => one(&mut w64, &mut ctrl, &mut irq, ring, id, run, n)?,
-            _ => one(&mut w256, &mut ctrl, &mut irq, ring, id, run, n)?,
+            0 => one(&mut events, &mut ctrl, ring, id, run, n)?,
+            1 => one(&mut w64, &mut ctrl, ring, id, run, n)?,
+            _ => one(&mut w256, &mut ctrl, ring, id, run, n)?,
         };
         let s = match ring {
             0 => events.wait_stats(),
@@ -582,7 +578,7 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
         let line = format!(
             "run_id={id} name={} ring={} mode={} irq={} batch={} gap_us={} got={} missing={missing} \
              corrupt={} stale={} seconds={:.6} MBps={mbps:.3} cpu_pct={:.1} rp1_us={} \
-             pulses={pulses} wakes={} sleeps={sleeps} woken={woken} late={late} \
+             pulses={pulses} sleeps={sleeps} woken={woken} late={late} \
              gen_us={gen_us} push_us={push_us} notify_us={notify_us} ring_MBps={ring_mbps:.3} \
              ctl_l=0x{ctl_l:08x} wraps={wraps} dma_batches={dma_b} cpu_batches={cpu_b} \
              timed={} total_us={total_us} rp1_us_per_message={rp1_us_per_message:.4} \
@@ -600,7 +596,6 @@ fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
             res.seconds,
             100.0 * cpu / res.seconds,
             rep[6],
-            irq.wakes() - wakes0,
             run.timed,
             rep[5],
         );

@@ -190,7 +190,7 @@ fn main() -> Result<()> {
     let start = request(&mut ctrl, 1, 1, count, 0)?;
     let mut got = 0;
     while got < count {
-        if let Some(s) = up.pop()? {
+        if let Some(s) = up.try_recv()? {
             if s != sample(got) {
                 return Err(format!("up corrupt at {got}: {s:?}").into());
             }
@@ -209,7 +209,7 @@ fn main() -> Result<()> {
     let start = request(&mut ctrl, 2, 2, count, 0)?;
     let mut sent = 0;
     while sent < count {
-        match down.push(&sample(sent)) {
+        match down.send(&sample(sent)) {
             Ok(()) => sent += 1,
             Err(Error::Proto(proto::Error::Full)) => {}
             Err(e) => return Err(e.into()),
@@ -264,7 +264,7 @@ fn main() -> Result<()> {
     response(&ctrl, 6, start)?;
     let (mut lost, mut received, mut expected) = (0, 0, 0);
     while lost + received < n {
-        match latest.pop() {
+        match latest.try_recv() {
             Ok(Some(s)) => {
                 if s != sample(expected) {
                     return Err("overwrite corrupt".into());
@@ -284,7 +284,7 @@ fn main() -> Result<()> {
     println!("OVERWRITE n={n} received={received} lost={lost} corrupt=0");
     // Isolated per-message M3 cost, with no concurrent Linux traffic to the link page.
     for i in 0..128 {
-        down.push(&sample(i))?;
+        down.send(&sample(i))?;
     }
     let start = request(&mut ctrl, 7, 7, 128, 0)?;
     let report = response(&ctrl, 7, start)?;
@@ -296,7 +296,7 @@ fn main() -> Result<()> {
     let start = request(&mut ctrl, 8, 8, 256, 0)?;
     let report = response(&ctrl, 8, start)?;
     for i in 0..256 {
-        if up.pop()? != Some(sample(i)) {
+        if up.try_recv()? != Some(sample(i)) {
             return Err(format!("isolated up corrupt at {i}").into());
         }
     }
@@ -310,7 +310,7 @@ fn main() -> Result<()> {
     let start = request(&mut ctrl, 10, 10, count, 0)?;
     let mut got = 0;
     while got < count {
-        let n = up.pop_into(&mut batch)?;
+        let n = up.try_recv_into(&mut batch)?;
         for s in &batch[..n] {
             if *s != sample(got) {
                 return Err(format!("up batch corrupt at {got}: {s:?}").into());
@@ -334,7 +334,7 @@ fn main() -> Result<()> {
         for (j, b) in batch[..k].iter_mut().enumerate() {
             *b = sample(sent + j as u32);
         }
-        sent += down.push_slice(&batch[..k])? as u32;
+        sent += down.send_slice(&batch[..k])? as u32;
         expired(start)?;
     }
     let report = response(&ctrl, 11, start)?;
@@ -347,7 +347,7 @@ fn main() -> Result<()> {
     );
     // Isolated batch costs (Linux idle on the link page), as ISOLATED above.
     for i in 0..128 {
-        down.push(&sample(i))?;
+        down.send(&sample(i))?;
     }
     let start = request(&mut ctrl, 13, 13, 128, 0)?;
     let report = response(&ctrl, 13, start)?;
@@ -359,7 +359,7 @@ fn main() -> Result<()> {
     let start = request(&mut ctrl, 12, 12, 256, 0)?;
     let report = response(&ctrl, 12, start)?;
     for i in 0..256 {
-        if up.pop()? != Some(sample(i)) {
+        if up.try_recv()? != Some(sample(i)) {
             return Err(format!("isolated batch up corrupt at {i}").into());
         }
     }

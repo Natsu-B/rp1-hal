@@ -1,7 +1,7 @@
 //! Uncached UIO mappings. Only aligned volatile words ever touch Device memory.
 use rp1_proto::{
     self as proto, Message, barrier,
-    note::{Note, SHM_AREA, SHM_REGION, ShmArea, ShmKind, ShmRegion, Writer},
+    note::{LINK, Link, Note, SHM_AREA, SHM_REGION, ShmArea, ShmKind, ShmRegion, Writer},
     shm, uio,
 };
 use sha2::{Digest, Sha256};
@@ -15,8 +15,10 @@ use std::{
     time::{Duration, Instant},
 };
 mod error;
+mod notify;
 mod status;
 pub use error::{Error, Result};
+use notify::{Doorbell, Irq};
 pub use status::{CoreState, CoreStatus, Health, Monitor, PcieState, ScmiState, ShmState, Status};
 
 /// The firmware's note as the loader put it in the boot DT.
@@ -157,7 +159,7 @@ impl Drop for Mapping {
 struct Session {
     header: shm::Header,
     _map: Rc<Mapping>,
-    _link: Rc<Mapping>,
+    link: Rc<Mapping>,
 }
 impl Session {
     /// Map `rp1:header` and check it against the note and the link page.
@@ -183,7 +185,7 @@ impl Session {
         Ok(Self {
             header,
             _map: map,
-            _link: link.clone(),
+            link: link.clone(),
         })
     }
     /// The shared memory is still the one this session opened.
@@ -281,11 +283,7 @@ impl Firmware {
             .filter_map(|r| ShmRegion::parse(r.value).ok())
             .find(|r| r.name == name)
             .ok_or(Error::Unknown)?;
-        // notify=irq is valid only on RP1 -> Linux rings (rp1-build checks it; refuse others).
-        if r.type_id != T::TYPE_ID
-            || r.elem_size as usize != std::mem::size_of::<T>()
-            || (r.notify_irq && r.kind != ShmKind::RingToLinux)
-        {
+        if r.type_id != T::TYPE_ID || r.elem_size as usize != std::mem::size_of::<T>() {
             return Err(proto::Error::Mismatch.into());
         }
         Ok(r)
@@ -329,7 +327,11 @@ impl Firmware {
         }?;
         Ok(RingRx {
             inner,
-            notify_irq: r.notify_irq,
+            irq: r.notify_irq.then(Irq::open).transpose()?,
+            peer: Peer {
+                link: session.link.clone(),
+                core: r.core - 1,
+            },
             spin: Duration::ZERO,
             stats: WaitStats::default(),
             _map: map,
@@ -351,11 +353,19 @@ impl Firmware {
                 overflow(r.overwrite),
             )
         }?;
-        Ok(RingTx {
-            inner,
-            _map: map,
-            session,
-        })
+        let doorbell = r
+            .notify_irq
+            .then(|| self.doorbell(r.core - 1))
+            .transpose()?;
+        Ok(RingTx::open(inner, doorbell, map, session))
+    }
+    /// The doorbell of `core` (0 = proc0) that the note's LINK record declares.
+    fn doorbell(&self, core: u8) -> Result<Doorbell> {
+        let record = Note::parse(&self.note)?.get(LINK).ok_or(Error::Unknown)?;
+        let pin = Link::parse(record.value)?.cores[core as usize]
+            .doorbell
+            .ok_or(proto::Error::Mismatch)?;
+        Doorbell::open(core.into(), pin)
     }
     /// The block `name`.
     pub fn block<T: Message>(&self, name: &str) -> Result<BlockMap<T>> {
@@ -372,6 +382,46 @@ impl Firmware {
             _map: map,
             session,
         })
+    }
+    /// Sleep until one of `endpoints` has messages or `timeout` passes (`None`: no deadline);
+    /// returns whether one has. Each round arms every ring and re-checks them all, then sleeps
+    /// once: on `rp1:irq` up to [`RECHECK`] when all are irq rings, at most [`POLL`] when one
+    /// is a poll ring. The caller then receives from every endpoint. No spin, and
+    /// [`RingRx::wait_stats`] is not updated. `Err(PeerDown)` once a serving core is down.
+    pub fn wait_any(
+        &self,
+        endpoints: &mut [&mut dyn Waitable],
+        timeout: Option<Duration>,
+    ) -> Result<bool> {
+        let deadline = deadline(timeout);
+        loop {
+            for endpoint in endpoints.iter() {
+                endpoint.check()?;
+            }
+            let (mut waiters, irqs): (Vec<_>, Vec<_>) =
+                endpoints.iter_mut().map(|e| e.parts()).unzip();
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return Ok(waiters.iter().any(|w| w.available() != 0));
+            }
+            let polled = irqs.iter().any(Option::is_none);
+            let mut irq = irqs.into_iter().flatten().next();
+            let bound = remaining(deadline, if polled { POLL } else { RECHECK });
+            let mut io = Ok(false);
+            let outcome = shm::wait_any_with(&mut waiters, || match &mut irq {
+                Some(irq) => {
+                    io = irq.wait(bound);
+                    matches!(io, Ok(true))
+                }
+                None => {
+                    std::thread::sleep(bound);
+                    false
+                }
+            });
+            io?;
+            if outcome == shm::Wait::Ready {
+                return Ok(true);
+            }
+        }
     }
     /// [`Monitor::status`] through this firmware's link mapping.
     pub fn status(&self) -> Result<Status> {
@@ -390,187 +440,129 @@ fn overflow(overwrite: bool) -> shm::Overflow {
     }
 }
 
-/// Longest single sleep in [`RingRx::wait`]. A wake is a hint: an edge can be lost (before
-/// the UIO is first enabled, or while the vector's hardware source is held) or merged, so the
-/// ring is re-checked at least this often even without one (protocol.md §3).
+/// Longest single sleep of a wait on a `notify = "irq"` ring. A wake is a hint: an edge can be
+/// lost (before the UIO is first enabled, or while the vector's hardware source is held) or
+/// merged, so the ring is re-checked at least this often even without one (protocol.md §3).
 pub const RECHECK: Duration = Duration::from_millis(10);
+/// Longest single sleep of a wait on a `notify = "poll"` ring: its writer never notifies, so
+/// every sleep ends with a re-check.
+pub const POLL: Duration = Duration::from_millis(1);
 
-/// The `rp1:irq` UIO node: the RP1 -> Linux interrupt (MSI-X vector `rp1_proto::irq::VECTOR`,
-/// raised by the core that declares `host_irq = true`). One owner (exclusive `flock`), and one
-/// line for every `notify = "irq"` ring: a wake for one ring is a spurious wake for another.
-/// [`RingRx::wait`] arms only its own ring, so while it sleeps (up to its timeout; `None`:
-/// until that ring has data) the other rings' writers do not notify. To serve several irq
-/// rings from one thread, wait on all of them with [`Irq::wait_any`].
-pub struct Irq {
-    file: File,
-    wakes: u64,
-    count: u32,
+/// The core that serves an endpoint, seen through its status words.
+struct Peer {
+    link: Rc<Mapping>,
+    /// 0 = proc0.
+    core: u8,
 }
-impl Irq {
-    /// Open `rp1:irq` and enable the interrupt (`uio_pdrv_genirq` starts it enabled, and masks
-    /// it again in its handler; pulses before the first enable are lost).
-    pub fn open() -> Result<Self> {
-        let file = open_exclusive(&dev_path(&find_uio(&format!("rp1:{}", uio::IRQ))?)?)?;
-        let mut irq = Self {
-            file,
-            wakes: 0,
-            count: 0,
-        };
-        irq.enable()?;
-        Ok(irq)
-    }
-    fn enable(&mut self) -> std::io::Result<()> {
-        let one = 1u32.to_ne_bytes();
-        loop {
-            let n = unsafe { libc::write(self.file.as_raw_fd(), one.as_ptr().cast(), 4) };
-            match n {
-                4 => return Ok(()),
-                0..=3 => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero)),
-                _ => {
-                    let e = std::io::Error::last_os_error();
-                    if e.kind() != std::io::ErrorKind::Interrupted {
-                        return Err(e);
-                    }
-                }
-            }
+impl Peer {
+    /// `Err(PeerDown)` once the core stopped, panicked or faulted (one link-page read while it
+    /// runs), `Err(LinkDown)` when its state reads all ones.
+    fn check(&self) -> Result<()> {
+        let block = proto::status::BLOCKS[self.core as usize];
+        let word = self.link.read(block + proto::status::STATE);
+        if word == u32::MAX {
+            return Err(Error::LinkDown);
         }
-    }
-    /// Sleep up to `timeout` (rounded up to whole ms) for an interrupt. Returns whether one
-    /// arrived; it is consumed and the line re-enabled before returning, so an edge from then
-    /// on wakes the next call (edges while masked merge into one pending wake). A signal
-    /// (`EINTR`) ends the wait early as a spurious wake (`Ok(false)`).
-    pub fn wait(&mut self, timeout: Duration) -> std::io::Result<bool> {
-        let mut pfd = libc::pollfd {
-            fd: self.file.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ms = timeout.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
-        let r = unsafe { libc::poll(&mut pfd, 1, ms) };
-        if r < 0 {
-            let e = std::io::Error::last_os_error();
-            return if e.kind() == std::io::ErrorKind::Interrupted {
-                Ok(false)
-            } else {
-                Err(e)
-            };
+        let state = CoreState::from_word(word);
+        if !state.is_terminal() {
+            return Ok(());
         }
-        if r == 0 {
-            return Ok(false);
-        }
-        let mut count = [0u8; 4];
-        let n = unsafe { libc::read(self.file.as_raw_fd(), count.as_mut_ptr().cast(), 4) };
-        if n < 0 {
-            let e = std::io::Error::last_os_error();
-            return if e.kind() == std::io::ErrorKind::Interrupted {
-                Ok(false)
-            } else {
-                Err(e)
-            };
-        }
-        if n != 4 {
-            // UIO reads are all-or-nothing; anything else is not a UIO event count.
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("rp1:irq read returned {n} bytes"),
-            ));
-        }
-        self.count = u32::from_ne_bytes(count);
-        self.wakes += 1;
-        self.enable()?;
-        Ok(true)
-    }
-    /// Interrupts consumed by [`Irq::wait`] so far.
-    pub fn wakes(&self) -> u64 {
-        self.wakes
-    }
-    /// The UIO's total event count at the last wake (the kernel's count, including events
-    /// that merged into one wake).
-    pub fn event_count(&self) -> u32 {
-        self.count
-    }
-    /// [`RingRx::wait`] for several `notify = "irq"` rings at once (any message types): arm
-    /// every ring, re-check them all, sleep once (bounded by [`RECHECK`]), disarm all, and
-    /// repeat until one has messages or `timeout` passes. Returns whether one has; the caller
-    /// then pops every ring. No spin, and [`RingRx::wait_stats`] is not updated.
-    pub fn wait_any(
-        &mut self,
-        rings: &mut [&mut dyn IrqRing],
-        timeout: Option<Duration>,
-    ) -> Result<bool> {
-        let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
-        loop {
-            let mut waiters = rings
-                .iter_mut()
-                .map(|r| r.waiter())
-                .collect::<Result<Vec<_>>>()?;
-            if deadline.is_some_and(|d| Instant::now() >= d) {
-                return Ok(waiters.iter().any(|w| w.available() != 0));
-            }
-            let bound = remaining(deadline);
-            let mut io = Ok(false);
-            let outcome = shm::wait_any_with(&mut waiters, || {
-                io = self.wait(bound);
-                matches!(io, Ok(true))
-            });
-            io?;
-            if outcome == shm::Wait::Ready {
-                return Ok(true);
-            }
-        }
+        // The core wrote the reason before the terminal state.
+        barrier();
+        Err(Error::PeerDown {
+            core: self.core,
+            state,
+            reason: self.link.read(block + proto::status::REASON),
+        })
     }
 }
 
-/// A [`RingRx`] of any message type, for [`Irq::wait_any`].
-pub trait IrqRing {
-    /// Check the session and that the ring is `notify = "irq"`; the ring's wait handle.
-    fn waiter(&mut self) -> Result<&mut dyn shm::Waiter>;
+/// When a wait that may take `timeout` ends (`None`: never).
+fn deadline(timeout: Option<Duration>) -> Option<Instant> {
+    timeout.and_then(|t| Instant::now().checked_add(t))
 }
-impl<T: Message> IrqRing for RingRx<T> {
-    fn waiter(&mut self) -> Result<&mut dyn shm::Waiter> {
-        if !self.notify_irq {
-            return Err(proto::Error::Invalid.into());
-        }
-        self.session.check()?;
-        Ok(&mut self.inner)
-    }
-}
-
-/// One sleep's bound: [`RECHECK`], or less when the deadline is closer.
-fn remaining(deadline: Option<Instant>) -> Duration {
+/// One sleep's bound: `longest`, or less when the deadline is closer.
+fn remaining(deadline: Option<Instant>, longest: Duration) -> Duration {
     deadline
-        .map_or(RECHECK, |d| d.saturating_duration_since(Instant::now()))
-        .min(RECHECK)
+        .map_or(longest, |d| d.saturating_duration_since(Instant::now()))
+        .min(longest)
 }
 
-/// Counters of [`RingRx::wait`] (observational).
+/// Counters of the waits of a [`RingRx`] (observational).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WaitStats {
     /// Sleeps (the ring was empty after arming).
     pub sleeps: u64,
     /// Sleeps ended by an interrupt.
     pub woken: u64,
-    /// Sleeps that ran to their bound ([`RECHECK`] or the deadline) without one.
+    /// Sleeps that ran to their bound ([`RECHECK`], [`POLL`] or the deadline) without one.
     pub rechecks: u64,
     /// Of `rechecks`, those after which messages were available: data found by the re-check
-    /// rather than a wake (a lost, merged-away or slower-than-`RECHECK` notification).
+    /// rather than a wake (a lost, merged-away or slower-than-`RECHECK` notification, or any
+    /// message of a poll ring).
     pub late: u64,
 }
 
+/// The reading end of an RP1 -> Linux ring. A `notify = "irq"` ring sleeps on `rp1:irq`
+/// between messages; a `notify = "poll"` ring sleeps [`POLL`] at a time.
 pub struct RingRx<T> {
     inner: shm::RingRx<T>,
-    notify_irq: bool,
+    /// `notify = "irq"`: the interrupt its writer raises.
+    irq: Option<Irq>,
+    peer: Peer,
     spin: Duration,
     stats: WaitStats,
     _map: Rc<Mapping>,
     session: Rc<Session>,
 }
 impl<T: Message> RingRx<T> {
-    pub fn pop(&mut self) -> Result<Option<T>> {
+    /// The oldest message, without waiting.
+    pub fn try_recv(&mut self) -> Result<Option<T>> {
         self.session.check()?;
         let r = self.inner.pop()?;
         self.session.check()?;
         Ok(r)
+    }
+    /// The oldest message, waiting up to `timeout` for one (`None`: no deadline). `Ok(None)`
+    /// when the deadline passed first.
+    pub fn recv(&mut self, timeout: Option<Duration>) -> Result<Option<T>> {
+        let deadline = deadline(timeout);
+        loop {
+            if let Some(value) = self.try_recv()? {
+                return Ok(Some(value));
+            }
+            if !self.wait_until(deadline)? {
+                return Ok(None);
+            }
+        }
+    }
+    /// As many messages as fit in `out`, without waiting: one `tail` store per call
+    /// (`rp1_proto::shm::RingRx::pop_into`).
+    pub fn try_recv_into(&mut self, out: &mut [T]) -> Result<usize> {
+        self.session.check()?;
+        let n = self.inner.pop_into(out)?;
+        self.session.check()?;
+        Ok(n)
+    }
+    /// [`RingRx::try_recv_into`], waiting up to `timeout` for the first message (`None`: no
+    /// deadline). `Ok(0)` when the deadline passed first.
+    pub fn recv_into(&mut self, out: &mut [T], timeout: Option<Duration>) -> Result<usize> {
+        let deadline = deadline(timeout);
+        loop {
+            let n = self.try_recv_into(out)?;
+            if n != 0 || out.is_empty() || !self.wait_until(deadline)? {
+                return Ok(n);
+            }
+        }
+    }
+    /// [`RingRx::try_recv_into`] that keeps the messages read before an error.
+    pub fn try_recv_into_report(&mut self, out: &mut [T]) -> (usize, Option<Error>) {
+        if let Err(e) = self.session.check() {
+            return (0, Some(e));
+        }
+        let (n, error) = self.inner.pop_into_report(out);
+        let error = error.map(Error::from);
+        (n, error.or_else(|| self.session.check().err()))
     }
     /// Newest published slot and its index, without consuming it (reject rings only).
     pub fn newest(&self) -> Result<Option<(u32, Result<T>)>> {
@@ -582,22 +574,6 @@ impl<T: Message> RingRx<T> {
     pub fn tail(&self) -> u32 {
         self.inner.tail()
     }
-    /// Batch read retaining an error encountered after a valid prefix.
-    pub fn pop_into_report(&mut self, out: &mut [T]) -> (usize, Option<Error>) {
-        if let Err(e) = self.session.check() {
-            return (0, Some(e));
-        }
-        let (n, error) = self.inner.pop_into_report(out);
-        let error = error.map(Error::from);
-        (n, error.or_else(|| self.session.check().err()))
-    }
-    /// Batch form of [`RingRx::pop`]: one `tail` store per call (`rp1_proto::shm::RingRx::pop_into`).
-    pub fn pop_into(&mut self, out: &mut [T]) -> Result<usize> {
-        self.session.check()?;
-        let n = self.inner.pop_into(out)?;
-        self.session.check()?;
-        Ok(n)
-    }
     pub fn dropped(&self) -> u32 {
         self.inner.dropped()
     }
@@ -605,45 +581,46 @@ impl<T: Message> RingRx<T> {
     pub fn available(&self) -> u32 {
         self.inner.available()
     }
-    /// Block until messages are available or `timeout` passes (`None`: no deadline); returns
-    /// whether some are. For rings declared `notify = "irq"` (otherwise `Proto(Invalid)`).
+    /// Wait until messages are available or `timeout` passes (`None`: no deadline), without
+    /// taking any; returns whether some are.
     ///
-    /// Handshake (protocol.md §2.3): arm the sleep counter, read it back, re-check `head`, and
-    /// only then sleep on `irq`; RP1 drains `head` before it samples the counter. Each sleep
-    /// is bounded by [`RECHECK`], because a wake is only a hint.
-    pub fn wait(&mut self, irq: &mut Irq, timeout: Option<Duration>) -> Result<bool> {
-        if !self.notify_irq {
-            return Err(proto::Error::Invalid.into());
-        }
+    /// Spins first (see [`RingRx::set_spin`]), then sleeps. An irq ring arms its sleep
+    /// counter, reads it back and re-checks `head` before it sleeps on `rp1:irq`, and RP1
+    /// drains `head` before it samples the counter (protocol.md §2.3); each sleep is bounded
+    /// by [`RECHECK`] because a wake is only a hint. Before each sleep it reads the serving
+    /// core's state: `Err(PeerDown)` once that core is down.
+    pub fn wait(&mut self, timeout: Option<Duration>) -> Result<bool> {
+        self.wait_until(deadline(timeout))
+    }
+    fn wait_until(&mut self, deadline: Option<Instant>) -> Result<bool> {
         self.session.check()?;
-        let start = Instant::now();
-        let deadline = timeout.and_then(|t| start.checked_add(t));
-        if !self.spin.is_zero() {
-            // Never past the deadline; `None` (spin too long to represent): until data.
-            let end = match (start.checked_add(self.spin), deadline) {
-                (Some(s), Some(d)) => Some(s.min(d)),
-                (s, d) => s.or(d),
-            };
-            while end.is_none_or(|e| Instant::now() < e) {
-                self.session.check()?;
-                if self.inner.available() != 0 {
-                    return Ok(true);
-                }
-                std::hint::spin_loop();
-            }
+        if self.spin_until(deadline)? {
+            return Ok(true);
         }
         loop {
             self.session.check()?;
             if deadline.is_some_and(|d| Instant::now() >= d) {
                 return Ok(self.inner.available() != 0);
             }
-            let bound = remaining(deadline);
-            let mut io = Ok(false);
-            let outcome = self.inner.wait_with(|| {
-                io = irq.wait(bound);
-                matches!(io, Ok(true))
-            });
-            io?;
+            self.peer.check()?;
+            let outcome = match &mut self.irq {
+                Some(irq) => {
+                    let bound = remaining(deadline, RECHECK);
+                    let mut io = Ok(false);
+                    let outcome = self.inner.wait_with(|| {
+                        io = irq.wait(bound);
+                        matches!(io, Ok(true))
+                    });
+                    io?;
+                    outcome
+                }
+                // Its writer never looks at the sleep counter: just sleep.
+                None if self.inner.available() != 0 => shm::Wait::Ready,
+                None => {
+                    std::thread::sleep(remaining(deadline, POLL));
+                    shm::Wait::Timeout
+                }
+            };
             match outcome {
                 shm::Wait::Ready => return Ok(true),
                 shm::Wait::Woken => self.stats.woken += 1,
@@ -657,8 +634,27 @@ impl<T: Message> RingRx<T> {
             self.stats.sleeps += 1;
         }
     }
-    /// Poll for up to `spin` (never past the wait's timeout) before the first arm of each
-    /// [`RingRx::wait`] (default zero).
+    /// Poll for up to the spin, never past `deadline`; whether messages arrived.
+    fn spin_until(&self, deadline: Option<Instant>) -> Result<bool> {
+        if self.spin.is_zero() {
+            return Ok(false);
+        }
+        // `None` (spin too long to represent, no deadline): until data.
+        let end = match (Instant::now().checked_add(self.spin), deadline) {
+            (Some(s), Some(d)) => Some(s.min(d)),
+            (s, d) => s.or(d),
+        };
+        while end.is_none_or(|e| Instant::now() < e) {
+            self.session.check()?;
+            if self.inner.available() != 0 {
+                return Ok(true);
+            }
+            std::hint::spin_loop();
+        }
+        Ok(false)
+    }
+    /// Poll for up to `spin` (never past the wait's deadline) before each wait sleeps
+    /// (default zero).
     /// With a producer that publishes a message every few µs, arming right away is mostly
     /// cancelled by the re-check, yet RP1 may still see the odd counter and pulse (one PCIe
     /// round trip each way per arm); a short spin trades consumer CPU for fewer arms.
@@ -669,20 +665,83 @@ impl<T: Message> RingRx<T> {
         self.stats
     }
 }
+
+mod sealed {
+    use rp1_proto::shm::Waiter;
+
+    pub trait Waitable {
+        /// The session and the serving core are still up.
+        fn check(&self) -> crate::Result<()>;
+        /// The ring's wait handle and, for an irq ring, its interrupt.
+        fn parts(&mut self) -> (&mut dyn Waiter, Option<&mut crate::notify::Irq>);
+    }
+}
+/// An endpoint [`Firmware::wait_any`] waits on: a [`RingRx`] of any message type.
+pub trait Waitable: sealed::Waitable {}
+impl<T: Message> Waitable for RingRx<T> {}
+impl<T: Message> sealed::Waitable for RingRx<T> {
+    fn check(&self) -> Result<()> {
+        self.session.check()?;
+        self.peer.check()
+    }
+    fn parts(&mut self) -> (&mut dyn shm::Waiter, Option<&mut Irq>) {
+        (&mut self.inner, self.irq.as_mut())
+    }
+}
+
+/// The writing end of a Linux -> RP1 ring. On a `notify = "irq"` ring every send that finds
+/// the reader asleep rings its core's doorbell (protocol.md §3).
 pub struct RingTx<T> {
     inner: shm::RingTx<T>,
+    /// `notify = "irq"`: the reader's doorbell.
+    doorbell: Option<Doorbell>,
     _map: Rc<Mapping>,
     session: Rc<Session>,
 }
 impl<T: Message> RingTx<T> {
-    pub fn push(&mut self, value: &T) -> Result<()> {
-        self.session.check()?;
-        Ok(self.inner.push(value)?)
+    /// The writer over an attached ring. Rings the doorbell once if the reader already
+    /// sleeps: a previous writer may have published `head` and ended before it rang.
+    fn open(
+        inner: shm::RingTx<T>,
+        doorbell: Option<Doorbell>,
+        map: Rc<Mapping>,
+        session: Rc<Session>,
+    ) -> Self {
+        let tx = Self {
+            inner,
+            doorbell,
+            _map: map,
+            session,
+        };
+        tx.wake();
+        tx
     }
-    /// Batch form of [`RingTx::push`]: one `head` store per call (`rp1_proto::shm::RingTx::push_slice`).
-    pub fn push_slice(&mut self, values: &[T]) -> Result<usize> {
+    /// Ring the doorbell if the reader sleeps. `reader_asleep` first reads `head` back, so
+    /// what was sent has reached RP1 before the doorbell does.
+    fn wake(&self) {
+        if let Some(doorbell) = &self.doorbell
+            && self.inner.reader_asleep()
+        {
+            doorbell.ring();
+        }
+    }
+    /// Publish one message and wake the reader if it sleeps. `Err(Proto(Full))`: no room
+    /// (counted in [`RingTx::dropped`]).
+    pub fn send(&mut self, value: &T) -> Result<()> {
         self.session.check()?;
-        Ok(self.inner.push_slice(values))
+        self.inner.push(value)?;
+        self.wake();
+        Ok(())
+    }
+    /// Publish as many of `values` as fit (one `head` store,
+    /// `rp1_proto::shm::RingTx::push_slice`) and wake the reader if it sleeps.
+    pub fn send_slice(&mut self, values: &[T]) -> Result<usize> {
+        self.session.check()?;
+        let n = self.inner.push_slice(values);
+        if n != 0 {
+            self.wake();
+        }
+        Ok(n)
     }
     pub fn dropped(&self) -> u32 {
         self.inner.dropped()
@@ -731,7 +790,6 @@ impl<T: Message> BlockMap<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use std::os::{fd::OwnedFd, unix::net::UnixStream};
 
     /// Anonymous memory standing in for a UIO mapping.
@@ -753,53 +811,95 @@ mod tests {
             _file: File::open("/dev/null").unwrap(),
         })
     }
+    /// Where the rig's rings keep their link-page side (after the status words).
+    const UP_SRAM: usize = 0x100;
+    const DOWN_SRAM: usize = 0x200;
     struct Rig {
+        /// Linux's end of an RP1 -> Linux ring of four `u32`, served by proc1.
         rx: RingRx<u32>,
+        /// RP1's end of it.
         tx: shm::RingTx<u32>,
         header: Rc<Mapping>,
-        _ctrl: Rc<Mapping>,
+        /// The link page: status words and the rings' SRAM side.
+        link: Rc<Mapping>,
+        session: Rc<Session>,
+        /// The other end of the irq ring's `rp1:irq` stand-in (`None` for a poll ring).
+        _irq: Option<File>,
     }
-    /// A published header and one depth-4 irq ring; both ends in this process.
-    fn rig() -> Rig {
+    /// A published header and one depth-4 ring, irq or poll; both ends in this process.
+    fn rig(irq: bool) -> Rig {
         let header = anon(4096);
         let sha = [7u8; 32];
         let mut init = unsafe { shm::HeaderInit::begin(header.ptr(), 0) };
         init.write(&sha, 1, 0);
         init.publish();
-        let (data, ctrl) = (anon(4096), anon(4096));
+        let link = anon(LINK_PAGE);
         let session = Rc::new(Session {
             header: unsafe { shm::Header::open(header.ptr(), &sha) }.unwrap(),
             _map: header.clone(),
-            _link: header.clone(),
+            link: link.clone(),
         });
-        let len = shm::CONTROL_SIZE + 4 * shm::slot_size(4);
+        let data = anon(4096);
+        let (len, ctrl) = (shm::ring_body_size(4, 4).unwrap(), unsafe {
+            link.ptr().add(UP_SRAM)
+        });
         let ow = shm::Overflow::Reject;
-        let inner = unsafe { shm::RingRx::attach(data.ptr(), len, ctrl.ptr(), 128, 4, ow) };
-        let tx = unsafe { shm::RingTx::attach(data.ptr(), len, ctrl.ptr(), 128, 4, ow) };
+        let inner = unsafe { shm::RingRx::attach(data.ptr(), len, ctrl, 128, 4, ow) };
+        let tx = unsafe { shm::RingTx::attach(data.ptr(), len, ctrl, 128, 4, ow) };
+        let (irq, peer) = if irq {
+            let (irq, peer) = irq_pair();
+            (Some(irq), Some(peer))
+        } else {
+            (None, None)
+        };
         let rx = RingRx {
             inner: inner.unwrap(),
-            notify_irq: true,
+            irq,
+            peer: Peer {
+                link: link.clone(),
+                core: 1,
+            },
             spin: Duration::ZERO,
             stats: WaitStats::default(),
             _map: data,
-            session,
+            session: session.clone(),
         };
         Rig {
             rx,
             tx: tx.unwrap(),
             header,
-            _ctrl: ctrl,
+            link,
+            session,
+            _irq: peer,
         }
     }
     /// An `Irq` on one end of a socket pair; writing 4 bytes to the other end is an event.
-    fn irq() -> (Irq, File) {
+    fn irq_pair() -> (Irq, File) {
         let (a, b) = UnixStream::pair().unwrap();
-        let irq = Irq {
-            file: File::from(OwnedFd::from(a)),
-            wakes: 0,
-            count: 0,
-        };
-        (irq, File::from(OwnedFd::from(b)))
+        (
+            Irq::from_file(File::from(OwnedFd::from(a))),
+            File::from(OwnedFd::from(b)),
+        )
+    }
+    /// RP1's end of a depth-4 Linux -> RP1 ring on the rig's link page, and the ring's DDR
+    /// side.
+    fn down(r: &Rig) -> (shm::RingRx<u32>, Rc<Mapping>) {
+        let ddr = anon(4096);
+        let sram = unsafe { r.link.ptr().add(DOWN_SRAM) };
+        let len = shm::ring_body_size(4, 4).unwrap();
+        let ow = shm::Overflow::Reject;
+        let rp1 = unsafe { shm::RingRx::attach(sram, len, ddr.ptr(), 128, 4, ow) }.unwrap();
+        (rp1, ddr)
+    }
+    /// Linux's end of [`down`]'s ring, with proc1's doorbell 27 on `page` (`None`: a poll
+    /// ring).
+    fn writer(r: &Rig, ddr: &Rc<Mapping>, page: Option<&Rc<Mapping>>) -> RingTx<u32> {
+        let sram = unsafe { r.link.ptr().add(DOWN_SRAM) };
+        let len = shm::ring_body_size(4, 4).unwrap();
+        let ow = shm::Overflow::Reject;
+        let inner = unsafe { shm::RingTx::attach(sram, len, ddr.ptr(), 128, 4, ow) }.unwrap();
+        let doorbell = page.map(|page| Doorbell::new(page.clone(), 1, 27));
+        RingTx::open(inner, doorbell, ddr.clone(), r.session.clone())
     }
 
     /// A valid note with an SHM area, a LINK record (doorbells as given) and these regions,
@@ -876,10 +976,10 @@ mod tests {
 
     #[test]
     fn rings_refuse_channel_halves_by_name() {
-        let r = rig();
+        let r = rig(false);
         let fw = firmware(
             note([None; 2], &[("x", 2, false), ("x-dn", 2, false)]),
-            Some(r.rx.session.clone()),
+            Some(r.session.clone()),
         );
         // `x-dn` is in the note, yet only a channel or rpc may open it.
         assert!(matches!(fw.ring_tx::<u32>("x-dn"), Err(Error::Unknown)));
@@ -937,54 +1037,174 @@ mod tests {
 
     #[test]
     fn spin_stops_at_the_deadline() {
-        let mut r = rig();
-        let (mut irq, _peer) = irq();
+        let mut r = rig(true);
         r.rx.set_spin(Duration::from_secs(60));
         let t = Instant::now();
-        assert!(!r.rx.wait(&mut irq, Some(Duration::from_millis(1))).unwrap());
+        assert!(!r.rx.wait(Some(Duration::from_millis(1))).unwrap());
         assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
         // Zero timeout: no spin, no sleep.
-        assert!(!r.rx.wait(&mut irq, Some(Duration::ZERO)).unwrap());
+        assert!(!r.rx.wait(Some(Duration::ZERO)).unwrap());
         assert_eq!(r.rx.wait_stats().sleeps, 0);
     }
 
     #[test]
     fn wait_checks_the_session_before_spinning() {
-        let mut r = rig();
-        let (mut irq, _peer) = irq();
+        let mut r = rig(true);
         r.rx.set_spin(Duration::from_secs(60));
         r.header.write(12, 1); // RP1 re-initializes the region
         let t = Instant::now();
-        let e = r.rx.wait(&mut irq, None).unwrap_err();
+        let e = r.rx.recv(None).unwrap_err();
         assert!(matches!(e, Error::Proto(proto::Error::Reset)), "{e:?}");
         assert!(t.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
-    fn irq_wait_wakes_and_rejects_short_reads() {
-        let (mut irq, mut peer) = irq();
-        assert!(!irq.wait(Duration::from_millis(1)).unwrap());
-        peer.write_all(&5u32.to_ne_bytes()).unwrap();
-        assert!(irq.wait(Duration::from_secs(5)).unwrap());
-        assert_eq!((irq.wakes(), irq.event_count()), (1, 5));
-        peer.write_all(&[1, 2]).unwrap();
-        let e = irq.wait(Duration::from_secs(5)).unwrap_err();
-        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    fn recv_keeps_its_deadline() {
+        for irq in [true, false] {
+            let mut r = rig(irq);
+            let timeout = Duration::from_millis(30);
+            let t = Instant::now();
+            assert_eq!(r.rx.recv(Some(timeout)).unwrap(), None);
+            let elapsed = t.elapsed();
+            // Each sleep ends by RECHECK; 40 ms is scheduling slack.
+            assert!(
+                elapsed >= timeout && elapsed < timeout + RECHECK + Duration::from_millis(40),
+                "irq={irq} {elapsed:?}"
+            );
+            let s = r.rx.wait_stats();
+            assert!(
+                s.sleeps > 0 && s.rechecks == s.sleeps && s.late == 0,
+                "{s:?}"
+            );
+            r.tx.push(&5).unwrap();
+            let mut out = [0; 4];
+            assert_eq!(r.rx.recv_into(&mut out, Some(timeout)).unwrap(), 1);
+            assert_eq!(out[0], 5);
+            // Zero timeout: no sleep.
+            assert_eq!(r.rx.recv(Some(Duration::ZERO)).unwrap(), None);
+            assert_eq!(r.rx.wait_stats(), s);
+        }
+    }
+
+    #[test]
+    fn a_wait_ends_when_the_serving_core_is_down() {
+        let mut r = rig(true);
+        let block = proto::status::BLOCKS[1];
+        r.link
+            .write(block + proto::status::STATE, CoreState::Running.word());
+        assert_eq!(r.rx.recv(Some(Duration::from_millis(1))).unwrap(), None);
+        r.link.write(block + proto::status::REASON, 7);
+        r.link
+            .write(block + proto::status::STATE, CoreState::Panicked.word());
+        let t = Instant::now();
+        let e = r.rx.recv(None).unwrap_err();
+        assert!(t.elapsed() < Duration::from_secs(5));
+        assert!(
+            matches!(
+                e,
+                Error::PeerDown {
+                    core: 1,
+                    state: CoreState::Panicked,
+                    reason: 7
+                }
+            ),
+            "{e:?}"
+        );
+        // Messages already there are still received.
+        r.tx.push(&1).unwrap();
+        assert_eq!(r.rx.recv(None).unwrap(), Some(1));
+        let fw = firmware(note([None; 2], &[]), None);
+        let e = fw.wait_any(&mut [&mut r.rx], None).unwrap_err();
+        assert!(matches!(e, Error::PeerDown { core: 1, .. }), "{e:?}");
+        // BAR2 reads after the PCIe link went down.
+        r.link.write(block + proto::status::STATE, u32::MAX);
+        assert!(matches!(r.rx.recv(None), Err(Error::LinkDown)));
+    }
+
+    /// proc1's `PROCn_INTF` SET alias in `rp1:doorbell`: the address the raw GPIO27 doorbell
+    /// uses (HW).
+    const PROC1_BELL: usize = 0x2114;
+    /// Whether the doorbell was rung since the last call.
+    fn rung(page: &Mapping) -> bool {
+        let value = page.read(PROC1_BELL);
+        page.write(PROC1_BELL, 0);
+        assert!(value == 0 || value == 1 << 27, "{value:#x}");
+        value != 0
+    }
+
+    #[test]
+    fn send_rings_the_doorbell_only_for_a_sleeping_reader() {
+        let r = rig(false);
+        let page = anon(0x4000);
+        let (mut rp1, ddr) = down(&r);
+        let mut tx = writer(&r, &ddr, Some(&page));
+        // The reader is awake (even counter): neither the opening notify nor a send rings.
+        assert!(!rung(&page));
+        tx.send(&1).unwrap();
+        assert!(!rung(&page));
+        assert_eq!(rp1.pop().unwrap(), Some(1));
+        // Asleep (odd): every send rings.
+        assert!(rp1.prepare_wait());
+        tx.send(&2).unwrap();
+        assert!(rung(&page));
+        assert_eq!(tx.send_slice(&[3, 4]).unwrap(), 2);
+        assert!(rung(&page));
+        // Awake again: no ring.
+        rp1.finish_wait();
+        tx.send(&5).unwrap();
+        assert!(!rung(&page));
+        // A poll ring never rings, also while its reader sleeps.
+        let r = rig(false);
+        let (mut rp1, ddr) = down(&r);
+        let mut tx = writer(&r, &ddr, None);
+        assert!(rp1.prepare_wait());
+        tx.send(&6).unwrap();
+        assert!(!rung(&page));
+    }
+
+    #[test]
+    fn a_new_writer_rings_once_for_a_reader_already_asleep() {
+        let r = rig(false);
+        let page = anon(0x4000);
+        let (mut rp1, ddr) = down(&r);
+        // The reader sleeps; a previous writer published and ended before it rang.
+        assert!(rp1.prepare_wait());
+        let mut inner = unsafe {
+            shm::RingTx::<u32>::attach(
+                r.link.ptr().add(DOWN_SRAM),
+                shm::ring_body_size(4, 4).unwrap(),
+                ddr.ptr(),
+                128,
+                4,
+                shm::Overflow::Reject,
+            )
+        }
+        .unwrap();
+        inner.push(&1).unwrap();
+        let _tx = writer(&r, &ddr, Some(&page));
+        assert!(rung(&page));
+        // Reader awake when the next writer opens: no ring.
+        assert_eq!(rp1.drain(4, |_| {}).unwrap(), shm::Progress::Idle);
+        rp1.finish_wait();
+        let _tx = writer(&r, &ddr, Some(&page));
+        assert!(!rung(&page));
     }
 
     #[test]
     fn wait_any_returns_on_any_ring() {
-        let mut a = rig();
-        let mut b = rig();
-        let (mut irq, _peer) = irq();
-        let t = Instant::now();
-        let timeout = Some(Duration::from_millis(30));
-        assert!(!irq.wait_any(&mut [&mut a.rx, &mut b.rx], timeout).unwrap());
-        assert!(t.elapsed() >= Duration::from_millis(30));
-        b.tx.push(&9).unwrap();
-        assert!(irq.wait_any(&mut [&mut a.rx, &mut b.rx], None).unwrap());
-        assert_eq!(b.rx.pop().unwrap(), Some(9));
-        // Both rings were disarmed again: no notification is due.
-        assert!(!a.tx.wake_needed() && !b.tx.wake_needed());
+        let fw = firmware(note([None; 2], &[]), None);
+        for irq in [true, false] {
+            let mut a = rig(true);
+            let mut b = rig(irq);
+            let t = Instant::now();
+            let timeout = Some(Duration::from_millis(30));
+            assert!(!fw.wait_any(&mut [&mut a.rx, &mut b.rx], timeout).unwrap());
+            assert!(t.elapsed() >= Duration::from_millis(30));
+            b.tx.push(&9).unwrap();
+            assert!(fw.wait_any(&mut [&mut a.rx, &mut b.rx], None).unwrap());
+            assert_eq!(b.rx.try_recv().unwrap(), Some(9));
+            // Both rings were disarmed again: no notification is due.
+            assert!(!a.tx.wake_needed() && !b.tx.wake_needed());
+        }
     }
 }
