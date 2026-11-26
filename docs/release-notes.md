@@ -17,7 +17,9 @@ STATIC
 - Proc0 gets its clocks from `rp1::platform::init`. Proc1 uses
   `Clocks::wait_from_proc0(&core, timeout)`. Pass `0.micros()` for a single attempt.
 - `Uart::split` gives a `Tx` and `Rx` for use in main and an ISR on the owning core.
-  Each half exposes its own IRQ status and mask operations. Use `Uart::join` before
-  calling `free` or `abort`. The pin route traits are now `TxPin` and `RxPin`.
+  Each half exposes its own IRQ status and mask operations. Both `Uart::enable_rx_interrupt`
+  and `Rx::enable_interrupt` enable the RX threshold, timeout and error interrupts.
+  Acknowledge receive error interrupts with `clear_interrupt`. Use `Uart::join` before
+  calling `free` or `abort`. The pin route traits are `TxPin` and `RxPin`.
 - Enable `rp1-hal/eh02-adc` for the embedded-hal 0.2 `OneShot` ADC adapter or migrate to
   `Adc::read`.
