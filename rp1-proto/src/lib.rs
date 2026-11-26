@@ -29,9 +29,7 @@ pub mod link {
     pub const HANDOFF_PHYS_LOW: usize = 0x04;
     pub const HANDOFF_PHYS_HIGH: usize = 0x08;
     pub const HANDOFF_SIZE: usize = 0x0c;
-    /// Example doorbell request/reply words (Linux writes request, proc1 echoes reply).
-    pub const DOORBELL_REQUEST: usize = 0x10;
-    pub const DOORBELL_REPLY: usize = 0x14;
+    // 0x10 and 0x14 are reserved.
     /// Written by proc0 when publishing the window: the published DDR generation (even) or 0.
     pub const SHM_GENERATION: usize = 0x18;
     /// 0 = not enabled yet, 1 = ready, `SHM_WINDOW_LOST`, other = error code from enable.

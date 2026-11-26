@@ -63,7 +63,7 @@ heartbeat = { period_ms = 100 }           # 任意: このコアが rp1_rt::stat
 
 [[package.metadata.rp1.shm]]
 name = "down"                             # [a-z][a-z0-9_]{0,23}。UIO 名は rp1:<name>
-kind = "ring"                             # "ring" | "block"
+kind = "ring"                             # "ring" | "block" | "channel" | "rpc"
 direction = "linux-to-rp1"
 core = "proc1"                            # M3 側でハンドルを受け取るコア
 message = "protocol::Cmd"                 # リングの要素
@@ -117,6 +117,33 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 `gpio-reserved-ranges` が所有ピンちょうど `<2 2 8 4 14 2 22 1 27 1>`（I2C1 2/3、SPI0 9..11 と CS 8、log 14/15、GPIO 22、27）になり、
 既存の回帰（shm・doorbell・I2C・SPI・ADC・SCMI）が全て合格。同じ起動で Linux の UART1（ttyAMA1、GPIO 0/1）がホストとの
 送受信の両方向で合格し、その間も RP1 の UART0 ログは出続けた。
+
+### 名前付き channel と RPC（STATIC）
+
+```toml
+[package.metadata.rp1.proc1]
+doorbell = 27
+host_irq = true
+
+[[package.metadata.rp1.shm]]
+name = "ping"
+kind = "rpc"
+core = "proc1"
+message = "Ping"
+reply = "Pong"
+depth = 8
+notify = "irq"
+```
+
+`message` は Linux → RP1、`reply` は RP1 → Linux。両方の型を `configure_with_types` に登録する。
+名前は `[a-z][a-z0-9_]{0,20}`。`channel` は `depth = { dn = 16, up = 64 }` も選べる。
+`notify` は既定で両方向 `poll`。`notify = { dn = "irq", up = "poll" }` で個別に指定できる。
+`irq` の dn には `doorbell`、up には同じコアの `host_irq` が必要。ドアベルのピンは
+`doorbell` が所有する。`direction`・`overflow`・`writer`・`type`・`placement` は省く。
+
+1 項目につき 2 つの物理領域を数える（上限は合計 64）。UIO は `rp1:ping-dn`、`rp1:ping-up`。
+生成される `rp1::link::Ping` は `Proc1Link::ping` の型。Linux は `fw.client("ping")` で開く。
+`channel` は `fw.channel(name)` で開く。
 
 ### 1.3 語彙（所有の単位）
 
@@ -275,8 +302,9 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 | 0x0012 | 0 | LOG | sink u8（1 uart0）、baudrate u32 |
 | 0x0013 | 1 | BOOT | config.txt の SHA-256、cmdline.txt の SHA-256、本来のカーネルのファイル名（文字列） |
 | 0x0020 | 1 | SHM_AREA | 24 bytes: DDR 合計サイズ u32（1 MiB 単位、1..16 MiB）、領域境界 u32（65536）、SRAM ハンドオフアドレス u32、SRAM 使用末尾 u16、予約 0 u16、DDR CPU 物理アドレス u64（STATIC: rpi-cm5 は 0x22000000）。旧 14-byte 形式は拒否 |
-| 0x0021 | 1 | SHM_REGION | 1 件 1 レコード: kind u8、direction u8、core u8、notify u8、linux_map u8、writer u8、overflow u8（1 reject / 2 overwrite）、placement u8（1 reader-local / 2 linux）、DDR オフセット/長さ u32×2、SRAM オフセット/長さ u16×2、要素長 u32、depth u32、型 ID u64（要求/応答で 2 つ）、名前（u8 長さ + UTF-8）、型名（同） |
+| 0x0021 | 1 | SHM_REGION | 1 件 1 レコード: kind u8、direction u8、core u8、notify u8、linux_map u8、writer u8、overflow u8（1 reject / 2 overwrite）、placement u8（1 reader-local / 2 linux）、DDR オフセット/長さ u32×2、SRAM オフセット/長さ u16×2、要素長 u32、depth u32、型 ID u64、名前（u8 長さ + UTF-8）、型名（同） |
 | 0x0022 | 0 | LINK | 12 bytes: 版 u8 = 1、予約 u8 = 0、状態語のオフセット u16 = 0x40、コアごとに（proc0、proc1）ドアベルのピン u8（0..=27、宣言なしは 0xff）、host_irq の MSI-X vector u8（0 = 無し）、心拍の周期 ms u16（0 = 宣言なし） |
+| 0x0023 | 0 | RPC | 論理名（u8 長さ + UTF-8）。RPC ごとに 1 件。対応する `-dn` と `-up` は SHM_REGION |
 
 - 文字列は `u8 長さ + UTF-8`（最大 255）。
 - id（ピン番号、ブロック番号）の割り当ては `rp1-proto` の enum が正本。番号は一度決めたら変えない。
@@ -292,7 +320,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 | 読み手 | 使うレコード | 失敗時 |
 |---|---|---|
 | ローダー | ENTRY、SHM_AREA（ハンドオフ）、OWNERSHIP（当てた後の DTB の検査、§3.2）。overlay 本体は `.rp1.dtbo` | 知らない critical レコード・CRC 不一致・DTB の印（§3.2）と不一致 → RP1 を起動せず停止（ログに理由） |
-| Linux 側 `rp1-linux` | overlay が載せたコピー（`/rp1-firmware` ノードの `rp1,note` プロパティ）の SHM_*、FIRMWARE | 型 ID 不一致・名前が無い → `Err` |
+| Linux 側 `rp1-linux` | overlay が載せたコピー（`/rp1-firmware` ノードの `rp1,note` プロパティ）の SHM_*、LINK、RPC、FIRMWARE | 型 ID 不一致・名前が無い → `Err` |
 | `cargo rp1 check --dtb` | OWNERSHIP、LOG、SHM_AREA/SHM_REGION、note 全体 | ローダーと同じコード（`rp1_dt::check::enforce`）で起動時の結果を予測して表示する（STATIC）。ローダーが停止する場合（保護ノード、`on_conflict = "refuse"`、DT の不備）は失敗。衝突によるノードの無効化は既定で失敗、`--allow-boot-disable` で警告。gpiomem 方針だけの無効化は表示だけ。予測が起動時と一致するのは、渡した DTB がファームの渡す DTB と同じときだけ（[build.md](build.md) §3）。衝突として数えるもの（§3.2 手順 3）: 有効なノードの `pinctrl-N` が `rp1_gpio` 配下のグループで RP1 所有ピンを設定、所有ブロックのノード（`rp1_uartN` 等）が有効・ラベルが無い、authority=rp1 なのに `rp1_clocks` が有効、`rp1-shm` 予約が SHM_AREA と違う・他の予約や `/memreserve/` と重なる、`rp1:<name>` の UIO が領域と違う、`/rp1-firmware rp1,note` が ELF の note と違う、有効な gpio-hog・`gpio(s)`/`*-gpio(s)` の利用者が `gpio-reserved-ranges` の線を使う |
 
 ## 3. Linux 用 DT overlay（`rp1-app.dtbo`）

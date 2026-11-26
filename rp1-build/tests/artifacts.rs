@@ -572,11 +572,11 @@ fn in_tree_declarations_have_stable_notes() {
     for (manifest, expected) in [
         (
             "examples/dual-core/Cargo.toml",
-            "bbbac530490e68ded79976f4e0965fbb3cc52f124b8d51bbced25c2e6af84d31",
+            "5bf5e23290e79b3a837935408e2cca063d72c9f91655f108d623d5d3aa99af02",
         ),
         (
             "lab/shm-firmware/Cargo.toml",
-            "8ae65b7dc431ebc8c69de5298eb40fbf1f03a3adf6da89784ca351d63e3129a5",
+            "7226a53a23c887bdba569f58928474aac26c95db2fb5853ba3b1d12465fd44e2",
         ),
     ] {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -596,8 +596,10 @@ fn in_tree_declarations_have_stable_notes() {
         );
         assert!(d.warnings().is_empty(), "{manifest}");
 
-        // The lab build script supplies these types separately from the manifest.
+        // The build scripts register these types separately from their manifests.
         d.types.extend([
+            ("Ping".into(), TypeInfo::of::<u32>()),
+            ("Pong".into(), TypeInfo::of::<u32>()),
             ("Sample".into(), TypeInfo::of::<[u32; 4]>()),
             ("Wide64".into(), TypeInfo::of::<[u32; 16]>()),
             ("Wide256".into(), TypeInfo::of::<[u32; 64]>()),

@@ -1,7 +1,7 @@
 # Linux shared-memory proof
 
-STATIC: `shm-firmware` retains the dual-core UART0, SCMI server and GPIO27 doorbell, and adds
-reader-local rings, a 1 MiB block and a command block. `shm-linux` checks 1,000,000 messages
+STATIC: `shm-firmware` uses dual-core UART0 logging, SCMI, and a typed `ping` RPC on GPIO27.
+The workload uses reader-local rings, a 1 MiB block and a command block. `shm-linux` checks 1,000,000 messages
 in each direction in reject mode, every word of the block in both directions, overwrite
 accounting, M3 scalar DDR read latency/read bandwidth/posted-write bandwidth, and the isolated
 M3 per-message push/pop cost (commands 7/8, Linux idle on the link page).
@@ -12,7 +12,7 @@ STATIC: the SRAM/DDR micro-profile (command 9) is opt-in. The default firmware a
 `lab/build-shm.sh` to enable `sram-profile` in both binaries, and pass `--profile` to
 `lab/verify-shm.py`. For direct builds, pass `--features sram-profile` to both packages. The default + `sram-profile` image currently does not fit (below).
 The firmware also has `i2c`, `adc` and `spi` features, all enabled by default for
-`lab/check-shm.sh`. Use `--no-default-features` for SHM/doorbell/SCMI alone, or add
+`lab/check-shm.sh`. Use `--no-default-features` for SHM/ping/SCMI alone, or add
 `--features i2c` (or `adc`, `spi`, `sram-profile`, comma-separated) for a focused image.
 For example, build a profile-only image with:
 
@@ -40,7 +40,7 @@ cargo rp1 build -p shm-firmware --target thumbv7m-none-eabi --release \
 ```
 
 With it, I2C/ADC/SPI requests are refused (`0xffffffff`) as for any focused image, so the
-full `check-shm.sh`/verifier does not apply; check SHM, doorbell, ring-irq and UART1 directly.
+full `check-shm.sh`/verifier does not apply; check SHM, ping, ring-irq and UART1 directly.
 
 The `ring-dma` feature (not default; use `--no-default-features --features ring-dma`) adds
 command 17 (`shm-linux ring-dma [count]`): RP1 -> Linux streams on `events` (16 B), `wide64`
@@ -83,15 +83,14 @@ unknown-command path (`errors=1`); it never touches the bulk scratch or starts S
 
 STATIC: every image keeps the `host_irq = true` declaration: it is part of the default lab
 profile, not a cargo feature of `shm-firmware`, because the declaration (and the `rp1:irq`
-overlay node) is metadata that features cannot select. Its code is the
-`pulse_after_sram_write()` call in proc1's command loop and the wake of the `events` ring's
-`send_slice`.
+overlay node) is metadata that features cannot select. The `events` ring wakes Linux on
+`send_slice`. Ping replies use poll.
 A firmware built with `sram-profile` logs `p0 sram-profile` on UART0; `verify-shm.py`
 fails a run without `--profile` that has this line, and a run with `--profile` that lacks it,
 so a firmware/client profile mismatch is caught in both directions.
 
-STATIC size measurement (rustc 1.99.1, release, `cargo rp1 build` two-stage link, with the
-host interrupt):
+STATIC size measurement (reference revision `9a41f28`, rustc 1.99.1, release,
+`cargo rp1 build` two-stage link):
 
 | Firmware features | SRAM image / 49152 B | Free | ISRAM / 8192 B | DSRAM static |
 |---|---:|---:|---:|---:|
@@ -113,7 +112,8 @@ and check `p0 sram-profile`, `PROF_DONE` and `p1 shm cmd=9 ... errors=0` on UART
 HW 未検証: cold-boot the default tuple, run `lab/check-shm.sh`, and require `PROFILE skipped`, `SHM_PASS`, the peripheral replies
 and the normal verifier's pass. Also pair a profile client
 with a default firmware once and require a non-zero client exit for command 9. Cold-boot
-each focused image, run `shm-linux` (with the matching `sram-profile` setting) plus a doorbell check before/after it, then send
+each focused image, run `shm-linux probe-only`, `shm-linux ping`, `shm-linux workload` (with
+matching `sram-profile`), and `shm-linux ping` again. Then send
 peripheral requests 1/0xadc/0x5b1 one at a time through link+0x28 (clear link+0x2c first).
 Require the usual reply and UART0 proof markers for enabled proofs; omitted proofs must
 clear the request and reply `0xffffffff`, both before and after SHM enable. Verify SCMI
@@ -133,16 +133,17 @@ remain intact. Loader maximum placements are kernel `0x06000000..0x0e000000`, in
 No range intersects even the maximum shared reservation `0x22000000..0x23000000`.
 M3 `0x81000000+x` translates through ATU region 0 to PCIe `0x1022000000+x`.
 
-The link-page first 64 bytes hold handoff magic/PA/size (offsets 0/4/8/12), existing doorbell
-request/reply (16/20), published generation/status (24/28), and Linux enable request (32).
+The link-page first 64 bytes hold handoff magic/PA/size (offsets 0/4/8/12), reserved words
+(16/20), published generation/status (24/28), and Linux enable request (32).
 The allocator starts at `0xc0` after the lifecycle words and skips the SCMI region
 `0x17c0..0x18c0`.
 Linux loads `uio.ko`, then `uio_pdrv_genirq.ko of_id=generic-uio`, and runs `lab/check-shm.sh`.
-UIO is polled, or (after shm enable) proc1 also raises MSI-X vector 29 on the `rp1:irq` UIO after
-each doorbell reply (`host_irq = true`, `linux-doorbell <link> <doorbell> N
-/dev/uio<rp1:irq>`, which re-checks the reply every 10 ms without a wake and reports
-`missed=`); hwirq58 stays with SCMI's mailbox. No cached mapping, kernel patch or private
-kernel API is used. Device mappings never go through libc memcpy/memset.
+The checks run `shm-linux probe-only` (whole window before Ready, then publish), `shm-linux ping`,
+`shm-linux workload 1000000`, and `shm-linux ping` again, in that order. Standalone `shm-linux`
+still starts with the cold-window probe. Ping requests wake proc1 through GPIO27 and Linux
+polls for replies. The lab uses its existing 16-byte `Sample` for ping in both directions.
+MSI-X vector 29 serves `rp1:irq` when declared. Hwirq58 stays with SCMI's mailbox.
+The clients use uncached UIO mappings and aligned word accesses.
 
 STATIC: proc0 calls generated `rp1::link::try_enable(&mut pcie)` once when Linux requests
 publication. It requires the PERSTn detector to be `Up`. The lab uses the hidden
@@ -165,15 +166,15 @@ Pass/fail is strict (`lab/check-shm.sh` + `lab/verify-shm.py`): each Linux step 
 limit, any non-zero exit or wrong I2C reply prints `CHECK_FAIL`, the script ends with
 `CHECK_SHM_RESULT=PASS|FAIL` then `DDR_INSPECT_END` and exits non-zero on failure. The host
 runs `python3 lab/verify-shm.py --uart0 U0 --uart10 U10 --result OBSERVER_JSON`, which needs
-the capture's `"complete": true`, the UART10 markers in order (`SHM_PASS`, `SHM_RC=0`, both
-doorbells, `I2C_REPLY=0x00000001`, `ADC_REPLY=0x00000ADC`, `SPI_REPLY=0x000005B1`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
+the capture's `"complete": true`, the UART10 markers in order (`WINDOW_PASS`, `SHM_READY`, `SHM_PROBE_RC=0`, first `PING_RTT`
+and exit 0, `SHM_PASS`, `SHM_RC=0`, second `PING_RTT` and exit 0, `I2C_REPLY=0x00000001`, `ADC_REPLY=0x00000ADC`, `SPI_REPLY=0x000005B1`, `CHECK_SHM_RESULT=PASS`, `DDR_INSPECT_END`) and on UART0
 the three `I2C_PASS` lines and
 `I2C_RESULT request=1 Ok` (with `--profile`, also `PROF_DONE` and
 `p1 shm cmd=9 ... errors=0`). The ADC is declared on proc1 in `shm-firmware`: proc1 gets its
 `Clocks` with `Clocks::wait_from_proc0`, runs the boot burst (`p1 adc init Ok`,
 `ADC_P1BOOT ... PASS`) and answers Linux's 0xadc request (`ADC_P1REQ ... PASS`).
-`check-shm.sh` issues that request itself, after the doorbell, shm and I2C steps (the burst
-blocks proc1's doorbell and command handling for tens of ms, so it must not overlap them), and
+`check-shm.sh` issues that request itself, after the ping, SHM and I2C steps (the burst
+blocks proc1's ping and command handling for tens of ms, so it must not overlap them), and
 fails unless the reply is 0xadc. `verify-shm.py` requires `ADC_REPLY=0x00000ADC` on UART10 (after
 `I2C_REPLY`) and on UART0 `ADC_P1BOOT ... PASS`, `ADC_RESULT boot Ok`, `ADC_P1REQ ... PASS` and
 `ADC_RESULT request=0xadc Ok`; any `ADC_RESULT ... Err` fails the run. The UART0 boot markers are
@@ -206,18 +207,17 @@ prints `UART1_DIAG` lines: GPIO 0/1 CTRL/STATUS/PADS, the PL011 baud and control
 driver's tx/rx counters, to tell a wiring or pinmux fault from a script fault. It keeps the port
 open while it reads, because closing it shuts the PL011 down and drops received bytes.
 
-## Interrupt proof image (HW 2026-11-26)
+## Interrupt proof image
 
 `irq-proof` is a focused firmware that proves the interrupt path on hardware: handlers entered
 and left on both cores, the `+0x108` wrapper of the DesignWare blocks, the user interrupt
-section, the default handler and `log!` from a handler. The proof passed on both cores
-(HW 2026-11-26, cold boot ×1). It includes the SHM and doorbell regressions; proc1's
-`IO_BANK0` handler answers the raw doorbell. The proof measures both stacks (proc0 2 KiB
-plus the 768 B platform margin, proc1 2 KiB).
+section, the default handler and `log!` from a handler. HW (2026-11-26, `9a41f28`, cold boot ×1)
+covered both cores with the previous echo. STATIC: proc1 serves the named ping from `IO_BANK0`.
+The proof measures both stacks (proc0 2 KiB plus the 768 B platform margin, proc1 2 KiB).
 
 Every marker line on UART0 ends with `nonce=<8 hex digits>`, a value made at boot; the firmware
 also stores it in the link page (+0x28) for Linux to print. Items that need no Linux run right
-after boot. The proof ends when Linux has rung the doorbell 1000 times.
+after boot. The proof reports after proc1 has served 1000 pings.
 
 | Marker (UART0) | Shows | Decides |
 |---|---|---|
@@ -230,7 +230,7 @@ after boot. The proof ends when Linux has rung the doorbell 1000 times.
 | `IRQ_CS` | main updates a two-word pair in critical sections against a 10 kHz handler | `iters>=100000`, `isr_n>=1000`, `torn=0`, `control_torn>=1` (the same update unmasked must be caught), `max_masked_us<=100` |
 | `IRQ_LOG`, `IRQ_LOG_MAIN i=`, `IRQ_LOG_ISR k=` | a handler's `log!` is dropped without waiting while main writes | 20 main lines in order, `isr_dropped>=1`, `drop_max_us<=100`, as many `IRQ_LOG_ISR` lines as `isr_logged` |
 | `IRQ_DEFAULT` | a line enabled without a handler is masked by the default handler; the core goes on | `irq=28 count=1 masked=1 pre_count=0 pre_pending=0` |
-| `IRQ_P1_GPIO27` | Linux's 1000 doorbells were answered by proc1's handler | `seen>=1000`, `ipsr=16`; the round-trip time is `linux-doorbell`'s line on UART10 |
+| `IRQ_P1_GPIO27` | proc1's handler served the first 1000 pings | `seen>=1000`, `ipsr=16`; `PING_RTT` records the latency on UART10 |
 | `IRQ_XCORE` | no handler ran on the core it was not written for | both 0 |
 | `IRQ_UNHANDLED` | unhandled interrupts per core | `p0=0 p1=1` (the `IRQ_DEFAULT` one) |
 | `IRQ_STACK` | untouched bytes at the bottom of each stack (painted at entry) | both at least 512 |
@@ -241,9 +241,9 @@ After the proof each `p1 shm cmd=` line carries `stack_free=`, which must stay a
 The lines whose number was only an estimate before the sweep are not raised here; `irq-sweep` (below) does that.
 
 Build a boot set with `FIRMWARE_PKG=irq-proof bash lab/build-rp1boot.sh` (the initramfs needs
-`shm-linux`, `linux-doorbell` and the UIO modules, as for `check-shm.sh`). On the Linux console
-run `lab/check-irq.sh`; it prints `IRQ_NONCE=`, rings the doorbell, runs `shm-linux` and the
-doorbell again, and ends with `IRQ_CHECK_RESULT=` and `IRQ_CHECK_END`. Capture UART0 and UART10
+`shm-linux`, `linux-status` and the UIO modules, as for `check-shm.sh`). On the Linux console
+run `lab/check-irq.sh`. It prints `IRQ_NONCE=`, runs the cold-window probe, ping and workload,
+runs ping again, then records the notification proofs and `IRQ_CHECK_RESULT=` / `IRQ_CHECK_END`. Capture UART0 and UART10
 from power-on (the bootloader banner is part of the check). The host decides with
 
 ```sh
@@ -260,12 +260,11 @@ before matching lines with any other tool; `verify-irq.py` does it itself.
 
 ### Notification proofs
 
-proc0 owns `host_irq` and doorbell GPIO26 (`down0`), proc1 owns GPIO27 (`down1` and the
-raw echo). Each `IO_BANK0` handler acks before draining and raises again on `More`. The
+proc0 owns `host_irq` and doorbell GPIO26 (`down0`), proc1 owns GPIO27 (`down1` and `ping`). Each `IO_BANK0` handler acks before draining and raises again on `More`. The
 firmware raises once after handing each reader to its handler, which can then service data
 queued at open (docs/protocol.md §3.2).
 
-After the SHM and doorbell checks, `check-irq.sh` runs these `shm-linux` commands:
+After the SHM and ping checks, `check-irq.sh` runs these `shm-linux` commands:
 
 | Command | UART10 result |
 |---|---|
@@ -495,7 +494,7 @@ user functions (for example `platform::init` into `main`), so the platform figur
 bound and the user figure an upper bound. The compiler's panic entry symbol is attributed to
 user code by name, including when rp1-rt supplies the handler.
 
-STATIC (2026-11-26, rustc 1.99.1, release `cargo rp1 build`; bytes):
+STATIC (2026-11-26, reference revision `9a41f28`, rustc 1.99.1, release `cargo rp1 build`; bytes):
 
 | Firmware | Image / 49152 | SRAM free | ISRAM / 8192 | Platform code | Runtime code | User code | Unattributed | stack0 (margin) / stack1 | DSRAM free p0 / p1 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -651,10 +650,12 @@ it waits for `eth0`.
   HW (2026-10-28) verified bundle loading up to 32 MiB. Measure the new bundle before
   relying on that boot range. When reusing a copy from the earlier experiment, remove its
   `etc/initramfs-tools-rp1nfs/hooks/zz-rp1nfs-prune` hook first.
-- `check-realos.sh` prints an inventory (dmesg, lsmod, interrupts, bound platform devices,
+- STATIC: `check-realos.sh` prints an inventory (dmesg, lsmod, interrupts, bound platform devices,
   deferred probes, i2c/spi/uio nodes, lsusb). PASS requires a mounted NFS root, active
-  `multi-user.target`, the `rp1:link`, `rp1:doorbell`, and `rp1:header` UIO nodes, and
-  successful `linux-doorbell` polling (1000 round trips by default with `examples/dual-core`).
+  `multi-user.target`, the `rp1:link`, `rp1:header`, `rp1:ping-dn` and `rp1:ping-up` UIO nodes, and
+  `PING_RC=0` (1000 verified round trips by default). Install the matching `linux-ping` via
+  `CLIENT_BIN` and replace the boot set and client together. Keep the original checker and client
+  with an archived pre-RPC boot set.
   For an SD boot with the same UIO setup, set `EXPECTED_ROOT_FSTYPE=ext4`.
 
 HW (2026-11-16, `examples/dual-core`, cold boot ×2 + `systemctl reboot` ×1; firmware from

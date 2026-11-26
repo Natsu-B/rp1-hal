@@ -39,7 +39,9 @@ pins = [4, 5]
 
 [package.metadata.rp1.proc1]
 peripherals = ["TIMER.ALARM1"]
-pins = [22, 27]
+pins = [22]
+doorbell = 27
+host_irq = true
 
 # Linux と共有するメモリ（BCM2712 側の DDR）。kind で「リング」か「ブロック」を選ぶ（§4.3）
 [[package.metadata.rp1.shm]]            # 要求/応答の通信路 = 向きの違う 2 本のリング
@@ -49,7 +51,7 @@ core = "proc1"
 message = "protocol::Cmd"               # Linux → M3
 reply = "protocol::Reply"               # M3 → Linux
 depth = 16
-notify = "irq"                          # Linux → proc1 を割り込みで通知（GPIO INTF）。"poll" も可
+notify = "irq"                          # 両方向を IRQ にする。"poll" も可
 
 [[package.metadata.rp1.shm]]            # 片方向のリング（M3 → Linux の計測値ストリーム）
 name = "samples"
@@ -129,15 +131,15 @@ fn main(core: Proc0, p: rp1::Proc0Resources) -> ! {
 
 #[entry(proc1)]
 fn proc1_main(core: Proc1, p: rp1::Proc1Resources) -> ! {
-    let pins = hal::gpio::Pins::new(p.pins);            // 宣言した 22, 27 だけ
+    let pins = hal::gpio::Pins::new(p.pins);            // 宣言した 22 だけ
     let mut led = pins.gpio22.into_push_pull_output();
     let mut alarm = hal::timer::Alarm::new(p.TIMER_ALARM1);
-    let mut ctl = /* 将来の channel API から取得する "ctl" */;
+    let mut ctl = /* p.link.try_open() で開いた Proc1Link の ctl */;
     let samples = SAMPLES.producer(&core);
 
     let mut period = None;
     loop {
-        if let Some(cmd) = ctl.try_recv() {
+        if let Ok(Some(cmd)) = ctl.recv() {
             period = match cmd {
                 protocol::Cmd::Start { period_us } => Some(period_us.micros()),
                 protocol::Cmd::Stop => None,
@@ -150,7 +152,7 @@ fn proc1_main(core: Proc1, p: rp1::Proc1Resources) -> ! {
             samples.enqueue(v).ok();
             ctl.send(&protocol::Reply { seq: 0, value: v as i32 }).ok();   // channel "ctl"（§4.3）
         } else {
-            ctl.wait();                                 // ドアベルの割り込みで起きる
+            // IRQ 待ちでは drain で空を確認してから WFE する（protocol.md §3.2）
         }
     }
 }
@@ -196,12 +198,13 @@ static SCRATCH: AtomicU32 = AtomicU32::new(0); // 印の無い static はコア�
 
 ### 4.3 Linux と共有するメモリ（リング / ブロック）
 
-BCM2712 側の DDR に連続領域を 1 つ確保し、宣言した `shm` ごとに区切って使う。種類は 3 つ:
+BCM2712 側の DDR に連続領域を 1 つ確保し、宣言した `shm` ごとに区切って使う。種類は 4 つ:
 
 | kind | 用途 | M3 側の型 | Linux 側の型 |
 |---|---|---|---|
 | `ring` | 片方向のメッセージ列（ストリーム） | `RingTx<T>` / `RingRx<T>` | `RingRx<T>` / `RingTx<T>` |
-| `channel` | 要求と応答（`ring` 2 本 + 通知） | `Channel<Req, Rep>` | `Channel<Req, Rep>` |
+| `channel` | 双方向メッセージ | `Channel<Rep, Req>` | `Channel<Req, Rep>` |
+| `rpc` | 1 要求に 1 応答 | `Server<Req, Rep>` | `Client<Req, Rep>` |
 | `block` | 共有メモリブロック（大きな表、トレース、外付け RAM として） | `Block<T>` | `BlockMap<T>` |
 
 M3 側（STATIC）。proc0 は Linux の公開要求を受けて `rp1::link::try_enable(&mut system.pcie)` を呼ぶ。
@@ -251,7 +254,7 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
   アクセス権は udev ルールでグループ（例 `rp1`）に与え、root を不要にする。rp1-build が `70-rp1.rules`
   （`SUBSYSTEM=="uio", ATTR{name}=="rp1:*", GROUP="<uio_group>", MODE="0660"`）を書き出す。HW（2026-11-05、cold boot 1 回）:
   そのルールと同じ所有（root:1000、0660）にした `rp1:*` UIO を uid/gid 1000（補助グループ無し）が開き、mmap・IRQ の
-  read/write(1) まで使えた（`linux-doorbell` IRQ 往復 2000 回 成功）。gid 1001 は EACCES。udev 自体の照合は STATIC
+  read/write(1) まで使えた（旧エコーの IRQ 往復 2000 回 成功、この時点の起動一式のみ）。gid 1001 は EACCES。udev 自体の照合は STATIC
   （`udevadm verify` 通過）で、initramfs に udev が無いため実機の udev では未試験。
 - **mmap の属性**:
   - `uncached`（既定）: UIO の物理メモリ mmap は arm64 では Device 属性になる（DOC: `uio_mmap_physical` が `pgprot_noncached`）。
@@ -377,10 +380,10 @@ fn main() -> anyhow::Result<()> {
 
     ctl.send(&protocol::Cmd::Start { period_us: 1000 })?;                 // ドアベルも鳴らす
     for _ in 0..10 {
-        let r = ctl.recv_timeout(Duration::from_millis(10))?;              // UIO の割り込み待ち
+        let r = ctl.recv(Some(Duration::from_millis(10)))?.ok_or(rp1_linux::Error::Timeout)?;              // UIO の割り込み待ち
         println!("{} {}", r.seq, r.value);
     }
-    ctl.set_wait(rp1_linux::Wait::Poll);                                   // 低遅延が要るならポーリング
+    ctl.set_spin(Duration::from_micros(5));                               // 次の待機の前に短時間ポーリング
     Ok(())
 }
 ```

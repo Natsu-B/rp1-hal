@@ -61,7 +61,7 @@ lab/           実験・診断（公開 API ではない）
 | ISRAM（コアごと） | ISR、ホットループ、実行時の PCIe 状態機械 | `#[isram]`（v0.1 は手で付ける、§3.3） |
 | DSRAM（コアごと） | スタック、既定の `.data` / `.bss`、`#[proc0]` / `#[proc1]` static、atomic、executor 状態 | 普通の static（§5 の検査を受ける） |
 | 共有 SRAM `0xff00..` | 予約 | linker ASSERT |
-| Linux DDR | Linux との共有メモリ（`ring` / `channel` / `block`）。block は「遅くて大きい」外付け RAM としても使う | 宣言 `[[package.metadata.rp1.shm]]`、`rp1::link` が生成する型付き端点。api-sketch §4.3（STATIC） |
+| Linux DDR | Linux との共有メモリ（`ring` / `channel` / `rpc` / `block`）。block は「遅くて大きい」外付け RAM としても使う | 宣言 `[[package.metadata.rp1.shm]]`、`rp1::link` が生成する型付き端点。api-sketch §4.3（STATIC） |
 
 既定の `.data` / `.bss` を DSRAM に置く理由: 依存 crate が static の atomic で RMW をしても壊れない。
 大きなバッファは DSRAM に入らないので明示的に `#[shared]` にする。
@@ -264,7 +264,7 @@ RMW atomic のメソッドは持たない。
   - 旧 vector 57（PROC_MISC）を捨てた理由: 57 は Linux の rp1 ドライバの番号表で `RP1_INT_PROC_MISC`（DOC、dt-bindings rp1.h）
     だが源が特定できず（mailbox PROC_EVENTS ch0/ch3 は HW 2026-11-04 で否定）、源だけを止める方法も無かった（MSIX_CFG の
     ENABLE は TEST も止める）。往復の数値は vector 57 と 29 で差が無い（下）。
-  - 受け手の約束: 起床は合図。起床のたびと、起床が無くても上限付きの待ち（`linux-doorbell` は 10 ms）ごとにデータを見直す。
+  - 受け手の約束: 起床は合図。起床のたびと、起床が無くても上限付きの待ち（`rp1_linux::RECHECK` は 10 ms）ごとにデータを見直す。
     Linux が vector を有効にする前（UIO の最初の `write(1)` の前）のパルスは失われる。UIO が無効の間（起床から `write(1)`
     まで）の複数のパルスは 1 回にまとまる（lazy disable）。
   - 往復（Linux が GPIO27 INTF ドアベル → proc1 が link+0x14 に返してパルス → `poll`+`read` で起床）: cold boot 2 回で
@@ -364,7 +364,7 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 |---|---|
 | 2 コアのランタイム（1 イメージ、`#[entry(proc0/1)]`、proc1 起動、DSRAM の既定配置、`#[shared]`/`#[proc0]`/`#[proc1]`） | ISRAM の自動配置（2 段リンク）と到達解析 → 共通イメージ分は実装済み（§3.3、`cargo rp1 build`） |
 | 手で付ける `#[isram]`（共通 ISRAM イメージ） | コアごとの ISRAM overlay |
-| 宣言 → 型・linker script・note・overlay の生成（rp1-build） | `channel` の正式 API（v0.1 は `ring` 2 本で組めることを例で示す） |
+| 宣言 → 型・linker script・note・overlay の生成（rp1-build）、名前付き `channel` / `rpc` | — |
 | 起動一式（config.txt、cmdline.txt、rp1boot.img、rp1.elf）の生成と照合 | async / Embassy |
 | ローダー（SD / TFTP、overlay 適用、config.txt 照合、RP1 起動） | Linux 側の cached マップ |
 | Linux 共有メモリ `ring` と `block`（UIO、uncached） | 実行時の PCIe 状態機械、Linux 再起動への追従 |

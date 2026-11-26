@@ -5,7 +5,7 @@ M3 側（`rp1-link`）と Linux 側（`rp1-linux`）の両方がそれを使う�
 
 前提:
 
-- v0.1 は `ring` と `block`。`channel` は向きの違う `ring` 2 本と通知で組む（正式 API は v0.2）。
+- STATIC: `ring` と `block`、双方向の `channel` と要求・応答の `rpc`。双方向の端点は 2 本の ring を使う。
 - PCIe の書き込みは posted で速く、読み出しは往復が要って遅い。どちらの側も「相手のメモリには書くだけ、読むのは自分の手元」にする。
 - Linux カーネルは 16 KiB ページ（`6.12.75-v8-16k`）。UIO の mmap は 16 KiB 境界・16 KiB 単位。64 KiB ページのカーネルも将来ありうるので、
   DDR 側の領域は 64 KiB 境界にそろえる。
@@ -28,7 +28,7 @@ M3 側（`rp1-link`）と Linux 側（`rp1-linux`）の両方がそれを使う�
 
 | オフセット | 内容 | 書く側 |
 |---|---|---|
-| 0x00〜0x23 | 固定語: ハンドオフ（0x00〜0x0c）、例のドアベル要求 / 返答（0x10 / 0x14）、`SHM_GENERATION` / `SHM_STATUS` / `SHM_REQUEST`（0x18 / 0x1c / 0x20） | ローダー / Linux / proc0 |
+| 0x00〜0x23 | 固定語: ハンドオフ（0x00〜0x0c）、予約（0x10 / 0x14）、`SHM_GENERATION` / `SHM_STATUS` / `SHM_REQUEST`（0x18 / 0x1c / 0x20） | ローダー / Linux / proc0 |
 | 0x24〜0x3f | lab と診断用（lab のファームとスクリプトが 0x24 / 0x28 / 0x2c を使う）。ライブラリは使わない | lab |
 | 0x40〜0xbf | ファームの状態語（§9） | rp1-rt |
 | 0xc0〜 | 宣言した領域の SRAM 部分（割り当ての開始。0xc0 より前に置いた note は読み手が拒否する） | 端点 |
@@ -172,6 +172,20 @@ T   payload 8 バイト境界に 0 埋め
   旧実験は prefix 後の stale を見逃せたため順序の証拠にしない。新実験は最新スロットを先に読み、`pop_into_report` で prefix 後の
   異常も報告し、同じスロットを重複計数しない。early-head 陽性対照と bit30=0 比較を伴う（dma.md）。
 - 未確認（TODO）: M3 の outbound 窓が Normal 属性の領域（0x8000_0000..）にあることで、M3 側の書き込みが並べ替えられないか。
+
+### 名前付き channel と RPC（STATIC）
+
+`<name>-dn` は Linux → RP1、`<name>-up` は RP1 → Linux。どちらも `reader-local` と
+`reject` を使う。Linux は up、dn の順に UIO をロックする。channel は両端点を `split` できる。
+
+RPC は同じ深さの 2 本を使う。ファームの `Server::serve` は要求順に 1 件ずつ応答する。
+応答の publish に失敗したら drain を止め、以後 `Reset` を返す。Linux の `Client::call` は
+送信時の `dn.head` と受信時の `up.tail` を比較する。未回収数 `dn.head.wrapping_sub(up.tail)`
+を深さ以下に抑えるので、処理中の要求にも応答の空きがある。再 open では共有の添字を読む。
+
+正の timeout は送信と受信に共通の締切。ゼロなら空きがあるとき 1 件送って `Timeout` を返す。
+後続の call は期限切れの応答を回収して捨てる。未回収数が深さに達したら `Busy`。期限切れの要求も
+処理されることがあるため、自動で再送しない。停止・panic・fault を観測すると `PeerDown` を返す。
 
 ## 3. 通知
 
