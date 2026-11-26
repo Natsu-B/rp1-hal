@@ -21,10 +21,12 @@ embedded-hal = "1"
 [build-dependencies]
 rp1-build = { path = "../../rp1-build" }
 
-# The system part matches lab/shm-firmware (same owners for I2C1, SPI0, ADC, DMA, GPIO 8/22/27,
-# host_irq and the rings shm-linux uses), so its Linux-side regressions run on this image too.
-# Differences: proc0 takes GPIO22's interrupt, proc1 takes ALARM2 (a line left without a
-# handler on purpose), and both stacks are the default size, which the proof measures.
+# The system part matches lab/shm-firmware (same owners for I2C1, SPI0, ADC, DMA, GPIO 8/22,
+# and the rings shm-linux uses), so its Linux-side regressions run on this image too.
+# Differences: proc0 takes GPIO22's interrupt and owns host_irq, proc1 takes ALARM2 (a line left
+# without a handler on purpose), both cores have a doorbell (proc0 GPIO26, proc1 GPIO27, the
+# raw doorbell of examples/linux-doorbell), and both stacks are the default size, which the
+# proof measures.
 [package.metadata.rp1]
 schema = 2
 board = "rpi-cm5"
@@ -36,15 +38,16 @@ gpio = [22]
 gpio_irq = [22]
 timer = ["ALARM0"]
 i2c1 = { sda = 2, scl = 3 }
+host_irq = true
+doorbell = 26
 
 [package.metadata.rp1.proc1]
-gpio = [8, 27]
-gpio_irq = [27]
+gpio = [8]
 timer = ["ALARM1", "ALARM2"]
 adc = {}
 spi0 = { sck = 11, mosi = 10, miso = 9 }
 dma = {}
-host_irq = true
+doorbell = 27
 
 # The generated proc1 link attaches these endpoints once after the window is Ready.
 [[package.metadata.rp1.shm]]
@@ -86,4 +89,54 @@ name = "bulk"
 kind = "block"
 core = "proc1"
 type = "Bulk"
+writer = "both"
+
+# The notification proofs (lab/irq_message.rs messages). proc1's IO_BANK0 handler drains
+# `down1`; proc0's drains `down0`, its main streams `events0` and its TIMER_0 handler `tick0`.
+# proc0 takes its commands on `control0`.
+[[package.metadata.rp1.shm]]
+name = "down1"
+kind = "ring"
+core = "proc1"
+message = "Sample"
+direction = "linux-to-rp1"
+depth = 128
+overflow = "reject"
+notify = "irq"
+
+[[package.metadata.rp1.shm]]
+name = "down0"
+kind = "ring"
+core = "proc0"
+message = "Sample"
+direction = "linux-to-rp1"
+depth = 64
+overflow = "reject"
+notify = "irq"
+
+[[package.metadata.rp1.shm]]
+name = "events0"
+kind = "ring"
+core = "proc0"
+message = "Sample"
+direction = "rp1-to-linux"
+depth = 256
+overflow = "reject"
+notify = "irq"
+
+[[package.metadata.rp1.shm]]
+name = "tick0"
+kind = "ring"
+core = "proc0"
+message = "Sample"
+direction = "rp1-to-linux"
+depth = 64
+overflow = "reject"
+notify = "irq"
+
+[[package.metadata.rp1.shm]]
+name = "control0"
+kind = "block"
+core = "proc0"
+type = "Control"
 writer = "both"

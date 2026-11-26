@@ -7,7 +7,7 @@
 //! cold boot.
 use crate::{
     generated,
-    notify::{Notify, Poll, Wake},
+    notify::{Doorbell, Notify, Poll, Wake},
 };
 use rp1_proto::{
     Error, Message, link,
@@ -143,6 +143,20 @@ impl<T: Message, W: Wake> RingRx<T, W> {
     pub fn drain(&mut self, max: u32, f: impl FnMut(T)) -> Result<Progress, Error> {
         window_ready()?;
         self.wake.drain(&mut self.ring, max, f)
+    }
+}
+
+impl<T: Message, const PIN: u8, const CORE: u8> RingRx<T, Doorbell<PIN, CORE>> {
+    /// Lab control only: [`Self::drain`] whose arm skips the readback that the protocol needs
+    /// (`rp1_proto::shm::RingRx::__drain_without_readback`).
+    #[doc(hidden)]
+    pub fn __drain_without_readback(
+        &mut self,
+        max: u32,
+        f: impl FnMut(T),
+    ) -> Result<Progress, Error> {
+        window_ready()?;
+        self.ring.__drain_without_readback(max, f)
     }
 }
 

@@ -64,6 +64,14 @@ impl<T: Message> RingTx<T> {
         let waiting = unsafe { ld(self.ctrl, WAITING) };
         waiting & 1 != 0
     }
+    /// Lab control only: [`Self::reader_asleep`] without the readback of `head`, which the
+    /// protocol needs. Shows what the readback is for.
+    #[doc(hidden)]
+    pub fn __reader_asleep_without_readback(&self) -> bool {
+        barrier();
+        let waiting = unsafe { ld(self.ctrl, WAITING) };
+        waiting & 1 != 0
+    }
 }
 
 impl<T: Message> RingRx<T> {
@@ -76,13 +84,20 @@ impl<T: Message> RingRx<T> {
     /// The notification itself must not overtake `head`: the writer calls
     /// [`RingTx::wake_needed`] (which drains `head`) before it notifies.
     pub fn prepare_wait(&mut self) -> bool {
+        self.arm(true)
+    }
+    /// [`Self::prepare_wait`]; `readback = false` only for the lab control.
+    #[inline(always)]
+    fn arm(&mut self, readback: bool) -> bool {
         if self.waiting & 1 == 0 {
             self.waiting = self.waiting.wrapping_add(1);
             unsafe { st(self.ctrl, WAITING, self.waiting) };
         }
         barrier();
-        let _ = unsafe { ld(self.ctrl, WAITING) };
-        barrier();
+        if readback {
+            let _ = unsafe { ld(self.ctrl, WAITING) };
+            barrier();
+        }
         let empty = self.available() == 0;
         if !empty {
             self.finish_wait();
@@ -115,7 +130,27 @@ impl<T: Message> RingRx<T> {
     /// For a handler of a level-type notification (protocol.md §3). On an error the ring
     /// is not armed.
     #[cfg_attr(feature = "isram", rp1_macros::isram)]
-    pub fn drain(&mut self, max: u32, mut f: impl FnMut(T)) -> Result<Progress, Error> {
+    pub fn drain(&mut self, max: u32, f: impl FnMut(T)) -> Result<Progress, Error> {
+        self.drain_and_arm(max, f, true)
+    }
+    /// Lab control only: [`Self::drain`] whose arm skips the readback of `waiting`, which the
+    /// protocol needs. Shows what the readback is for.
+    #[doc(hidden)]
+    #[cfg_attr(feature = "isram", rp1_macros::isram)]
+    pub fn __drain_without_readback(
+        &mut self,
+        max: u32,
+        f: impl FnMut(T),
+    ) -> Result<Progress, Error> {
+        self.drain_and_arm(max, f, false)
+    }
+    #[inline(always)]
+    fn drain_and_arm(
+        &mut self,
+        max: u32,
+        mut f: impl FnMut(T),
+        readback: bool,
+    ) -> Result<Progress, Error> {
         self.finish_wait();
         let mut budget = max.max(1);
         loop {
@@ -127,7 +162,7 @@ impl<T: Message> RingRx<T> {
             if budget == 0 {
                 return Ok(Progress::More);
             }
-            if self.prepare_wait() {
+            if self.arm(readback) {
                 return Ok(Progress::Idle);
             }
         }

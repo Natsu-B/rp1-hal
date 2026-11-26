@@ -315,6 +315,30 @@ fn drain_stops_at_the_budget_without_arming() {
     assert!(tx.reader_asleep());
 }
 
+/// The lab controls differ from `drain` / `reader_asleep` only in the readbacks, which a host
+/// memory cannot show: same results here.
+#[test]
+fn lab_controls_drain_and_check_like_the_real_calls() {
+    let (mut data, mut ctrl) = wait_pair(4);
+    let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+    let mut tx = unsafe { RingTx::<u32>::attach(d, 224, c, 128, 4, Overflow::Reject) }.unwrap();
+    let mut rx = unsafe { RingRx::<u32>::attach(d, 224, c, 128, 4, Overflow::Reject) }.unwrap();
+    let mut got = vec![];
+    assert_eq!(tx.push_slice(&[1, 2]), 2);
+    assert_eq!(
+        rx.__drain_without_readback(1, |v| got.push(v)),
+        Ok(Progress::More)
+    );
+    assert!(!tx.__reader_asleep_without_readback());
+    assert_eq!(
+        rx.__drain_without_readback(4, |v| got.push(v)),
+        Ok(Progress::Idle)
+    );
+    assert_eq!(got, [1, 2]);
+    assert!(tx.__reader_asleep_without_readback());
+    assert!(tx.reader_asleep());
+}
+
 #[test]
 fn drain_reports_corruption_unarmed() {
     let (mut data, mut ctrl) = wait_pair(4);

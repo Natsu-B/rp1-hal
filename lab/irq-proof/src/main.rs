@@ -6,19 +6,27 @@
 //! loop) is that of lab/shm-firmware without its peripheral proofs, so the Linux-side SHM,
 //! doorbell and UART1 regressions run in the same boot. The doorbell is answered by proc1's
 //! IO_BANK0 handler here, not by polling.
+//!
+//! Once shm is up, the notification proofs of [`rings`] run on commands from shm-linux: each
+//! core's doorbell handler drains its Linux -> RP1 ring, and proc0 (the `host_irq` owner) sends
+//! to Linux from main and from its alarm handler.
 #![no_std]
 #![no_main]
 use rp1_hal::log;
-use rp1_link::{Block, OpenError, RingRx, RingTx, flush_window, notify::HostIrq};
+use rp1_link::{Block, OpenError, RingRx, RingTx, flush_window};
 use rp1_proto::{Error, link};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
 mod cs_stats;
+#[path = "../../irq_message.rs"]
+mod irq_message;
 mod proc0;
 mod proc1;
 mod proof;
+mod rings;
 mod stack;
-use proof::{mark, now};
+use proof::{mark, now, put, with};
+use rings::{Reader, Ticks, command};
 
 /// proc1's figures for the final lines ([`proc1::Report`]).
 #[shared]
@@ -86,14 +94,26 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         attempted: false,
     };
     // The system services keep running while proc0's items wait for their interrupts.
-    proc0::run(p.TIMER_ALARM0, i2c.ok(), p.irq, &mut || system.handle());
+    let doorbell = p.doorbell;
+    proc0::run(p.TIMER_ALARM0, i2c.ok(), doorbell, p.irq, &mut || {
+        system.handle()
+    });
 
     let mut rx = REPORT.consumer(&mut core);
     let mut report = [0; proc1::Report::WORDS];
     let mut words = 0;
+    let mut init = Some(p.link);
+    let mut commands: Option<Commands0> = None;
     loop {
-        let word = idle0(&mut rx, &system);
+        let word = idle0(&mut rx, &system, commands.as_ref());
         system.handle();
+        // proc0 enables the window itself, so its endpoints open right after that.
+        if commands.is_none() && system.attempted {
+            commands = open0(&mut init, doorbell);
+        }
+        if let Some(commands) = commands.as_mut() {
+            commands.serve();
+        }
         if let Some(word) = word
             && words < report.len()
         {
@@ -158,14 +178,113 @@ fn probe_window(pcie: &mut rp1_hal::platform::Pcie) {
 fn idle0(
     rx: &mut rp1_rt::sync::Consumer<'_, u32, 8, Proc1, Proc0>,
     system: &System,
+    commands: Option<&Commands0>,
 ) -> Option<u32> {
     loop {
         let word = rx.pop();
         let request = link_read(link::SHM_REQUEST);
-        if word.is_some() || (!system.probed && request == 2) || (!system.attempted && request == 1)
+        let command = commands.is_some_and(|c| c.control.sequence() != c.seen);
+        if word.is_some()
+            || command
+            || (!system.probed && request == 2)
+            || (!system.attempted && request == 1)
         {
             return word;
         }
+    }
+}
+
+/// Opens proc0's endpoints and hands `down0` and `tick0` to its handlers. Messages Linux sent
+/// before the handler had the reader rang a doorbell that found nothing to drain, so raise it
+/// once more.
+fn open0(
+    init: &mut Option<rp1::link::Proc0LinkInit>,
+    doorbell: rp1::Doorbell0,
+) -> Option<Commands0> {
+    match init.take()?.try_open() {
+        Ok(rp1::link::Proc0Link {
+            down0,
+            events0,
+            tick0,
+            control0,
+        }) => {
+            put(&proc0::DOWN0, Reader::new(down0));
+            put(&proc0::TICK0, Ticks::new(tick0));
+            doorbell.raise();
+            Some(Commands0 {
+                control: control0,
+                events: events0,
+                seen: 0,
+                last: 0,
+            })
+        }
+        Err(OpenError::NotReady(pending)) => {
+            *init = Some(pending);
+            None
+        }
+        Err(OpenError::Reset) => panic!("SHM window lost"),
+        Err(OpenError::Attach(error)) => panic!("SHM attach: {error:?}"),
+    }
+}
+
+/// proc0's commands on `control0` (the [`rings::command`] numbers), answered in the block as
+/// proc1 answers its own: word 4 = 2, word 5 = errors, word 6 = µs.
+struct Commands0 {
+    control: Block<Control>,
+    events: rp1::link::Events0,
+    /// The block's sequence and the request id last served.
+    seen: u32,
+    last: u32,
+}
+impl Commands0 {
+    fn serve(&mut self) {
+        let sequence = self.control.sequence();
+        if sequence == self.seen {
+            return;
+        }
+        let Ok(mut request) = self.control.read() else {
+            return;
+        };
+        self.seen = sequence;
+        if request[0] == self.last || request[0] == 0 {
+            return;
+        }
+        self.last = request[0];
+        let (command, count, seed) = (request[1], request[2], request[3]);
+        let start = now();
+        let errors = match command {
+            command::EVENTS => {
+                rings::send_events(&mut self.events, count, seed, request[8], request[9])
+            }
+            command::TICKS => {
+                proc0::start_ticks(count, request[8], seed);
+                0
+            }
+            command::TICK_REPORT => {
+                let mut errors = 1;
+                with(&proc0::TICK0, |ticks| {
+                    request[8..11].copy_from_slice(&ticks.words());
+                    errors = 0;
+                });
+                request[11] = proc0::tick_late_max_us();
+                errors
+            }
+            _ => rings::down_command(&proc0::DOWN0, &mut request).unwrap_or(1),
+        };
+        request[4] = 2;
+        request[5] = errors;
+        request[6] = now().wrapping_sub(start);
+        request[7] = 0;
+        unsafe { self.control.write(&request) };
+        flush_window();
+        log!(
+            "p0 shm cmd={} count={} errors={} us={}\n",
+            command,
+            count,
+            errors,
+            request[6]
+        )
+        .unwrap();
     }
 }
 
@@ -187,16 +306,17 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         Err(_) => Err(rp1_hal::spi::Error::Precondition),
     };
     log!("p1 spi0 init {}\n", spi.is_ok()).unwrap();
+    let doorbell = p.doorbell;
     proc1::run(proc1::Parts {
         alarm1: p.TIMER_ALARM1,
         alarm2: p.TIMER_ALARM2,
         spi: spi.ok(),
+        doorbell,
         irq: p.irq,
     });
 
     let mut report = REPORT.producer(&mut core);
-    let host_irq = p.host_irq;
-    // Keep servicing the doorbell and issuing its report before Linux enables the area.
+    // Keep issuing the doorbell report before Linux enables the area.
     let mut init = p.link;
     let rp1::link::Proc1Link {
         mut up,
@@ -204,6 +324,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         mut latest,
         mut control,
         mut bulk,
+        down1,
     } = loop {
         match init.try_open() {
             Ok(endpoints) => break endpoints,
@@ -211,14 +332,18 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             Err(OpenError::Reset) => panic!("SHM window lost"),
             Err(OpenError::Attach(error)) => panic!("SHM attach: {error:?}"),
         }
-        after_doorbell(host_irq, &mut report, &stack);
+        report_when_due(&mut report, &stack);
     };
+    put(&proc1::DOWN1, Reader::new(down1));
+    // As on proc0: a doorbell before the handler had the reader found nothing to drain.
+    doorbell.raise();
     let mut last = 0;
     let mut seen = 0;
-    // The command loop of lab/shm-firmware for shm-linux's default suite (commands 1..8, 10..13).
+    // The command loop of lab/shm-firmware for shm-linux's default suite (commands 1..8, 10..13),
+    // plus the `down1` commands of [`rings`].
     loop {
-        let sequence = wait_command(host_irq, &control, seen);
-        after_doorbell(host_irq, &mut report, &stack);
+        let sequence = wait_command(&control, seen);
+        report_when_due(&mut report, &stack);
         if sequence == seen {
             continue;
         }
@@ -337,7 +462,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             }
             10 | 12 => errors = up_batch(&mut up, count, start),
             11 | 13 => errors = down_batch(&mut down, count, start),
-            _ => errors = 1,
+            _ => errors = rings::down_command(&proc1::DOWN1, &mut request).unwrap_or(1),
         }
         flush_window();
         request[4] = 2;
@@ -360,29 +485,21 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     }
 }
 
-/// What main does for the doorbell handler: wake Linux's `rp1:irq` waiter after a reply, and
-/// send the report once the 1000 doorbells are in.
-fn after_doorbell(
-    host_irq: HostIrq,
+/// Send proc1's report once the 1000 doorbells of `linux-doorbell` are in.
+fn report_when_due(
     report: &mut rp1_rt::sync::Producer<'_, u32, 8, Proc1, Proc0>,
     stack: &stack::Watermark,
 ) {
-    if proc1::doorbell_served() {
-        host_irq.pulse_after_sram_write();
-    }
     if proc1::report_due() {
         proc1::report(report, stack.free_bytes());
     }
 }
 
 /// proc1 idle loop, from ISRAM: until the control block's sequence changes or the report is
-/// due (returns `seen` then). Idle cost is one DDR load, so the `rp1:irq` wake stays prompt.
+/// due (returns `seen` then). Idle cost is one DDR load.
 #[rp1_rt::isram]
-fn wait_command(host_irq: HostIrq, control: &Block<Control>, seen: u32) -> u32 {
+fn wait_command(control: &Block<Control>, seen: u32) -> u32 {
     loop {
-        if proc1::doorbell_served() {
-            host_irq.pulse_after_sram_write();
-        }
         let sequence = control.sequence();
         if sequence != seen || proc1::report_due() {
             return sequence;

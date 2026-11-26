@@ -3,6 +3,7 @@
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rp1_hal::{gpio::PinIrq, timer::Alarm};
+use rp1_link::notify::Doorbell;
 use rp1_rt::interrupt::{Line, Mutex, free};
 
 /// A driver object that main and a handler of the same core share.
@@ -20,6 +21,11 @@ pub fn with<T>(slot: &Shared<T>, f: impl FnOnce(&mut T)) {
             f(value)
         }
     });
+}
+
+/// A copy of the object in `slot`, if it holds one (for the zero-sized doorbell).
+pub fn get<T: Copy>(slot: &Shared<T>) -> Option<T> {
+    free(|cs| *slot.borrow_ref(cs))
 }
 
 static NONCE: AtomicU32 = AtomicU32::new(0);
@@ -306,6 +312,42 @@ pub fn intf_only<const N: u8, const CORE: u8>(
     // Whether INTF alone is enough is a finding, not a pass condition; a pin that was pending
     // before the force, or stays pending after it, would spoil the items that follow.
     expect(!pre && !post, if CORE == 0 { "p0_intf" } else { "p1_intf" });
+}
+
+/// `IRQ_Pc_DBELL`: this core raises its own doorbell once (the `PROCn_INTF` force Linux sets)
+/// and the IO_BANK0 handler, which acknowledges it, runs exactly once. `entries` is the
+/// handler's count of entries with the doorbell set.
+pub fn doorbell_test<const PIN: u8, const CORE: u8>(
+    bell: Doorbell<PIN, CORE>,
+    entries: &Entries,
+    line: &mut Line<0>,
+    idle: &mut dyn FnMut(),
+) {
+    entries.reset();
+    line.unpend();
+    let pre = bell.is_pending() || line.is_pending();
+    line.enable();
+    bell.raise();
+    wait(|| entries.count() != 0, 1000, idle);
+    // A second entry would mean that the handler's ack did not drop the force.
+    settle(1000, idle);
+    line.disable();
+    line.unpend();
+    let (n, ipsr) = (entries.count(), entries.ipsr());
+    let post = bell.is_pending() || line.is_pending();
+    mark!(
+        "IRQ_P{}_DBELL pin={} n={} ipsr={} pre_pending={} post_pending={}",
+        CORE,
+        PIN,
+        n,
+        ipsr,
+        pre as u32,
+        post as u32
+    );
+    expect(
+        n == 1 && ipsr == 16 && !pre && !post,
+        if CORE == 0 { "p0_dbell" } else { "p1_dbell" },
+    );
 }
 
 /// A DesignWare controller behind the RP1 interrupt wrapper (`base + 0x108` bit 0), with one

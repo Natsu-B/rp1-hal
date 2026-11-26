@@ -1,9 +1,13 @@
-//! proc0's items: its alarm, its own IO_BANK0 line (GPIO22, forced) and I2C1 behind the wrapper.
-//! proc0 also runs the system services, so every wait here goes through `idle`.
+//! proc0's items: its alarm, its own IO_BANK0 line (GPIO22, forced, and its doorbell GPIO26)
+//! and I2C1 behind the wrapper. proc0 also runs the system services, so every wait here goes
+//! through `idle`. Once shm is up the IO_BANK0 handler drains `down0` and the alarm handler can
+//! send on `tick0`.
 use crate::proof::{
     self, Entries, Shared, Wrapped, expect, mark, put, settle, shared, ticker, wait, with,
 };
+use crate::rings::{Reader, Ticks};
 use crate::rp1;
+use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use rp1_hal::{gpio::PinIrq, i2c::I2c, timer::Alarm};
 use rp1_rt::{interrupt, interrupt::Line, pac::dw_i2c::intr::TX_EMPTY};
 
@@ -11,21 +15,56 @@ type I2c1 = I2c<1, 2, 3>;
 static ALARM: Shared<Alarm<0>> = shared();
 static PIN: Shared<PinIrq<22, 0>> = shared();
 static I2C: Shared<I2c1> = shared();
+static BELL: Shared<rp1::Doorbell0> = shared();
+/// The `down0` ring and the `tick0` writer, once main has opened them.
+pub static DOWN0: Shared<Reader<26, 0>> = shared();
+pub static TICK0: Shared<Ticks> = shared();
 static GPIO: Entries = Entries::new();
 static WRAP: Entries = Entries::new();
+/// Handler entries with the doorbell set.
+static BELL_ENTRIES: Entries = Entries::new();
+/// The alarm handler also sends on `tick0`.
+static SEND_TICKS: AtomicBool = AtomicBool::new(false);
 
 #[interrupt(proc0)]
 fn TIMER_0() {
     ticker::on_alarm(&ALARM, 0);
+    if SEND_TICKS.load(Relaxed) {
+        with(&TICK0, |ticks| ticks.on_tick());
+    }
 }
+/// GPIO22's forced interrupt, or the doorbell: Linux forced GPIO26 in PROC0_INTF for `down0`.
+/// The doorbell is acknowledged before the drain: an ack after it could drop a later
+/// notification.
 #[interrupt(proc0)]
 fn IO_BANK0() {
     with(&PIN, |pin| {
-        pin.unforce();
-        // Read back so that the write has finished before the handler returns.
-        pin.is_forced();
+        if pin.is_forced() {
+            pin.unforce();
+            // Read back so that the write has finished before the handler returns.
+            pin.is_forced();
+            GPIO.enter(0);
+        }
     });
-    GPIO.enter(0);
+    if let Some(bell) = proof::get(&BELL)
+        && bell.is_pending()
+    {
+        bell.ack();
+        BELL_ENTRIES.enter(0);
+        with(&DOWN0, |reader| reader.on_doorbell(bell));
+    }
+}
+
+/// `TICKS`: send `count` messages on `tick0`, one per alarm interrupt every `period_us`.
+pub fn start_ticks(count: u32, period_us: u32, generation: u32) {
+    ticker::stop(&ALARM);
+    with(&TICK0, |ticks| ticks.start(generation));
+    SEND_TICKS.store(true, Relaxed);
+    ticker::start(&ALARM, period_us.max(50), count);
+}
+/// The latest tick run's lateness, for `TICK_REPORT`.
+pub fn tick_late_max_us() -> u32 {
+    ticker::late_max_us()
 }
 #[interrupt(proc0)]
 fn I2C1() {
@@ -39,13 +78,21 @@ fn I2C1() {
 const I2C1_BASE: usize = 0x4007_4000;
 const I2C1_ENABLE: usize = I2C1_BASE + 0x6c;
 
-pub fn run(alarm: Alarm<0>, i2c: Option<I2c1>, mut irq: rp1::Proc0Irq, idle: &mut dyn FnMut()) {
+pub fn run(
+    alarm: Alarm<0>,
+    i2c: Option<I2c1>,
+    doorbell: rp1::Doorbell0,
+    mut irq: rp1::Proc0Irq,
+    idle: &mut dyn FnMut(),
+) {
     put(&ALARM, alarm);
     proof::timer_test(&ALARM, &mut irq.TIMER_0, 0, idle);
 
     proof::intf_only(&mut irq.gpio22, &mut irq.IO_BANK0, idle);
     put(&PIN, irq.gpio22);
     forced_pin(&mut irq.IO_BANK0, idle);
+    put(&BELL, doorbell);
+    proof::doorbell_test(doorbell, &BELL_ENTRIES, &mut irq.IO_BANK0, idle);
 
     match i2c {
         Some(i2c) => {
@@ -71,6 +118,9 @@ pub fn run(alarm: Alarm<0>, i2c: Option<I2c1>, mut irq: rp1::Proc0Irq, idle: &mu
         }
         None => expect(false, "p0_i2c1_init"),
     }
+    // Left enabled for the shm items: the doorbell drains `down0`, the alarm sends `tick0`.
+    irq.IO_BANK0.enable();
+    irq.TIMER_0.enable();
 }
 
 /// `IRQ_P0_GPIO22`: proc0's IO_BANK0 handler, entered 100 times by `PinIrq::force`. The pin
