@@ -199,10 +199,7 @@ pub fn channel<Tx: Message, Rx: Message, N: Notify, W: Wake>(
 }
 
 /// Assemble the two attached rings of an RPC.
-///
-/// # Safety
-/// The rings must come from the same RPC declaration, with equal depth and reject overflow.
-pub unsafe fn server<Req: Message, Rep: Message, N: Notify, W: Wake>(
+pub fn server<Req: Message, Rep: Message, N: Notify, W: Wake>(
     tx: RingTx<Rep, N>,
     rx: RingRx<Req, W>,
 ) -> Server<Req, Rep, N, W> {

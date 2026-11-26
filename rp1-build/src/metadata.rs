@@ -227,6 +227,9 @@ pub(crate) enum Pair {
     Rpc,
 }
 
+const SHM_NAME_MAX: usize = 24;
+const PAIR_NAME_MAX: usize = SHM_NAME_MAX - "-dn".len();
+
 impl Shm {
     fn pair(&self) -> Option<Pair> {
         match self.kind.as_str() {
@@ -236,7 +239,7 @@ impl Shm {
         }
     }
 
-    fn expand(&self) -> Result<impl Iterator<Item = Cow<'_, Shm>>> {
+    fn expand(&self) -> Result<Vec<Cow<'_, Shm>>> {
         let Some(pair) = self.pair() else {
             if self.reply.is_some()
                 || self.depth.as_ref().is_some_and(|d| d.shared().is_none())
@@ -244,7 +247,7 @@ impl Shm {
             {
                 return Err("reply and per-direction settings require a channel or rpc".into());
             }
-            return Ok(std::iter::once(Cow::Borrowed(self)).chain(None));
+            return Ok(vec![Cow::Borrowed(self)]);
         };
         if self.direction.is_some()
             || self.overflow.is_some()
@@ -282,15 +285,10 @@ impl Shm {
                 ..self.clone()
             })
         };
-        Ok(
-            std::iter::once(ring("dn", "linux-to-rp1", message, *dn, dn_notify)).chain(Some(ring(
-                "up",
-                "rp1-to-linux",
-                reply,
-                *up,
-                up_notify,
-            ))),
-        )
+        Ok(vec![
+            ring("dn", "linux-to-rp1", message, *dn, dn_notify),
+            ring("up", "rp1-to-linux", reply, *up, up_notify),
+        ])
     }
 
     fn depth(&self) -> Option<u32> {
@@ -320,7 +318,6 @@ impl TypeInfo {
 }
 pub struct Region<'a> {
     pub spec: Cow<'a, Shm>,
-    logical: &'a Shm,
     pub ty: TypeInfo,
     pub ddr_offset: u32,
     pub ddr_len: u32,
@@ -477,19 +474,16 @@ impl Declaration {
         self.stack_size(1)?;
         self.validate_ownership()?;
         let mut names = BTreeSet::new();
-        if self
-            .shm
-            .iter()
-            .map(|r| 1 + usize::from(r.pair().is_some()))
-            .sum::<usize>()
-            > 64
-        {
-            return Err("v0.1 supports at most 64 shm regions".into());
-        }
+        let mut region_count = 0;
         for r in &self.shm {
             let b = r.name.as_bytes();
+            let max_len = if r.pair().is_some() {
+                PAIR_NAME_MAX
+            } else {
+                SHM_NAME_MAX
+            };
             if b.is_empty()
-                || b.len() > if r.pair().is_some() { 21 } else { 24 }
+                || b.len() > max_len
                 || !b[0].is_ascii_lowercase()
                 || !b
                     .iter()
@@ -511,8 +505,13 @@ impl Declaration {
             if r.linux_map.as_deref().is_some_and(|m| m != "uncached") {
                 return Err("cached mmap is not supported in v0.1".into());
             }
-            for ring in r.expand()? {
-                self.validate_region(&ring)?;
+            let regions = r.expand()?;
+            region_count += regions.len();
+            if region_count > 64 {
+                return Err("v0.1 supports at most 64 shm regions".into());
+            }
+            for region in regions {
+                self.validate_region(&region)?;
             }
         }
         if self.linux.uio_group.is_empty()
@@ -607,10 +606,24 @@ impl Declaration {
     }
 
     pub fn regions(&self) -> Result<Vec<Region<'_>>> {
+        Ok(self.shm_layout()?.regions)
+    }
+
+    pub fn ddr_size(&self) -> Result<u32> {
+        Ok(self.shm_layout()?.area.size)
+    }
+
+    pub(crate) fn shm_layout(&self) -> Result<ShmLayout<'_>> {
         let mut ddr = 65536usize; // Region header is in the first independently mapped page.
         let mut sram = SRAM_ALLOC_START;
-        let mut result = Vec::new();
+        let mut regions = Vec::new();
+        let mut endpoints = Vec::with_capacity(self.shm.len());
         for logical in &self.shm {
+            endpoints.push(Endpoint {
+                name: &logical.name,
+                first: regions.len(),
+                pair: logical.pair(),
+            });
             for r in logical.expand()? {
                 let name = r.message.as_ref().or(r.block_type.as_ref()).unwrap();
                 let ty=*self.types.get(name).ok_or_else(||format!("type {name} missing: use configure_with_types and register TypeInfo::of::<T>() in build.rs"))?;
@@ -650,9 +663,8 @@ impl Declaration {
                     );
                 }
                 let ddr_len = align(ddr_len, 65536);
-                result.push(Region {
+                regions.push(Region {
                     spec: r,
-                    logical,
                     ty,
                     ddr_offset: u32::try_from(ddr)?,
                     ddr_len: u32::try_from(ddr_len)?,
@@ -666,35 +678,14 @@ impl Declaration {
                 sram += sram_len;
             }
         }
-        Ok(result)
-    }
-    pub fn ddr_size(&self) -> Result<u32> {
-        let regions = self.regions()?;
-        Ok(ddr_size(&regions))
-    }
-
-    pub(crate) fn shm_layout(&self) -> Result<ShmLayout<'_>> {
-        let regions = self.regions()?;
         let area = ShmArea {
-            size: ddr_size(&regions),
+            size: align(ddr, 0x10_0000) as u32,
             handoff: rp1_proto::HANDOFF,
             sram_end: regions
                 .last()
                 .map_or(SRAM_ALLOC_START as u16, |r| r.sram_offset + r.sram_len),
             phys: rp1_proto::SHM_PHYS,
         };
-        let mut endpoints = Vec::with_capacity(self.shm.len());
-        let mut first = 0;
-        while first < regions.len() {
-            let logical = regions[first].logical;
-            let pair = logical.pair();
-            endpoints.push(Endpoint {
-                name: &logical.name,
-                first,
-                pair,
-            });
-            first += 1 + usize::from(pair.is_some());
-        }
         Ok(ShmLayout {
             area,
             regions,
@@ -744,9 +735,4 @@ impl Region<'_> {
     pub(crate) fn core(&self) -> u8 {
         if self.spec.core == "proc0" { 1 } else { 2 }
     }
-}
-
-fn ddr_size(regions: &[Region<'_>]) -> u32 {
-    let end = regions.last().map_or(65536, |r| r.ddr_offset + r.ddr_len);
-    align(end as usize, 0x10_0000) as u32
 }

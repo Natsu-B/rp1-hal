@@ -1,15 +1,15 @@
 error[E0382]: use of moved value: `init`
-  --> $CASE:85:9
+  --> $CASE:87:9
    |
-83 | fn reopen(init: link::Proc1LinkInit) {
+85 | fn reopen(init: link::Proc1LinkInit) {
    |           ---- move occurs because `init` has type `Proc1LinkInit`, which does not implement the `Copy` trait
-84 | let _ = init.try_open();
+86 | let _ = init.try_open();
    |              ---------- `init` moved due to this method call
-85 | let _ = init.try_open();
+87 | let _ = init.try_open();
    |         ^^^^ value used here after move
    |
 note: `link::Proc1LinkInit::try_open` takes ownership of the receiver `self`, which moves `init`
-  --> $CASE:75:17
+  --> $CASE:76:17
    |
-75 | pub fn try_open(self) -> Result<Proc1Link, OpenError<Self>> {
+76 | pub fn try_open(self) -> Result<Proc1Link, OpenError<Self>> {
    |                 ^^^^

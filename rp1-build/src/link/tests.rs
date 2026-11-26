@@ -95,8 +95,8 @@ fn every_region_has_an_alias_that_names_its_notifier() {
         "pub type Trace = transport::Block<::core::primitive::u32>;",
         "pub r#type: Type,",
         "pub down: Down,",
-        "r#type: generated::ring_tx(REGIONS[0])?,",
-        "down: generated::ring_rx(REGIONS[1])?,",
+        "r#type: unsafe { generated::ring_tx(REGIONS[0]) }?,",
+        "down: unsafe { generated::ring_rx(REGIONS[1]) }?,",
     ] {
         assert!(body.contains(alias), "{alias}\n{body}");
     }

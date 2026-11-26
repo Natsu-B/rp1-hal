@@ -240,7 +240,7 @@ fn write_core(
          /// The token can be retried while pending. A lost window requires an RP1 reload.\n\
          /// A doorbell ring is armed when this returns: give it to its handler, then raise the doorbell once ([`transport::RingRx`]).\n\
          pub fn try_open(self) -> Result<Proc{core}Link, OpenError<Self>> {{\n\
-         unsafe {{ generated::try_open(self, || Ok(Proc{core}Link {{"
+         let attach = || Ok(Proc{core}Link {{"
     )?;
     for &(endpoint, _) in endpoints {
         let index = endpoint.first;
@@ -254,7 +254,7 @@ fn write_core(
                 let up = index + 1;
                 writeln!(
                     output,
-                    "{field}: generated::{constructor}(generated::ring_tx(REGIONS[{up}])?, generated::ring_rx(REGIONS[{index}])?),"
+                    "{field}: generated::{constructor}(unsafe {{ generated::ring_tx(REGIONS[{up}]) }}?, unsafe {{ generated::ring_rx(REGIONS[{index}]) }}?),"
                 )?;
             }
             None => {
@@ -263,11 +263,14 @@ fn write_core(
                     ShmKind::RingToRp1 => "ring_rx",
                     ShmKind::Block { .. } => "block",
                 };
-                writeln!(output, "{field}: generated::{attach}(REGIONS[{index}])?,")?;
+                writeln!(
+                    output,
+                    "{field}: unsafe {{ generated::{attach}(REGIONS[{index}]) }}?,"
+                )?;
             }
         }
     }
-    output.push_str("})) }\n}\n}\n");
+    output.push_str("});\nunsafe { generated::try_open(self, attach) }\n}\n}\n");
     Ok(())
 }
 
