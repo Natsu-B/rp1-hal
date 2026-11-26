@@ -1,5 +1,9 @@
 //! The DMA ring producer: RP1 -> Linux batches copied into Linux DDR by a DMA channel.
-use crate::{RingTx, notify::Notify, ring::window_ready};
+use crate::{
+    RingTx,
+    notify::{Notify, sealed::Token},
+    ring::window_ready,
+};
 use rp1_hal::dma;
 pub use rp1_proto::shm::{SlotCopy, Staged};
 use rp1_proto::{Message, shm};
@@ -134,7 +138,7 @@ impl<T: Message, N: Notify> RingTx<T, N> {
     ) -> Result<usize, Staged<C::Error>> {
         window_ready().map_err(|_| Staged::Reset)?;
         let sent = dma.push_slice(&mut self.ring, copy, values);
-        self.notify.wake(&mut self.ring);
+        self.notify.wake(Token(()), &mut self.ring);
         sent
     }
     /// [`RingTx::push_with_dma`], then wake the reader as [`RingTx::send_slice_dma`] does.
@@ -148,7 +152,7 @@ impl<T: Message, N: Notify> RingTx<T, N> {
     ) -> Result<usize, Staged<C::Error>> {
         window_ready().map_err(|_| Staged::Reset)?;
         let sent = dma.push_with(&mut self.ring, copy, count, fill);
-        self.notify.wake(&mut self.ring);
+        self.notify.wake(Token(()), &mut self.ring);
         sent
     }
 }
@@ -331,7 +335,7 @@ mod tests {
         let (mut data, mut ctrl, mut stage) = (Mem::zeroed(), Mem::zeroed(), Mem::zeroed());
         let (ring, mut helper) = ring_and_stage(&mut data, &ctrl, &mut stage);
         helper.set_threshold(usize::MAX);
-        let mut tx = crate::RingTx::new(ring, HostIrq::claim());
+        let mut tx = crate::RingTx::new(ring, HostIrq::claim(Token(())));
         // The reader sleeps (odd `waiting`).
         let waiting = unsafe { ctrl.0.as_mut_ptr().add(rp1_proto::shm::WAITING) };
         unsafe { waiting.cast::<u32>().write_volatile(1) };

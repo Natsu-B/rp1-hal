@@ -1,0 +1,13 @@
+error[E0603]: module `sealed` is private
+ --> tests/ui-notify/notifier_token_not_nameable.rs:4:32
+  |
+4 |     N::claim(rp1_link::notify::sealed::Token(()))
+  |                                ^^^^^^  ----- tuple struct `Token` is not publicly re-exported
+  |                                |
+  |                                private module
+  |
+note: the module `sealed` is defined here
+ --> src/notify.rs
+  |
+  | pub(crate) mod sealed {
+  | ^^^^^^^^^^^^^^^^^^^^^

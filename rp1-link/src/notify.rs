@@ -13,10 +13,9 @@
 //! of the MSI-X vector no Linux driver uses. Linux receives it on the `rp1:irq` UIO node
 //! (`read()` / `poll()` on `/dev/uioN`, then `write(1)` to re-enable).
 //!
-//! **Unstable** (declaration `host_irq = true`). TEST is ORed
-//! with the vector's own hardware source, TIMER alarm 3 (`TIMER.INTS` bit 3). `host_irq` owns
-//! `TIMER.ALARM3` (the declaration rejects any other owner), and nothing in rp1-hal unmasks or
-//! forces it. Firmware that ran earlier (or a previous image on this RP1) might have, so
+//! The core that declares `host_irq = true` owns it. TEST is ORed with the vector's own
+//! hardware source, TIMER alarm 3 (`TIMER.INTS` bit 3). `host_irq` owns `TIMER.ALARM3` (the
+//! declaration rejects any other owner), and nothing in rp1-hal unmasks or forces it. Firmware that ran earlier (or a previous image on this RP1) might have, so
 //! [`HostIrq::new`] takes the source over: it masks and un-forces alarm 3 and clears its raw
 //! flag, leaving TEST as the only thing that can raise the vector (HW 2026-11-05: forcing
 //! `TIMER.INTF` bit 3 raises the vector once and then swallows TEST pulses until released).
@@ -69,19 +68,25 @@ const ALARM_BIT: u32 = 1 << (VECTOR - TIMER0_VECTOR);
 pub(crate) mod sealed {
     use super::{Error, Message, Progress, shm};
 
+    /// Every method takes one. Its field is private to this crate and nothing returns one, so
+    /// outside code cannot call the methods, not even through a public `Notify` / `Wake` bound.
+    #[derive(Clone, Copy)]
+    pub struct Token(pub(crate) ());
+
     pub trait Notify: Copy {
         /// The endpoint's copy of a notifier whose resource the generated code made.
-        fn claim() -> Self;
+        fn claim(_: Token) -> Self;
         /// Wake the reader of `ring` if it sleeps. Returns whether it notified.
-        fn wake<T: Message>(self, ring: &mut shm::RingTx<T>) -> bool;
+        fn wake<T: Message>(self, _: Token, ring: &mut shm::RingTx<T>) -> bool;
     }
 
     pub trait Wake: Copy {
-        fn claim() -> Self;
+        fn claim(_: Token) -> Self;
         /// Make the ring just attached notifiable: the first message wakes this reader.
-        fn opened<T: Message>(self, ring: &mut shm::RingRx<T>);
+        fn opened<T: Message>(self, _: Token, ring: &mut shm::RingRx<T>);
         fn drain<T: Message>(
             self,
+            _: Token,
             ring: &mut shm::RingRx<T>,
             max: u32,
             f: impl FnMut(T),
@@ -100,24 +105,25 @@ pub struct Poll;
 
 impl Notify for Poll {}
 impl sealed::Notify for Poll {
-    fn claim() -> Self {
+    fn claim(_: sealed::Token) -> Self {
         Poll
     }
     #[inline(always)]
-    fn wake<T: Message>(self, _: &mut shm::RingTx<T>) -> bool {
+    fn wake<T: Message>(self, _: sealed::Token, _: &mut shm::RingTx<T>) -> bool {
         false
     }
 }
 impl Wake for Poll {}
 impl sealed::Wake for Poll {
-    fn claim() -> Self {
+    fn claim(_: sealed::Token) -> Self {
         Poll
     }
     #[inline(always)]
-    fn opened<T: Message>(self, _: &mut shm::RingRx<T>) {}
+    fn opened<T: Message>(self, _: sealed::Token, _: &mut shm::RingRx<T>) {}
     #[inline(always)]
     fn drain<T: Message>(
         self,
+        _: sealed::Token,
         ring: &mut shm::RingRx<T>,
         max: u32,
         mut f: impl FnMut(T),
@@ -186,7 +192,7 @@ impl HostIrq {
 
 impl Notify for HostIrq {}
 impl sealed::Notify for HostIrq {
-    fn claim() -> Self {
+    fn claim(_: sealed::Token) -> Self {
         Self { _private: () }
     }
     /// [`shm::RingTx::wake_needed`] reads `head` back through the shm window (completing the
@@ -194,7 +200,7 @@ impl sealed::Notify for HostIrq {
     /// it pulses only for a sleep not yet notified, so a reader that keeps up costs no
     /// interrupts and a sleeping one gets one (protocol.md §2.3). One PCIe round trip per call.
     #[inline(always)]
-    fn wake<T: Message>(self, ring: &mut shm::RingTx<T>) -> bool {
+    fn wake<T: Message>(self, _: sealed::Token, ring: &mut shm::RingTx<T>) -> bool {
         let asleep = ring.wake_needed();
         if asleep {
             self.pulse();
@@ -247,12 +253,12 @@ impl<const PIN: u8, const CORE: u8> Doorbell<PIN, CORE> {
 
 impl<const PIN: u8, const CORE: u8> Wake for Doorbell<PIN, CORE> {}
 impl<const PIN: u8, const CORE: u8> sealed::Wake for Doorbell<PIN, CORE> {
-    fn claim() -> Self {
+    fn claim(_: sealed::Token) -> Self {
         unsafe { Self::new() }
     }
     /// Arm the ring. Messages that Linux sent before the arm are already there and rang no
     /// doorbell, so raise it for them: the handler drains them and arms again.
-    fn opened<T: Message>(self, ring: &mut shm::RingRx<T>) {
+    fn opened<T: Message>(self, _: sealed::Token, ring: &mut shm::RingRx<T>) {
         if !ring.prepare_wait() {
             self.raise();
         }
@@ -260,6 +266,7 @@ impl<const PIN: u8, const CORE: u8> sealed::Wake for Doorbell<PIN, CORE> {
     #[inline(always)]
     fn drain<T: Message>(
         self,
+        _: sealed::Token,
         ring: &mut shm::RingRx<T>,
         max: u32,
         f: impl FnMut(T),
@@ -306,7 +313,7 @@ mod tests {
     fn a_pulse_is_set_then_clear_in_one_section() {
         use crate::mmio::fake::{self, Access};
         fake::take();
-        let irq = <HostIrq as sealed::Notify>::claim();
+        let irq = <HostIrq as sealed::Notify>::claim(sealed::Token(()));
         irq.pulse_after_sram_write();
         assert_eq!(
             fake::take(),

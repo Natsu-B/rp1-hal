@@ -1,0 +1,47 @@
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+ --> tests/ui-notify/notifier_not_usable_on_raw_rings.rs:5:12
+  |
+5 |     notify.wake(ring)
+  |            ^^^^ ---- argument #1 of type `notify::sealed::Token` is missing
+  |
+note: method defined here
+ --> src/notify.rs
+  |
+  |         fn wake<T: Message>(self, _: Token, ring: &mut shm::RingTx<T>) -> bool;
+  |            ^^^^
+help: provide the argument
+  |
+5 |     notify.wake(/* Token */, ring)
+  |                 ++++++++++++
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+ --> tests/ui-notify/notifier_not_usable_on_raw_rings.rs:8:10
+  |
+8 |     wake.opened(ring)
+  |          ^^^^^^ ---- argument #1 of type `notify::sealed::Token` is missing
+  |
+note: method defined here
+ --> src/notify.rs
+  |
+  |         fn opened<T: Message>(self, _: Token, ring: &mut shm::RingRx<T>);
+  |            ^^^^^^
+help: provide the argument
+  |
+8 |     wake.opened(/* Token */, ring)
+  |                 ++++++++++++
+
+error[E0061]: this method takes 4 arguments but 3 arguments were supplied
+  --> tests/ui-notify/notifier_not_usable_on_raw_rings.rs:11:18
+   |
+11 |     let _ = wake.drain(ring, 1, |_| {});
+   |                  ^^^^^ ---- argument #1 of type `notify::sealed::Token` is missing
+   |
+note: method defined here
+  --> src/notify.rs
+   |
+   |         fn drain<T: Message>(
+   |            ^^^^^
+help: provide the argument
+   |
+11 |     let _ = wake.drain(/* Token */, ring, 1, |_| {});
+   |                        ++++++++++++

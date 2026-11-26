@@ -7,7 +7,7 @@
 //! cold boot.
 use crate::{
     generated,
-    notify::{Doorbell, Notify, Poll, Wake},
+    notify::{Doorbell, Notify, Poll, Wake, sealed::Token},
 };
 use rp1_proto::{
     Error, Message, link,
@@ -39,7 +39,7 @@ impl<T: Message, N: Notify> RingTx<T, N> {
     pub fn send(&mut self, value: &T) -> Result<(), Error> {
         window_ready()?;
         let sent = self.ring.push(value);
-        self.notify.wake(&mut self.ring);
+        self.notify.wake(Token(()), &mut self.ring);
         sent
     }
     /// Publish a batch with one `head` store and at most one wake. Returns how many were
@@ -49,7 +49,7 @@ impl<T: Message, N: Notify> RingTx<T, N> {
     pub fn send_slice(&mut self, values: &[T]) -> Result<usize, Error> {
         window_ready()?;
         let sent = self.ring.push_slice(values);
-        self.notify.wake(&mut self.ring);
+        self.notify.wake(Token(()), &mut self.ring);
         Ok(sent)
     }
     /// Publish one message without waking the reader (a caller batching by hand); follow with
@@ -81,7 +81,7 @@ impl<T: Message, N: Notify> RingTx<T, N> {
     #[inline(always)]
     pub fn flush(&mut self) -> Result<bool, Error> {
         window_ready()?;
-        Ok(self.notify.wake(&mut self.ring))
+        Ok(self.notify.wake(Token(()), &mut self.ring))
     }
     /// Free slots as last seen (a local load).
     pub fn free(&self) -> u32 {
@@ -115,7 +115,7 @@ pub struct RingRx<T, W = Poll> {
 impl<T: Message, W: Wake> RingRx<T, W> {
     /// Attach the endpoint to a ring just attached and make it notifiable.
     pub(crate) fn open(mut ring: shm::RingRx<T>, wake: W) -> Self {
-        wake.opened(&mut ring);
+        wake.opened(Token(()), &mut ring);
         Self { ring, wake }
     }
     /// Take the oldest message, if any.
@@ -142,7 +142,7 @@ impl<T: Message, W: Wake> RingRx<T, W> {
     #[inline(always)]
     pub fn drain(&mut self, max: u32, f: impl FnMut(T)) -> Result<Progress, Error> {
         window_ready()?;
-        self.wake.drain(&mut self.ring, max, f)
+        self.wake.drain(Token(()), &mut self.ring, max, f)
     }
 }
 
@@ -165,7 +165,7 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::mmio::fake::{self, Access};
-    use crate::notify::{Doorbell, HostIrq, sealed};
+    use crate::notify::{Doorbell, HostIrq};
     use rp1_proto::{
         LINK_START,
         shm::{Overflow, WAITING},
@@ -202,7 +202,7 @@ mod tests {
                     Overflow::Reject,
                 )
             };
-            RingTx::new(ring.unwrap(), <N as sealed::Notify>::claim())
+            RingTx::new(ring.unwrap(), N::claim(Token(())))
         }
         /// A Linux writer of the ring that `rx` reads.
         fn linux_tx(&mut self) -> shm::RingTx<Word> {
@@ -229,7 +229,7 @@ mod tests {
                     Overflow::Reject,
                 )
             };
-            RingRx::open(ring.unwrap(), <W as sealed::Wake>::claim())
+            RingRx::open(ring.unwrap(), W::claim(Token(())))
         }
         fn waiting(&self) -> u32 {
             u32::from_le_bytes(self.ctrl.0[WAITING..WAITING + 4].try_into().unwrap())

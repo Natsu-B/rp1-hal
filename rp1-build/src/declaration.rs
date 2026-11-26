@@ -266,8 +266,8 @@ pub struct Core {
     pub gpio: Vec<u8>,
     pub gpio_irq: Vec<u8>,
     pub timer: Vec<String>,
-    /// `host_irq = true`: this core owns the RP1 -> Linux interrupt (`rp1_link::notify`,
-    /// unstable) and the overlay adds the `rp1:irq` UIO node.
+    /// `host_irq = true`: this core owns the RP1 -> Linux interrupt (`rp1_link::notify`)
+    /// and the overlay adds the `rp1:irq` UIO node.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub host_irq: bool,
     /// `doorbell = N`: Linux interrupts this core by setting the `PROCn_INTF` force bit of

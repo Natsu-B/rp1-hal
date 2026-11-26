@@ -2,7 +2,7 @@
 
 use crate::{
     Block, EnableError, Error, Message, OpenError, Overflow, RingRx, RingTx,
-    notify::{Notify, Wake, sealed},
+    notify::{Notify, Wake, sealed::Token},
 };
 use rp1_hal::platform::Pcie;
 pub use rp1_proto::note::{ShmArea, ShmKind, ShmRegion, Writer};
@@ -168,7 +168,7 @@ pub unsafe fn ring_tx<T: Message, N: Notify>(r: ShmRegion<'_>) -> Result<RingTx<
             overflow(r),
         )
     }?;
-    Ok(RingTx::new(ring, <N as sealed::Notify>::claim()))
+    Ok(RingTx::new(ring, N::claim(Token(()))))
 }
 
 /// Attach the Linux -> RP1 ring `r` and make it notifiable ([`RingRx`]).
@@ -187,7 +187,7 @@ pub unsafe fn ring_rx<T: Message, W: Wake>(r: ShmRegion<'_>) -> Result<RingRx<T,
             overflow(r),
         )
     }?;
-    Ok(RingRx::open(ring, <W as sealed::Wake>::claim()))
+    Ok(RingRx::open(ring, W::claim(Token(()))))
 }
 
 /// Attach the block `region`.

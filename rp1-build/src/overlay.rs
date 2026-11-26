@@ -163,7 +163,7 @@ pub(crate) fn dts_with_layout(d: &Declaration, note: &[u8], shm: &ShmLayout<'_>)
             header = rp1_proto::uio::HEADER,
         ),
     );
-    // RP1 -> Linux interrupt (`rp1_proto::irq`, unstable, only for `host_irq = true`): a child
+    // RP1 -> Linux interrupt (`rp1_proto::irq`, only for `host_irq = true`): a child
     // of the rp1 node, so the rp1 driver populates it and its interrupt parent is rp1's MSI-X
     // domain. At the root, fw_devlink waits for the rp1 node as a supplier forever (HW
     // 2026-11-04: deferred). The UIO maps one 16 KiB page of PCIE_APBS (the 16K-page kernel's
