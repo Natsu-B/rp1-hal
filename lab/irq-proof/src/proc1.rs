@@ -1,6 +1,6 @@
 //! proc1's items: its alarm, the critical section and `log!` under a periodic handler, a line
 //! without a handler, SPI0 behind the wrapper, and its doorbell (GPIO27) served by a handler:
-//! the raw doorbell of examples/linux-doorbell and the `down1` ring.
+//! the `ping` RPC and the `down1` ring.
 use crate::proof::{
     self, Entries, Shared, Wrapped, expect, mark, now, put, settle, shared, ticker, wait, with,
 };
@@ -8,7 +8,7 @@ use crate::rings::Reader;
 use crate::rp1;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
 use rp1_hal::{log, spi::Spi, timer::Alarm};
-use rp1_proto::link;
+use rp1_link::Progress;
 use rp1_rt::{
     Proc0, Proc1, interrupt,
     interrupt::{Line, free},
@@ -21,12 +21,13 @@ static ALARM: Shared<Alarm<1>> = shared();
 static BELL: Shared<rp1::Doorbell1> = shared();
 /// The `down1` ring, once main has opened it.
 pub static DOWN1: Shared<Reader<27, 1>> = shared();
+pub static PING: Shared<rp1::link::Ping> = shared();
 static SPI: Shared<Spi0> = shared();
 static WRAP: Entries = Entries::new();
 /// Handler entries with the doorbell set.
 static BELL_ENTRIES: Entries = Entries::new();
-/// Raw doorbells answered (a new request word echoed).
-static DOORBELL: Entries = Entries::new();
+/// Ping requests served in the doorbell handler.
+static PINGS: Entries = Entries::new();
 
 /// What the alarm handler does besides ticking.
 const TICK_ONLY: u8 = 0;
@@ -56,8 +57,7 @@ fn SPI0() {
     });
     WRAP.enter(1);
 }
-/// The doorbell: Linux forced GPIO27 in PROC1_INTF, for a raw request word or for `down1`.
-/// Acknowledge first, then serve both: an ack after a drain could drop a later notification.
+/// Both endpoints share a force bit. Ack before draining either one.
 #[interrupt(proc1)]
 fn IO_BANK0() {
     let Some(bell) = proof::get(&BELL) else {
@@ -65,22 +65,22 @@ fn IO_BANK0() {
     };
     bell.ack();
     BELL_ENTRIES.enter(1);
-    echo_request();
-    with(&DOWN1, |reader| reader.on_doorbell(bell));
-}
-
-/// The raw doorbell of examples/linux-doorbell: echo a new request word as the reply. Linux
-/// clears the reply before it writes the next request, so a reply equal to the request was
-/// answered already (this entry was for `down1`).
-fn echo_request() {
-    let page = rp1_proto::LINK_START as usize;
-    let request = proof::rd(page + link::DOORBELL_REQUEST);
-    if request == 0 || proof::rd(page + link::DOORBELL_REPLY) == request {
-        return;
+    let mut more = false;
+    with(&PING, |ping| {
+        let progress = ping.serve(8, |value| {
+            PINGS.enter(1);
+            value
+        });
+        more = match progress {
+            Ok(Progress::More) => true,
+            Ok(Progress::Idle) => false,
+            Err(_) => panic!("ping serve failed"),
+        };
+    });
+    with(&DOWN1, |reader| more |= reader.drain());
+    if more {
+        bell.raise();
     }
-    proof::wr(page + link::DOORBELL_REPLY, request);
-    rp1_proto::barrier();
-    DOORBELL.enter(1);
 }
 
 const SPI0_BASE: usize = 0x4005_0000;
@@ -134,7 +134,7 @@ pub fn run(parts: Parts) {
         None => expect(false, "p1_spi0_init"),
     }
 
-    DOORBELL.reset();
+    PINGS.reset();
     irq.IO_BANK0.enable();
 }
 
@@ -293,11 +293,11 @@ fn default_handler_test(mut alarm: Alarm<2>, line: &mut Line<28>, idle: &mut dyn
 }
 
 static REPORTED: AtomicBool = AtomicBool::new(false);
-const DOORBELLS: u32 = 1000;
-/// The 1000 doorbells of `linux-doorbell` are in and [`report`] has not run yet.
+const REPORT_PINGS: u32 = 1000;
+/// Whether the first ping run is complete and ready to report.
 #[inline(always)]
 pub fn report_due() -> bool {
-    DOORBELL.count() >= DOORBELLS && !REPORTED.load(Relaxed)
+    PINGS.count() >= REPORT_PINGS && !REPORTED.load(Relaxed)
 }
 
 /// proc1's figures for proc0's final lines, in the order they are sent.
@@ -325,8 +325,8 @@ impl Report {
 /// image, so every reply Linux got came from the handler.
 pub fn report(tx: &mut Producer<'_, u32, 8, Proc1, Proc0>, stack_free: u32) {
     REPORTED.store(true, Relaxed);
-    let ipsr = DOORBELL.ipsr();
-    mark!("IRQ_P1_GPIO27 ipsr={} seen={}", ipsr, DOORBELL.count());
+    let ipsr = PINGS.ipsr();
+    mark!("IRQ_P1_GPIO27 ipsr={} seen={}", ipsr, PINGS.count());
     expect(ipsr == 16, "p1_gpio27");
     let unhandled = interrupt::unhandled().map_or(0, |(_, count)| count);
     for word in [

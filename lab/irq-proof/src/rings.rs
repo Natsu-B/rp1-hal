@@ -90,6 +90,13 @@ impl<const PIN: u8, const CORE: u8> Reader<PIN, CORE> {
     /// message. When the budget runs out the ring is not armed, so raise the doorbell: the
     /// handler runs again for the rest.
     pub fn on_doorbell(&mut self, bell: Doorbell<PIN, CORE>) {
+        if self.drain() {
+            bell.raise();
+        }
+    }
+
+    /// Drain one budget after the ack, returning whether the handler needs another entry.
+    pub fn drain(&mut self) -> bool {
         self.tally.entries += 1;
         let (tally, generation, next) = (&mut self.tally, self.generation, &mut self.next);
         let check = |m: Message| {
@@ -111,12 +118,15 @@ impl<const PIN: u8, const CORE: u8> Reader<PIN, CORE> {
             self.ring.__drain_without_readback(self.budget, check)
         };
         match progress {
-            Ok(Progress::Idle) => {}
+            Ok(Progress::Idle) => false,
             Ok(Progress::More) => {
                 self.tally.raises += 1;
-                bell.raise();
+                true
             }
-            Err(_) => self.tally.errors += 1,
+            Err(_) => {
+                self.tally.errors += 1;
+                false
+            }
         }
     }
 

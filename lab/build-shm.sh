@@ -16,11 +16,11 @@ case ${SHM_PROFILE:-0} in
     *) echo 'SHM_PROFILE must be 0 or 1' >&2; exit 1 ;;
 esac
 cargo build --offline -p shm-firmware --target thumbv7m-none-eabi --release ${profile_args[@]+"${profile_args[@]}"}
-cargo build --offline -p shm-linux -p linux-doorbell -p linux-status --target aarch64-unknown-linux-musl --release ${profile_args[@]+"${profile_args[@]}"}
+cargo build --offline -p shm-linux -p linux-ping -p linux-status --target aarch64-unknown-linux-musl --release ${profile_args[@]+"${profile_args[@]}"}
 cp target/thumbv7m-none-eabi/release/shm-firmware "$out/fw/RP1.elf"
 # The bss smoke test needs a real .bss in the image (review #10).
 arm-none-eabi-size -A "$out/fw/RP1.elf" | awk '$1==".bss" { found = $2 > 0 } END { exit !found }'
-cp target/aarch64-unknown-linux-musl/release/{shm-linux,linux-doorbell,linux-status} "$out/"
+cp target/aarch64-unknown-linux-musl/release/{shm-linux,linux-ping,linux-status} "$out/"
 llvm-objcopy --dump-section .rp1.dtbo="$out/dtb/app.dtbo" "$out/fw/RP1.elf"
 fdtoverlay -i "$base" -o "$out/dtb/scmi_linux.dtb" "$out/dtb/app.dtbo"
 args=$(fdtget -t s "$out/dtb/scmi_linux.dtb" /chosen bootargs)
@@ -46,4 +46,4 @@ CARGO_TARGET_DIR="$out/loader-target" CARGO_INCREMENTAL=0 CARGO_ENCODED_RUSTFLAG
  --features 'log-uart,tftp-boot,require-rp1-img,rp1-hal-dev'
 cp "$out/loader-target/aarch64-unknown-none-softfloat/release/rp1_chainboot_poc" "$out/loader/reader.elf"
 llvm-objcopy -O binary "$out/loader/reader.elf" "$out/loader/kernel_2712.img"
-sha256sum "$out/fw/RP1.elf" "$out/dtb/scmi_linux.dtb" "$out/loader/kernel_2712.img" "$out/shm-linux"
+sha256sum "$out/fw/RP1.elf" "$out/dtb/scmi_linux.dtb" "$out/loader/kernel_2712.img" "$out/shm-linux" "$out/linux-ping" "$out/linux-status"

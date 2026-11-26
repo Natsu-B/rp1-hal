@@ -21,11 +21,12 @@ base_initramfs = env("RP1_INITRAMFS")
 helper = runpy.run_path(str(env("RP1_INITRAMFS_HELPER")))
 tools = {
     "bin/shm-linux": out / "shm-linux",
-    "bin/linux-doorbell": out / "linux-doorbell",
+    "bin/linux-ping": out / "linux-ping",
     "bin/linux-status": out / "linux-status",
 }
+replaced = {"TRAILER!!!", "bin/linux-doorbell", *tools}
 entries = [(n, m, bytes(d)) for n, m, d, _ in helper["parse_newc"](gzip.decompress(base_initramfs.read_bytes()))
-           if n != "TRAILER!!!" and n not in tools]
+           if n not in replaced]
 entries.extend((n, 0o100755, path.read_bytes()) for n, path in tools.items())
 assert len(entries) == len({n for n, _, _ in entries})
 raw = bytearray()

@@ -152,6 +152,19 @@ fn probe_window() -> Result<()> {
     result
 }
 fn main() -> Result<()> {
+    let command = std::env::args().nth(1);
+    if command.as_deref() == Some("probe-only") {
+        probe_window()?;
+        let generation = Firmware::open()?.wait_ready(READY)?;
+        println!("SHM_READY generation={generation}");
+        return Ok(());
+    }
+    if command.as_deref() == Some("workload") {
+        return workload(count_arg(2)?);
+    }
+    if command.as_deref() == Some("ping") {
+        return ping();
+    }
     if std::env::args().nth(1).as_deref() == Some("dma") {
         return dma::main();
     }
@@ -196,15 +209,47 @@ fn main() -> Result<()> {
             .unwrap_or(1_000_000);
         return ring_irq::main(count);
     }
-    let count: u32 = std::env::args()
-        .nth(1)
+    let count = count_arg(1)?;
+    probe_window()?;
+    workload(count)
+}
+
+fn ping() -> Result<()> {
+    const ROUNDS: usize = 1000;
+    let fw = Firmware::open()?;
+    fw.wait_ready(READY)?;
+    let mut client = fw.client::<[u32; 4], [u32; 4]>("ping")?;
+    let mut samples = [0; ROUNDS];
+    for (i, us) in samples.iter_mut().enumerate() {
+        let value = sample(i as u32);
+        let start = Instant::now();
+        let reply = client.call(&value, Duration::from_secs(1))?;
+        *us = start.elapsed().as_micros();
+        if reply != value {
+            return Err(format!("ping {i}: received {reply:?}").into());
+        }
+    }
+    samples.sort_unstable();
+    println!(
+        "PING_RTT n={ROUNDS} failed=0 p50_us={} p99_us={} max_us={}",
+        samples[499], samples[989], samples[999]
+    );
+    Ok(())
+}
+
+fn count_arg(index: usize) -> Result<u32> {
+    let count = std::env::args()
+        .nth(index)
         .map(|v| v.parse())
         .transpose()?
         .unwrap_or(1_000_000);
     if count < 1_000_000 {
         return Err("proof needs at least 1e6 messages per direction".into());
     }
-    probe_window()?;
+    Ok(count)
+}
+
+fn workload(count: u32) -> Result<()> {
     let fw = Firmware::open()?;
     let generation = fw.wait_ready(READY)?;
     let mut up = fw.ring_rx::<[u32; 4]>("up")?;

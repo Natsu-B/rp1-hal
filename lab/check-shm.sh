@@ -1,5 +1,5 @@
 #!/bin/sh
-# Linux-side SHM / doorbell / I2C / ADC / SPI regression. Strict: every step has a time limit, a non-zero
+# Linux-side SHM / ping / I2C / ADC / SPI regression. Strict: every step has a time limit, a non-zero
 # exit code or a missing reply is a failure, and the script ends with exactly one
 # `CHECK_SHM_RESULT=PASS|FAIL`, then `DDR_INSPECT_END`, and exits non-zero on failure.
 # The host decides with `lab/verify-shm.py` (UART0 + UART10 + capture completion); the boot
@@ -38,13 +38,15 @@ done
 cat /proc/iomem
 echo ASPM_POLICY=$(cat /sys/module/pcie_aspm/parameters/policy 2>&1)
 for d in /sys/bus/pci/devices/*; do echo "PCI $d $(cat $d/vendor) $(cat $d/device)"; ls $d/link 2>/dev/null && grep . $d/link/* 2>/dev/null; od -A x -t x4 -N 256 $d/config; done
-limit 30 /bin/linux-doorbell "$L" "$D" 1000
-rc=$?; echo DOORBELL_BEFORE_RC=$rc; [ $rc -eq 0 ] || fail doorbell_before
-# shm-linux has a 180 s limit per request; the whole run normally takes well under a minute.
-limit 600 /bin/shm-linux 1000000
+limit 30 /bin/shm-linux probe-only
+rc=$?; echo SHM_PROBE_RC=$rc; [ $rc -eq 0 ] || fail shm_probe
+limit 30 /bin/shm-linux ping
+rc=$?; echo PING_BEFORE_RC=$rc; [ $rc -eq 0 ] || fail ping_before
+# The full-window probe ran on this cold boot, before publishing Ready.
+limit 600 /bin/shm-linux workload 1000000
 rc=$?; echo SHM_RC=$rc; [ $rc -eq 0 ] || fail shm
-limit 30 /bin/linux-doorbell "$L" "$D" 1000
-rc=$?; echo DOORBELL_AFTER_RC=$rc; [ $rc -eq 0 ] || fail doorbell_after
+limit 30 /bin/shm-linux ping
+rc=$?; echo PING_AFTER_RC=$rc; [ $rc -eq 0 ] || fail ping_after
 mount -t debugfs none /sys/kernel/debug 2>/dev/null
 grep -E 'uart|apb' /sys/kernel/debug/clk/clk_summary
 dmesg | grep -E 'scmi|clk:|34000|SError|abort|fault|WARN|error'
@@ -70,8 +72,8 @@ echo I2C_REPLY=$reply
 [ $((reply)) -eq 1 ] || fail i2c_reply
 echo I2C_LINUX_DONE
 # request REQ: write it to link+0x28 (reply cleared first), poll link+0x2c up to 20 s and
-# print the reply. Each runs only after the doorbell and shm steps have finished: the
-# proc1 ADC / SPI bursts block its doorbell and command handling for tens of ms.
+# print the reply. Each runs only after the ping and SHM steps have finished: the
+# proc1 ADC / SPI bursts block its ping and command handling for tens of ms.
 request() {
     busybox devmem 0x1f0040c02c 32 0
     busybox devmem 0x1f0040c028 32 "$1"

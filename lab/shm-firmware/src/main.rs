@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
-use rp1_hal::{gpio::PinIrq, log};
-use rp1_link::{Block, OpenError, flush_window, notify::HostIrq};
+use rp1_hal::log;
+use rp1_link::{Block, OpenError, Progress, flush_window};
 #[cfg(not(feature = "ring-dma"))]
 use rp1_link::{RingRx, RingTx};
 use rp1_proto::{Error, link};
@@ -252,9 +252,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         dma
     };
     VALUES.producer(&mut core).push(42).unwrap();
-    // Linux's raw doorbell request: the GPIO27 force bit of proc1.
-    let mut doorbell = p.irq.gpio27;
-    let host_irq = p.host_irq;
+    let doorbell = p.doorbell;
     // Linux may ask for an ADC burst before it enables the shm area.
     let mut init = p.link;
     let endpoints = loop {
@@ -264,7 +262,6 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             Err(OpenError::Reset) => panic!("SHM window lost"),
             Err(OpenError::Attach(error)) => panic!("SHM attach: {error:?}"),
         }
-        service_doorbell(&mut doorbell);
         serve_proc1(
             #[cfg(feature = "adc")]
             adc.as_mut(),
@@ -279,6 +276,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         mut events,
         mut control,
         mut bulk,
+        mut ping,
         ..
     } = endpoints;
     #[cfg(feature = "ring-dma")]
@@ -288,7 +286,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut last = 0;
     let mut seen = 0;
     loop {
-        let sequence = wait_command(&mut doorbell, host_irq, &control, seen);
+        let sequence = wait_command(doorbell, &mut ping, &control, seen);
         serve_proc1(
             #[cfg(feature = "adc")]
             adc.as_mut(),
@@ -681,22 +679,18 @@ unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
         unsafe { pointer.add(i).write_volatile(i as u32 ^ seed) };
     }
 }
-/// proc1 idle loop, from ISRAM: answer doorbells until the control block's sequence changes
-/// or Linux asks for an ADC or SPI burst (returns `seen` then).
-/// Idle cost is one DDR load (not a 17-word read), so the doorbell stays responsive.
+/// Wait for ping, a control-block command, or a peripheral proof request.
 #[rp1_rt::isram]
 fn wait_command(
-    doorbell: &mut PinIrq<27, 1>,
-    host_irq: HostIrq,
+    doorbell: rp1::Doorbell1,
+    ping: &mut rp1::link::Ping,
     control: &Block<Control>,
     seen: u32,
 ) -> u32 {
     loop {
-        // Interrupt to Linux (rp1:irq) after the reply; only here, in ISRAM: the shared SRAM
-        // image has no room for it in the pre-shm loop, so Linux uses interrupts after shm enable.
-        // The reply is in the link page (RP1 SRAM), so the SRAM variant is enough.
-        if service_doorbell(doorbell) {
-            host_irq.pulse_after_sram_write();
+        if doorbell.is_pending() {
+            doorbell.ack();
+            service_ping(ping);
         }
         let sequence = control.sequence();
         if sequence != seen || proc1_request(proof_pending()) {
@@ -704,16 +698,14 @@ fn wait_command(
         }
     }
 }
-#[inline(always)]
-fn service_doorbell(doorbell: &mut PinIrq<27, 1>) -> bool {
-    if doorbell.is_forced() {
-        doorbell.unforce();
-        unsafe {
-            ((rp1_proto::LINK_START as usize + link::DOORBELL_REPLY) as *mut u32)
-                .write_volatile(link_read(link::DOORBELL_REQUEST));
+
+#[rp1_rt::cold]
+fn service_ping(ping: &mut rp1::link::Ping) {
+    loop {
+        match ping.serve(8, |value| value) {
+            Ok(Progress::More) => {}
+            Ok(Progress::Idle) => break,
+            Err(_) => panic!("ping serve failed"),
         }
-        rp1_proto::barrier();
-        return true;
     }
-    false
 }

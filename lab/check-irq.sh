@@ -1,10 +1,6 @@
 #!/bin/sh
-# Linux side of the interrupt proof (lab/irq-proof): print the firmware's nonce, ring the GPIO27
-# doorbell 1000 times (proc1 answers from its interrupt handler; the firmware then prints its
-# final markers on UART0), and run the SHM and doorbell regressions in the same boot. Then the
-# notification proofs of shm-linux (down_irq.rs, up_irq.rs): Linux -> RP1 on both cores'
-# doorbells, RP1 -> Linux from proc0, a writer killed at random moments, and the record-only
-# controls last (they may stall a ring by design).
+# Linux side of the interrupt proof (lab/irq-proof): publish SHM, serve the first 1000
+# ping requests in proc1's IRQ handler, then run the SHM and notification proofs.
 # Strict like check-shm.sh: every step has a time limit, and the script ends with exactly one
 # `IRQ_CHECK_RESULT=PASS|FAIL`, then `IRQ_CHECK_END`. The host decides with lab/verify-irq.py.
 export PATH=/bin
@@ -53,13 +49,15 @@ echo IRQ_NONCE=$(busybox devmem 0x1f0040c028 32)
 # The blocks whose interrupts the proof raises must be RP1's: Linux's nodes disabled.
 dt_disabled I2C1 i2c@74000
 dt_disabled SPI0 spi@50000
-limit 30 /bin/linux-doorbell "$L" "$D" 1000
-rc=$?; echo DOORBELL_BEFORE_RC=$rc; [ $rc -eq 0 ] || fail doorbell_before
-# shm-linux has a 180 s limit per request; the whole run normally takes well under a minute.
-limit 600 /bin/shm-linux 1000000
+limit 30 /bin/shm-linux probe-only
+rc=$?; echo SHM_PROBE_RC=$rc; [ $rc -eq 0 ] || fail shm_probe
+limit 30 /bin/shm-linux ping
+rc=$?; echo PING_BEFORE_RC=$rc; [ $rc -eq 0 ] || fail ping_before
+# The full-window probe ran on this cold boot, before publishing Ready.
+limit 600 /bin/shm-linux workload 1000000
 rc=$?; echo SHM_RC=$rc; [ $rc -eq 0 ] || fail shm
-limit 30 /bin/linux-doorbell "$L" "$D" 1000
-rc=$?; echo DOORBELL_AFTER_RC=$rc; [ $rc -eq 0 ] || fail doorbell_after
+limit 30 /bin/shm-linux ping
+rc=$?; echo PING_AFTER_RC=$rc; [ $rc -eq 0 ] || fail ping_after
 # step NAME SECONDS ARGS...: one shm-linux proof with a time limit.
 step() {
     name=$1 secs=$2; shift 2

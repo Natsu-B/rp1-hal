@@ -4,8 +4,7 @@
 //!
 //! The system part (proc0's clocks, PCIe endpoint, SCMI and shm bring-up; proc1's shm command
 //! loop) is that of lab/shm-firmware without its peripheral proofs, so the Linux-side SHM,
-//! doorbell and UART1 regressions run in the same boot. The doorbell is answered by proc1's
-//! IO_BANK0 handler here, not by polling.
+//! ping and UART1 regressions run in the same boot. Proc1 serves ping in its IO_BANK0 handler.
 //!
 //! Once shm is up, the notification proofs of [`rings`] run on commands from shm-linux: each
 //! core's doorbell handler drains its Linux -> RP1 ring, and proc0 (the `host_irq` owner) sends
@@ -316,7 +315,6 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     });
 
     let mut report = REPORT.producer(&mut core);
-    // Keep issuing the doorbell report before Linux enables the area.
     let mut init = p.link;
     let rp1::link::Proc1Link {
         mut up,
@@ -325,6 +323,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         mut control,
         mut bulk,
         down1,
+        ping,
     } = loop {
         match init.try_open() {
             Ok(endpoints) => break endpoints,
@@ -332,9 +331,9 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             Err(OpenError::Reset) => panic!("SHM window lost"),
             Err(OpenError::Attach(error)) => panic!("SHM attach: {error:?}"),
         }
-        report_when_due(&mut report, &stack);
     };
     put(&proc1::DOWN1, Reader::new(down1));
+    put(&proc1::PING, ping);
     // As on proc0: a doorbell before the handler had the reader found nothing to drain.
     doorbell.raise();
     let mut last = 0;
@@ -485,7 +484,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     }
 }
 
-/// Send proc1's report once the 1000 doorbells of `linux-doorbell` are in.
+/// Send proc1's report after the first 1000 ping requests.
 fn report_when_due(
     report: &mut rp1_rt::sync::Producer<'_, u32, 8, Proc1, Proc0>,
     stack: &stack::Watermark,

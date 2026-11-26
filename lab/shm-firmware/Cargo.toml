@@ -47,8 +47,8 @@ timer = ["ALARM0"]
 i2c1 = { sda = 2, scl = 3 }
 
 [package.metadata.rp1.proc1]
-gpio = [8, 27] # 8 = SPI0 chip select driven as GPIO
-gpio_irq = [27]
+gpio = [8] # SPI0 chip select
+doorbell = 27
 timer = ["ALARM1"]
 adc = {}
 spi0 = { sck = 11, mosi = 10, miso = 9 }
@@ -129,3 +129,13 @@ kind = "block"
 core = "proc1"
 type = "Bulk"
 writer = "both"
+
+
+[[package.metadata.rp1.shm]]
+name = "ping"
+kind = "rpc"
+core = "proc1"
+message = "Sample"
+reply = "Sample"
+depth = 8
+notify = { dn = "irq", up = "poll" }

@@ -24,8 +24,7 @@ rp1-build = { path = "../../rp1-build" }
 # The system part matches lab/shm-firmware (same owners for I2C1, SPI0, ADC, DMA, GPIO 8/22,
 # and the rings shm-linux uses), so its Linux-side regressions run on this image too.
 # Differences: proc0 takes GPIO22's interrupt and owns host_irq, proc1 takes ALARM2 (a line left
-# without a handler on purpose), both cores have a doorbell (proc0 GPIO26, proc1 GPIO27, the
-# raw doorbell of examples/linux-doorbell), and both stacks are the default size, which the
+# without a handler on purpose), both cores have a doorbell (proc0 GPIO26, proc1 GPIO27), and both stacks are the default size, which the
 # proof measures.
 [package.metadata.rp1]
 schema = 2
@@ -140,3 +139,13 @@ kind = "block"
 core = "proc0"
 type = "Control"
 writer = "both"
+
+
+[[package.metadata.rp1.shm]]
+name = "ping"
+kind = "rpc"
+core = "proc1"
+message = "Sample"
+reply = "Sample"
+depth = 8
+notify = { dn = "irq", up = "poll" }

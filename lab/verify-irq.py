@@ -225,8 +225,11 @@ def verify_uart0(text, nonce=None, regression=True):
 
 # Linux console, in the order check-irq.sh prints them.
 UART10_PROOF = [
-    ("doorbell replies", r"\bdoorbell rtt n=1000 "),
-    ("doorbell before", r"\bDOORBELL_BEFORE_RC=0\b"),
+    ("window probe", r"\bWINDOW_PASS bytes=\d+ all_words errors=0\b"),
+    ("Ready", r"\bSHM_READY generation=\d+\b"),
+    ("probe exit", r"\bSHM_PROBE_RC=0(?!\S)"),
+    ("ping before RTT", r"\bPING_RTT n=1000 failed=0 p50_us=\d+ p99_us=\d+ max_us=\d+(?!\S)"),
+    ("ping before exit", r"\bPING_BEFORE_RC=0(?!\S)"),
 ]
 # The notification proofs (shm-linux down_irq.rs / up_irq.rs), in check-irq.sh's order.
 UART10_NOTIFY = [
@@ -253,7 +256,8 @@ UART10_NOTIFY = [
 UART10_REGRESSION = [
     ("SHM_PASS", r"\bSHM_PASS\b"),
     ("SHM_RC=0", r"\bSHM_RC=0\b"),
-    ("doorbell after", r"\bDOORBELL_AFTER_RC=0\b"),
+    ("ping after RTT", r"\bPING_RTT n=1000 failed=0 p50_us=\d+ p99_us=\d+ max_us=\d+(?!\S)"),
+    ("ping after exit", r"\bPING_AFTER_RC=0(?!\S)"),
     *UART10_NOTIFY,
     ("script result", r"\bIRQ_CHECK_RESULT=PASS\b"),
     ("terminal marker", r"\bIRQ_CHECK_END\b"),
@@ -265,7 +269,9 @@ UART10_POWER = [
     ("3 A supply", r"\bmax-current 3000\b"),
 ]
 UART10_FORBIDDEN = [r"\bCHECK_FAIL\b", r"\bIRQ_CHECK_RESULT=FAIL\b", r"Kernel panic", r"\bSError\b",
-                    r"\b(?:DOWNIRQ|DOWN0IRQ|RINGIRQ0|MIXIRQ|IRQPAIR)(?:_UNRUNG|_REOPEN)?_(?:STALL|FAIL)\b"]
+                    r"\b(?:SHM(?:_PROBE)?|PING_BEFORE|PING_AFTER)_RC=(?!0(?!\S))",
+                    r"\b(?:DOWNIRQ|DOWN0IRQ|RINGIRQ0|MIXIRQ|IRQPAIR)(?:_UNRUNG|_REOPEN)?_(?:STALL|FAIL)\b",
+                    r"\b(?:DOWNIRQ(?:_MORE|_KILL|_UNRUNG|_REOPEN)?|DOWN0IRQ|RINGIRQ0|MIXIRQ|IRQPAIR|LINUX_STATUS)_RC=(?!0(?!\S))"]
 
 
 def verify_uart10(text, nonce, steps, final_check=None):
@@ -280,6 +286,9 @@ def verify_uart10(text, nonce, steps, final_check=None):
         return [f"UART10: {len(matching)} boots with IRQ_NONCE={nonce} after a bootloader banner"], []
     boot = "\n".join(matching[0])
     failures, info = [], []
+    for marker in ("IRQ_NONCE=", "IRQ_CHECK_RESULT=", "IRQ_CHECK_END"):
+        if len(re.findall(rf"\b{marker}", boot)) > 1:
+            failures.append(f"UART10: multiple {marker} markers")
     for name, pattern in UART10_POWER:
         if re.search(pattern, boot) is None:
             failures.append(f"UART10 power {name}: missing ({pattern})")
@@ -297,9 +306,7 @@ def verify_uart10(text, nonce, steps, final_check=None):
             failures.append(f"UART10 failure marker: {line.strip()[:160]}")
     if final_check:
         failures += verify_final_cores(boot, final_check, nonce)
-    rtt = re.search(r"\bdoorbell rtt n=1000 .*", boot)
-    if rtt:
-        info.append(rtt.group(0).strip())
+    info.extend(re.findall(r"\bPING_RTT n=1000[^\n]*", boot))
     if any(name.startswith("(b)") for name, _ in steps):
         for name in UART10_RECORD:
             line = re.search(rf"\b{name} .*", boot)

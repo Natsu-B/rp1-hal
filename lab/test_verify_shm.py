@@ -9,12 +9,18 @@ spec = importlib.util.spec_from_file_location(
 v = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(v)
 
-UART10 = """[t] DOORBELL_BEFORE_RC=0
+UART10 = """[t] HWRUN3_BEGIN
+[t] WINDOW_PASS bytes=3145728 all_words errors=0
+[t] SHM_READY generation=1
+[t] SHM_PROBE_RC=0
+[t] PING_RTT n=1000 failed=0 p50_us=1000 p99_us=1100 max_us=1200
+[t] PING_BEFORE_RC=0
 [t] RING up_batch n=1000000 missing=0 corrupt=0
 [t] PROFILE skipped
 [t] SHM_PASS
 [t] SHM_RC=0
-[t] DOORBELL_AFTER_RC=0
+[t] PING_RTT n=1000 failed=0 p50_us=1001 p99_us=1101 max_us=1201
+[t] PING_AFTER_RC=0
 [t] I2C_REPLY=0x00000001
 [t] I2C_LINUX_DONE
 [t] ADC_DT=/sys/firmware/devicetree/base/axi/pcie@1000120000/rp1/adc@c8000 status=disabled
@@ -69,7 +75,7 @@ class Verify(unittest.TestCase):
 
     def test_review3_stall_fails(self):
         # Review 3 #2: both UARTs stop inside command 9; boot markers were all present.
-        uart10 = "[t] DOORBELL_BEFORE_RC=0\n[t] ISOLATED up_push_batch n=256 rp1_us=293\n"
+        uart10 = "[t] PING_BEFORE_RC=0\n[t] ISOLATED up_push_batch n=256 rp1_us=293\n"
         uart0 = "[t] PROF ring_data_ddr single push n=128 cyc=1 pop cyc=2\n"
         failures = v.verify(uart0, uart10, {"complete": False}, profile=True)
         for marker in ("SHM_PASS", "SHM_RC=0", "terminal marker", "I2C reply",
@@ -111,6 +117,11 @@ class Verify(unittest.TestCase):
                 self.assertTrue(v.verify(UART0, UART10.replace(line, bad), DONE), bad)
                 # Also when a second, disabled node line is present.
                 self.assertTrue(v.verify(UART0, UART10.replace(line, line + "\n" + bad), DONE), bad)
+
+    def test_bad_ping_and_stale_console_fail(self):
+        self.assertTrue(v.verify(UART0, UART10.replace("failed=0", "failed=1", 1), DONE))
+        self.assertTrue(v.verify(UART0, UART10.replace("PING_AFTER_RC=0", "PING_AFTER_RC=1"), DONE))
+        self.assertTrue(v.verify(UART0, UART10 + "[t] HWRUN3_BEGIN\n[t] DDR_INSPECT_END\n", DONE))
 
     def test_order_matters(self):
         swapped = UART10.replace("[t] SHM_PASS\n", "").replace("[t] DDR_INSPECT_END\n", "[t] DDR_INSPECT_END\n[t] SHM_PASS\n")

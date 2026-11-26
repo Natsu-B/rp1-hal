@@ -110,12 +110,15 @@ def uart10(nonce=NONCE):
 [    0.000000] Linux version 6.12.75-v8-16k
 IRQ_CHECK_BEGIN
 IRQ_NONCE=0x{nonce.upper()}
-doorbell rtt n=1000 min=1.611µs p50=3.481µs p99=3.519µs p99.9=20µs max=36.259µs
-DOORBELL_BEFORE_RC=0
+WINDOW_PASS bytes=3145728 all_words errors=0
+SHM_READY generation=1
+SHM_PROBE_RC=0
+PING_RTT n=1000 failed=0 p50_us=1000 p99_us=1100 max_us=1200
+PING_BEFORE_RC=0
 SHM_PASS
 SHM_RC=0
-doorbell rtt n=1000 min=1.148µs p50=2.333µs p99=2.352µs p99.9=20µs max=2.358111ms
-DOORBELL_AFTER_RC=0
+PING_RTT n=1000 failed=0 p50_us=1001 p99_us=1101 max_us=1201
+PING_AFTER_RC=0
 {NOTIFY}IRQ_CHECK_RESULT=PASS
 IRQ_CHECK_END
 """
@@ -229,8 +232,10 @@ class VerifyIrq(unittest.TestCase):
         self.assertFails(failures(uart0(), headless), "0 boots with IRQ_NONCE")
 
     def test_linux_side(self):
-        self.assertFails(failures(uart0(), uart10().replace("DOORBELL_BEFORE_RC=0", "DOORBELL_BEFORE_RC=137")),
-                         "doorbell before")
+        self.assertFails(failures(uart0(), uart10().replace("PING_BEFORE_RC=0", "PING_BEFORE_RC=137")),
+                         "ping before exit")
+        self.assertFails(failures(uart0(), uart10().replace("failed=0", "failed=1", 1)), "ping before exit")
+        self.assertFails(failures(uart0(), uart10() + "IRQ_CHECK_END\n"), "multiple IRQ_CHECK_END")
         no_shm = uart10().replace("SHM_PASS\n", "").replace("SHM_RC=0", "SHM_RC=1").replace(
             "IRQ_CHECK_RESULT=PASS", "CHECK_FAIL shm\nIRQ_CHECK_RESULT=FAIL shm")
         self.assertFails(failures(uart0(), no_shm), "SHM_PASS", "failure marker")

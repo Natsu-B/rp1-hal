@@ -1,15 +1,15 @@
 #!/bin/sh
 # Linux-side check for the real Raspberry Pi OS environment (stock kernel, NFS root, systemd).
 # Run as root on the target, e.g. from the serial console. Prints an inventory and runs the
-# examples/dual-core doorbell polling check (linux-doorbell, 1000 round trips over the rp1:link and
-# rp1:doorbell UIO nodes). Ends with exactly one REALOS_CHECK_RESULT=PASS|FAIL line.
+# examples/dual-core ping RPC check (linux-ping, 1000 round trips by default).
+# Ends with exactly one REALOS_CHECK_RESULT=PASS|FAIL line.
 # Everything is also written to OUTDIR (default /var/log/rp1-realos/<boot id>).
-# Optional: DOORBELL (default linux-doorbell from PATH), ROUNDS (default 1000),
+# Optional: PING (default linux-ping from PATH), ROUNDS (default 1000),
 # EXPECTED_ROOT_FSTYPE (default nfs; set to e.g. ext4 for an SD root).
 boot_id=$(cat /proc/sys/kernel/random/boot_id) || { echo "REALOS_CHECK_RESULT=FAIL boot_id"; exit 1; }
 out=${OUTDIR:-/var/log/rp1-realos/$boot_id}
 mkdir -p "$out" || { echo "REALOS_CHECK_RESULT=FAIL out_dir"; exit 1; }
-doorbell=${DOORBELL:-linux-doorbell}
+ping=${PING:-linux-ping}
 rounds=${ROUNDS:-1000}
 FAILED=
 fail() { echo "REALOS_FAIL $1"; FAILED="$FAILED $1"; }
@@ -70,7 +70,7 @@ done | tee "$out/rp1-unbound.txt"
 
 section uio
 modprobe uio_pdrv_genirq || fail modprobe
-L= D= H=
+L= H= DN= UP=
 for x in /sys/class/uio/uio*; do
     [ -r "$x/name" ] || continue
     n=$(cat "$x/name") || continue
@@ -79,20 +79,22 @@ for x in /sys/class/uio/uio*; do
     [ -e "$node" ] || continue
     case "$n" in
         rp1:link) L=$node ;;
-        rp1:doorbell) D=$node ;;
+        rp1:ping-dn) DN=$node ;;
+        rp1:ping-up) UP=$node ;;
         rp1:header) H=$node ;;
     esac
 done
 [ -n "$L" ] || fail uio_rp1:link
-[ -n "$D" ] || fail uio_rp1:doorbell
 [ -n "$H" ] || fail uio_rp1:header
-section doorbell-polling
-if [ -n "$L" ] && [ -n "$D" ]; then
-    timeout 30 "$doorbell" "$L" "$D" "$rounds" > "$out/doorbell.txt" 2>&1
+[ -n "$DN" ] || fail uio_rp1:ping-dn
+[ -n "$UP" ] || fail uio_rp1:ping-up
+section ping
+if [ -n "$L" ] && [ -n "$H" ] && [ -n "$DN" ] && [ -n "$UP" ]; then
+    timeout 30 "$ping" "$rounds" > "$out/ping.txt" 2>&1
     rc=$?
-    cat "$out/doorbell.txt"
-    echo "DOORBELL_MODE=polling DOORBELL_RC=$rc"
-    [ "$rc" -eq 0 ] || fail doorbell
+    cat "$out/ping.txt"
+    echo "PING_RC=$rc"
+    [ "$rc" -eq 0 ] || fail ping
 fi
 if save dmesg dmesg; then
     grep -iE 'scmi|macb|rp1|uio' "$out/dmesg.txt" | tail -40
