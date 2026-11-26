@@ -8,7 +8,7 @@
 //! RP1 firmware runs at, and creates the [`Clocks`].
 //!
 //! The switch is the HW-proven PoC sequence (the PoC HAL's `clk_sys::switch`): with PLL_SYS
-//! locked on the admitted tuple and CLK_SYS_DIV_INT = 1, write only CLK_SYS_CTRL.SRC[1:0] = 2
+//! locked on the admitted tuple and CLK_SYS_DIV_INT = 1, write only `CLK_SYS_CTRL.SRC[1:0] = 2`
 //! and poll CLK_SYS_SEL for the one-hot value 4. HW 2026-10-22: 200.000 MHz measured on two
 //! boots, and a live XOSC ⇄ PLL_SYS switch from Linux devmem was glitch-free. DOC: Linux
 //! clk-rp1 lists clk_sys parents {xosc, -, pll_sys}, `clk_src_mask = 0x3`,
@@ -22,7 +22,7 @@
 //! proc1: only proc0 runs the platform init, so a driver owned by proc1 (ADC, I2C, UART
 //! declared under `[proc1]`) gets its [`Clocks`] from [`Clocks::wait_from_proc0`].
 //! The init publishes the value in a `.shared` cell as soon as
-//! its clock step ([`init`]: clk_sys and the blocks Linux owns) succeeds, so proc1 can only
+//! its clock step (`init`: clk_sys and the blocks Linux owns) succeeds, so proc1 can only
 //! ever obtain a `Clocks` that proc0's init created. A later init step that fails does not
 //! withdraw it: a published value means the clocks are up, not that the whole platform init
 //! succeeded. Launch proc1 after init (or let proc1 wait).
@@ -156,10 +156,15 @@ impl Handoff {
 }
 
 impl Clocks {
-    /// Receives the clocks proc0's platform init published. A zero timeout tries once.
+    /// Receives proc1's copy of the clocks published by platform init. Borrows the proc1
+    /// token because proc0 already has its own value.
     ///
-    /// Returns [`Error::NotReady`] if the clock step has not published by the deadline.
-    /// Returns [`Error::Precondition`] immediately if the published rates are stale.
+    /// Polls the 64-bit 1 MHz timer that runs from cold bring-up, so every timeout in
+    /// the `u32` range expires. A zero timeout tries once.
+    ///
+    /// - [`Error::NotReady`]: the clock step has not published by the deadline.
+    /// - [`Error::Precondition`]: the tree no longer matches the published rates. Returns
+    ///   at once because waiting cannot fix it.
     pub fn wait_from_proc0(
         _core: &rp1_rt::Proc1,
         timeout: MicrosDurationU32,
@@ -183,9 +188,9 @@ fn published(handoff: &Handoff, current: impl Fn(&Clocks) -> bool) -> Result<Clo
     }
 }
 
-/// Retries `attempt` while it reports [`Error::NotReady`], until `now() - start >= timeout_us`;
-/// then one last attempt (a publish that lands at the deadline still counts). The 64-bit
-/// difference cannot wrap within any `u32` timeout, so every timeout up to `u32::MAX` ends.
+/// A zero timeout calls `attempt` once. Otherwise, retries while it reports [`Error::NotReady`]
+/// until `now() - start >= timeout_us`, then tries once more to catch a publish at the deadline.
+/// The 64-bit difference covers every timeout up to `u32::MAX`.
 fn wait_until(
     timeout_us: u32,
     mut now: impl FnMut() -> u64,

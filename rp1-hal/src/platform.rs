@@ -4,10 +4,10 @@
 //! The firmware calls the generated `rp1::platform::init(&mut core, p.platform)`, which runs
 //! [`Token::init`]. The steps, in order:
 //!
-//! 0. `PLAT_PCIE` = Initializing ([`rp1_proto::status::PLAT_PCIE`], written by [`perstn`]).
+//! 0. `PLAT_PCIE` = Initializing ([`rp1_proto::status::PLAT_PCIE`], written by `perstn`).
 //! 1. Cold clocks: PLL_SYS and CLK_UART, if RP1 is at cold defaults ([`crate::cold`]).
 //! 2. clk_sys = PLL_SYS and the blocks Linux owns; on success the [`Clocks`] are published for
-//!    proc1 ([`Clocks::from_proc0`]).
+//!    proc1 ([`Clocks::wait_from_proc0`]).
 //! 3. The declared log.
 //! 4. A link that is already up is a warm start: refused ([`InitError::Warm`]) before anything
 //!    is written to the SCMI channel or the endpoint.
@@ -20,7 +20,7 @@
 //! 7. Endpoint bring-up: PERSTn wait (up to 20 s), core alive, DBI, LTSSM enable, link.
 //! 8. SYSCFG reset released.
 //! 9. Publish SCMI Serving with zero requests, then enable proc0 IRQ57.
-//! 10. Arm the PERSTn detector on proc0 IRQ53 ([`perstn`]). A forced PCIe interrupt source
+//! 10. Arm the PERSTn detector on proc0 IRQ53 (`perstn`). A forced PCIe interrupt source
 //!     leaves it off (`DetectorOff`), and init still succeeds.
 //! 11. Return. Init writes no handler state and no status word after the ISER of its line:
 //!     a handler that ran at once keeps what it wrote (rule E1).

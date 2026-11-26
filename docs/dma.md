@@ -40,14 +40,15 @@ dma = {}          # the whole controller: reset, clk_dma, the DMA interrupt line
   Returns `Dma { ch0..ch7 }`, or `rp1_hal::InitError` with the token as `resources` for a retry. `Dma::free()` takes
   all eight channels back and returns the token; it cannot fail, since a transfer borrows
   its channel.
-- `Channel<N>::copy(&[u8], &mut [u8], timeout_us)`: safe, blocking. Both slices must be
-  contiguous DMAC-visible memory (shared SRAM or the outbound window; peripheral registers are
-  refused, use `start`); splits into blocks. A timed-out or failed block is stopped before
-  return (see Cancellation); `copy` never returns while the channel can still access a buffer.
+- `Channel<N>::copy(&[u8], &mut [u8], timeout: MicrosDurationU32)`: safe, blocking.
+  Both slices must be contiguous DMAC-visible memory in shared SRAM or the outbound window.
+  Use `start` for peripheral registers. `copy` splits the transfer into blocks and stops a
+  timed-out or failed block before returning (see Cancellation). The channel can no longer
+  access the buffers when `copy` returns.
 - `unsafe Channel<N>::start(src: BusAddr, dst: BusAddr, len) -> Transfer`: one block,
-  `Transfer::poll()` / `wait(timeout_us)` / `cancel() -> Stopped`; dropping an unfinished
-  transfer stops it the same way. The caller guarantees the memory (a leaked `Transfer` keeps
-  the DMA running).
+  `Transfer::poll()` / `wait(timeout: MicrosDurationU32)` / `cancel() -> Stopped`.
+  Dropping an unfinished transfer stops it the same way. The caller guarantees the memory
+  (a leaked `Transfer` keeps the DMA running).
 - Errors: `Bus(CH_INTSTATUS)` on decode/slave errors, `Timeout`, `Busy`, `Invalid`,
   `NotDmaVisible`, `Precondition` (clk_dma not 100 MHz). With `Bus` and `Timeout` the channel
   has already been stopped.

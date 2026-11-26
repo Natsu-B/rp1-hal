@@ -102,7 +102,7 @@ impl LinuxBlocks {
     }
     /// SCMI clock IDs (one bit each) of the Linux-kind generators whose block is not Linux's:
     /// the image declared it (ADC or PWM), so RP1 holds the clock
-    /// ([`crate::scmi::Server::holding`]) and [`bring_up`] leaves the generator to its driver.
+    /// ([`crate::scmi::Server::holding`]) and `bring_up` leaves the generator to its driver.
     pub const fn held_clocks(&self) -> u32 {
         let mut held = 0;
         let mut i = 0;
@@ -130,7 +130,7 @@ const CLOCK_BLOCKS: [(u32, usize, u32); 8] = [
     (crate::scmi::id::I2S, 0, 0x7 << 14),
 ];
 
-/// What [`bring_up`] did.
+/// What `bring_up` did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Report {
     /// Reset bits released (cleared) per bank.

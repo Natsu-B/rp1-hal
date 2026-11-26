@@ -112,8 +112,8 @@ low rate and 3- or 33-bit frames write no register, leave the reset asserted and
 pin; 32-bit frames on a 16-bit instance fail after the probe, still without routing, and the
 `Parts` in the returned `InitError` initialise the controller on retry.
 
-`Config` is `#[non_exhaustive]`: build it with `Config::new(hz, mode)` and the `with_*`
-setters.
+Build the `#[non_exhaustive]` `Config` with `Config::new(frequency, mode)` and the `with_*`
+setters. The frequency is a `HertzU32`.
 `Spi` has no `Drop`: dropping it without `free` or `abort` leaves the controller enabled and
 the pins on the SPI function, and the token is gone.
 Release (STATIC, host model): `free()` waits for the bus to be idle (TX FIFO empty and not

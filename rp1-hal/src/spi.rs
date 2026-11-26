@@ -690,9 +690,9 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
     pub fn divider(&self) -> u32 {
         self.div
     }
-    /// Sets SCLK to at most `hz`; returns the rate used.
-    pub fn set_frequency(&mut self, hz: fugit::HertzU32) -> Result<fugit::HertzU32, Error> {
-        let div = divider(self.clocks.sys().raw(), hz.raw())?;
+    /// Sets SCLK to at most `frequency` and returns the rate used.
+    pub fn set_frequency(&mut self, frequency: fugit::HertzU32) -> Result<fugit::HertzU32, Error> {
+        let div = divider(self.clocks.sys().raw(), frequency.raw())?;
         self.reconfigure(self.cr0, div)?;
         Ok(self.frequency())
     }
@@ -763,7 +763,7 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
         }
         Ok(())
     }
-    /// Unmasks the [`int`](crate::pac::dw_ssi::int) bits in `mask` and opens the RP1 wrapper
+    /// Unmasks the [`int`] bits in `mask` and opens the RP1 wrapper
     /// that routes the controller interrupt to the cores; the NVIC line comes from the generated
     /// `irq` resources. Blocking transfers mask every interrupt while they run and restore the
     /// mask afterwards.

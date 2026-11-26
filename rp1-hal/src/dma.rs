@@ -14,8 +14,8 @@
 //! The DMAC is a 40-bit bus master and does not use the processor's 32-bit map (DOC: RP1
 //! Peripherals §2.2, table 1). [`BusAddr::from_proc`] translates the processor addresses it can
 //! reach; processor-local ISRAM/DSRAM (stacks, ordinary `static`s) and the ROM are not visible
-//! to the DMAC. Linux DDR is reached either through the outbound ATU window that
-//! [`crate::shm`] programs (processor `0x8000_0000 + x` = bus `0x80_0000_0000 + x`) or through
+//! to the DMAC. Linux DDR is reached either through the outbound ATU window for shared DDR
+//! (processor `0x8000_0000 + x` = bus `0x80_0000_0000 + x`) or through
 //! the PCIe direct-mapped space, where host physical address `p` is bus
 //! `0x10_0000_0000 + p` ([`BusAddr::host_phys`], the RP1 `dma-ranges` Linux uses).
 //!

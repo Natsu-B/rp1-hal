@@ -41,7 +41,8 @@ STATIC: declaring `ADC` does three things.
 
 Without the declaration, the ADC stays Linux's, as before.
 
-Either core may own the ADC. On proc1, `init` needs proc0's clocks: `Clocks::wait_from_proc0` returns the value proc0's `platform::init` published
+Either core may own the ADC. On proc1, `init` needs proc0's clocks.
+`Clocks::wait_from_proc0` returns the value proc0's `platform::init` published
 (see [Clocks on proc1](#clocks-on-proc1)).
 
 ## Clocks on proc1
