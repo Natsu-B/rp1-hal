@@ -190,7 +190,7 @@ pub(crate) fn dts_with_layout(d: &Declaration, note: &[u8], shm: &ShmLayout<'_>)
             "target-path = \"/\"",
             &format!(
                 "rp1-{}@{addr:x} {{ compatible = \"generic-uio\"; linux,uio-name = \"rp1:{}\"; reg = <0 0x{addr:x} 0x{:x}>; status = \"okay\"; }};",
-                r.name, r.name, r.ddr_len
+                r.spec.name, r.spec.name, r.ddr_len
             ),
         );
     }

@@ -224,3 +224,153 @@ fn generated_types_and_layout() {
         ),
     ));
 }
+
+const PING: &str = r#"
+[[shm]]
+name = "ping"
+kind = "rpc"
+core = "proc1"
+message = "Word"
+reply = "Pong"
+depth = 1
+notify = { dn = "irq", up = "poll" }
+"#;
+
+fn named(body: &str) -> Declaration {
+    let mut d: Declaration =
+        toml::from_str(&format!("schema = 2\n[proc1]\ndoorbell = 27\n{body}")).unwrap();
+    d.types.extend([
+        ("Word".into(), TypeInfo::of::<[u32; 4]>()),
+        ("Pong".into(), TypeInfo::of::<u32>()),
+    ]);
+    d
+}
+
+#[test]
+fn named_endpoints_share_one_layout() {
+    use rp1_proto::note::{Note, RPC, SHM_REGION, rpc_name};
+
+    let events = PING
+        .replace("ping", "events")
+        .replace("rpc", "channel")
+        .replace("depth = 1", "depth = { dn = 2, up = 4 }");
+    let status = PING
+        .replace("ping", "status")
+        .replace("depth = 1", "depth = 8");
+    let d = named(&format!("{PING}{events}{status}"));
+    d.validate().unwrap();
+    let (body, desc) = fragment(&d);
+    let note = Note::parse(&desc).unwrap();
+    let names: Vec<_> = note
+        .records()
+        .map(std::result::Result::unwrap)
+        .filter(|record| record.kind == RPC)
+        .map(|record| {
+            assert_eq!(record.flags, 0);
+            rpc_name(record.value).unwrap()
+        })
+        .collect();
+    assert_eq!(names, ["ping", "status"]);
+    let regions: Vec<_> = note
+        .records()
+        .map(std::result::Result::unwrap)
+        .filter(|r| r.kind == SHM_REGION)
+        .map(|r| ShmRegion::parse(r.value).unwrap())
+        .collect();
+    let expected = [
+        ("ping-dn", ShmKind::RingToRp1, 1),
+        ("ping-up", ShmKind::RingToLinux, 1),
+        ("events-dn", ShmKind::RingToRp1, 2),
+        ("events-up", ShmKind::RingToLinux, 4),
+        ("status-dn", ShmKind::RingToRp1, 8),
+        ("status-up", ShmKind::RingToLinux, 8),
+    ];
+    assert_eq!(
+        regions
+            .iter()
+            .map(|r| (r.name, r.kind, r.depth))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let out = tempfile::tempdir().unwrap();
+    let dts = out.path().join("named.dts");
+    let dtbo = out.path().join("named.dtbo");
+    fs::write(&dts, crate::overlay::dts(&d, &desc).unwrap()).unwrap();
+    crate::overlay::compile(&dts, &dtbo).unwrap();
+    let overlay = fs::read(dtbo).unwrap();
+    for (r, index) in regions.iter().zip(0..) {
+        assert_eq!(r.notify_irq, index % 2 == 0);
+        assert!(!r.overwrite);
+        let name = format!("rp1:{}\0", r.name);
+        assert!(
+            overlay
+                .windows(name.len())
+                .any(|bytes| bytes == name.as_bytes())
+        );
+    }
+
+    let t = trybuild::TestCases::new();
+    t.pass(write_case(out.path(), "pass", format!(
+        "type Pong = u32;\nmod link {{\n{body}}}\n\
+         fn main() {{\n\
+             let _: fn(link::Proc1Link) -> rp1_link::Server<Word, Pong, rp1_link::notify::Poll, Doorbell1> = |l| l.ping;\n\
+             let _: fn(link::Proc1Link) -> rp1_link::Channel<Pong, Word, rp1_link::notify::Poll, Doorbell1> = |l| l.events;\n\
+         }}"
+    )));
+}
+
+#[test]
+fn named_endpoint_limits() {
+    for bad in [
+        PING.replace("depth = 1", "depth = { dn = 1, up = 1 }"),
+        PING.replace("ping", "abcdefghijklmnopqrstuv"),
+        PING.replace("ping", "header"),
+        format!("{PING}{PING}"),
+    ]
+    .into_iter()
+    .chain(
+        ["direction", "overflow", "writer", "type", "placement"]
+            .map(|key| format!("{PING}{key} = \"extra\"\n")),
+    ) {
+        assert!(named(&bad).validate().is_err(), "{bad}");
+    }
+    named(&PING.replace("ping", "abcdefghijklmnopqrstu"))
+        .validate()
+        .unwrap();
+
+    let d = named(&format!(
+        "{}{}",
+        PING.replace("ping", "pi_ng"),
+        PING.replace("ping", "pi__ng")
+    ));
+    assert!(
+        generate(&d.shm_layout().unwrap(), &[])
+            .unwrap_err()
+            .to_string()
+            .contains("PiNg")
+    );
+
+    let mut d = named(
+        &(0..32)
+            .map(|i| PING.replace("ping", &format!("ping{i}")))
+            .collect::<String>(),
+    );
+    d.validate().unwrap();
+    let (_, desc) = fragment(&d);
+    assert!(rp1_proto::note::Note::parse(&desc).is_ok());
+    d.shm.push(
+        named(
+            &PING
+                .replace("ping", "more")
+                .replace("rpc", "ring")
+                .replace("reply = \"Pong\"", "direction = \"linux-to-rp1\"")
+                .replace(
+                    "notify = { dn = \"irq\", up = \"poll\" }",
+                    "notify = \"irq\"",
+                ),
+        )
+        .shm
+        .remove(0),
+    );
+    assert!(d.validate().unwrap_err().to_string().contains("at most 64"));
+}

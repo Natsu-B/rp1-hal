@@ -5,7 +5,10 @@ use crate::{
 use rp1_proto::note::{ShmArea, ShmKind, ShmRegion, Writer, ownership_kind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -176,16 +179,132 @@ pub struct Shm {
     pub kind: String,
     pub core: String,
     pub message: Option<String>,
+    pub reply: Option<String>,
     #[serde(rename = "type")]
     pub block_type: Option<String>,
     pub direction: Option<String>,
-    pub depth: Option<u32>,
-    pub notify: Option<String>,
+    pub depth: Option<Directional<u32>>,
+    pub notify: Option<Directional<String>>,
     pub overflow: Option<String>,
     pub placement: Option<String>,
     pub writer: Option<String>,
     pub linux_map: Option<String>,
 }
+/// A setting shared by both directions, or set separately for each ring.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Directional<T> {
+    Shared(T),
+    PerDirection(Directions<T>),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Directions<T> {
+    pub dn: T,
+    pub up: T,
+}
+
+impl<T> Directional<T> {
+    fn shared(&self) -> Option<&T> {
+        match self {
+            Self::Shared(value) => Some(value),
+            Self::PerDirection(_) => None,
+        }
+    }
+
+    fn pair(&self) -> (&T, &T) {
+        match self {
+            Self::Shared(value) => (value, value),
+            Self::PerDirection(d) => (&d.dn, &d.up),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Pair {
+    Channel,
+    Rpc,
+}
+
+impl Shm {
+    fn pair(&self) -> Option<Pair> {
+        match self.kind.as_str() {
+            "channel" => Some(Pair::Channel),
+            "rpc" => Some(Pair::Rpc),
+            _ => None,
+        }
+    }
+
+    fn expand(&self) -> Result<impl Iterator<Item = Cow<'_, Shm>>> {
+        let Some(pair) = self.pair() else {
+            if self.reply.is_some()
+                || self.depth.as_ref().is_some_and(|d| d.shared().is_none())
+                || self.notify.as_ref().is_some_and(|n| n.shared().is_none())
+            {
+                return Err("reply and per-direction settings require a channel or rpc".into());
+            }
+            return Ok(std::iter::once(Cow::Borrowed(self)).chain(None));
+        };
+        if self.direction.is_some()
+            || self.overflow.is_some()
+            || self.writer.is_some()
+            || self.block_type.is_some()
+            || self.placement.is_some()
+        {
+            return Err(
+                "channel and rpc forbid direction, overflow, writer, type and placement".into(),
+            );
+        }
+        let message = self
+            .message
+            .as_ref()
+            .ok_or("channel and rpc require message")?;
+        let reply = self.reply.as_ref().ok_or("channel and rpc require reply")?;
+        let depth = self.depth.as_ref().ok_or("channel and rpc require depth")?;
+        if pair == Pair::Rpc && depth.shared().is_none() {
+            return Err("rpc requires a common integer depth".into());
+        }
+        let (dn, up) = depth.pair();
+        let (dn_notify, up_notify) = self.notify.as_ref().map_or((None, None), |n| {
+            let (dn, up) = n.pair();
+            (Some(dn.clone()), Some(up.clone()))
+        });
+        let ring = |suffix, direction: &str, message: &String, depth, notify: Option<String>| {
+            Cow::Owned(Shm {
+                name: format!("{}-{suffix}", self.name),
+                kind: "ring".into(),
+                direction: Some(direction.into()),
+                message: Some(message.clone()),
+                reply: None,
+                depth: Some(Directional::Shared(depth)),
+                notify: notify.map(Directional::Shared),
+                ..self.clone()
+            })
+        };
+        Ok(
+            std::iter::once(ring("dn", "linux-to-rp1", message, *dn, dn_notify)).chain(Some(ring(
+                "up",
+                "rp1-to-linux",
+                reply,
+                *up,
+                up_notify,
+            ))),
+        )
+    }
+
+    fn depth(&self) -> Option<u32> {
+        self.depth.as_ref().and_then(Directional::shared).copied()
+    }
+
+    fn notify(&self) -> Option<&str> {
+        self.notify
+            .as_ref()
+            .and_then(Directional::shared)
+            .map(String::as_str)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct TypeInfo {
     pub size: usize,
@@ -200,7 +319,8 @@ impl TypeInfo {
     }
 }
 pub struct Region<'a> {
-    pub spec: &'a Shm,
+    pub spec: Cow<'a, Shm>,
+    logical: &'a Shm,
     pub ty: TypeInfo,
     pub ddr_offset: u32,
     pub ddr_len: u32,
@@ -209,7 +329,14 @@ pub struct Region<'a> {
 }
 pub(crate) struct ShmLayout<'a> {
     pub area: ShmArea,
-    pub regions: Vec<ShmRegion<'a>>,
+    pub regions: Vec<Region<'a>>,
+    pub endpoints: Vec<Endpoint<'a>>,
+}
+
+pub(crate) struct Endpoint<'a> {
+    pub name: &'a str,
+    pub first: usize,
+    pub pair: Option<Pair>,
 }
 
 pub const SCMI_OFFSET: usize = 0x17c0; // Existing scmi_linux.dtb shmem at SRAM + 0xd7c0.
@@ -350,13 +477,19 @@ impl Declaration {
         self.stack_size(1)?;
         self.validate_ownership()?;
         let mut names = BTreeSet::new();
-        if self.shm.len() > 64 {
+        if self
+            .shm
+            .iter()
+            .map(|r| 1 + usize::from(r.pair().is_some()))
+            .sum::<usize>()
+            > 64
+        {
             return Err("v0.1 supports at most 64 shm regions".into());
         }
         for r in &self.shm {
             let b = r.name.as_bytes();
             if b.is_empty()
-                || b.len() > 24
+                || b.len() > if r.pair().is_some() { 21 } else { 24 }
                 || !b[0].is_ascii_lowercase()
                 || !b
                     .iter()
@@ -378,81 +511,8 @@ impl Declaration {
             if r.linux_map.as_deref().is_some_and(|m| m != "uncached") {
                 return Err("cached mmap is not supported in v0.1".into());
             }
-            match r.kind.as_str() {
-                "ring" => {
-                    if r.message.is_none()
-                        || r.block_type.is_some()
-                        || r.writer.is_some()
-                        || !matches!(
-                            r.direction.as_deref(),
-                            Some("rp1-to-linux" | "linux-to-rp1")
-                        )
-                    {
-                        return Err("ring requires message and direction; no type or writer".into());
-                    }
-                    if !r
-                        .depth
-                        .is_some_and(|d| d.is_power_of_two() && d <= (1 << 30))
-                    {
-                        return Err("ring depth must be a power of two <= 2^30".into());
-                    }
-                    if r.overflow
-                        .as_deref()
-                        .is_some_and(|s| !matches!(s, "reject" | "overwrite"))
-                    {
-                        return Err("invalid overflow".into());
-                    }
-                    if r.placement.as_deref().is_some_and(|s| s != "reader-local") {
-                        return Err("placement=linux is unimplemented".into());
-                    }
-                    match r.notify.as_deref() {
-                        None | Some("poll") => {}
-                        // RP1 -> Linux: the producing core raises `rp1:irq`, so it must own the
-                        // host interrupt. Linux -> RP1: Linux raises the owning core's doorbell.
-                        Some("irq") => {
-                            let owner = if r.core == "proc0" {
-                                &self.proc0
-                            } else {
-                                &self.proc1
-                            };
-                            if r.direction.as_deref() == Some("rp1-to-linux") && !owner.host_irq {
-                                return Err(format!(
-                                    "notify=irq on ring {} requires {}.host_irq = true \
-                                     (the producing core raises rp1:irq)",
-                                    r.name, r.core
-                                )
-                                .into());
-                            }
-                            if r.direction.as_deref() == Some("linux-to-rp1")
-                                && owner.doorbell.is_none()
-                            {
-                                return Err(format!(
-                                    "notify=irq on ring {} requires {}.doorbell \
-                                     (Linux raises the reading core's doorbell)",
-                                    r.name, r.core
-                                )
-                                .into());
-                            }
-                        }
-                        Some(_) => return Err("invalid notify (poll or irq)".into()),
-                    }
-                }
-                "block" => {
-                    if r.block_type.is_none()
-                        || r.message.is_some()
-                        || r.direction.is_some()
-                        || r.depth.is_some()
-                        || r.notify.is_some()
-                        || r.overflow.is_some()
-                        || r.placement.is_some()
-                        || !matches!(r.writer.as_deref(), Some("rp1" | "linux" | "both"))
-                    {
-                        return Err(
-                            "block requires type and writer; ring-only fields are forbidden".into(),
-                        );
-                    }
-                }
-                _ => return Err("v0.1 supports ring and block; use two rings for a channel".into()),
+            for ring in r.expand()? {
+                self.validate_region(&ring)?;
             }
         }
         if self.linux.uio_group.is_empty()
@@ -466,62 +526,145 @@ impl Declaration {
         }
         Ok(())
     }
+    fn validate_region(&self, r: &Shm) -> Result<()> {
+        match r.kind.as_str() {
+            "ring" => {
+                if r.message.is_none()
+                    || r.block_type.is_some()
+                    || r.writer.is_some()
+                    || !matches!(
+                        r.direction.as_deref(),
+                        Some("rp1-to-linux" | "linux-to-rp1")
+                    )
+                {
+                    return Err("ring requires message and direction; no type or writer".into());
+                }
+                if !r
+                    .depth()
+                    .is_some_and(|d| d.is_power_of_two() && d <= (1 << 30))
+                {
+                    return Err("ring depth must be a power of two <= 2^30".into());
+                }
+                if r.overflow
+                    .as_deref()
+                    .is_some_and(|s| !matches!(s, "reject" | "overwrite"))
+                {
+                    return Err("invalid overflow".into());
+                }
+                if r.placement.as_deref().is_some_and(|s| s != "reader-local") {
+                    return Err("placement=linux is unimplemented".into());
+                }
+                match r.notify() {
+                    None | Some("poll") => {}
+                    // RP1 -> Linux: the producing core raises `rp1:irq`, so it must own the
+                    // host interrupt. Linux -> RP1: Linux raises the owning core's doorbell.
+                    Some("irq") => {
+                        let owner = if r.core == "proc0" {
+                            &self.proc0
+                        } else {
+                            &self.proc1
+                        };
+                        if r.direction.as_deref() == Some("rp1-to-linux") && !owner.host_irq {
+                            return Err(format!(
+                                "notify=irq on ring {} requires {}.host_irq = true \
+                                     (the producing core raises rp1:irq)",
+                                r.name, r.core
+                            )
+                            .into());
+                        }
+                        if r.direction.as_deref() == Some("linux-to-rp1")
+                            && owner.doorbell.is_none()
+                        {
+                            return Err(format!(
+                                "notify=irq on ring {} requires {}.doorbell \
+                                     (Linux raises the reading core's doorbell)",
+                                r.name, r.core
+                            )
+                            .into());
+                        }
+                    }
+                    Some(_) => return Err("invalid notify (poll or irq)".into()),
+                }
+            }
+            "block" => {
+                if r.block_type.is_none()
+                    || r.message.is_some()
+                    || r.direction.is_some()
+                    || r.depth.is_some()
+                    || r.notify.is_some()
+                    || r.overflow.is_some()
+                    || r.placement.is_some()
+                    || !matches!(r.writer.as_deref(), Some("rp1" | "linux" | "both"))
+                {
+                    return Err(
+                        "block requires type and writer; ring-only fields are forbidden".into(),
+                    );
+                }
+            }
+            _ => return Err("shm kind must be ring, block, channel or rpc".into()),
+        }
+        Ok(())
+    }
+
     pub fn regions(&self) -> Result<Vec<Region<'_>>> {
         let mut ddr = 65536usize; // Region header is in the first independently mapped page.
         let mut sram = SRAM_ALLOC_START;
         let mut result = Vec::new();
-        for r in &self.shm {
-            let name = r.message.as_ref().or(r.block_type.as_ref()).unwrap();
-            let ty=*self.types.get(name).ok_or_else(||format!("type {name} missing: use configure_with_types and register TypeInfo::of::<T>() in build.rs"))?;
-            if ty.size == 0
-                || ty.size > rp1_proto::SHM_MAX as usize - 8
-                || (r.kind == "ring" && ty.size > 65535)
-            {
-                return Err("invalid message size (ring <= 65535, block < 16 MiB)".into());
-            }
-            let slot = 8usize
-                .checked_add(align(ty.size, 8))
-                .ok_or("slot overflow")?;
-            let (ddr_len, sram_len) = if r.kind == "block" {
-                (slot, 0)
-            } else {
-                let body = (r.depth.unwrap() as usize)
-                    .checked_mul(slot)
-                    .and_then(|n| n.checked_add(128))
-                    .ok_or("ring size overflow")?;
-                if r.direction.as_deref() == Some("rp1-to-linux") {
-                    (body, 128)
-                } else {
-                    (128, body)
+        for logical in &self.shm {
+            for r in logical.expand()? {
+                let name = r.message.as_ref().or(r.block_type.as_ref()).unwrap();
+                let ty=*self.types.get(name).ok_or_else(||format!("type {name} missing: use configure_with_types and register TypeInfo::of::<T>() in build.rs"))?;
+                if ty.size == 0
+                    || ty.size > rp1_proto::SHM_MAX as usize - 8
+                    || (r.kind == "ring" && ty.size > 65535)
+                {
+                    return Err("invalid message size (ring <= 65535, block < 16 MiB)".into());
                 }
-            };
-            sram = align(sram, 64);
-            let end = sram.checked_add(sram_len).ok_or("SRAM size overflow")?;
-            if sram < SCMI_OFFSET + 256 && end > SCMI_OFFSET {
-                sram = align(SCMI_OFFSET + 256, 64);
+                let slot = 8usize
+                    .checked_add(align(ty.size, 8))
+                    .ok_or("slot overflow")?;
+                let (ddr_len, sram_len) = if r.kind == "block" {
+                    (slot, 0)
+                } else {
+                    let body = (r.depth().unwrap() as usize)
+                        .checked_mul(slot)
+                        .and_then(|n| n.checked_add(128))
+                        .ok_or("ring size overflow")?;
+                    if r.direction.as_deref() == Some("rp1-to-linux") {
+                        (body, 128)
+                    } else {
+                        (128, body)
+                    }
+                };
+                sram = align(sram, 64);
+                let end = sram.checked_add(sram_len).ok_or("SRAM size overflow")?;
+                if sram < SCMI_OFFSET + 256 && end > SCMI_OFFSET {
+                    sram = align(SCMI_OFFSET + 256, 64);
+                }
+                if sram
+                    .checked_add(sram_len)
+                    .is_none_or(|end| end > rp1_proto::LINK_LEN)
+                {
+                    return Err(
+                        "link page SRAM budget exceeded (SCMI and ABI reservation excluded)".into(),
+                    );
+                }
+                let ddr_len = align(ddr_len, 65536);
+                result.push(Region {
+                    spec: r,
+                    logical,
+                    ty,
+                    ddr_offset: u32::try_from(ddr)?,
+                    ddr_len: u32::try_from(ddr_len)?,
+                    sram_offset: u16::try_from(sram)?,
+                    sram_len: u16::try_from(sram_len)?,
+                });
+                ddr = ddr.checked_add(ddr_len).ok_or("DDR overflow")?;
+                if ddr > 0x0100_0000 {
+                    return Err("DDR exceeds rpi-cm5 reserved window (16 MiB)".into());
+                }
+                sram += sram_len;
             }
-            if sram
-                .checked_add(sram_len)
-                .is_none_or(|end| end > rp1_proto::LINK_LEN)
-            {
-                return Err(
-                    "link page SRAM budget exceeded (SCMI and ABI reservation excluded)".into(),
-                );
-            }
-            let ddr_len = align(ddr_len, 65536);
-            result.push(Region {
-                spec: r,
-                ty,
-                ddr_offset: u32::try_from(ddr)?,
-                ddr_len: u32::try_from(ddr_len)?,
-                sram_offset: u16::try_from(sram)?,
-                sram_len: u16::try_from(sram_len)?,
-            });
-            ddr = ddr.checked_add(ddr_len).ok_or("DDR overflow")?;
-            if ddr > 0x0100_0000 {
-                return Err("DDR exceeds rpi-cm5 reserved window (16 MiB)".into());
-            }
-            sram += sram_len;
         }
         Ok(result)
     }
@@ -540,46 +683,66 @@ impl Declaration {
                 .map_or(SRAM_ALLOC_START as u16, |r| r.sram_offset + r.sram_len),
             phys: rp1_proto::SHM_PHYS,
         };
-        let regions = regions
-            .into_iter()
-            .map(|r| {
-                let spec = r.spec;
-                let kind = match (spec.direction.as_deref(), spec.writer.as_deref()) {
-                    (Some("rp1-to-linux"), _) => ShmKind::RingToLinux,
-                    (Some("linux-to-rp1"), _) => ShmKind::RingToRp1,
-                    (_, Some("rp1")) => ShmKind::Block {
-                        writer: Writer::Rp1,
-                    },
-                    (_, Some("linux")) => ShmKind::Block {
-                        writer: Writer::Linux,
-                    },
-                    (_, Some("both")) => ShmKind::Block {
-                        writer: Writer::Both,
-                    },
-                    _ => return Err("invalid SHM direction or writer".into()),
-                };
-                Ok(ShmRegion {
-                    kind,
-                    core: if spec.core == "proc0" { 1 } else { 2 },
-                    notify_irq: spec.notify.as_deref() == Some("irq"),
-                    overwrite: spec.overflow.as_deref() == Some("overwrite"),
-                    ddr_offset: r.ddr_offset,
-                    ddr_len: r.ddr_len,
-                    sram_offset: r.sram_offset,
-                    sram_len: r.sram_len,
-                    elem_size: r.ty.size as u32,
-                    depth: spec.depth.unwrap_or(0),
-                    type_id: r.ty.id,
-                    name: &spec.name,
-                    type_name: spec
-                        .message
-                        .as_deref()
-                        .or(spec.block_type.as_deref())
-                        .unwrap(),
-                })
-            })
-            .collect::<Result<_>>()?;
-        Ok(ShmLayout { area, regions })
+        let mut endpoints = Vec::with_capacity(self.shm.len());
+        let mut first = 0;
+        while first < regions.len() {
+            let logical = regions[first].logical;
+            let pair = logical.pair();
+            endpoints.push(Endpoint {
+                name: &logical.name,
+                first,
+                pair,
+            });
+            first += 1 + usize::from(pair.is_some());
+        }
+        Ok(ShmLayout {
+            area,
+            regions,
+            endpoints,
+        })
+    }
+}
+
+impl Region<'_> {
+    pub(crate) fn wire(&self) -> Result<ShmRegion<'_>> {
+        let spec = &self.spec;
+        let kind = match (spec.direction.as_deref(), spec.writer.as_deref()) {
+            (Some("rp1-to-linux"), _) => ShmKind::RingToLinux,
+            (Some("linux-to-rp1"), _) => ShmKind::RingToRp1,
+            (_, Some("rp1")) => ShmKind::Block {
+                writer: Writer::Rp1,
+            },
+            (_, Some("linux")) => ShmKind::Block {
+                writer: Writer::Linux,
+            },
+            (_, Some("both")) => ShmKind::Block {
+                writer: Writer::Both,
+            },
+            _ => return Err("invalid SHM direction or writer".into()),
+        };
+        Ok(ShmRegion {
+            kind,
+            core: self.core(),
+            notify_irq: spec.notify() == Some("irq"),
+            overwrite: spec.overflow.as_deref() == Some("overwrite"),
+            ddr_offset: self.ddr_offset,
+            ddr_len: self.ddr_len,
+            sram_offset: self.sram_offset,
+            sram_len: self.sram_len,
+            elem_size: self.ty.size as u32,
+            depth: spec.depth().unwrap_or(0),
+            type_id: self.ty.id,
+            name: &spec.name,
+            type_name: spec
+                .message
+                .as_deref()
+                .or(spec.block_type.as_deref())
+                .unwrap(),
+        })
+    }
+
+    pub(crate) fn core(&self) -> u8 {
+        if self.spec.core == "proc0" { 1 } else { 2 }
     }
 }
 

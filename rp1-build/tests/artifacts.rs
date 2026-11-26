@@ -496,7 +496,7 @@ depth=16
     )
     .unwrap();
     assert_eq!((area.phys, area.size), (0x2200_0000, 0x10_0000));
-    d.shm[0].depth = Some(4096);
+    d.shm[0].depth = Some(rp1_build::metadata::Directional::Shared(4096));
     assert!(d.regions().is_err());
     d.shm[0].placement = Some("linux".into());
     assert!(d.validate().is_err());

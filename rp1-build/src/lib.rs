@@ -246,7 +246,10 @@ fn resources(
     }
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
         let ty = format!("Proc{index}Resources");
-        let has_link = shm.regions.iter().any(|r| usize::from(r.core) == index + 1);
+        let has_link = shm
+            .regions
+            .iter()
+            .any(|r| usize::from(r.core()) == index + 1);
         // Instances come as bundles of their token and pins; `pins` keeps the rest.
         let parts = c
             .instances

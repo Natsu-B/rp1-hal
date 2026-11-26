@@ -1,6 +1,6 @@
 use crate::{
     Result,
-    metadata::{Declaration, ShmLayout, peripheral_id},
+    metadata::{Declaration, Pair, ShmLayout, peripheral_id},
 };
 use rp1_proto::note::*;
 
@@ -125,7 +125,8 @@ pub(crate) fn descriptor_with_layout(
     };
     tlv(&mut out, LINK, false, &link.encode());
     tlv(&mut out, SHM_AREA, true, &shm.area.encode());
-    for r in &shm.regions {
+    for region in &shm.regions {
+        let r = region.wire()?;
         let (kind, direction, writer) = match r.kind {
             ShmKind::RingToLinux => (1, 1, 0),
             ShmKind::RingToRp1 => (1, 2, 0),
@@ -160,6 +161,11 @@ pub(crate) fn descriptor_with_layout(
         string(&mut v, r.name)?;
         string(&mut v, r.type_name)?;
         tlv(&mut out, SHM_REGION, true, &v);
+    }
+    for endpoint in shm.endpoints.iter().filter(|e| e.pair == Some(Pair::Rpc)) {
+        v.clear();
+        string(&mut v, endpoint.name)?;
+        tlv(&mut out, RPC, false, &v);
     }
     out[..8].copy_from_slice(MAGIC);
     out[8..10].copy_from_slice(&2u16.to_le_bytes());

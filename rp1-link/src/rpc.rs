@@ -4,6 +4,12 @@ use crate::{
 };
 
 /// The firmware endpoint of a named request/reply pair.
+///
+/// ```compile_fail
+/// fn split(server: rp1_link::Server<u32, u32>) {
+///     let _ = server.split();
+/// }
+/// ```
 pub struct Server<Req, Rep, N = Poll, W = Poll> {
     tx: RingTx<Rep, N>,
     rx: RingRx<Req, W>,

@@ -30,6 +30,17 @@ pub const BOOT: u16 = 0x13;
 pub const SHM_AREA: u16 = 0x20;
 pub const SHM_REGION: u16 = 0x21;
 pub const LINK: u16 = 0x22;
+/// Non-critical record containing one logical RPC name.
+pub const RPC: u16 = 0x23;
+
+/// Decode the length-prefixed name in an RPC record.
+pub fn rpc_name(mut value: &[u8]) -> Result<&str, Error> {
+    let name = take_string(&mut value)?;
+    if !value.is_empty() || name.is_empty() {
+        return Err(Error::Invalid);
+    }
+    Ok(name)
+}
 
 pub const fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = !0u32;
