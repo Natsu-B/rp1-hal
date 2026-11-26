@@ -1,7 +1,12 @@
 use rp1_linux::{BlockMap, Error, Firmware};
 mod dma;
+mod down_irq;
+mod irq_common;
+#[path = "../../irq_message.rs"]
+mod irq_message;
 mod ring_dma;
 mod ring_irq;
+mod up_irq;
 use rp1_proto as proto;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// How long [`Firmware::wait_ready`] may take: RP1 enables shared memory on request.
@@ -26,8 +31,20 @@ fn request(
     count: u32,
     seed: u32,
 ) -> Result<Instant> {
+    request_with(ctrl, id, command, count, seed, &[])
+}
+/// [`request`] with arguments in words 8.. (at most 8).
+fn request_with(
+    ctrl: &mut BlockMap<Control>,
+    id: u32,
+    command: u32,
+    count: u32,
+    seed: u32,
+    extra: &[u32],
+) -> Result<Instant> {
     let mut words = [0; 16];
     words[..5].copy_from_slice(&[id, command, count, seed, 1]);
+    words[8..8 + extra.len()].copy_from_slice(extra);
     // Only Linux writes until the command is published; it then yields the writer role.
     let mut writer = unsafe { ctrl.begin_write() }?;
     writer.write_words(0, &words)?;
@@ -159,6 +176,17 @@ fn main() -> Result<()> {
                 _ => None,
             },
         );
+    }
+    // The notification proofs of lab/irq-proof (down_irq.rs, up_irq.rs).
+    match std::env::args().nth(1).as_deref() {
+        Some("down-irq") => return down_irq::main(&down_irq::DOWN1, std::env::args().skip(2)),
+        Some("down0-irq") => return down_irq::main(&down_irq::DOWN0, std::env::args().skip(2)),
+        Some("controls") => return down_irq::controls(),
+        Some("host0-irq") => return up_irq::host0(std::env::args().skip(2)),
+        Some("mix-irq") => return up_irq::mix(std::env::args().skip(2)),
+        Some("irq-pair") => return up_irq::pair(std::env::args().skip(2)),
+        Some("pair-member") => return up_irq::pair_member(std::env::args().skip(2)),
+        _ => {}
     }
     if std::env::args().nth(1).as_deref() == Some("ring-irq") {
         let count = std::env::args()

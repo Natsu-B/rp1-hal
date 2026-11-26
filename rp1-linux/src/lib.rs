@@ -746,6 +746,23 @@ impl<T: Message> RingTx<T> {
     pub fn dropped(&self) -> u32 {
         self.inner.dropped()
     }
+    /// Free slots, from the reader's `tail` read now (one read of RP1 memory).
+    pub fn free(&self) -> u32 {
+        self.inner.free()
+    }
+    /// Lab control only: [`RingTx::send`] whose check of the reader skips the readback of
+    /// `head` that the protocol needs (`rp1_proto::shm::RingTx::__reader_asleep_without_readback`).
+    #[doc(hidden)]
+    pub fn __send_without_readback(&mut self, value: &T) -> Result<()> {
+        self.session.check()?;
+        self.inner.push(value)?;
+        if let Some(doorbell) = &self.doorbell
+            && self.inner.__reader_asleep_without_readback()
+        {
+            doorbell.ring();
+        }
+        Ok(())
+    }
 }
 pub struct BlockMap<T> {
     inner: shm::Block<T>,
@@ -1159,6 +1176,27 @@ mod tests {
         let mut tx = writer(&r, &ddr, None);
         assert!(rp1.prepare_wait());
         tx.send(&6).unwrap();
+        assert!(!rung(&page));
+    }
+
+    #[test]
+    fn free_reads_the_tail_now_and_the_lab_control_still_rings() {
+        let r = rig(false);
+        let page = anon(0x4000);
+        let (mut rp1, ddr) = down(&r);
+        let mut tx = writer(&r, &ddr, Some(&page));
+        assert_eq!(tx.free(), 4);
+        tx.send(&1).unwrap();
+        assert_eq!(tx.free(), 3);
+        assert_eq!(rp1.pop().unwrap(), Some(1));
+        assert_eq!(tx.free(), 4);
+        // Without the readback a sleeping reader is still seen here (the readback matters
+        // only for ordering on the bus).
+        assert!(rp1.prepare_wait());
+        tx.__send_without_readback(&2).unwrap();
+        assert!(rung(&page));
+        rp1.finish_wait();
+        tx.__send_without_readback(&3).unwrap();
         assert!(!rung(&page));
     }
 

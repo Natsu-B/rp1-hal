@@ -18,8 +18,13 @@ captures with a prefix on each line both work. A capture may hold several boots:
 PASS needs every marker once, with the values of the contract below (not just present), no
 `IRQ_PROOF_FAIL`, `IRQ_PROOF_PASS` as the last marker, the USB-PD banner lines
 (`usb_pd_init status 3`, `max-current 3000`), and the doorbell run on the Linux side. The SHM
-regression of the same boot is required too unless --proof-only is given. Findings that are
-not pass conditions (`IRQ_INTF_ONLY`) are printed as `INFO`.
+regression and the notification proofs of the same boot (UART10_NOTIFY, in check-irq.sh's
+order; any `<NAME>_STALL` fails) are required too unless --proof-only is given. Findings that
+are not pass conditions (`IRQ_INTF_ONLY`, the record-only `CONTROL_J1` / `CONTROL_J2` lines)
+are printed as `INFO`.
+
+Terminal control sequences in a capture (a console's bracketed-paste switches, colours) are
+removed before anything is matched.
 
 --sweep PASS means every line of the table was routed by its expected stimulus: one
 `IRQ_SWEEP ... result=ROUTED exit=left` line per table line, in table order, with the hits of
@@ -69,13 +74,15 @@ def at_most(high):
 TIMER = {"n": 1000, "us": between(999_000, 1_010_000), "pre_pending": 0, "post_pending": 0}
 WRAP = {"pre_pending": 0, "off_stat": 1, "off_pending": 0, "on_n": 1, "post_pending": 0}
 INTF = {"pre_pending": 0, "post_pending": 0}
+DBELL = {"n": 1, "ipsr": 16, "pre_pending": 0, "post_pending": 0}
 CONTRACT = {
     "IRQ_PROOF_BEGIN": {"sweep": 0},
     "IRQ_P0_TIMER0": {**TIMER, "ipsr": 42},
     "IRQ_P1_TIMER1": {**TIMER, "ipsr": 43},
     "IRQ_INTF_ONLY core=0": {**INTF, "pin": 22},
-    "IRQ_INTF_ONLY core=1": {**INTF, "pin": 27},
     "IRQ_P0_GPIO22": {"n": 100, "ipsr": 16, "pre_pending": 0, "post_pending": 0},
+    "IRQ_P0_DBELL": {**DBELL, "pin": 26},
+    "IRQ_P1_DBELL": {**DBELL, "pin": 27},
     "IRQ_WRAP i2c1": {**WRAP, "ipsr": 24},
     "IRQ_WRAP spi0": {**WRAP, "ipsr": 35},
     "IRQ_CS": {"iters": at_least(100_000), "isr_n": at_least(1000), "torn": 0,
@@ -94,9 +101,18 @@ CONTRACT = {
 INFORMATIONAL = ("IRQ_LOG_MAIN", "IRQ_LOG_ISR", "IRQ_INTF_INTE")
 
 
+# CSI sequences (`ESC [ ... final`, e.g. the bracketed-paste `ESC [ ? 2004 h` and
+# `ESC [ 200 ~`) and the other two-byte escapes.
+CONTROL_SEQUENCE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
+
+
+def clean(text):
+    return CONTROL_SEQUENCE.sub("", text).replace("\r", "").replace("\x00", "")
+
+
 def read_text(path):
     with open(path, "rb") as f:
-        return f.read().decode("utf-8", errors="replace").replace("\r", "").replace("\x00", "")
+        return clean(f.read().decode("utf-8", errors="replace"))
 
 
 def number(text):
@@ -212,18 +228,40 @@ UART10_PROOF = [
     ("doorbell replies", r"\bdoorbell rtt n=1000 "),
     ("doorbell before", r"\bDOORBELL_BEFORE_RC=0\b"),
 ]
+# The notification proofs (shm-linux down_irq.rs / up_irq.rs), in check-irq.sh's order.
+UART10_NOTIFY = [
+    ("(b) DOWNIRQ", r"\bDOWNIRQ ring=down1 n=1000000 missing=0 corrupt=0 stalls=0 "),
+    ("(b) DOWNIRQ_PASS", r"\bDOWNIRQ_PASS\b"),
+    ("(h) DOWNIRQ_MORE", r"\bDOWNIRQ_MORE raises=[1-9]\d* missing=0 corrupt=0 stalls=0\b"),
+    ("(h) DOWNIRQ_MORE_PASS", r"\bDOWNIRQ_MORE_PASS\b"),
+    ("(c)(d) DOWN0IRQ", r"\bDOWN0IRQ ring=down0 n=10000 missing=0 corrupt=0 stalls=0 "),
+    ("(c)(d) DOWN0IRQ_PASS", r"\bDOWN0IRQ_PASS\b"),
+    ("(g) RINGIRQ0_PASS", r"\bRINGIRQ0_PASS\b"),
+    ("(g) SCMI still serving", r"\bRP1_STATUS .*\bpcie=Up scmi=Serving\(requests=[1-9]"),
+    ("(g) cores healthy", r"\bRP1_HEALTH Ok\b"),
+    ("(e) MIXIRQ", r"\bMIXIRQ .*\bmissing=0 corrupt=0 .*\blate_pct=(?:0\.\d+|1\.00)\b"),
+    ("(e) MIXIRQ_PASS", r"\bMIXIRQ_PASS\b"),
+    ("(f) IRQPAIR_PASS", r"\bIRQPAIR_PASS\b"),
+    ("(i) 50 killed writers", r"\bDOWNIRQ_KILLS=50\b"),
+    ("(i) DOWNIRQ after them", r"\bDOWNIRQ ring=down1 n=10000 missing=0 corrupt=0 stalls=0 "),
+    ("(i) DOWNIRQ_KILL_PASS", r"\bDOWNIRQ_KILL_PASS\b"),
+]
 UART10_REGRESSION = [
     ("SHM_PASS", r"\bSHM_PASS\b"),
     ("SHM_RC=0", r"\bSHM_RC=0\b"),
     ("doorbell after", r"\bDOORBELL_AFTER_RC=0\b"),
+    *UART10_NOTIFY,
     ("script result", r"\bIRQ_CHECK_RESULT=PASS\b"),
     ("terminal marker", r"\bIRQ_CHECK_END\b"),
 ]
+# (j): printed as INFO, never a pass condition.
+UART10_RECORD = ("CONTROL_J1", "CONTROL_J2")
 UART10_POWER = [
     ("USB-PD negotiated", r"\busb_pd_init status 3\b"),
     ("3 A supply", r"\bmax-current 3000\b"),
 ]
-UART10_FORBIDDEN = [r"\bCHECK_FAIL\b", r"\bIRQ_CHECK_RESULT=FAIL\b", r"Kernel panic", r"\bSError\b"]
+UART10_FORBIDDEN = [r"\bCHECK_FAIL\b", r"\bIRQ_CHECK_RESULT=FAIL\b", r"Kernel panic", r"\bSError\b",
+                    r"\b(?:DOWNIRQ|DOWN0IRQ|RINGIRQ0|MIXIRQ|IRQPAIR)_(?:STALL|FAIL)\b"]
 
 
 def verify_uart10(text, nonce, steps, final_check=None):
@@ -258,6 +296,10 @@ def verify_uart10(text, nonce, steps, final_check=None):
     rtt = re.search(r"\bdoorbell rtt n=1000 .*", boot)
     if rtt:
         info.append(rtt.group(0).strip())
+    if any(name.startswith("(b)") for name, _ in steps):
+        for name in UART10_RECORD:
+            line = re.search(rf"\b{name} .*", boot)
+            info.append(line.group(0).strip() if line else f"{name}: not recorded")
     return failures, info
 
 

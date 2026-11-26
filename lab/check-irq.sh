@@ -1,7 +1,10 @@
 #!/bin/sh
 # Linux side of the interrupt proof (lab/irq-proof): print the firmware's nonce, ring the GPIO27
 # doorbell 1000 times (proc1 answers from its interrupt handler; the firmware then prints its
-# final markers on UART0), and run the SHM and doorbell regressions in the same boot.
+# final markers on UART0), and run the SHM and doorbell regressions in the same boot. Then the
+# notification proofs of shm-linux (down_irq.rs, up_irq.rs): Linux -> RP1 on both cores'
+# doorbells, RP1 -> Linux from proc0, a writer killed at random moments, and the record-only
+# controls last (they may stall a ring by design).
 # Strict like check-shm.sh: every step has a time limit, and the script ends with exactly one
 # `IRQ_CHECK_RESULT=PASS|FAIL`, then `IRQ_CHECK_END`. The host decides with lab/verify-irq.py.
 export PATH=/bin
@@ -57,6 +60,39 @@ limit 600 /bin/shm-linux 1000000
 rc=$?; echo SHM_RC=$rc; [ $rc -eq 0 ] || fail shm
 limit 30 /bin/linux-doorbell "$L" "$D" 1000
 rc=$?; echo DOORBELL_AFTER_RC=$rc; [ $rc -eq 0 ] || fail doorbell_after
+# step NAME SECONDS ARGS...: one shm-linux proof with a time limit.
+step() {
+    name=$1 secs=$2; shift 2
+    limit "$secs" /bin/shm-linux "$@"
+    rc=$?; echo "${name}_RC=$rc"; [ $rc -eq 0 ] || fail "$name"
+}
+step DOWNIRQ 300 down-irq 1000000
+step DOWNIRQ_MORE 120 down-irq --max 1 --burst 128 100000
+step DOWN0IRQ 60 down0-irq 10000
+/bin/linux-status
+step RINGIRQ0 180 host0-irq 100000
+# proc0 served SCMI all along: still serving, both cores healthy.
+limit 10 /bin/linux-status --health 1000
+rc=$?; echo LINUX_STATUS_RC=$rc; [ $rc -eq 0 ] || fail linux_status
+step MIXIRQ 120 mix-irq 100000
+step IRQPAIR 120 irq-pair
+# A writer killed at a random moment (5..200 ms into its stream) leaves messages it may not
+# have rung for; the next writer's opening notify must still get the reader going.
+i=0
+while [ $i -lt 50 ]; do
+    /bin/shm-linux down-irq --stream-only 100000000 &
+    pid=$!
+    usleep $((5000 + RANDOM % 195000))
+    kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    i=$((i + 1))
+done
+echo "DOWNIRQ_KILLS=$i"
+step DOWNIRQ_KILL 60 down-irq 10000
+[ $rc -eq 0 ] && echo DOWNIRQ_KILL_PASS
+# Record only: not part of the result.
+limit 30 /bin/shm-linux controls
+echo "CONTROLS_RC=$?"
 grep -E 'rp1|uio' /proc/interrupts
 dmesg | grep -E 'SError|abort|fault|WARN'
 if [ -z "$FAILED" ]; then

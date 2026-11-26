@@ -26,6 +26,7 @@ def uart0(nonce=NONCE):
         "IRQ_INTF_ONLY core=0 pin=22 pre_pending=0 ints=1 nvic=1 post_pending=0 need_inte=0",
         "IRQ_CS iters=412345 isr_n=1000 torn=0 control_torn=57 max_masked_us=2",
         "IRQ_P0_GPIO22 n=100 ipsr=16 pre_pending=0 post_pending=0",
+        "IRQ_P0_DBELL pin=26 n=1 ipsr=16 pre_pending=0 post_pending=0",
         "IRQ_WRAP i2c1 pre_pending=0 off_stat=1 off_pending=0 on_n=1 ipsr=24 post_pending=0",
     ]
     for i in range(v.LOG_MAIN_LINES):
@@ -35,7 +36,7 @@ def uart0(nonce=NONCE):
     lines += [
         "IRQ_LOG main_lines=20 isr_tries=75 isr_dropped=74 isr_logged=1 drop_max_us=4",
         "IRQ_DEFAULT irq=28 count=1 masked=1 pre_count=0 pre_pending=0",
-        "IRQ_INTF_ONLY core=1 pin=27 pre_pending=0 ints=1 nvic=1 post_pending=0 need_inte=0",
+        "IRQ_P1_DBELL pin=27 n=1 ipsr=16 pre_pending=0 post_pending=0",
         "IRQ_WRAP spi0 pre_pending=0 off_stat=1 off_pending=0 on_n=1 ipsr=35 post_pending=0",
         "IRQ_P1_GPIO27 ipsr=16 seen=1000",
         "IRQ_XCORE p0_seen_27=0 p1_seen_26=0",
@@ -53,6 +54,47 @@ def uart0(nonce=NONCE):
         for l in lines)
 
 
+# check-irq.sh's notification steps as shm-linux prints them (values invented).
+NOTIFY = """\
+DOWNIRQ ring=down1 n=1000000 missing=0 corrupt=0 stalls=0 max=16 burst=1 entries=412001 raises=0 stale=0 errors=0 seconds=4.100000 msgs_per_s=243902
+DOWNIRQ_PASS
+DOWNIRQ_RC=0
+DOWNIRQ ring=down1 n=100000 missing=0 corrupt=0 stalls=0 max=1 burst=128 entries=100020 raises=99000 stale=0 errors=0 seconds=2.000000 msgs_per_s=50000
+DOWNIRQ_MORE raises=99000 missing=0 corrupt=0 stalls=0
+DOWNIRQ_MORE_PASS
+DOWNIRQ_MORE_RC=0
+DOWN0IRQ ring=down0 n=10000 missing=0 corrupt=0 stalls=0 max=16 burst=1 entries=9000 raises=0 stale=0 errors=0 seconds=0.100000 msgs_per_s=100000
+DOWN0IRQ_PASS
+DOWN0IRQ_RC=0
+RP1_STATUS epoch=2 shm=Ready shm_generation=1 pcie=Up scmi=Serving(requests=120)
+RINGIRQ0 name=burst-irq n=100000 missing=0 corrupt=0 stale=0 batch=32 gap_us=0 seconds=0.500000 sleeps=3 woken=3 late=0 check=ok
+RINGIRQ0 name=paced-irq n=100000 missing=0 corrupt=0 stale=0 batch=32 gap_us=100 seconds=0.400000 sleeps=3000 woken=2990 late=10 check=ok
+RINGIRQ0_PASS count=100000
+RINGIRQ0_RC=0
+RP1_STATUS epoch=2 shm=Ready shm_generation=1 pcie=Up scmi=Serving(requests=131)
+RP1_CORE core=0 state=Running reason=0 line=0 aux=0x0 beat=10 file=None
+RP1_CORE core=1 state=Running reason=0 line=0 aux=0x0 beat=10 file=None
+RP1_HEALTH Ok
+LINUX_STATUS_RC=0
+MIXIRQ events=100000 ticks=2000 ticks_sent=2000 ticks_full=0 tick_errors=0 tick_late_max_us=12 missing=0 corrupt=0 waits=2100 late=3 late_pct=0.14 seconds=1.100
+MIXIRQ_PASS
+MIXIRQ_RC=0
+PAIR_MEMBER ring=events0 n=100000 corrupt=0 stale=0 sleeps=900 woken=899 late=1
+PAIR_MEMBER ring=tick0 n=2000 corrupt=0 stale=0 sleeps=2000 woken=2000 late=0
+IRQPAIR events=100000 ticks=2000 ticks_sent=2000 ticks_full=0 missing=0 seconds=1.200
+IRQPAIR_PASS
+IRQPAIR_RC=0
+DOWNIRQ_KILLS=50
+DOWNIRQ ring=down1 n=10000 missing=0 corrupt=0 stalls=0 max=16 burst=1 entries=9000 raises=0 stale=3000 errors=0 seconds=0.050000 msgs_per_s=200000
+DOWNIRQ_PASS
+DOWNIRQ_KILL_RC=0
+DOWNIRQ_KILL_PASS
+CONTROL_J1 n=20000 stalls=0 late=2 received=20000 corrupt=0 seconds=3.000 (record only)
+CONTROL_J2 n=20000 stalls=1 late=0 received=20000 corrupt=0 seconds=4.000 (record only)
+CONTROLS_RC=0
+"""
+
+
 def uart10(nonce=NONCE):
     return f"""
   1.00 RPi: BOOTSYS release VERSION:9cd61c53 DATE: 2026/04/14 TIME: 22:20:24
@@ -68,7 +110,7 @@ SHM_PASS
 SHM_RC=0
 doorbell rtt n=1000 min=1.148µs p50=2.333µs p99=2.352µs p99.9=20µs max=2.358111ms
 DOORBELL_AFTER_RC=0
-IRQ_CHECK_RESULT=PASS
+{NOTIFY}IRQ_CHECK_RESULT=PASS
 IRQ_CHECK_END
 """
 
@@ -99,7 +141,8 @@ class VerifyIrq(unittest.TestCase):
         stamped = "".join(f"2026-11-14T10:00:00+0900 {l}\n" for l in uart0().splitlines())
         self.assertEqual(failures(stamped), [])
         _, info, _ = v.verify_uart0(uart0())
-        self.assertEqual(sum("IRQ_INTF_ONLY" in i for i in info), 2)
+        # proc0's GPIO22 only: proc1's item is its doorbell self-test now.
+        self.assertEqual(sum("IRQ_INTF_ONLY" in i for i in info), 1)
 
     def test_missing_marker(self):
         without = "".join(l for l in uart0().splitlines(True) if "IRQ_WRAP spi0" not in l)
@@ -196,6 +239,71 @@ class VerifyIrq(unittest.TestCase):
         short = uart0().replace("p1 shm cmd=13 ", "p1 shm command 13 ")
         self.assertFails(failures(short), "11 lines, not 12")
         self.assertEqual(failures(short, proof_only, regression=False), [])
+
+    def test_doorbell_self_tests(self):
+        for old, new, needle in [
+            ("IRQ_P1_DBELL pin=27 n=1", "IRQ_P1_DBELL pin=27 n=2", "IRQ_P1_DBELL: n=2"),
+            ("IRQ_P0_DBELL pin=26 n=1 ipsr=16 pre_pending=0 post_pending=0",
+             "IRQ_P0_DBELL pin=26 n=1 ipsr=16 pre_pending=0 post_pending=1",
+             "IRQ_P0_DBELL: post_pending=1"),
+            ("IRQ_P0_DBELL pin=26", "IRQ_P0_DBELL pin=23", "IRQ_P0_DBELL: pin=23"),
+        ]:
+            with self.subTest(new=new):
+                self.assertFails(failures(changed(old, new)), needle)
+        without = "".join(l for l in uart0().splitlines(True) if "IRQ_P1_DBELL" not in l)
+        self.assertFails(failures(without), "IRQ_P1_DBELL: missing")
+
+    def test_notification_proofs(self):
+        def console(old, new):
+            assert old in uart10(), old
+            return uart10().replace(old, new, 1)
+        # A stall fails the boot even with every pass line present (here before the pass line).
+        stall = console("DOWNIRQ_PASS", "DOWNIRQ_STALL ring=down1 at=512 pending=3\nDOWNIRQ_PASS")
+        self.assertFails(failures(uart0(), stall), "DOWNIRQ_STALL")
+        stall0 = console("DOWN0IRQ_PASS", "DOWN0IRQ_STALL ring=down0 at=10000 pending=1\nDOWN0IRQ_PASS")
+        self.assertFails(failures(uart0(), stall0), "DOWN0IRQ_STALL")
+        for old, new, needle in [
+            ("DOWNIRQ ring=down1 n=1000000 missing=0 corrupt=0 stalls=0",
+             "DOWNIRQ ring=down1 n=1000000 missing=1 corrupt=0 stalls=0", "(b) DOWNIRQ"),
+            ("DOWNIRQ_MORE raises=99000", "DOWNIRQ_MORE raises=0", "(h) DOWNIRQ_MORE"),
+            ("DOWN0IRQ_PASS\n", "", "(c)(d) DOWN0IRQ_PASS"),
+            ("RINGIRQ0_PASS count=100000\n", "RINGIRQ0_FAIL runs=['paced-irq']\n", "RINGIRQ0_PASS"),
+            ("scmi=Serving(requests=131)", "scmi=Stalled", "(g) SCMI still serving"),
+            ("late_pct=0.14", "late_pct=1.50", "(e) MIXIRQ"),
+            ("IRQPAIR_PASS\n", "", "(f) IRQPAIR_PASS"),
+            ("DOWNIRQ_KILLS=50", "DOWNIRQ_KILLS=12", "(i) 50 killed writers"),
+            ("DOWNIRQ_KILL_PASS\n", "", "(i) DOWNIRQ_KILL_PASS"),
+        ]:
+            with self.subTest(new=new):
+                self.assertFails(failures(uart0(), console(old, new)), needle)
+        # The final DOWNIRQ_PASS of (i) cannot stand in for the one of (b).
+        no_b = console("DOWNIRQ_PASS\nDOWNIRQ_RC=0\n", "DOWNIRQ_RC=1\n")
+        self.assertFails(failures(uart0(), no_b), "out of order")
+        # The controls are recorded, never a pass condition: a stall there or no line at all.
+        controls = console("CONTROL_J1 n=20000 stalls=0", "CONTROL_J1 n=20000 stalls=7")
+        self.assertEqual(failures(uart0(), controls), [])
+        _, info = v.verify_uart10(controls, NONCE, v.UART10_PROOF + v.UART10_REGRESSION)
+        self.assertTrue(any(i.startswith("CONTROL_J1 n=20000 stalls=7") for i in info), info)
+        silent = console("CONTROL_J2 n=20000", "nothing")
+        self.assertEqual(failures(uart0(), silent), [])
+        _, info = v.verify_uart10(silent, NONCE, v.UART10_PROOF + v.UART10_REGRESSION)
+        self.assertIn("CONTROL_J2: not recorded", info)
+        # --proof-only does not ask for them.
+        bare = uart10().replace(NOTIFY, "")
+        self.assertFails(failures(uart0(), bare), "(b) DOWNIRQ")
+        self.assertEqual(failures(uart0(), bare.replace("SHM_PASS\nSHM_RC=0\n", ""), regression=False), [])
+
+    def test_terminal_control_sequences_are_removed(self):
+        import tempfile
+        # The console echo of a pasted command: bracketed paste on, the paste markers, colours.
+        noisy = uart10().replace("DOWNIRQ_PASS", "\x1b[?2004h\x1b[200~DOWNIRQ_PASS\x1b[201~\x1b[0m", 1)
+        noisy = noisy.replace("IRQ_CHECK_END", "\x1b[?2004lIRQ_CHECK_END\x1b[?2004h")
+        with tempfile.TemporaryDirectory() as d:
+            u0, u10 = pathlib.Path(d, "uart0.raw"), pathlib.Path(d, "uart10.raw")
+            u0.write_bytes(uart0().encode())
+            u10.write_bytes(noisy.encode())
+            self.assertEqual(v.main(["--uart0", str(u0), "--uart10", str(u10)]), 0)
+        self.assertEqual(v.clean("a\x1b[?2004hb\x1b[200~c\x1b[201~d\x1b[1;32me\r"), "abcde")
 
     def test_contract_matches_the_firmware_source(self):
         # Every field the checker decides on is one the firmware prints in that marker.
