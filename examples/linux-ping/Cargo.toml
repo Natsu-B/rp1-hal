@@ -1,0 +1,12 @@
+[package]
+name = "linux-ping"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+ping-test = ["dep:rp1-proto"]
+
+[dependencies]
+rp1-linux = { path = "../../rp1-linux" }
+rp1-proto = { path = "../../rp1-proto", optional = true }

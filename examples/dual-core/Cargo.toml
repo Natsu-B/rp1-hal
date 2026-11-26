@@ -11,14 +11,14 @@ test = false
 bench = false
 
 [features]
-# Test build: Linux makes a core panic by writing `PANIC_PROC0` / `PANIC_PROC1` to the doorbell
-# request word (proc1 then needs the doorbell), to check what it reads in the status words.
-panic-request = []
+ping-test = []
+ping-poll = ["ping-test"]
 
 [dependencies]
 embedded-hal = "1"
 rp1-hal = { path = "../../rp1-hal" }
 rp1-rt = { path = "../../rp1-rt", features = ["panic-location"] }
+rp1-link = { path = "../../rp1-link" }
 rp1-proto = { path = "../../rp1-proto" }
 
 [build-dependencies]
@@ -37,8 +37,17 @@ heartbeat = { period_ms = 1000 } # TIMER_0 beats once per tick
 spi0 = { sck = 11, mosi = 10, miso = 9 }
 
 [package.metadata.rp1.proc1]
-gpio = [27]
-gpio_irq = [27]
+doorbell = 27
+host_irq = true
 timer = ["ALARM1"]
 adc = {}
 i2c1 = { sda = 2, scl = 3 }
+
+[[package.metadata.rp1.shm]]
+name = "ping"
+kind = "rpc"
+core = "proc1"
+message = "Ping"
+reply = "Pong"
+depth = 8
+notify = "irq"

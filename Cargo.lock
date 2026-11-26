@@ -143,6 +143,7 @@ dependencies = [
  "embedded-hal 1.0.0",
  "rp1-build",
  "rp1-hal",
+ "rp1-link",
  "rp1-proto",
  "rp1-rt",
 ]
@@ -297,6 +298,14 @@ name = "linux-doorbell"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rp1-proto",
+]
+
+[[package]]
+name = "linux-ping"
+version = "0.1.0"
+dependencies = [
+ "rp1-linux",
  "rp1-proto",
 ]
 

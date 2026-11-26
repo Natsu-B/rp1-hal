@@ -3,11 +3,10 @@
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rp1_hal::{
-    gpio::PinIrq,
     log,
     timer::{Alarm, Timer},
 };
-use rp1_proto::link;
+use rp1_link::{EnableError, OpenError, Progress};
 use rp1_rt::{
     Proc0, Proc1, entry, interrupt,
     interrupt::{Mutex, free},
@@ -38,12 +37,16 @@ fn bss_check(marker: u32) -> u32 {
 // and that core's handlers, so a core-local `Mutex` or a plain atomic is enough.
 static ALARM0: Mutex<RefCell<Option<Alarm<0>>>> = Mutex::new(RefCell::new(None));
 static TICKS: AtomicU32 = AtomicU32::new(0);
-static DOORBELL: Mutex<RefCell<Option<PinIrq<27, 1>>>> = Mutex::new(RefCell::new(None));
+#[cfg(not(feature = "ping-poll"))]
+static DOORBELL: Mutex<core::cell::Cell<Option<rp1::Doorbell1>>> =
+    Mutex::new(core::cell::Cell::new(None));
 const TICK_US: u32 = 1_000_000;
-#[cfg(feature = "panic-request")]
-const PANIC_PROC0: u32 = 0x0dea_d000;
-#[cfg(feature = "panic-request")]
-const PANIC_PROC1: u32 = 0x0dea_d001;
+type Ping = u32;
+type Pong = u32;
+
+#[cfg(feature = "ping-test")]
+#[path = "../../../lab/ping/firmware.rs"]
+mod ping_test;
 
 /// proc0's heartbeat: count the tick, tell Linux (the declared `heartbeat`), arm the next one.
 #[interrupt(proc0)]
@@ -58,26 +61,18 @@ fn TIMER_0() {
     TICKS.store(TICKS.load(Relaxed) + 1, Relaxed);
     rp1_rt::status::beat();
 }
-/// Linux's doorbell (examples/linux-doorbell): it wrote a request word and forced GPIO27 in
-/// PROC1_INTF. Drop the force, then echo the request as the reply, which Linux polls for.
+#[cfg(not(feature = "ping-poll"))]
 #[interrupt(proc1)]
 fn IO_BANK0() {
     free(|cs| {
-        if let Some(pin) = DOORBELL.borrow_ref_mut(cs).as_mut() {
-            pin.unforce();
+        if let Some(doorbell) = DOORBELL.borrow(cs).get() {
+            doorbell.ack();
         }
     });
-    let page = rp1_proto::LINK_START as usize;
-    unsafe {
-        let request = ((page + link::DOORBELL_REQUEST) as *const u32).read_volatile();
-        #[cfg(feature = "panic-request")]
-        if request == PANIC_PROC1 {
-            panic!("proc1 panic requested by Linux");
-        }
-        ((page + link::DOORBELL_REPLY) as *mut u32).write_volatile(request);
-    }
-    rp1_proto::barrier();
+    // Keep the event if the interrupt arrived just before main's WFE.
+    unsafe { core::arch::asm!("sev", options(nomem, nostack, preserves_flags)) };
 }
+
 fn next_tick() -> u32 {
     (Timer::new().now() as u32).wrapping_add(TICK_US)
 }
@@ -86,10 +81,10 @@ fn next_tick() -> u32 {
 fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     // Clocks (200 MHz clk_sys), Linux's blocks, the log, the PCIe endpoint (waits for Linux's
     // probe, about 3 s after RP1 starts) and the SCMI clock server.
-    let sys = match rp1::platform::init(&mut core, p.platform) {
+    let mut sys = match rp1::platform::init(&mut core, p.platform) {
         Ok(sys) => sys,
-        Err(e) => {
-            let _ = log!("PLAT_INIT ok=0 {:?}\n", e);
+        Err(_) => {
+            let _ = log!("PLAT_INIT ok=0\n");
             panic!("platform init failed");
         }
     };
@@ -131,14 +126,13 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     p.proc1.launch(&mut core).unwrap();
     let mut rx = VALUES.consumer(&mut core);
     let mut logged = 0;
+    let mut ready = false;
     loop {
-        #[cfg(feature = "panic-request")]
-        {
-            let page = rp1_proto::LINK_START as usize;
-            let request =
-                unsafe { ((page + link::DOORBELL_REQUEST) as *const u32).read_volatile() };
-            if request == PANIC_PROC0 {
-                panic!("proc0 panic requested by Linux");
+        if !ready {
+            match rp1::link::try_enable(&mut sys.pcie) {
+                Ok(_) => ready = true,
+                Err(EnableError::NotRequested) => {}
+                Err(_) => panic!("SHM enable failed"),
             }
         }
         let ticks = TICKS.load(Relaxed);
@@ -165,15 +159,38 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let _i2c = p.i2c1.init(&clocks, rp1_hal::i2c::Speed::Standard).unwrap();
     let mut tx = VALUES.producer(&mut core);
     tx.push(increment(core::hint::black_box(41))).unwrap();
-    let mut irq = p.irq;
-    free(|cs| DOORBELL.borrow(cs).replace(Some(irq.gpio27)));
-    irq.IO_BANK0.enable();
-    log!("proc1 doorbell armed\n").unwrap();
-    // Everything else happens in IO_BANK0.
+    #[cfg(not(feature = "ping-poll"))]
+    {
+        let mut irq = p.irq;
+        free(|cs| DOORBELL.borrow(cs).set(Some(p.doorbell)));
+        irq.IO_BANK0.enable();
+    }
+    let mut init = p.link;
+    let mut ping = loop {
+        match init.try_open() {
+            Ok(link) => break link.ping,
+            Err(OpenError::NotReady(token)) => init = token,
+            Err(_) => panic!("ping open failed"),
+        }
+    };
+    #[cfg(feature = "ping-test")]
+    let mut probe = ping_test::Probe::default();
     loop {
+        let progress = ping.serve(8, |value| {
+            #[cfg(feature = "ping-test")]
+            let value = probe.reply(value);
+            value
+        });
+        match progress {
+            Ok(Progress::More) => continue,
+            Ok(Progress::Idle) => {}
+            Err(_) => panic!("ping serve failed"),
+        }
+        #[cfg(not(feature = "ping-poll"))]
         rp1_rt::wait_for_event();
     }
 }
+
 #[isram]
 fn increment(value: u32) -> u32 {
     value.wrapping_add(1)
