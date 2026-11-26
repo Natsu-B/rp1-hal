@@ -291,12 +291,17 @@ const ONE_MESSAGE: Case = Case {
     ..STOCK
 };
 
+/// With both readbacks, none of 1,021 runs stall.
+#[test]
+fn one_message_never_stalls() {
+    assert_eq!(timed(ONE_MESSAGE).1, 0);
+}
+
 /// Negative: writers that look at the reader without first reading `head` back (W3) can see
 /// it awake before their message has landed, while it arms and re-checks without seeing it
-/// (1,591 of 4,125 runs stall; with both readbacks none of 1,021).
+/// (1,591 of 4,125 runs stall).
 #[test]
 fn writer_without_readback_stalls() {
-    assert_eq!(timed(ONE_MESSAGE).1, 0);
     let (runs, stalls) = timed(Case {
         writer_readback: false,
         ..ONE_MESSAGE

@@ -166,7 +166,7 @@ adc = {}
         assert!(fdt.enabled(fdt.label(label).unwrap()), "{label}");
     }
     assert!(rp1_dt_check(&fdt, &note).is_empty());
-    // The unstable RP1 -> Linux interrupt is opt-in: no `host_irq`, no `rp1:irq` node.
+    // The RP1 -> Linux interrupt is opt-in: no `host_irq`, no `rp1:irq` node.
     let rp1 = fdt.label("rp1").unwrap();
     assert!(fdt.child(rp1, "rp1-irq@c040108000").is_none());
 }

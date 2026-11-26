@@ -15,7 +15,8 @@
 //!
 //! The core that declares `host_irq = true` owns it. TEST is ORed with the vector's own
 //! hardware source, TIMER alarm 3 (`TIMER.INTS` bit 3). `host_irq` owns `TIMER.ALARM3` (the
-//! declaration rejects any other owner), and nothing in rp1-hal unmasks or forces it. Firmware that ran earlier (or a previous image on this RP1) might have, so
+//! declaration rejects any other owner), and nothing in rp1-hal unmasks or forces it.
+//! Firmware that ran earlier (or a previous image on this RP1) might have, so
 //! [`HostIrq::new`] takes the source over: it masks and un-forces alarm 3 and clears its raw
 //! flag, leaving TEST as the only thing that can raise the vector (HW 2026-11-05: forcing
 //! `TIMER.INTF` bit 3 raises the vector once and then swallows TEST pulses until released).
@@ -70,7 +71,6 @@ pub(crate) mod sealed {
 
     /// Every method takes one. Its field is private to this crate and nothing returns one, so
     /// outside code cannot call the methods, not even through a public `Notify` / `Wake` bound.
-    #[derive(Clone, Copy)]
     pub struct Token(pub(crate) ());
 
     pub trait Notify: Copy {
@@ -246,6 +246,7 @@ impl<const PIN: u8, const CORE: u8> Doorbell<PIN, CORE> {
         write(Self::INTF_CLR, Self::BIT);
     }
     /// Force this core's own doorbell bit: the handler runs again (after [`Progress::More`]).
+    /// Raise it once after handing the endpoint to its handler ([`RingRx`](crate::RingRx)).
     pub fn raise(self) {
         write(Self::INTF_SET, Self::BIT);
     }
