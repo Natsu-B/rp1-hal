@@ -20,15 +20,15 @@
 //! 100 MHz `uart_apb` that SCMI reports, a PLL output independent of the clk_sys mux, DOC).
 //!
 //! proc1: only proc0 runs the platform init, so a driver owned by proc1 (ADC, I2C, UART
-//! declared under `[proc1]`) gets its [`Clocks`] from [`Clocks::from_proc0`] /
-//! [`Clocks::wait_from_proc0`]. The init publishes the value in a `.shared` cell as soon as
+//! declared under `[proc1]`) gets its [`Clocks`] from [`Clocks::wait_from_proc0`].
+//! The init publishes the value in a `.shared` cell as soon as
 //! its clock step ([`init`]: clk_sys and the blocks Linux owns) succeeds, so proc1 can only
 //! ever obtain a `Clocks` that proc0's init created. A later init step that fails does not
 //! withdraw it: a published value means the clocks are up, not that the whole platform init
 //! succeeded. Launch proc1 after init (or let proc1 wait).
 use crate::{Error, read};
 use core::sync::atomic::{AtomicU32, Ordering};
-use fugit::HertzU32;
+use fugit::{HertzU32, MicrosDurationU32};
 
 const CLK_SYS_CTRL: usize = 0x4001_8014;
 const CLK_SYS_DIV_INT: usize = 0x4001_8018;
@@ -54,7 +54,7 @@ const SEL_PLL_SYS: u32 = 1 << SRC_PLL_SYS;
 const SWITCH_TIMEOUT_US: u32 = 10_000;
 
 /// Frequencies the drivers rely on. Only the platform init creates one, from the registers;
-/// proc1 receives a copy of that value through [`Clocks::from_proc0`].
+/// proc1 receives a copy of that value through [`Clocks::wait_from_proc0`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Clocks {
     sys_hz: u32,
@@ -156,24 +156,20 @@ impl Handoff {
 }
 
 impl Clocks {
-    /// proc1's copy of the [`Clocks`] that proc0's platform init returned. Takes the
-    /// proc1 token: proc0 already has its own value.
+    /// Receives the clocks proc0's platform init published. A zero timeout tries once.
     ///
-    /// - [`Error::NotReady`]: the clock step of init has not succeeded (yet); nothing is
-    ///   published.
-    /// - [`Error::Precondition`]: init published a value, but the clock tree no longer
-    ///   matches it (the same error the drivers return for a stale `Clocks`).
-    pub fn from_proc0(_core: &rp1_rt::Proc1) -> Result<Clocks, Error> {
-        published(&HANDOFF, Clocks::still_current)
-    }
-
-    /// [`Clocks::from_proc0`], polled for up to `timeout_us` (64-bit 1 MHz timer, which runs
-    /// from the cold bring-up on). Tries at least once, also with `timeout_us` = 0.
-    /// [`Error::NotReady`] if proc0's init has not published by then; [`Error::Precondition`]
-    /// at once if it has published but the tree no longer matches (waiting cannot fix that).
-    pub fn wait_from_proc0(core: &rp1_rt::Proc1, timeout_us: u32) -> Result<Clocks, Error> {
+    /// Returns [`Error::NotReady`] if the clock step has not published by the deadline.
+    /// Returns [`Error::Precondition`] immediately if the published rates are stale.
+    pub fn wait_from_proc0(
+        _core: &rp1_rt::Proc1,
+        timeout: MicrosDurationU32,
+    ) -> Result<Clocks, Error> {
         let timer = crate::timer::Timer::new();
-        wait_until(timeout_us, || timer.now(), || Self::from_proc0(core))
+        wait_until(
+            timeout.ticks(),
+            || timer.now().ticks(),
+            || published(&HANDOFF, Clocks::still_current),
+        )
     }
 }
 
@@ -195,6 +191,9 @@ fn wait_until(
     mut now: impl FnMut() -> u64,
     mut attempt: impl FnMut() -> Result<Clocks, Error>,
 ) -> Result<Clocks, Error> {
+    if timeout_us == 0 {
+        return attempt();
+    }
     let start = now();
     loop {
         match attempt() {
@@ -395,7 +394,7 @@ fn select_pll_sys(r: &mut impl Registers) -> Result<u32, Error> {
 /// from `sys_hz`. Already on PLL_SYS (warm restart): nothing is written to clk_sys.
 ///
 /// On success, and only then, the same [`Clocks`] is published once for proc1
-/// ([`Clocks::from_proc0`]); on any error here proc1 keeps seeing [`Error::NotReady`]. The
+/// ([`Clocks::wait_from_proc0`]); on any error here proc1 keeps seeing [`Error::NotReady`]. The
 /// later platform steps never withdraw it.
 pub(crate) fn init(
     linux: crate::linux_blocks::LinuxBlocks,
@@ -679,11 +678,16 @@ mod tests {
 
     #[test]
     fn wait_zero_timeout_still_tries() {
-        let (r, attempts, elapsed) = wait_never_ready(0, 0, 1);
-        assert_eq!(r, Err(Error::NotReady));
-        // One try, the deadline check, the final try.
-        assert_eq!(attempts, 2);
-        assert_eq!(elapsed, 1);
+        let mut attempts = 0;
+        let r = wait_until(
+            0,
+            || unreachable!(),
+            || {
+                attempts += 1;
+                Err(Error::NotReady)
+            },
+        );
+        assert_eq!((r, attempts), (Err(Error::NotReady), 1));
     }
 
     #[test]

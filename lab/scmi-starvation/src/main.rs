@@ -10,6 +10,7 @@ use core::{
     sync::atomic::{AtomicU32, Ordering::Relaxed},
 };
 use rp1_hal::{
+    fugit::TimerInstantU32,
     log,
     platform::{ScmiState, scmi_state, scmi_stats},
     timer::{Alarm, Timer},
@@ -70,7 +71,7 @@ fn log_init(report: &rp1_hal::platform::InitReport, prio_bits: u8) {
 }
 
 fn now() -> u32 {
-    Timer::new().now() as u32
+    Timer::new().now_32().ticks()
 }
 
 #[interrupt(proc0)]
@@ -81,7 +82,7 @@ fn TIMER_0() {
     alarm.clear_interrupt();
     let next = NEXT.load(Relaxed).wrapping_add(PERIOD_US);
     NEXT.store(next, Relaxed);
-    alarm.schedule(next).unwrap();
+    alarm.schedule(TimerInstantU32::from_ticks(next)).unwrap();
     let started = now();
     let before = scmi_state();
     while now().wrapping_sub(started) < HOLD_US {
@@ -133,7 +134,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     // Half a period at each end leaves time for the first and last full ISR holds.
     let first = start.wrapping_add(PERIOD_US / 2);
     NEXT.store(first, Relaxed);
-    alarm.schedule(first).unwrap();
+    alarm.schedule(TimerInstantU32::from_ticks(first)).unwrap();
     unsafe { (&raw mut ALARM).write(MaybeUninit::new(alarm)) };
     line.enable();
     unsafe { ACK.write_volatile(START) };

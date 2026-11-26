@@ -3,7 +3,7 @@
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rp1_hal::{
-    fugit::RateExtU32,
+    fugit::{ExtU32, RateExtU32, TimerInstantU32},
     log,
     timer::{Alarm, Timer},
 };
@@ -41,7 +41,6 @@ static TICKS: AtomicU32 = AtomicU32::new(0);
 #[cfg(not(feature = "ping-poll"))]
 static DOORBELL: Mutex<core::cell::Cell<Option<rp1::Doorbell1>>> =
     Mutex::new(core::cell::Cell::new(None));
-const TICK_US: u32 = 1_000_000;
 type Ping = u32;
 type Pong = u32;
 
@@ -74,8 +73,8 @@ fn IO_BANK0() {
     unsafe { core::arch::asm!("sev", options(nomem, nostack, preserves_flags)) };
 }
 
-fn next_tick() -> u32 {
-    (Timer::new().now() as u32).wrapping_add(TICK_US)
+fn next_tick() -> TimerInstantU32<1_000_000> {
+    Timer::new().now_32() + 1.secs()
 }
 
 #[entry(proc0)]
@@ -154,7 +153,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     log!("proc1 ready private={} bss=0x{:x}\n", private, bss).unwrap();
     // ADC and I2C1 are declared on proc1: their drivers take the Clocks that proc0's
     // platform init published (proc0 launches proc1 only after that, so no wait).
-    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000).unwrap();
+    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10.millis()).unwrap();
     let mut adc = p.adc.init(&clocks).unwrap();
     log!("proc1 temp_mc={}\n", adc.read_temperature().unwrap()).unwrap();
     let _i2c = p.i2c1.init(&clocks, rp1_hal::i2c::Speed::Standard).unwrap();

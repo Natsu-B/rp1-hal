@@ -288,7 +288,7 @@ impl<const N: u8> Token<N> {
     /// Checks clk_sys and the configuration, releases only this controller's reset, checks
     /// the block, detects the FIFO depth and frame field, then routes the typed pins. GPIO bank0
     /// and the raw microsecond timer must already run (cold bring-up); `clocks` may come from
-    /// proc0 ([`crate::clocks::Clocks::from_proc0`]). On error the token and the pins come back
+    /// proc0 ([`crate::clocks::Clocks::wait_from_proc0`]). On error the token and the pins come back
     /// as the [`Parts`] in [`InitError`](crate::InitError); the pins are not touched before
     /// success, and a stale clk_sys or an invalid frequency / frame size is reported before
     /// the reset is released.

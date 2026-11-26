@@ -11,3 +11,8 @@ STATIC
   and `Clocks::uart`, SPI SCLK with `Spi::frequency`, and the ADC and PWM clocks with
   `clock`. Use `Config::with_frequency` for SPI's rate limit. TOML rates and SCMI values
   remain integer hertz.
+- `Timer::now` returns a 64-bit microsecond instant. Use `Timer::now_32` for the absolute
+  deadline passed to `Alarm::schedule`. Use `fugit::ExtU32` for durations such as `10.millis()`
+  in `Timer::delay`, `Uart::set_read_timeout` and the DMA wait APIs.
+- Proc0 gets its clocks from `rp1::platform::init`. Proc1 uses
+  `Clocks::wait_from_proc0(&core, timeout)`. Pass `0.micros()` for a single attempt.

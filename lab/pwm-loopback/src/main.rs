@@ -6,6 +6,7 @@ mod status_nonce;
 
 use embedded_hal::{digital::InputPin, pwm::SetDutyCycle};
 use rp1_hal::{
+    fugit::ExtU32,
     gpio::{Input, Pin},
     log,
     timer::Timer,
@@ -32,7 +33,7 @@ struct Samples {
 }
 fn sample<const P: u8>(pin: &mut Pin<P, Input>) -> Samples {
     let timer = Timer::new();
-    let start = timer.now();
+    let start = timer.now().ticks();
     let mut previous = pin.is_high().unwrap();
     let mut s = Samples {
         rising: 0,
@@ -46,7 +47,7 @@ fn sample<const P: u8>(pin: &mut Pin<P, Input>) -> Samples {
         s.high += u32::from(high);
         s.total += 1;
         previous = high;
-        s.elapsed_us = timer.now().wrapping_sub(start);
+        s.elapsed_us = timer.now().ticks().wrapping_sub(start);
         if s.elapsed_us >= 100_000 {
             return s;
         }
@@ -55,7 +56,7 @@ fn sample<const P: u8>(pin: &mut Pin<P, Input>) -> Samples {
 
 #[entry(proc1)]
 fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
-    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000).unwrap();
+    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10.millis()).unwrap();
     let mut channels = p.pwm0.init(&clocks).unwrap();
     let mut a = channels.channel0.output(p.pins.gpio12);
     let mut b = channels.channel1.output(p.pins.gpio13);
@@ -70,7 +71,7 @@ fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
     for round in 0..60 {
         for percent in [0, 25, 50, 75, 100] {
             a.set_duty_cycle_percent(percent).unwrap();
-            timer.delay_us(3_000); // Range/duty latch on overflow; let old period finish.
+            timer.delay(3.millis()); // Range/duty latch on overflow; let old period finish.
             let sa = sample(&mut in_a);
             let sb = sample(&mut in_b);
             log!("PWM_SAMPLE round={} duty={} a_rise={} a_high={} a_total={} a_us={} b_rise={} b_high={} b_total={} b_us={}\n",
@@ -82,7 +83,7 @@ fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
         a.set_period_ticks(100_000).unwrap();
         a.set_duty_ticks(25_000).unwrap();
         a.enable().unwrap();
-        timer.delay_us(5_000);
+        timer.delay(5.millis());
         let slow = sample(&mut in_a);
         log!(
             "PWM_REPERIOD round={} rise={} high={} total={} us={}\n",

@@ -15,7 +15,8 @@ let raw: u16 = adc.read(0)?;                 // input 0, 0..=0xfff
 let mc: i32 = adc.read_temperature()?;       // millidegrees Celsius
 
 // Declared under [proc1] instead: proc1 takes the Clocks proc0's platform::init published.
-let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000)?;   // core: Proc1
+use rp1_hal::fugit::ExtU32;
+let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10.millis())?;   // core: Proc1
 let mut adc = p.adc.init(&clocks)?;
 
 // embedded-hal 0.2 (1.0 has no ADC trait):
@@ -38,8 +39,7 @@ STATIC: declaring `ADC` does three things.
 
 Without the declaration, the ADC stays Linux's, as before.
 
-Either core may own the ADC. On proc1, `init` needs proc0's clocks: `Clocks::from_proc0` /
-`Clocks::wait_from_proc0` return the value proc0's `platform::init` published
+Either core may own the ADC. On proc1, `init` needs proc0's clocks: `Clocks::wait_from_proc0` returns the value proc0's `platform::init` published
 (see [Clocks on proc1](#clocks-on-proc1)).
 
 ## Clocks on proc1
@@ -52,13 +52,10 @@ endpoint, SYSCFG) does not withdraw it: a published value means the clocks are u
 the whole platform init succeeded. A failing clock step leaves the ready word 0.
 The value is published once per image load: `init` consumes the one `platform::Token`, and
 `.shared` is loaded with the image (ready word 0).
-`Clocks::from_proc0(&Proc1)` reads the ready word with an acquire load and returns that
-copy. It returns `Error::NotReady` before the clock step has succeeded, and
-`Error::Precondition` if a value was published but the clock tree no longer matches it (as
-the drivers do).
-`Clocks::wait_from_proc0(&Proc1, timeout_us)` retries only `NotReady`, against the 64-bit
-1 MHz timer, trying at least once; it returns `Error::NotReady` once `timeout_us` has
-elapsed (any `u32` value ends) and `Precondition` at once.
+`Clocks::wait_from_proc0(&core, timeout)` reads the ready word with an acquire load,
+checks the published rates and returns a copy. It retries `Error::NotReady` against the
+64-bit 1 MHz timer until `timeout`. Pass `0.micros()` to try once.
+A stale clock tree returns `Error::Precondition` immediately.
 Only loads and stores are used (no LDREX/STREX in shared SRAM). Safe code cannot build a
 `Clocks` from arbitrary numbers, so a proc1 `Clocks` still means "proc0's init ran".
 Launching proc1 after init (the usual order) makes the wait return at once.

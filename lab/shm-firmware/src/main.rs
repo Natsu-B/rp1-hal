@@ -194,7 +194,10 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         feature = "dma",
         feature = "ring-dma"
     ))]
-    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000);
+    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(
+        &core,
+        rp1_hal::fugit::MicrosDurationU32::millis(10),
+    );
     #[cfg(any(
         feature = "adc",
         feature = "spi",

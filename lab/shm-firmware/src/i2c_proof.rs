@@ -48,28 +48,28 @@ fn prove(bus: &mut Bus) -> Result<(), Failure> {
     let timer = Timer::new();
     let mut frame = core::array::from_fn::<_, 16, _>(|i| i as u8);
     frame[..4].copy_from_slice(&0x5244_3144u32.to_le_bytes());
-    let gap = || timer.delay_us(2000);
+    let gap = || timer.delay(rp1_hal::fugit::MicrosDurationU32::millis(2));
     // Resync the peer: a STOP-terminated read makes it reload its reply (data unchecked).
     let _ = bus.read(PEER, &mut [0; 64]);
     gap();
     for (speed, hz) in [(Speed::Standard, 100_000), (Speed::Fast, 400_000)] {
         let at = |step| move |e| Failure::Bus(step, e);
         bus.set_speed(speed).map_err(at("set_speed"))?;
-        let start = timer.now();
+        let start = timer.now().ticks();
         bus.write(PEER, &frame).map_err(at("write"))?;
-        let write_us = (timer.now() - start) as u32;
+        let write_us = timer.now().ticks().wrapping_sub(start) as u32;
         gap();
         let mut bytes = [0; 64];
-        let start = timer.now();
+        let start = timer.now().ticks();
         bus.read(PEER, &mut bytes).map_err(at("read"))?;
-        let read_us = (timer.now() - start) as u32;
+        let read_us = timer.now().ticks().wrapping_sub(start) as u32;
         check("read", &bytes)?;
         gap();
         bytes.fill(0);
-        let start = timer.now();
+        let start = timer.now().ticks();
         bus.write_read(PEER, &frame, &mut bytes)
             .map_err(at("write_read"))?;
-        let combined_us = (timer.now() - start) as u32;
+        let combined_us = timer.now().ticks().wrapping_sub(start) as u32;
         check("write_read", &bytes)?;
         gap();
         bytes.fill(0);

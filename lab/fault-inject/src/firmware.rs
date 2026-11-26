@@ -11,6 +11,7 @@ use core::{
 };
 use protocol::*;
 use rp1_hal::{
+    fugit::ExtU32,
     log,
     timer::{Alarm, Timer},
 };
@@ -42,7 +43,7 @@ fn write(offset: usize, value: u32) {
 fn schedule<const N: u8>(alarm: &mut Alarm<N>) {
     alarm.clear_interrupt();
     alarm
-        .schedule((Timer::new().now() as u32).wrapping_add(PERIOD_US))
+        .schedule(Timer::new().now_32() + PERIOD_US.micros())
         .unwrap();
 }
 
@@ -165,7 +166,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let nonce = [
         sys.report.perstn_wait_us,
         sys.report.link_wait_us,
-        Timer::new().now() as u32,
+        Timer::new().now_32().ticks(),
     ]
     .into_iter()
     .fold(0x811c_9dc5u32, |hash, sample| {

@@ -5,7 +5,7 @@ pub fn publish(report: &InitReport) -> u32 {
     let nonce = [
         report.perstn_wait_us,
         report.link_wait_us,
-        Timer::new().now() as u32,
+        Timer::new().now_32().ticks(),
     ]
     .into_iter()
     .fold(0x811c_9dc5u32, |hash, sample| {

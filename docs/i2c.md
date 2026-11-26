@@ -77,7 +77,7 @@ whole-MHz `ic_clk` the result (counts or `Invalid`) equals the earlier 64-bit fo
 clk_sys or an impossible speed writes no register, leaves the reset asserted and routes no
 pin, and the returned `Parts` initialise on retry.
 A controller declared under `[proc1]` takes its `Clocks` from
-`Clocks::wait_from_proc0(&core, timeout_us)` (the value proc0's `platform::init` published;
+`Clocks::wait_from_proc0(&core, timeout)` (the value proc0's `platform::init` published;
 see `docs/adc.md`, "Clocks on proc1"). STATIC: compile-checked in `examples/dual-core`.
 
 STATIC: address NACK, data NACK and arbitration loss map to embedded-hal's matching

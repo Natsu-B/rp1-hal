@@ -11,7 +11,10 @@
 //! to Linux from main and from its alarm handler.
 #![no_std]
 #![no_main]
-use rp1_hal::{fugit::RateExtU32, log};
+use rp1_hal::{
+    fugit::{ExtU32, RateExtU32},
+    log,
+};
 use rp1_link::{Block, OpenError, RingRx, RingTx, flush_window};
 use rp1_proto::{Error, link};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
@@ -293,7 +296,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let stack = unsafe { stack::paint(1) };
     // proc0 pushed the nonce before it launched this core.
     proof::set_nonce(NONCE.consumer(&mut core).pop().unwrap_or(0));
-    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10_000);
+    let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10.millis());
     let spi = match clocks {
         Ok(c) => p
             .spi0

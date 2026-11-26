@@ -2,7 +2,7 @@
 //! a counter here is the running core's own, and the same handler code serves either core.
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use rp1_hal::{gpio::PinIrq, timer::Alarm};
+use rp1_hal::{fugit::TimerInstantU32, gpio::PinIrq, timer::Alarm};
 use rp1_link::notify::Doorbell;
 use rp1_rt::interrupt::{Line, Mutex, free};
 
@@ -172,7 +172,7 @@ pub mod ticker {
             let deadline = now().wrapping_add(period_us);
             DEADLINE.store(deadline, Relaxed);
             alarm.clear_interrupt();
-            let _ = alarm.schedule(deadline);
+            let _ = alarm.schedule(TimerInstantU32::from_ticks(deadline));
             alarm.enable_interrupt();
         });
     }
@@ -200,10 +200,10 @@ pub mod ticker {
             let period = PERIOD_US.load(Relaxed);
             let mut next = DEADLINE.load(Relaxed).wrapping_add(period);
             // A handler that ran past the next deadline starts a new series from now.
-            if alarm.schedule(next).is_err() {
+            if alarm.schedule(TimerInstantU32::from_ticks(next)).is_err() {
                 bump(&RESYNCS);
                 next = now().wrapping_add(period);
-                let _ = alarm.schedule(next);
+                let _ = alarm.schedule(TimerInstantU32::from_ticks(next));
             }
             DEADLINE.store(next, Relaxed);
         });

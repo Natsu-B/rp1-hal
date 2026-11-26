@@ -40,7 +40,7 @@ const fn reset_bit(n: u8) -> u32 {
 }
 /// Bound of the two waits of the bring-up (reset done, transmitter idle).
 const START_TIMEOUT_US: u32 = 10_000;
-/// [`Uart::set_read_timeout_us`] until changed.
+/// [`Uart::set_read_timeout`] until changed.
 pub const DEFAULT_READ_TIMEOUT_US: u32 = 100_000;
 /// Bit times for a full TX FIFO to leave the line: 32 queued characters and the one being
 /// shifted, 10 bits each at 8N1.
@@ -365,8 +365,8 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     /// to send a byte. [`DEFAULT_READ_TIMEOUT_US`] after `init`; 0 makes a read a poll. The TX
     /// waits ([`Uart::write`], [`Uart::flush`], [`Uart::free`]) are not affected: they are
     /// bounded by twice the time a full TX FIFO takes at the configured baud rate, plus 1 ms.
-    pub fn set_read_timeout_us(&mut self, timeout_us: u32) {
-        self.read_timeout_us = timeout_us;
+    pub fn set_read_timeout(&mut self, timeout: fugit::MicrosDurationU32) {
+        self.read_timeout_us = timeout.ticks();
     }
     /// Queues a prefix of `bytes` for transmission and returns its length, as
     /// [`embedded_io::Write::write`]: waits for room in the TX FIFO for the first byte, then
@@ -428,7 +428,7 @@ where
     /// or write the handler so that it accepts the UART being gone.
     ///
     /// [`Error::Timeout`]: the line is still busy after the TX bound (see
-    /// [`Uart::set_read_timeout_us`]), which only a stalled transmitter exceeds, and nothing
+    /// [`Uart::set_read_timeout`]), which only a stalled transmitter exceeds, and nothing
     /// was changed; the UART comes
     /// back in [`FreeError`](crate::FreeError) with the error, to retry (transmission went on
     /// meanwhile) or to [`Uart::abort`].
@@ -484,7 +484,7 @@ impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Write for Uart<N, TX,
         Uart::flush(self)
     }
 }
-/// One byte per call. [`Error::Timeout`] if none arrives within [`Uart::set_read_timeout_us`];
+/// One byte per call. [`Error::Timeout`] if none arrives within [`Uart::set_read_timeout`];
 /// receive errors as in [`Uart::read_byte`].
 impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Read for Uart<N, TX, RX> {
     fn read(&mut self, b: &mut [u8]) -> Result<usize, Error> {

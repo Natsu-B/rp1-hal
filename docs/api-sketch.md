@@ -342,7 +342,7 @@ let mut uart = parts.init(&clocks, 9_600.Hz()).unwrap();    // 返った Parts �
   `Invalid` → `InvalidInput`、`Overrun`・`Precondition` → `Other`（overrun は、それまでに読めた文字は正しいが、エラーを付けて届いた文字より前の 1 文字以上が FIFO 満杯で失われたという意味で、対応する kind が無い。エラーを付けて届いた文字自体も捨てる）。
   エラー付きで受信した文字は捨て、その位置でエラーを返す。
 - 待ちはすべて 1 MHz タイマーの経過時間で測る（ポーリング回数ではない）。受信待ち（`embedded_io::Read`）の上限は
-  `Uart::set_read_timeout_us`（既定 100 ms、0 でポーリング）。送信側の待ち（`write` の FIFO 空き待ち、`flush`、`free`）は
+  `Uart::set_read_timeout`（既定 100 ms、0 でポーリング）。送信側の待ち（`write` の FIFO 空き待ち、`flush`、`free`）は
   利用者が変えられず、`init` の baud から決まる: FIFO 満杯の送信時間（330 ビット時間）の 2 倍 + 1 ms。フロー制御が無いので
   送信は相手によらず baud の速さで進む。読み取り用に短くした timeout で `free` が `Timeout` になり、`abort` に落ちて
   出力が切れることはない。

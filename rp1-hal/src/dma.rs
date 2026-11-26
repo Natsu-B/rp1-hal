@@ -317,7 +317,12 @@ impl<const N: u8> Channel<N> {
     /// failed block is stopped before this returns; if the DMAC cannot be stopped this never
     /// returns (module docs, Cancellation). On error the contents of `dst` are unspecified
     /// (a prefix may have been written).
-    pub fn copy(&mut self, src: &[u8], dst: &mut [u8], timeout_us: u32) -> Result<(), Error> {
+    pub fn copy(
+        &mut self,
+        src: &[u8],
+        dst: &mut [u8],
+        timeout: fugit::MicrosDurationU32,
+    ) -> Result<(), Error> {
         if src.len() != dst.len() || src.is_empty() || src.len() > u32::MAX as usize {
             return Err(Error::Invalid);
         }
@@ -327,7 +332,7 @@ impl<const N: u8> Channel<N> {
         let d = memory(dst.as_mut_ptr() as usize, len)?;
         // The borrows of `src` and `dst` outlive every block: each is finished (or stopped)
         // before the next starts and before return.
-        unsafe { copy_blocking(&mut Mmio, N, s, d, len, timeout_us) }
+        unsafe { copy_blocking(&mut Mmio, N, s, d, len, timeout.ticks()) }
     }
 }
 
@@ -412,14 +417,14 @@ impl<const N: u8> Transfer<'_, N> {
         }
         self.result
     }
-    /// Polls until done or `timeout_us` passed (then stops it and returns [`Error::Timeout`]).
+    /// Polls until done or `timeout` has elapsed (then stops it and returns [`Error::Timeout`]).
     /// Every value expires, `u32::MAX` after about 71.6 minutes; only stopping the block,
     /// after the timeout or after a bus error, may wait without a deadline (module docs,
     /// Cancellation).
-    pub fn wait(mut self, timeout_us: u32) -> Result<(), Error> {
+    pub fn wait(mut self, timeout: fugit::MicrosDurationU32) -> Result<(), Error> {
         let r = match self.result {
             Some(r) => r,
-            None => wait_block(&mut Mmio, N, timeout_us),
+            None => wait_block(&mut Mmio, N, timeout.ticks()),
         };
         self.result = Some(r);
         r

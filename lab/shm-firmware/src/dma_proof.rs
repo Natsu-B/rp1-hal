@@ -28,7 +28,7 @@ use rp1_link::ring_dma::SlotCopy;
 #[cfg(feature = "dma")]
 pub const WORDS: usize = 256;
 #[cfg(feature = "dma")]
-const TIMEOUT_US: u32 = 100_000;
+const TIMEOUT: rp1_hal::fugit::MicrosDurationU32 = rp1_hal::fugit::MicrosDurationU32::millis(100);
 #[cfg(feature = "dma")]
 #[repr(C, align(16))]
 struct Buf(UnsafeCell<[u32; WORDS]>);
@@ -121,7 +121,7 @@ pub fn sram(dma: &mut Dma) {
         let r = code(dma.ch0.copy(
             unsafe { core::slice::from_raw_parts(s8, bytes) },
             unsafe { core::slice::from_raw_parts_mut(d8, bytes) },
-            TIMEOUT_US,
+            TIMEOUT,
         ));
         let mut bad = 0;
         for i in 0..WORDS * 4 {
@@ -147,8 +147,8 @@ pub fn sram(dma: &mut Dma) {
         let t = now();
         for _ in 0..1000 {
             match slot {
-                0 => ok &= dma.ch0.copy(s(), d(), TIMEOUT_US).is_ok(),
-                1 => ok &= dma.ch2.copy(s(), d(), TIMEOUT_US).is_ok(),
+                0 => ok &= dma.ch0.copy(s(), d(), TIMEOUT).is_ok(),
+                1 => ok &= dma.ch2.copy(s(), d(), TIMEOUT).is_ok(),
                 _ => {
                     for i in 0..WORDS {
                         unsafe { dst().add(i).write_volatile(src().add(i).read_volatile()) };
@@ -179,7 +179,7 @@ fn repeat<const N: u8>(
     let s = BusAddr::from_proc(src() as usize)?;
     let t = now();
     for _ in 0..n {
-        unsafe { ch.start(s, dst, bytes) }?.wait(TIMEOUT_US)?;
+        unsafe { ch.start(s, dst, bytes) }?.wait(TIMEOUT)?;
     }
     Ok(now().wrapping_sub(t))
 }
@@ -295,7 +295,7 @@ pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8
                     0x1_0000,
                 )
             }
-            .and_then(|x| x.wait(TIMEOUT_US));
+            .and_then(|x| x.wait(TIMEOUT));
             if let Err(e) = r {
                 errors += 1;
                 log!("DMA_DDR_ERR large slot={} rc=0x{:x}\n", slot, code(Err(e))).unwrap();
@@ -428,7 +428,7 @@ fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
     let full = |dma: &mut Dma| {
         canary(data);
         let t = now();
-        let r = code(unsafe { dma.ch2.start(src, dst, len) }.and_then(|x| x.wait(TIMEOUT_US)));
+        let r = code(unsafe { dma.ch2.start(src, dst, len) }.and_then(|x| x.wait(TIMEOUT)));
         let us = now().wrapping_sub(t);
         let (copied, tail_bad, guard_bad, _) = inspect(data);
         (
@@ -547,7 +547,7 @@ fn raw_abort(
     let (copied, tail_bad, guard_bad, _) = inspect(data);
     let (r, _, reuse_ok, _) = {
         canary(data);
-        let r = code(unsafe { dma.ch2.start(src, dst, len) }.and_then(|x| x.wait(TIMEOUT_US)));
+        let r = code(unsafe { dma.ch2.start(src, dst, len) }.and_then(|x| x.wait(TIMEOUT)));
         let (c, t, g, _) = inspect(data);
         (r, 0, r == 0 && c == len && t == 0 && g == 0, c)
     };
