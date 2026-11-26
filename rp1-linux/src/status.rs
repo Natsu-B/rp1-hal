@@ -1,5 +1,5 @@
 //! The firmware's status words on the link page (`rp1_proto::status`), written by rp1-rt.
-use super::{Error, Mapping, NOTE, Result};
+use super::{Access, Error, Mapping, NOTE, Result};
 pub use rp1_proto::status::{CoreState, PcieState, ScmiState};
 use rp1_proto::{
     self as proto, barrier, link,
@@ -66,12 +66,7 @@ impl Monitor {
     /// boot DT's note.
     pub fn open() -> Result<Self> {
         let note = fs::read(NOTE)?;
-        let link = Mapping::open_read_only(
-            &format!("rp1:{}", rp1_proto::uio::LINK),
-            rp1_proto::LINK_PHYS,
-            0x4000,
-        )?;
-        Self::new(link, &note)
+        Self::new(Mapping::link(Access::ReadOnly)?, &note)
     }
     pub(crate) fn new(link: Rc<Mapping>, note: &[u8]) -> Result<Self> {
         // Without the record the words at 0x40.. are not status words, or are stale ones (the

@@ -6,7 +6,7 @@ use rp1_proto::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    cell::RefCell,
     fs::{self, File, OpenOptions},
     os::fd::AsRawFd,
     path::{Path, PathBuf},
@@ -27,22 +27,25 @@ struct Mapping {
     len: usize,
     _file: File,
 }
+/// How a UIO node is opened.
+#[derive(Clone, Copy)]
+enum Access {
+    /// Read-write, holding the node's exclusive `flock`: an endpoint has one owner.
+    Exclusive,
+    /// Read-write without a lock (`rp1:link`, `rp1:header`).
+    Shared,
+    /// Read-only without a lock.
+    ReadOnly,
+}
 impl Mapping {
-    /// Map a UIO node read-write and hold its exclusive `flock`.
-    fn open(name: &str, phys: u64, len: usize) -> Result<Rc<Self>> {
-        let path = find_mapping(name, phys, len)?;
-        Self::map(
-            open_exclusive(&path)?,
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-        )
-    }
-    /// Map a UIO node read-only, without a lock.
-    fn open_read_only(name: &str, phys: u64, len: usize) -> Result<Rc<Self>> {
-        let path = find_mapping(name, phys, len)?;
-        Self::map(File::open(dev_path(&path)?)?, len, libc::PROT_READ)
-    }
-    fn map(file: File, len: usize, prot: libc::c_int) -> Result<Rc<Self>> {
+    /// Map the UIO node `name` after checking its address and size.
+    fn open(name: &str, phys: u64, len: usize, access: Access) -> Result<Rc<Self>> {
+        let dev = dev_path(&find_mapping(name, phys, len)?)?;
+        let (file, prot) = match access {
+            Access::Exclusive => (open_exclusive(&dev)?, libc::PROT_READ | libc::PROT_WRITE),
+            Access::Shared => (open_read_write(&dev)?, libc::PROT_READ | libc::PROT_WRITE),
+            Access::ReadOnly => (File::open(dev)?, libc::PROT_READ),
+        };
         let pointer = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -62,6 +65,15 @@ impl Mapping {
             _file: file,
         }))
     }
+    /// `rp1:link`, the link page.
+    fn link(access: Access) -> Result<Rc<Self>> {
+        Self::open(
+            &format!("rp1:{}", uio::LINK),
+            proto::LINK_PHYS,
+            LINK_PAGE,
+            access,
+        )
+    }
     fn ptr(&self) -> *mut u8 {
         self.base.as_ptr()
     }
@@ -75,6 +87,8 @@ impl Mapping {
         barrier();
     }
 }
+/// Bytes of the `rp1:link` mapping.
+const LINK_PAGE: usize = 0x4000;
 /// The `/sys/class/uio` entry with this name; exactly one must exist.
 fn find_uio(name: &str) -> Result<PathBuf> {
     let mut matches = Vec::new();
@@ -107,20 +121,27 @@ fn find_mapping(name: &str, phys: u64, len: usize) -> Result<PathBuf> {
     }
     Ok(path)
 }
+/// `/dev/uioN` for a `/sys/class/uio/uioN` entry.
 fn dev_path(sys: &Path) -> Result<PathBuf> {
     let name = sys
         .file_name()
         .ok_or_else(|| Error::setup("invalid UIO path"))?;
     Ok(Path::new("/dev").join(name))
 }
-/// Open `/dev/uioN` for a sysfs entry, with an exclusive non-blocking `flock` (one owner).
-fn open_exclusive(sys: &Path) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(dev_path(sys)?)?;
+fn open_read_write(dev: &Path) -> Result<File> {
+    Ok(OpenOptions::new().read(true).write(true).open(dev)?)
+}
+/// [`open_read_write`] with an exclusive non-blocking `flock`. `Err(Busy)` while another open
+/// file holds it, also one of this process.
+fn open_exclusive(dev: &Path) -> Result<File> {
+    let file = open_read_write(dev)?;
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
+        let e = std::io::Error::last_os_error();
+        return Err(if e.kind() == std::io::ErrorKind::WouldBlock {
+            Error::Busy
+        } else {
+            e.into()
+        });
     }
     Ok(file)
 }
@@ -132,92 +153,132 @@ impl Drop for Mapping {
     }
 }
 
+/// One enabled shared memory: its header, checked against the note.
 struct Session {
     header: shm::Header,
     _map: Rc<Mapping>,
     _link: Rc<Mapping>,
 }
 impl Session {
+    /// Map `rp1:header` and check it against the note and the link page.
+    fn open(note: &[u8], area: &ShmArea, link: &Rc<Mapping>) -> Result<Self> {
+        let map = Mapping::open(
+            &format!("rp1:{}", uio::HEADER),
+            area.phys,
+            65536,
+            Access::Shared,
+        )?;
+        let digest: [u8; 32] = Sha256::digest(note).into();
+        let header = unsafe { shm::Header::open(map.ptr(), &digest) }?;
+        let regions = Note::parse(note)?
+            .records()
+            .filter_map(std::result::Result::ok)
+            .filter(|r| r.kind == SHM_REGION)
+            .count() as u32;
+        if header.generation() != link.read(proto::link::SHM_GENERATION)
+            || header.regions() != regions
+        {
+            return Err(proto::Error::Mismatch.into());
+        }
+        Ok(Self {
+            header,
+            _map: map,
+            _link: link.clone(),
+        })
+    }
     /// The shared memory is still the one this session opened.
     fn check(&self) -> Result<()> {
         Ok(self.header.check()?)
     }
 }
 
-/// One exclusive Linux owner. Handles retain their mappings even when Firmware is dropped.
+/// The firmware the boot DT's note describes, reached through `rp1:link`.
+///
+/// Shared: any number of processes may open it at once. Each endpoint has one owner, the
+/// holder of its UIO node's `flock`; opening a held endpoint is `Err(Busy)`, also within one
+/// process. Endpoints keep their mappings after the `Firmware` is dropped.
 pub struct Firmware {
     note: Vec<u8>,
+    area: ShmArea,
     link: Rc<Mapping>,
     monitor: Monitor,
-    session: Rc<Session>,
-    taken: HashSet<String>,
+    session: RefCell<Option<Rc<Session>>>,
 }
 impl Firmware {
-    /// Match the boot DT's note to UIO names/addresses and the published DDR note hash.
-    /// If necessary, request cold-boot initialization after Linux PCIe probe is complete.
+    /// Map `rp1:link` and check the loader's handoff against the boot DT's note. Does not
+    /// enable shared memory and does not wait: [`Firmware::status`] works right away,
+    /// endpoints after [`Firmware::wait_ready`].
     pub fn open() -> Result<Self> {
-        let bytes = fs::read(NOTE)?;
-        let note = Note::parse(&bytes)?;
-        let area = ShmArea::parse(note.get(SHM_AREA).ok_or(proto::Error::Invalid)?.value)?;
-        let link = Mapping::open(&format!("rp1:{}", uio::LINK), rp1_proto::LINK_PHYS, 0x4000)?;
-        let magic = link.read(rp1_proto::link::HANDOFF_MAGIC);
+        let note = fs::read(NOTE)?;
+        let area = ShmArea::parse(
+            Note::parse(&note)?
+                .get(SHM_AREA)
+                .ok_or(proto::Error::Invalid)?
+                .value,
+        )?;
+        let link = Mapping::link(Access::Shared)?;
+        let magic = link.read(proto::link::HANDOFF_MAGIC);
         if magic == u32::MAX {
             return Err(Error::LinkDown);
         }
-        if magic != rp1_proto::link::MAGIC
-            || link.read(rp1_proto::link::HANDOFF_PHYS_LOW) != area.phys as u32
-            || link.read(rp1_proto::link::HANDOFF_PHYS_HIGH) != (area.phys >> 32) as u32
-            || link.read(rp1_proto::link::HANDOFF_SIZE) != area.size
+        if magic != proto::link::MAGIC
+            || link.read(proto::link::HANDOFF_PHYS_LOW) != area.phys as u32
+            || link.read(proto::link::HANDOFF_PHYS_HIGH) != (area.phys >> 32) as u32
+            || link.read(proto::link::HANDOFF_SIZE) != area.size
         {
             return Err(Error::setup("loader handoff differs from note"));
         }
-        link.write(rp1_proto::link::SHM_REQUEST, 1);
-        let start = Instant::now();
-        while link.read(rp1_proto::link::SHM_STATUS) != rp1_proto::link::SHM_READY {
-            if start.elapsed() > Duration::from_secs(10) {
-                return Err(Error::Timeout);
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let map = Mapping::open(&format!("rp1:{}", uio::HEADER), area.phys, 65536)?;
-        let digest: [u8; 32] = Sha256::digest(&bytes).into();
-        let header = unsafe { shm::Header::open(map.ptr(), &digest) }?;
-        if header.generation() != link.read(rp1_proto::link::SHM_GENERATION)
-            || header.regions()
-                != note
-                    .records()
-                    .filter_map(std::result::Result::ok)
-                    .filter(|r| r.kind == SHM_REGION)
-                    .count() as u32
-        {
-            return Err(proto::Error::Mismatch.into());
-        }
-        let session = Rc::new(Session {
-            header,
-            _map: map,
-            _link: link.clone(),
-        });
         Ok(Self {
-            monitor: Monitor::new(link.clone(), &bytes)?,
-            note: bytes,
+            monitor: Monitor::new(link.clone(), &note)?,
+            note,
+            area,
             link,
-            session,
-            taken: HashSet::new(),
+            session: RefCell::new(None),
         })
     }
-    fn region<T: Message>(&self, name: &str) -> Result<ShmRegion<'_>> {
-        self.session.check()?;
-        if self.taken.contains(name) {
-            return Err(Error::Busy);
+    /// Ask RP1 to enable shared memory, wait up to `timeout` until it is ready, and return
+    /// its generation (`Err(Timeout)` if it is not ready by then). Cheap once ready: later
+    /// calls only check that the shared memory is still the same, and open it again after
+    /// the firmware re-initialized it.
+    pub fn wait_ready(&self, timeout: Duration) -> Result<u32> {
+        if let Some(session) = self.session.borrow().as_ref()
+            && session.check().is_ok()
+        {
+            return Ok(session.header.generation());
         }
-        let note = Note::parse(&self.note)?;
-        let r = note
+        self.link.write(proto::link::SHM_REQUEST, 1);
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.link.read(proto::link::SHM_STATUS) {
+                proto::link::SHM_READY => break,
+                u32::MAX => return Err(Error::LinkDown),
+                _ if Instant::now() >= deadline => return Err(Error::Timeout),
+                _ => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        let session = Session::open(&self.note, &self.area, &self.link)?;
+        let generation = session.header.generation();
+        *self.session.borrow_mut() = Some(Rc::new(session));
+        Ok(generation)
+    }
+    /// The session [`Firmware::wait_ready`] opened; `Err(Proto(NotReady))` before.
+    fn session(&self) -> Result<Rc<Session>> {
+        let session = self
+            .session
+            .borrow()
+            .clone()
+            .ok_or(proto::Error::NotReady)?;
+        session.check()?;
+        Ok(session)
+    }
+    /// The note's region `name`, checked against the message type.
+    fn region<T: Message>(&self, name: &str) -> Result<ShmRegion<'_>> {
+        let r = Note::parse(&self.note)?
             .records()
             .filter_map(std::result::Result::ok)
             .filter(|r| r.kind == SHM_REGION)
-            .map(|r| ShmRegion::parse(r.value))
-            .collect::<std::result::Result<Vec<_>, proto::Error>>()?
-            .into_iter()
+            // Note::parse validated every region.
+            .filter_map(|r| ShmRegion::parse(r.value).ok())
             .find(|r| r.name == name)
             .ok_or(Error::Unknown)?;
         // notify=irq is valid only on RP1 -> Linux rings (rp1-build checks it; refuse others).
@@ -229,16 +290,33 @@ impl Firmware {
         }
         Ok(r)
     }
-    pub fn ring_rx<T: Message>(&mut self, name: &str) -> Result<RingRx<T>> {
+    /// [`Firmware::region`] for a ring of `kind`. A name with `-` is unknown here:
+    /// `<name>-dn` and `<name>-up` are the two rings of a channel or rpc, and only that
+    /// endpoint opens them.
+    fn ring<T: Message>(&self, name: &str, kind: ShmKind) -> Result<ShmRegion<'_>> {
+        if name.contains('-') {
+            return Err(Error::Unknown);
+        }
         let r = self.region::<T>(name)?;
-        if r.kind != ShmKind::RingToLinux {
+        if r.kind != kind {
             return Err(proto::Error::Mismatch.into());
         }
-        let map = Mapping::open(
-            &format!("rp1:{name}"),
-            rp1_proto::SHM_PHYS + u64::from(r.ddr_offset),
+        Ok(r)
+    }
+    /// The DDR part of region `r`, as its exclusive owner.
+    fn map(r: &ShmRegion<'_>) -> Result<Rc<Mapping>> {
+        Mapping::open(
+            &format!("rp1:{}", r.name),
+            proto::SHM_PHYS + u64::from(r.ddr_offset),
             r.ddr_len as usize,
-        )?;
+            Access::Exclusive,
+        )
+    }
+    /// The RP1 -> Linux ring `name`.
+    pub fn ring_rx<T: Message>(&self, name: &str) -> Result<RingRx<T>> {
+        let session = self.session()?;
+        let r = self.ring::<T>(name, ShmKind::RingToLinux)?;
+        let map = Self::map(&r)?;
         let inner = unsafe {
             shm::RingRx::attach(
                 map.ptr(),
@@ -249,27 +327,20 @@ impl Firmware {
                 overflow(r.overwrite),
             )
         }?;
-        let notify_irq = r.notify_irq;
-        self.taken.insert(name.into());
         Ok(RingRx {
             inner,
-            notify_irq,
+            notify_irq: r.notify_irq,
             spin: Duration::ZERO,
             stats: WaitStats::default(),
             _map: map,
-            session: self.session.clone(),
+            session,
         })
     }
-    pub fn ring_tx<T: Message>(&mut self, name: &str) -> Result<RingTx<T>> {
-        let r = self.region::<T>(name)?;
-        if r.kind != ShmKind::RingToRp1 {
-            return Err(proto::Error::Mismatch.into());
-        }
-        let map = Mapping::open(
-            &format!("rp1:{name}"),
-            rp1_proto::SHM_PHYS + u64::from(r.ddr_offset),
-            r.ddr_len as usize,
-        )?;
+    /// The Linux -> RP1 ring `name`.
+    pub fn ring_tx<T: Message>(&self, name: &str) -> Result<RingTx<T>> {
+        let session = self.session()?;
+        let r = self.ring::<T>(name, ShmKind::RingToRp1)?;
+        let map = Self::map(&r)?;
         let inner = unsafe {
             shm::RingTx::attach(
                 self.link.ptr().add(r.sram_offset as usize),
@@ -280,40 +351,33 @@ impl Firmware {
                 overflow(r.overwrite),
             )
         }?;
-        self.taken.insert(name.into());
         Ok(RingTx {
             inner,
             _map: map,
-            session: self.session.clone(),
+            session,
         })
     }
-    pub fn block<T: Message>(&mut self, name: &str) -> Result<BlockMap<T>> {
+    /// The block `name`.
+    pub fn block<T: Message>(&self, name: &str) -> Result<BlockMap<T>> {
+        let session = self.session()?;
         let r = self.region::<T>(name)?;
         let ShmKind::Block { writer } = r.kind else {
             return Err(proto::Error::Mismatch.into());
         };
-        let map = Mapping::open(
-            &format!("rp1:{name}"),
-            rp1_proto::SHM_PHYS + u64::from(r.ddr_offset),
-            r.ddr_len as usize,
-        )?;
+        let map = Self::map(&r)?;
         let inner = unsafe { shm::Block::attach(map.ptr(), map.len) }?;
-        self.taken.insert(name.into());
         Ok(BlockMap {
             inner,
             writer,
             _map: map,
-            session: self.session.clone(),
+            session,
         })
     }
-    pub fn generation(&self) -> u32 {
-        self.session.header.generation()
-    }
-    /// [`Monitor::status`] through this owner's link mapping.
+    /// [`Monitor::status`] through this firmware's link mapping.
     pub fn status(&self) -> Result<Status> {
         self.monitor.status()
     }
-    /// [`Monitor::health`] through this owner's link mapping.
+    /// [`Monitor::health`] through this firmware's link mapping.
     pub fn health(&self, window: Duration) -> Result<Health> {
         self.monitor.health(window)
     }
@@ -346,7 +410,7 @@ impl Irq {
     /// Open `rp1:irq` and enable the interrupt (`uio_pdrv_genirq` starts it enabled, and masks
     /// it again in its handler; pulses before the first enable are lost).
     pub fn open() -> Result<Self> {
-        let file = open_exclusive(&find_uio(&format!("rp1:{}", uio::IRQ))?)?;
+        let file = open_exclusive(&dev_path(&find_uio(&format!("rp1:{}", uio::IRQ))?)?)?;
         let mut irq = Self {
             file,
             wakes: 0,
@@ -736,6 +800,139 @@ mod tests {
             count: 0,
         };
         (irq, File::from(OwnedFd::from(b)))
+    }
+
+    /// A valid note with an SHM area, a LINK record (doorbells as given) and these regions,
+    /// each a Linux -> RP1 ring of four `u32` on `core` (1 = proc0, 2 = proc1).
+    pub(crate) fn note(doorbells: [Option<u8>; 2], rings: &[(&str, u8, bool)]) -> Vec<u8> {
+        use proto::note::{self, Link, LinkCore};
+        let mut records = Vec::new();
+        let mut record = |kind: u16, flags: u16, value: &[u8]| {
+            records.extend(kind.to_le_bytes());
+            records.extend(flags.to_le_bytes());
+            records.extend((value.len() as u32).to_le_bytes());
+            records.extend(value);
+            records.resize(records.len().next_multiple_of(4), 0);
+        };
+        record(
+            note::FIRMWARE,
+            1,
+            &[[1, b'f', 1, b'v'].as_slice(), &[0; 52]].concat(),
+        );
+        record(note::ENTRY, 1, &[0; 20]);
+        record(note::OWNERSHIP, 1, &[0; 4]);
+        record(note::CLOCK, 1, &[1, 0, 0, 0, 0]);
+        record(note::BOOT, 1, &[0; 65]);
+        let area = ShmArea {
+            size: 0x10_0000,
+            handoff: proto::HANDOFF,
+            sram_end: proto::LINK_LEN as u16,
+            phys: proto::SHM_PHYS,
+        };
+        record(SHM_AREA, 1, &area.encode());
+        let cores = doorbells.map(|doorbell| LinkCore {
+            doorbell,
+            ..LinkCore::default()
+        });
+        record(note::LINK, 0, &Link { cores }.encode());
+        let body = shm::ring_body_size(4, 4).unwrap() as u16;
+        for (i, &(name, core, irq)) in rings.iter().enumerate() {
+            let mut v = vec![1, 2, core, irq.into(), 1, 0, 1, 1];
+            v.extend((65536 * (i as u32 + 1)).to_le_bytes());
+            v.extend(65536u32.to_le_bytes());
+            v.extend((0x100 + 0x100 * i as u16).to_le_bytes());
+            v.extend(body.to_le_bytes());
+            v.extend(4u32.to_le_bytes());
+            v.extend(4u32.to_le_bytes());
+            v.extend(<u32 as Message>::TYPE_ID.to_le_bytes());
+            v.extend([0; 8]);
+            v.extend([&[name.len() as u8], name.as_bytes(), &[3], b"u32"].concat());
+            record(SHM_REGION, 1, &v);
+        }
+        let mut bytes = proto::note::MAGIC.to_vec();
+        bytes.extend(2u16.to_le_bytes());
+        bytes.extend(32u16.to_le_bytes());
+        bytes.extend(((32 + records.len()) as u32).to_le_bytes());
+        bytes.extend(0u32.to_le_bytes());
+        bytes.extend(proto::note::crc32(&records).to_le_bytes());
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend(0u32.to_le_bytes());
+        bytes.extend(records);
+        Note::parse(&bytes).expect("fixture note");
+        bytes
+    }
+    /// A [`Firmware`] over `note` and an anonymous link page, with this session.
+    pub(crate) fn firmware(note: Vec<u8>, session: Option<Rc<Session>>) -> Firmware {
+        let link = anon(LINK_PAGE);
+        let area = ShmArea::parse(Note::parse(&note).unwrap().get(SHM_AREA).unwrap().value);
+        Firmware {
+            monitor: Monitor::new(link.clone(), &note).unwrap(),
+            area: area.unwrap(),
+            note,
+            link,
+            session: RefCell::new(session),
+        }
+    }
+
+    #[test]
+    fn rings_refuse_channel_halves_by_name() {
+        let r = rig();
+        let fw = firmware(
+            note([None; 2], &[("x", 2, false), ("x-dn", 2, false)]),
+            Some(r.rx.session.clone()),
+        );
+        // `x-dn` is in the note, yet only a channel or rpc may open it.
+        assert!(matches!(fw.ring_tx::<u32>("x-dn"), Err(Error::Unknown)));
+        assert!(matches!(fw.ring_rx::<u32>("x-dn"), Err(Error::Unknown)));
+        assert!(matches!(fw.ring_tx::<u32>("y"), Err(Error::Unknown)));
+        // `x` passes the note and fails only for want of its UIO node on this host.
+        assert!(matches!(fw.ring_tx::<u32>("x"), Err(Error::Io(_))));
+        assert!(matches!(
+            fw.ring_rx::<u32>("x"),
+            Err(Error::Proto(proto::Error::Mismatch))
+        ));
+    }
+
+    #[test]
+    fn an_endpoint_has_one_owner() {
+        let dir = std::env::temp_dir().join(format!("rp1-linux-flock-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        fs::write(&a, []).unwrap();
+        fs::write(&b, []).unwrap();
+        let held = open_exclusive(&a).unwrap();
+        // A second open is refused, also in the owner's own process.
+        assert!(matches!(open_exclusive(&a), Err(Error::Busy)));
+        // Another endpoint opens.
+        let other = open_exclusive(&b).unwrap();
+        drop(held);
+        let again = open_exclusive(&a).unwrap();
+        drop((other, again));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn wait_ready_requests_and_times_out() {
+        let fw = firmware(note([None; 2], &[("x", 2, false)]), None);
+        assert!(matches!(
+            fw.ring_tx::<u32>("x"),
+            Err(Error::Proto(proto::Error::NotReady))
+        ));
+        let t = Instant::now();
+        let e = fw.wait_ready(Duration::from_millis(20)).unwrap_err();
+        assert!(matches!(e, Error::Timeout), "{e:?}");
+        assert!(t.elapsed() >= Duration::from_millis(20));
+        assert_eq!(fw.link.read(proto::link::SHM_REQUEST), 1);
+        // Status needs no shared memory.
+        assert!(matches!(
+            fw.status(),
+            Err(Error::Proto(proto::Error::NotReady))
+        ));
+        fw.link.write(proto::link::SHM_STATUS, u32::MAX);
+        assert!(matches!(
+            fw.wait_ready(Duration::from_secs(5)),
+            Err(Error::LinkDown)
+        ));
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! - `suppressed-irq` (command 15 with an irq consumer, a short paced stream): no pulses, the
 //!   data is found by the re-check (`late > 0`), and no single wait exceeds
 //!   `RECHECK + 40 ms` (bounded recovery; 40 ms is scheduling slack).
-use crate::{Control, Result, request, response, sample};
+use crate::{Control, READY, Result, request, response, sample};
 use rp1_linux::{Firmware, Irq, RECHECK};
 use std::time::{Duration, Instant};
 
@@ -45,7 +45,8 @@ struct Run {
 const SUPPRESSED_COUNT: u32 = 3200;
 
 pub fn main(count: u32) -> Result<()> {
-    let mut fw = Firmware::open()?;
+    let fw = Firmware::open()?;
+    fw.wait_ready(READY)?;
     let mut events = fw.ring_rx::<[u32; 4]>("events")?;
     let mut ctrl = fw.block::<Control>("control")?;
     drop(fw);

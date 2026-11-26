@@ -6,7 +6,7 @@
 //! half `h` is the firmware pattern with word 0 = `k | h << 16`. A canary left anywhere means a
 //! copy went missing or landed elsewhere. Prints the RP1 timings (`DMA_DDR_LINUX`) and
 //! `DMA_DDR_PASS` only when RP1 reported no error and every word matches.
-use crate::{Bulk, Control, Result, expired, request};
+use crate::{Bulk, Control, READY, Result, expired, request};
 use rp1_linux::{Error, Firmware};
 use rp1_proto as proto;
 
@@ -26,7 +26,8 @@ fn expected(w: usize, seed: u32) -> u32 {
 }
 
 pub fn main() -> Result<()> {
-    let mut fw = Firmware::open()?;
+    let fw = Firmware::open()?;
+    fw.wait_ready(READY)?;
     let mut ctrl = fw.block::<Control>("control")?;
     let mut bulk = fw.block::<Bulk>("bulk")?;
     drop(fw);

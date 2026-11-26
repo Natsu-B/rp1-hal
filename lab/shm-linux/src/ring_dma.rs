@@ -11,7 +11,7 @@ use protocol::{
 const BASELINE_BATCH_CAPACITY: [u32; 3] = [32, 32, 8];
 /// The firmware's `rp1_link::ring_dma::RingDma::DEFAULT_THRESHOLD` (staged bytes that go by DMA).
 const DMA_THRESHOLD: usize = 256;
-use crate::{Control, Result, response, sample};
+use crate::{Control, READY, Result, response, sample};
 use rp1_linux::{BlockMap, Error, Firmware, Irq, RingRx};
 use rp1_proto as proto;
 use std::time::{Duration, Instant};
@@ -455,7 +455,8 @@ fn path_matches(mode: u32, batch: u32, phase_count: u32, size: usize, dma: u32, 
 
 fn execute(count: u32, plan: Vec<(u32, Run)>) -> Result<()> {
     use Kind::*;
-    let mut fw = Firmware::open()?;
+    let fw = Firmware::open()?;
+    fw.wait_ready(READY)?;
     let mut events = fw.ring_rx::<[u32; 4]>("events")?;
     let mut w64 = fw.ring_rx::<[u32; 16]>("wide64")?;
     let mut w256 = fw.ring_rx::<[u32; 64]>("wide256")?;

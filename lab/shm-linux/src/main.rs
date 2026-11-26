@@ -4,6 +4,8 @@ mod ring_dma;
 mod ring_irq;
 use rp1_proto as proto;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+/// How long [`Firmware::wait_ready`] may take: RP1 enables shared memory on request.
+const READY: Duration = Duration::from_secs(10);
 use std::time::{Duration, Instant};
 type Control = [u32; 16];
 type Bulk = [u32; 262144];
@@ -175,13 +177,14 @@ fn main() -> Result<()> {
         return Err("proof needs at least 1e6 messages per direction".into());
     }
     probe_window()?;
-    let mut fw = Firmware::open()?;
+    let fw = Firmware::open()?;
+    let generation = fw.wait_ready(READY)?;
     let mut up = fw.ring_rx::<[u32; 4]>("up")?;
     let mut down = fw.ring_tx::<[u32; 4]>("down")?;
     let mut latest = fw.ring_rx::<[u32; 4]>("latest")?;
     let mut ctrl = fw.block::<Control>("control")?;
     let mut bulk = fw.block::<Bulk>("bulk")?;
-    println!("SHM generation={} count={count}", fw.generation());
+    println!("SHM generation={generation} count={count}");
     // Keep the same mapping ownership while showing that handles outlive Firmware.
     drop(fw);
     let start = request(&mut ctrl, 1, 1, count, 0)?;
