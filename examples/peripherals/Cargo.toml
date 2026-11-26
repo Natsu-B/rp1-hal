@@ -1,0 +1,35 @@
+[package]
+name = "peripherals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "peripherals"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+embedded-hal = "1"
+rp1-hal = { path = "../../rp1-hal" }
+rp1-rt = { path = "../../rp1-rt" }
+
+[build-dependencies]
+rp1-build = { path = "../../rp1-build" }
+
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+log = { sink = "uart0", baudrate = 115200 }
+linux.keep = {}
+
+[package.metadata.rp1.proc0]
+gpio = [8, 13, 22, 23]
+timer = ["ALARM0"]
+spi0 = { sck = 11, mosi = 10, miso = 9 }
+adc = {}
+pwm0 = { channel0 = 12 }
+i2c1 = { sda = 2, scl = 3 }
+uart1 = { tx = 0, rx = 1 }
