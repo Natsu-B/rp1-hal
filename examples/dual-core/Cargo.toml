@@ -11,7 +11,9 @@ test = false
 bench = false
 
 [features]
+# Test build: enables delayed replies and the proc1 panic request.
 ping-test = []
+# Polling test build: uses the IRQ-free declaration in lab/ping.
 ping-poll = ["ping-test"]
 
 [dependencies]

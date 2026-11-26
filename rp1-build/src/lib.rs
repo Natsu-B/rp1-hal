@@ -66,8 +66,13 @@ pub fn configure() -> Result<()> {
 }
 
 pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> {
+    configure_with_manifest(Path::new("Cargo.toml"), types)
+}
+
+/// Configure from an RP1 manifest path relative to the firmware package.
+pub fn configure_with_manifest(path: &Path, types: &[(&str, metadata::TypeInfo)]) -> Result<()> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
-    let path = manifest_dir.join("Cargo.toml");
+    let path = manifest_dir.join(path);
     let (name, version, mut d) = declaration(&path)?;
     d.types = types.iter().map(|(n, t)| (n.to_string(), *t)).collect();
     let out = PathBuf::from(env::var("OUT_DIR")?);
