@@ -84,12 +84,12 @@ pub(crate) mod sealed {
         fn claim(_: Token) -> Self;
         /// Make the ring just attached notifiable: the first message wakes this reader.
         fn opened<T: Message>(self, _: Token, ring: &mut shm::RingRx<T>);
-        fn drain<T: Message>(
+        fn try_drain<T: Message>(
             self,
             _: Token,
             ring: &mut shm::RingRx<T>,
             max: u32,
-            f: impl FnMut(T),
+            f: impl FnMut(T) -> Result<(), Error>,
         ) -> Result<Progress, Error>;
     }
 }
@@ -121,18 +121,18 @@ impl sealed::Wake for Poll {
     #[inline(always)]
     fn opened<T: Message>(self, _: sealed::Token, _: &mut shm::RingRx<T>) {}
     #[inline(always)]
-    fn drain<T: Message>(
+    fn try_drain<T: Message>(
         self,
         _: sealed::Token,
         ring: &mut shm::RingRx<T>,
         max: u32,
-        mut f: impl FnMut(T),
+        mut f: impl FnMut(T) -> Result<(), Error>,
     ) -> Result<Progress, Error> {
         for _ in 0..max.max(1) {
             let Some(value) = ring.pop()? else {
                 return Ok(Progress::Idle);
             };
-            f(value);
+            f(value)?;
         }
         Ok(Progress::More)
     }
@@ -265,14 +265,14 @@ impl<const PIN: u8, const CORE: u8> sealed::Wake for Doorbell<PIN, CORE> {
         }
     }
     #[inline(always)]
-    fn drain<T: Message>(
+    fn try_drain<T: Message>(
         self,
         _: sealed::Token,
         ring: &mut shm::RingRx<T>,
         max: u32,
-        f: impl FnMut(T),
+        f: impl FnMut(T) -> Result<(), Error>,
     ) -> Result<Progress, Error> {
-        ring.drain(max, f)
+        ring.try_drain(max, f)
     }
 }
 

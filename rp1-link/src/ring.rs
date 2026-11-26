@@ -154,9 +154,21 @@ impl<T: Message, W: Wake> RingRx<T, W> {
     /// armed, so no doorbell comes for what remains: drain again, or raise the doorbell. On an
     /// error the ring is not armed.
     #[inline(always)]
-    pub fn drain(&mut self, max: u32, f: impl FnMut(T)) -> Result<Progress, Error> {
+    pub fn drain(&mut self, max: u32, mut f: impl FnMut(T)) -> Result<Progress, Error> {
+        self.try_drain(max, |value| {
+            f(value);
+            Ok(())
+        })
+    }
+
+    #[inline(always)]
+    pub(crate) fn try_drain(
+        &mut self,
+        max: u32,
+        f: impl FnMut(T) -> Result<(), Error>,
+    ) -> Result<Progress, Error> {
         window_ready()?;
-        self.wake.drain(Token(()), &mut self.ring, max, f)
+        self.wake.try_drain(Token(()), &mut self.ring, max, f)
     }
 }
 
@@ -385,6 +397,45 @@ mod tests {
         assert_eq!(rx.drain(16, |v| got.push(v)), Ok(Progress::Idle));
         assert_eq!(got, [[1; 4]]);
         assert_eq!(memory.waiting() & 1, 1);
+    }
+
+    #[test]
+    fn server_replies_in_order_and_rearms() {
+        ready();
+        let mut down = Memory::new();
+        let mut up = Memory::new();
+        let mut server = crate::Server::new(up.tx::<Poll>(), down.rx::<Doorbell<27, 1>>());
+        let mut replies = up.rx::<Poll>();
+        assert_eq!(server.serve(1, |_| panic!("empty")), Ok(Progress::Idle));
+        down.linux_tx().push_slice(&[[1; 4], [2; 4]]);
+        assert_eq!(server.serve(0, |v| [v[0] + 10; 4]), Ok(Progress::More));
+        assert_eq!(server.serve(2, |v| [v[0] + 10; 4]), Ok(Progress::Idle));
+        assert_eq!(replies.recv(), Ok(Some([11; 4])));
+        assert_eq!(replies.recv(), Ok(Some([12; 4])));
+        assert_eq!(down.waiting() & 1, 1);
+    }
+
+    #[test]
+    fn a_failed_reply_stops_the_server() {
+        ready();
+        let mut down = Memory::new();
+        let mut up = Memory::new();
+        down.linux_tx().push_slice(&[[1; 4], [2; 4]]);
+        let mut tx = up.tx::<Poll>();
+        tx.send_slice(&[[0; 4]; DEPTH as usize]).unwrap();
+        let mut server = crate::Server::new(tx, down.rx::<Doorbell<27, 1>>());
+        assert_eq!(
+            server.serve(2, |v| {
+                assert_eq!(v, [1; 4]);
+                v
+            }),
+            Err(Error::Full)
+        );
+        assert_eq!(
+            server.serve(2, |_| panic!("after failure")),
+            Err(Error::Reset)
+        );
+        assert_eq!(down.waiting() & 1, 0);
     }
 
     #[test]

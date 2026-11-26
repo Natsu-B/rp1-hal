@@ -1,7 +1,7 @@
 //! Internal support for the declaration code emitted by rp1-build.
 
 use crate::{
-    Block, EnableError, Error, Message, OpenError, Overflow, RingRx, RingTx,
+    Block, Channel, EnableError, Error, Message, OpenError, Overflow, RingRx, RingTx, Server,
     notify::{Notify, Wake, sealed::Token},
 };
 use rp1_hal::platform::Pcie;
@@ -188,6 +188,25 @@ pub unsafe fn ring_rx<T: Message, W: Wake>(r: ShmRegion<'_>) -> Result<RingRx<T,
         )
     }?;
     Ok(RingRx::open(ring, W::claim(Token(()))))
+}
+
+/// Assemble the two attached rings of a channel.
+pub fn channel<Tx: Message, Rx: Message, N: Notify, W: Wake>(
+    tx: RingTx<Tx, N>,
+    rx: RingRx<Rx, W>,
+) -> Channel<Tx, Rx, N, W> {
+    Channel { tx, rx }
+}
+
+/// Assemble the two attached rings of an RPC.
+///
+/// # Safety
+/// The rings must come from the same RPC declaration, with equal depth and reject overflow.
+pub unsafe fn server<Req: Message, Rep: Message, N: Notify, W: Wake>(
+    tx: RingTx<Rep, N>,
+    rx: RingRx<Req, W>,
+) -> Server<Req, Rep, N, W> {
+    Server::new(tx, rx)
 }
 
 /// Attach the block `region`.

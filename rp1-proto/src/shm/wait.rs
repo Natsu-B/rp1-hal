@@ -130,7 +130,19 @@ impl<T: Message> RingRx<T> {
     /// For a handler of a level-type notification (protocol.md §3). On an error the ring
     /// is not armed.
     #[cfg_attr(feature = "isram", rp1_macros::isram)]
-    pub fn drain(&mut self, max: u32, f: impl FnMut(T)) -> Result<Progress, Error> {
+    pub fn drain(&mut self, max: u32, mut f: impl FnMut(T)) -> Result<Progress, Error> {
+        self.try_drain(max, |value| {
+            f(value);
+            Ok(())
+        })
+    }
+    /// Like [`Self::drain`], stopping without arming on the first callback error.
+    #[inline(always)]
+    pub fn try_drain(
+        &mut self,
+        max: u32,
+        f: impl FnMut(T) -> Result<(), Error>,
+    ) -> Result<Progress, Error> {
         self.drain_and_arm(max, f, true)
     }
     /// Lab control only: [`Self::drain`] whose arm skips the readback of `waiting`, which the
@@ -140,15 +152,22 @@ impl<T: Message> RingRx<T> {
     pub fn __drain_without_readback(
         &mut self,
         max: u32,
-        f: impl FnMut(T),
+        mut f: impl FnMut(T),
     ) -> Result<Progress, Error> {
-        self.drain_and_arm(max, f, false)
+        self.drain_and_arm(
+            max,
+            |value| {
+                f(value);
+                Ok(())
+            },
+            false,
+        )
     }
     #[inline(always)]
     fn drain_and_arm(
         &mut self,
         max: u32,
-        mut f: impl FnMut(T),
+        mut f: impl FnMut(T) -> Result<(), Error>,
         readback: bool,
     ) -> Result<Progress, Error> {
         self.finish_wait();
@@ -156,7 +175,7 @@ impl<T: Message> RingRx<T> {
         loop {
             while budget > 0 {
                 let Some(value) = self.pop()? else { break };
-                f(value);
+                f(value)?;
                 budget -= 1;
             }
             if budget == 0 {

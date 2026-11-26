@@ -33,15 +33,15 @@ help: provide the argument
 error[E0061]: this method takes 4 arguments but 3 arguments were supplied
   --> tests/ui-notify/notifier_not_usable_on_raw_rings.rs:11:18
    |
-11 |     let _ = wake.drain(ring, 1, |_| {});
-   |                  ^^^^^ ---- argument #1 of type `notify::sealed::Token` is missing
+11 |     let _ = wake.try_drain(ring, 1, |_| Ok(()));
+   |                  ^^^^^^^^^ ---- argument #1 of type `notify::sealed::Token` is missing
    |
 note: method defined here
   --> src/notify.rs
    |
-   |         fn drain<T: Message>(
-   |            ^^^^^
+   |         fn try_drain<T: Message>(
+   |            ^^^^^^^^^
 help: provide the argument
    |
-11 |     let _ = wake.drain(/* Token */, ring, 1, |_| {});
-   |                        ++++++++++++
+11 |     let _ = wake.try_drain(/* Token */, ring, 1, |_| Ok(()));
+   |                            ++++++++++++

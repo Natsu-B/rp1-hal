@@ -8,6 +8,6 @@ fn opened<W: Wake, T: Message>(wake: W, ring: &mut shm::RingRx<T>) {
     wake.opened(ring)
 }
 fn drain<W: Wake, T: Message>(wake: W, ring: &mut shm::RingRx<T>) {
-    let _ = wake.drain(ring, 1, |_| {});
+    let _ = wake.try_drain(ring, 1, |_| Ok(()));
 }
 fn main() {}
