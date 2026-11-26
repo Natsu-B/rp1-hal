@@ -162,6 +162,10 @@ block token reinitialization. It prints observations, not an automatic HW pass v
 
 ## HW acceptance and extended checks
 
+STATIC: the loopback firmware reports GPIO22 pull-up, GPIO22 pull-down and GPIO23's
+default pull-down before enabling PWM. Run `python3 lab/verify-pwm.py --uart0 CAPTURE`
+to check the three readbacks against the boot nonce and verify the waveform sequence.
+
 The results above cover the two-channel loopback subset. The remaining checks below are
 an extended plan, not a claim that all routes, periods or PWM1 have been verified.
 

@@ -7,7 +7,7 @@ mod status_nonce;
 use embedded_hal::{digital::InputPin, pwm::SetDutyCycle};
 use rp1_hal::{
     fugit::ExtU32,
-    gpio::{Input, Pin},
+    gpio::{Input, PadConfig, Pin, Pull},
     log,
     timer::Timer,
 };
@@ -54,14 +54,31 @@ fn sample<const P: u8>(pin: &mut Pin<P, Input>) -> Samples {
     }
 }
 
+fn check_pull<const N: u8>(pin: &Pin<N, Input>, nonce: u32, pull: Pull, bits: u32) {
+    let raw = unsafe { ((0x400f_0004 + usize::from(N) * 4) as *const u32).read_volatile() };
+    log!("PWM_PAD nonce={nonce:08x} pin={N} pull={pull:?} raw=0x{raw:02x}\n").unwrap();
+    assert!(
+        pin.pad_config().pull == pull && raw & 0xcc == 0xc0 | bits,
+        "PWM_FAIL pad readback"
+    );
+}
+
 #[entry(proc1)]
 fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10.millis()).unwrap();
     let mut channels = p.pwm0.init(&clocks).unwrap();
     let mut a = channels.channel0.output(p.pins.gpio12);
     let mut b = channels.channel1.output(p.pins.gpio13);
-    let mut in_a = p.pins.gpio22.into_input();
+    let nonce = unsafe { status_nonce::WORD.read_volatile() };
+    let mut in_a = p.pins.gpio22.into_input_with_pad(PadConfig {
+        pull: Pull::Up,
+        ..PadConfig::INPUT_DEFAULT
+    });
+    check_pull(&in_a, nonce, Pull::Up, 0x08);
+    in_a.set_pad_config(PadConfig::INPUT_DEFAULT);
+    check_pull(&in_a, nonce, Pull::Down, 0x04);
     let mut in_b = p.pins.gpio23.into_input();
+    check_pull(&in_b, nonce, Pull::Down, 0x04);
     a.set_period_ticks(50_000).unwrap(); // 1 kHz, 20 ns/tick.
     b.set_period_ticks(100_000).unwrap(); // 500 Hz sibling stays active throughout.
     b.set_duty_cycle_percent(50).unwrap();
