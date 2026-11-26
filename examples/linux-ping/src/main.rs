@@ -1,5 +1,9 @@
 use rp1_linux::{Client, Firmware};
-use std::time::{Duration, Instant};
+use std::{
+    fs::File,
+    io::Read,
+    time::{Duration, Instant},
+};
 
 #[cfg(feature = "ping-test")]
 #[path = "../../../lab/ping/client.rs"]
@@ -14,10 +18,13 @@ fn main() -> Result<()> {
     if args.first().is_some_and(|arg| arg == "--test") {
         return ping_test::run(&args[1..]);
     }
+    if args == ["--channel"] {
+        return channel_echo();
+    }
     let rounds = match args.as_slice() {
         [] => 1000,
         [rounds] => rounds.parse()?,
-        _ => return Err("usage: linux-ping [rounds]".into()),
+        _ => return Err("usage: linux-ping [rounds | --channel]".into()),
     };
     if rounds == 0 {
         return Err("rounds must be positive".into());
@@ -25,7 +32,29 @@ fn main() -> Result<()> {
     let fw = Firmware::open()?;
     fw.wait_ready(Duration::from_secs(10))?;
     let mut client = fw.client("ping")?;
-    rtt(&mut client, rounds, "")
+    rtt(&mut client, rounds, "")?;
+    println!("EXAMPLE_END name=rpc result=PASS");
+    Ok(())
+}
+
+fn channel_echo() -> Result<()> {
+    let fw = Firmware::open()?;
+    fw.wait_ready(Duration::from_secs(10))?;
+    let mut channel = fw.channel::<u32, u32>("channel")?;
+
+    let mut bytes = [0; 4];
+    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    let nonce = u32::from_ne_bytes(bytes);
+    channel.send(&nonce)?;
+    let reply = channel
+        .recv(Some(CALL_TIMEOUT))?
+        .ok_or("channel reply timed out")?;
+    if reply != nonce {
+        return Err(format!("channel sent {nonce:#010x}, received {reply:#010x}").into());
+    }
+    println!("CHANNEL_ECHO nonce={nonce:#010x}");
+    println!("EXAMPLE_END name=channel result=PASS");
+    Ok(())
 }
 
 fn echo(client: &mut Client<u32, u32>, value: u32) -> Result<u128> {

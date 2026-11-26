@@ -12,6 +12,7 @@ fn main() {
         &[
             ("Ping", TypeInfo::of::<u32>()),
             ("Pong", TypeInfo::of::<u32>()),
+            ("Nonce", TypeInfo::of::<u32>()),
         ],
     )
     .unwrap();

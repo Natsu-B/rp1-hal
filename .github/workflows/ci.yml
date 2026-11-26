@@ -56,6 +56,8 @@ jobs:
       matrix:
         include:
           - { package: dual-core }
+          - { package: dual-core, name: ping-test, features: --features ping-test }
+          - { package: dual-core, name: ping-poll, features: --features ping-poll }
           - { package: peripherals }
           - { package: pwm-loopback }
           - { package: irq-proof }
@@ -82,6 +84,15 @@ jobs:
         run: cargo rp1 build --locked -p ${{ matrix.package }} --target thumbv7m-none-eabi --release ${{ matrix.features }}
       - name: cargo rp1 check
         run: cargo rp1 check target/thumbv7m-none-eabi/release/${{ matrix.package }}
+
+  linux-clients:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup target add aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release --target aarch64-unknown-linux-musl -p linux-ping -p linux-status
+      - run: cargo build --locked --release --target aarch64-unknown-linux-musl -p linux-ping --features ping-test
 
   # Host fixture tests of the lab scripts; none of them touches hardware.
   lab:

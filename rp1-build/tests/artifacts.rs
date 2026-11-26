@@ -572,7 +572,7 @@ fn in_tree_declarations_have_stable_notes() {
     for (manifest, expected) in [
         (
             "examples/dual-core/Cargo.toml",
-            "5bf5e23290e79b3a837935408e2cca063d72c9f91655f108d623d5d3aa99af02",
+            "02ba276461b1cf43dc1687ad0fbf70834fb440867c89f5a6ca47813618acc10e",
         ),
         (
             "lab/shm-firmware/Cargo.toml",
@@ -600,6 +600,7 @@ fn in_tree_declarations_have_stable_notes() {
         d.types.extend([
             ("Ping".into(), TypeInfo::of::<u32>()),
             ("Pong".into(), TypeInfo::of::<u32>()),
+            ("Nonce".into(), TypeInfo::of::<u32>()),
             ("Sample".into(), TypeInfo::of::<[u32; 4]>()),
             ("Wide64".into(), TypeInfo::of::<[u32; 16]>()),
             ("Wide256".into(), TypeInfo::of::<[u32; 64]>()),

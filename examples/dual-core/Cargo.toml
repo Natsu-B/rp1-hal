@@ -53,3 +53,12 @@ message = "Ping"
 reply = "Pong"
 depth = 8
 notify = "irq"
+
+[[package.metadata.rp1.shm]]
+name = "channel"
+kind = "channel"
+core = "proc0"
+message = "Nonce"
+reply = "Nonce"
+depth = 8
+notify = "poll"

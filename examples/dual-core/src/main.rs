@@ -7,7 +7,7 @@ use rp1_hal::{
     log,
     timer::{Alarm, Timer},
 };
-use rp1_link::{EnableError, OpenError, Progress};
+use rp1_link::{Channel, EnableError, Error, OpenError, Progress};
 use rp1_rt::{
     Proc0, Proc1, entry, interrupt,
     interrupt::{Mutex, free},
@@ -43,6 +43,7 @@ static DOORBELL: Mutex<core::cell::Cell<Option<rp1::Doorbell1>>> =
     Mutex::new(core::cell::Cell::new(None));
 type Ping = u32;
 type Pong = u32;
+type Nonce = u32;
 
 #[cfg(feature = "ping-test")]
 #[path = "../../../lab/ping/firmware.rs"]
@@ -127,6 +128,9 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let mut rx = VALUES.consumer(&mut core);
     let mut logged = 0;
     let mut ready = false;
+    let mut channel_init = Some(p.link);
+    let mut channel = None;
+    let mut pending = None;
     loop {
         if !ready {
             match rp1::link::try_enable(&mut sys.pcie) {
@@ -134,6 +138,20 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
                 Err(EnableError::NotRequested) => {}
                 Err(_) => panic!("SHM enable failed"),
             }
+        }
+        // Publication must finish before opening the generated proc0 endpoint.
+        if ready && let Some(init) = channel_init.take() {
+            match init.try_open() {
+                Ok(link) => channel = Some(link.channel),
+                Err(OpenError::NotReady(init)) => channel_init = Some(init),
+                Err(_) => log!("channel open failed\n").unwrap(),
+            }
+        }
+        if let Some(endpoint) = channel.as_mut()
+            && let Err(error) = echo_channel(endpoint, &mut pending)
+        {
+            let _ = log!("channel stopped: {error}\n");
+            channel = None;
         }
         let ticks = TICKS.load(Relaxed);
         if ticks != logged {
@@ -144,6 +162,24 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
             log!("proc0 received {}\n", value).unwrap();
         }
     }
+}
+
+fn echo_channel(
+    channel: &mut Channel<Nonce, Nonce>,
+    pending: &mut Option<Nonce>,
+) -> Result<(), Error> {
+    if pending.is_none() {
+        *pending = channel.recv()?;
+    }
+    if let Some(nonce) = *pending {
+        match channel.send(&nonce) {
+            Ok(()) => *pending = None,
+            // Keep the reply for the next pass so a slow reader can't stall proc0.
+            Err(Error::Full) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 #[entry(proc1)]
