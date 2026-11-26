@@ -133,7 +133,6 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
     /// A timeout leaves the request outstanding. Later calls discard its reply when it
     /// arrives. The peer may already have acted on the request.
     pub fn call(&mut self, request: &Req, timeout: Duration) -> Result<Rep> {
-        self.rx.session.check()?;
         self.rx.peer.check()?;
         let end = deadline(Some(timeout));
         let index = self.tx.inner.head();
@@ -147,15 +146,15 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
         if index.wrapping_sub(self.rx.tail()) >= self.depth {
             return Err(Error::Busy);
         }
-        if !timeout.is_zero() && expired(end) {
-            self.rx.peer.check()?;
-            return Err(Error::Timeout);
-        }
         self.tx.send(request)?;
         if timeout.is_zero() {
             return Err(Error::Timeout);
         }
-        while !expired(end) && self.rx.wait_until(end)? && !expired(end) {
+        self.wait_reply(index, end)
+    }
+
+    fn wait_reply(&mut self, index: u32, end: Option<Instant>) -> Result<Rep> {
+        while self.rx.wait_until(end)? {
             let tail = self.rx.tail();
             if let Some(reply) = self.rx.try_recv()?
                 && tail == index
@@ -166,10 +165,6 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
         self.rx.peer.check()?;
         Err(Error::Timeout)
     }
-}
-
-fn expired(deadline: Option<Instant>) -> bool {
-    deadline.is_some_and(|end| Instant::now() >= end)
 }
 
 #[cfg(test)]

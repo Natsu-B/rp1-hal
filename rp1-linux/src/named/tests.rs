@@ -3,7 +3,7 @@ use crate::{
     CoreState, LINK_PAGE, open_exclusive, shm,
     tests::{anon, anon_with_file, firmware, irq_pair, named_note, new_session},
 };
-use std::{collections::HashSet, fs, thread};
+use std::{fs, thread};
 
 const RINGS: &[(&str, u8, bool)] = &[("ping-dn", 2, false), ("ping-up", 2, false)];
 
@@ -204,37 +204,19 @@ fn rpc_reports_capacity_timeout_and_peer_down() {
 }
 
 #[test]
-fn request_and_reply_steps_preserve_capacity_and_order() {
-    // (request head, request tail, reply head, reply tail, active call's index)
-    type State = (u8, u8, u8, u8, Option<u8>);
-    for depth in [1, 2] {
-        let mut seen = HashSet::new();
-        let mut todo: Vec<State> = vec![(0, 0, 0, 0, None)];
-        while let Some(state @ (sent, taken, replied, reclaimed, active)) = todo.pop() {
-            if !seen.insert(state) {
-                continue;
-            }
-            assert!(reclaimed <= replied && replied <= taken && taken <= sent);
-            assert!(sent - reclaimed <= depth);
-            if active.is_none() && sent < 5 && sent - reclaimed < depth {
-                todo.push((sent + 1, taken, replied, reclaimed, Some(sent)));
-            }
-            if taken < sent && taken == replied {
-                todo.push((sent, taken + 1, replied, reclaimed, active));
-            }
-            if replied < taken {
-                assert!(replied - reclaimed < depth);
-                todo.push((sent, taken, replied + 1, reclaimed, active));
-            }
-            if active.is_some() {
-                // Timeout or close/reopen clears only the caller's local index.
-                todo.push((sent, taken, replied, reclaimed, None));
-            }
-            if reclaimed < replied {
-                assert!(active.is_none_or(|index| reclaimed <= index));
-                let next = active.filter(|&index| reclaimed != index);
-                todo.push((sent, taken, replied, reclaimed + 1, next));
-            }
-        }
+fn rpc_takes_the_reply_available_at_the_deadline() {
+    let rig = Rig::new(2, 0);
+    let (mut requests, mut replies) = rig.server();
+    let mut client = rig.client();
+    for value in [7, 8] {
+        assert!(matches!(
+            client.call(&value, Duration::ZERO),
+            Err(Error::Timeout)
+        ));
+        assert_eq!(requests.pop().unwrap(), Some(value));
     }
+    for value in [7, 8] {
+        replies.push(&value).unwrap();
+    }
+    assert_eq!(client.wait_reply(1, Some(Instant::now())).unwrap(), 8);
 }
