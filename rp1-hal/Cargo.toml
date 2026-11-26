@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+eh02-adc = ["dep:embedded-hal-0-2", "dep:nb"]
 # DMA ring producer's `SlotCopy` implementation for `dma::Channel`. Unstable: the DMA
 # ordering chain is a hypothesis and the last hardware campaign failed (docs/dma.md).
 unstable-ring-dma = ["rp1-proto/unstable-ring-dma"]
@@ -17,8 +18,8 @@ rp1-rt = { path = "../rp1-rt", default-features = false }
 rp1-proto = { path = "../rp1-proto" }
 embedded-hal = "1"
 fugit = { version = "0.3.9", default-features = false }
-embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"] }
-nb = "1"
+embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"], optional = true }
+nb = { version = "1", optional = true }
 embedded-io = "0.6"
 
 [dev-dependencies]

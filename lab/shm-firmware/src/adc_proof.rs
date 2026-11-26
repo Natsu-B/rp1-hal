@@ -2,9 +2,8 @@
 //! a burst of conversions logged on UART0, at boot and on request
 //! (link+0x28 = [`super::ADC_REQUEST`], reply at link+0x2c = the request on success, all-ones on failure).
 use crate::rp1;
-use embedded_hal_0_2::adc::OneShot;
 use rp1_hal::{
-    adc::{Adc, Error, TEMPERATURE, TemperatureSensor},
+    adc::{Adc, Error, TEMPERATURE},
     log,
 };
 const SAMPLES: u32 = 1000;
@@ -27,8 +26,8 @@ fn burst(adc: &mut Adc, ain: u8) -> Result<(u16, u16, u32, u32), Error> {
 }
 
 pub fn prove(adc: &mut Adc, tag: &str) -> Result<(), Error> {
-    // embedded-hal 0.2 path; the first conversion after the sensor is powered.
-    let first = nb_block(OneShot::read(adc, &mut TemperatureSensor {}))?;
+    // Capture the first conversion as the sensor powers up.
+    let first = adc.read(TEMPERATURE)?;
     for ain in 0..=TEMPERATURE {
         let (min, max, sum, us) = burst(adc, ain)?;
         log!(
@@ -45,14 +44,6 @@ pub fn prove(adc: &mut Adc, tag: &str) -> Result<(), Error> {
     let t = adc.read_temperature()?;
     log!("ADC_{} first={} temp_mc={} PASS\n", tag, first, t).unwrap();
     Ok(())
-}
-
-fn nb_block(r: nb::Result<u16, Error>) -> Result<u16, Error> {
-    match r {
-        Ok(v) => Ok(v),
-        Err(nb::Error::Other(e)) => Err(e),
-        Err(nb::Error::WouldBlock) => unreachable!("Adc::read blocks"),
-    }
 }
 
 pub fn run(adc: Option<&mut Adc>, request: u32) {

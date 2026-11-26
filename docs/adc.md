@@ -19,10 +19,12 @@ use rp1_hal::fugit::ExtU32;
 let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10.millis())?;   // core: Proc1
 let mut adc = p.adc.init(&clocks)?;
 
-// embedded-hal 0.2 (1.0 has no ADC trait):
-use embedded_hal_0_2::adc::OneShot;
-let t = nb::block!(OneShot::read(&mut adc, &mut rp1_hal::adc::TemperatureSensor {}))?;
+let t = adc.read(rp1_hal::adc::TEMPERATURE)?;
 ```
+
+The embedded-hal 0.2 `OneShot` adapter (`Input<N>` and `TemperatureSensor`) is available
+with the `rp1-hal/eh02-adc` Cargo feature. For embedded-hal 1.0 projects, call `Adc::read`
+directly.
 
 ## Ownership
 

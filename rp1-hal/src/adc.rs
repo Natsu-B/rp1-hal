@@ -232,9 +232,12 @@ pub const fn millivolts_to_millicelsius(mv: u32) -> i32 {
 }
 
 /// AINSEL as a type, for the embedded-hal 0.2 `OneShot` API (embedded-hal 1.0 has no ADC trait).
+#[cfg(feature = "eh02-adc")]
 pub struct Input<const N: u8>;
 /// The temperature sensor input.
+#[cfg(feature = "eh02-adc")]
 pub type TemperatureSensor = Input<TEMPERATURE>;
+#[cfg(feature = "eh02-adc")]
 impl<const N: u8> embedded_hal_0_2::adc::Channel<Adc> for Input<N> {
     type ID = u8;
     fn channel() -> u8 {
@@ -242,6 +245,7 @@ impl<const N: u8> embedded_hal_0_2::adc::Channel<Adc> for Input<N> {
         N
     }
 }
+#[cfg(feature = "eh02-adc")]
 impl<P: embedded_hal_0_2::adc::Channel<Adc, ID = u8>> embedded_hal_0_2::adc::OneShot<Adc, u16, P>
     for Adc
 {
@@ -289,6 +293,7 @@ mod tests {
         assert_eq!(millivolts_to_millicelsius(0), 437_227);
     }
 
+    #[cfg(feature = "eh02-adc")]
     #[test]
     fn input_ids() {
         use embedded_hal_0_2::adc::Channel;

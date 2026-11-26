@@ -19,3 +19,5 @@ STATIC
 - `Uart::split` gives a `Tx` and `Rx` for use in main and an ISR on the owning core.
   Each half exposes its own IRQ status and mask operations. Use `Uart::join` before
   calling `free` or `abort`. The pin route traits are now `TxPin` and `RxPin`.
+- Enable `rp1-hal/eh02-adc` for the embedded-hal 0.2 `OneShot` ADC adapter or migrate to
+  `Adc::read`.

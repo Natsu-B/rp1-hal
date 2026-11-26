@@ -12,7 +12,7 @@ bench = false
 [features]
 default = ["i2c", "adc", "spi"]
 i2c = ["dep:embedded-hal"]
-adc = ["dep:embedded-hal-0-2", "dep:nb"]
+adc = []
 spi = ["dep:embedded-hal"]
 sram-profile = []
 # DMA proof (command 16). Its raw ring copies call `SlotCopy`, hence the unstable feature.
@@ -26,8 +26,6 @@ rp1-link = { path = "../../rp1-link" }
 rp1-rt = { path = "../../rp1-rt" }
 rp1-proto = { path = "../../rp1-proto" }
 embedded-hal = { version = "1", optional = true }
-embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"], optional = true }
-nb = { version = "1", optional = true }
 
 [build-dependencies]
 rp1-build = { path = "../../rp1-build" }
