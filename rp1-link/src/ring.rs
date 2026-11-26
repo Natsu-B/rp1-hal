@@ -107,6 +107,20 @@ impl<T: Message, N: Notify> RingTx<T, N> {
 /// An endpoint with a [`Doorbell`](crate::notify::Doorbell) is armed when `try_open` returns
 /// it: Linux rings the doorbell for its first message. Messages that were there before are
 /// announced by one doorbell raised at open.
+///
+/// # Handing the endpoint to the doorbell handler
+///
+/// Both of those doorbells can come before the IO_BANK0 handler can reach the endpoint. A
+/// handler that runs then acks the doorbell and has nothing to drain: the first message is
+/// only late (the next one rings again), but the raise for messages already there is lost and
+/// the ring, not armed, stalls for good. So once the handler can reach the endpoint, raise the
+/// doorbell one more time (or enable the IO_BANK0 line only after the handoff):
+///
+/// ```ignore
+/// let rp1::link::Proc1Link { down, .. } = init.try_open()?;
+/// put(&DOWN, down); // the static that the IO_BANK0 handler drains
+/// doorbell.raise(); // for what came before the handler could reach `down`
+/// ```
 pub struct RingRx<T, W = Poll> {
     ring: shm::RingRx<T>,
     wake: W,

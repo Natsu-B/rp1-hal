@@ -206,7 +206,7 @@ fn write_core(
          impl Proc{core}LinkInit {{\n\
          pub(super) const fn new() -> Self {{ Self {{ _core: ::core::marker::PhantomData }} }}\n\
          /// The token can be retried while pending. A lost window requires an RP1 reload.\n\
-         /// A doorbell-notified ring is armed when this returns (see [`transport::RingRx`]).\n\
+         /// A doorbell ring is armed when this returns: give it to its handler, then raise the doorbell once ([`transport::RingRx`]).\n\
          pub fn try_open(self) -> Result<Proc{core}Link, OpenError<Self>> {{\n\
          unsafe {{ generated::try_open(self, || Ok(Proc{core}Link {{"
     )?;
