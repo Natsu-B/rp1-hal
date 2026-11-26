@@ -66,12 +66,12 @@ DOWNIRQ_MORE_RC=0
 DOWN0IRQ ring=down0 n=10000 missing=0 corrupt=0 stalls=0 max=16 burst=1 entries=9000 raises=0 stale=0 errors=0 seconds=0.100000 msgs_per_s=100000
 DOWN0IRQ_PASS
 DOWN0IRQ_RC=0
-RP1_STATUS epoch=2 shm=Ready shm_generation=1 pcie=Up scmi=Serving(requests=120)
+RP1_STATUS epoch=2 shm=Ready shm_generation=2 pcie=Up scmi=Serving(requests=120)
 RINGIRQ0 name=burst-irq n=100000 missing=0 corrupt=0 stale=0 batch=32 gap_us=0 seconds=0.500000 sleeps=3 woken=3 late=0 check=ok
 RINGIRQ0 name=paced-irq n=100000 missing=0 corrupt=0 stale=0 batch=32 gap_us=100 seconds=0.400000 sleeps=3000 woken=2990 late=10 check=ok
 RINGIRQ0_PASS count=100000
 RINGIRQ0_RC=0
-RP1_STATUS epoch=2 shm=Ready shm_generation=1 pcie=Up scmi=Serving(requests=131)
+RP1_STATUS epoch=2 shm=Ready shm_generation=2 pcie=Up scmi=Serving(requests=131)
 RP1_CORE core=0 state=Running reason=0 line=0 aux=0x0 beat=10 file=None
 RP1_CORE core=1 state=Running reason=0 line=0 aux=0x0 beat=10 file=None
 RP1_HEALTH Ok

@@ -81,10 +81,11 @@ peripheral proofs. A profile-enabled client with a default firmware gets a comma
 it must not be reported as a successful profile. A disabled command 9 follows the existing
 unknown-command path (`errors=1`); it never touches the bulk scratch or starts SysTick.
 
-STATIC: every image keeps the `host_irq = true` declaration (rp1-link feature
-`unstable-host-irq`): it is part of the default lab profile, not a cargo feature of
-`shm-firmware`, because the declaration (and the `rp1:irq` overlay node) is metadata that
-features cannot select. Its code is the `notify_sram()` call in proc1's ISRAM command loop.
+STATIC: every image keeps the `host_irq = true` declaration: it is part of the default lab
+profile, not a cargo feature of `shm-firmware`, because the declaration (and the `rp1:irq`
+overlay node) is metadata that features cannot select. Its code is the
+`pulse_after_sram_write()` call in proc1's command loop and the wake of the `events` ring's
+`send_slice`.
 A firmware built with `sram-profile` logs `p0 sram-profile` on UART0; `verify-shm.py`
 fails a run without `--profile` that has this line, and a run with `--profile` that lacks it,
 so a firmware/client profile mismatch is caught in both directions.
@@ -94,25 +95,20 @@ host interrupt):
 
 | Firmware features | SRAM image / 49152 B | Free | ISRAM / 8192 B | DSRAM static |
 |---|---:|---:|---:|---:|
-| i2c, adc, spi (default) | 45400 | 3752 | 3128 | 16 |
-| none (SHM only) | 31648 | 17504 | 2116 | 16 |
-| i2c | 36736 | 12416 | 2812 | 16 |
-| adc | 35840 | 13312 | 2116 | 16 |
-| spi | 37352 | 11800 | 2532 | 16 |
-| sram-profile | 35440 | 13712 | 2708 | 656 |
-| dma (2026-11-05, rustc of that date) | 39728 | 9424 | 3092 | 16 |
-| ring-dma (2026-11-11, focused image) | 47840 | 1312 | 7912 | 16 |
-| i2c, adc, spi, sram-profile | does not link (16 B over) | - | - | - |
-| i2c, adc, spi, dma | does not link (about 3.3 KiB over) | - | - | - |
+| i2c, adc, spi (default) | 38688 | 10464 | 3744 | 96 |
+| none (SHM only) | 24040 | 25112 | 2736 | 96 |
+| i2c | 29872 | 19280 | 3428 | 96 |
+| adc | 28920 | 20232 | 2736 | 96 |
+| spi | 30712 | 18440 | 3152 | 96 |
+| sram-profile | 28432 | 20720 | 3356 | 736 |
+| dma | 39920 | 9232 | 3592 | 96 |
+| ring-dma | 38784 | 10368 | 8028 | 96 |
 
 The SRAM image includes ISRAM/DSRAM load copies and linker alignment; ELF file length is
-not the SRAM budget. Numbers are compiler-dependent. The all-features image (default +
-`sram-profile`) is best-effort and excluded from the matrix: it currently overflows the
-shared SRAM, so `SHM_PROFILE=1 lab/build-shm.sh` and `verify-shm.py --profile` (which also
-needs the I2C/ADC/SPI proofs) only work if it fits again. Profile with the focused
-`sram-profile` image and the profile client instead (commands above), running `shm-linux`
-directly and checking `p0 sram-profile`, `PROF_DONE`, `p1 shm cmd=9 ... errors=0` on UART0
-and `PROFILE rp1_us=` before `SHM_PASS` on UART10.
+not the SRAM budget. The combined default + `sram-profile` image is outside the build
+matrix. For profiling, use the focused `sram-profile` image and client (commands above)
+and check `p0 sram-profile`, `PROF_DONE` and `p1 shm cmd=9 ... errors=0` on UART0 and
+`PROFILE rp1_us=` before `SHM_PASS` on UART10.
 
 HW 未検証: cold-boot the default tuple, run `lab/check-shm.sh`, and require `PROFILE skipped`, `SHM_PASS`, the peripheral replies
 and the normal verifier's pass. Also pair a profile client
@@ -143,7 +139,7 @@ The allocator starts at `0xc0` after the lifecycle words and skips the SCMI regi
 `0x17c0..0x18c0`.
 Linux loads `uio.ko`, then `uio_pdrv_genirq.ko of_id=generic-uio`, and runs `lab/check-shm.sh`.
 UIO is polled, or (after shm enable) proc1 also raises MSI-X vector 29 on the `rp1:irq` UIO after
-each doorbell reply (unstable `host_irq = true`, `linux-doorbell <link> <doorbell> N
+each doorbell reply (`host_irq = true`, `linux-doorbell <link> <doorbell> N
 /dev/uio<rp1:irq>`, which re-checks the reply every 10 ms without a wake and reports
 `missed=`); hwirq58 stays with SCMI's mailbox. No cached mapping, kernel patch or private
 kernel API is used. Device mappings never go through libc memcpy/memset.
@@ -153,11 +149,17 @@ publication. It requires the PERSTn detector to be `Up`. The lab uses the hidden
 `rp1::link::__map_for_probe` for its separate, pre-publication window test.
 Each owning core moves its generated `p.link` into `try_open()` to attach its typed fields.
 Pending publication returns the token for retry. Window loss or attachment failure ends
-the wait. Block writes require the declared writer ownership. Linux `Firmware::open` checks UIO names, physical ranges, note hash and generation;
-handles retain mappings and advisory exclusive UIO locks. Other processes must respect those
-locks and must not mmap aliases. Only cold boot is supported; a live PCIe reset invalidates ATU.
+the wait. Block writes require the declared writer ownership. Linux `Firmware::open` checks
+the loader handoff against the note. `wait_ready` requests SHM and checks the published header
+before endpoints can open. Each endpoint holds its own advisory UIO lock. A live PCIe reset
+invalidates ATU, so the lab requires a cold boot.
 For writer=both the lab command handshake transfers writer ownership; the SeqLock alone does
 not arbitrate two writers. Blocks support word sections, so RP1 needs no 1 MiB local copy.
+
+For boot A, run the fresh-window probe before enabling SHM. Use the first `linux-status`
+with `shm=Ready` after the SHM check as the generation baseline for the ring IRQ and UART1
+workload. At the final status require `shm=Ready` and the same `shm_generation`. The pre-enable
+status can show generation 0 because the SHM header has yet to be published (STATIC).
 
 Pass/fail is strict (`lab/check-shm.sh` + `lab/verify-shm.py`): each Linux step has a time
 limit, any non-zero exit or wrong I2C reply prints `CHECK_FAIL`, the script ends with
@@ -204,18 +206,14 @@ prints `UART1_DIAG` lines: GPIO 0/1 CTRL/STATUS/PADS, the PL011 baud and control
 driver's tx/rx counters, to tell a wiring or pinmux fault from a script fault. It keeps the port
 open while it reads, because closing it shuts the PL011 down and drops received bytes.
 
-## Interrupt proof image (HW 2026-11-14)
+## Interrupt proof image (HW 2026-11-26)
 
 `irq-proof` is a focused firmware that proves the interrupt path on hardware: handlers entered
 and left on both cores, the `+0x108` wrapper of the DesignWare blocks, the user interrupt
-section, the default handler and `log!` from a handler. HW (2026-11-14, cold boot ×2): the
-proof and its regressions passed on the image as first built; later changes to the image and
-its checker are STATIC until the next run. `IRQ_MASKED` now measures BASEPRI sections
-(STATIC). Its system part is `shm-firmware`'s without the
-I2C/ADC/SPI proofs (same owners and the rings `shm-linux` uses), so the SHM, doorbell and UART1
-regressions run in the same boot. The doorbell is answered by proc1's `IO_BANK0` handler; main
-code never answers it. Both stacks are the defaults, which the proof measures (proc0 2 KiB + the
-768 B platform margin since 2026-11-25, STATIC; proc1 2 KiB; the HW run above had 2 KiB on both).
+section, the default handler and `log!` from a handler. The proof passed on both cores
+(HW 2026-11-26, cold boot ×1). It includes the SHM and doorbell regressions; proc1's
+`IO_BANK0` handler answers the raw doorbell. The proof measures both stacks (proc0 2 KiB
+plus the 768 B platform margin, proc1 2 KiB).
 
 Every marker line on UART0 ends with `nonce=<8 hex digits>`, a value made at boot; the firmware
 also stores it in the link page (+0x28) for Linux to print. Items that need no Linux run right
@@ -225,7 +223,8 @@ after boot. The proof ends when Linux has rung the doorbell 1000 times.
 |---|---|---|
 | `IRQ_PROOF_BEGIN sweep=0` | start of a boot's proof | cuts the capture; `sweep=0` (no estimated line is raised in this image) |
 | `IRQ_P0_TIMER0`, `IRQ_P1_TIMER1` | 1000 alarm interrupts at 1 kHz enter the handler and return | `n=1000`, `ipsr=42` / `43`, `us` within 999000..1010000, `pre_pending=0`, `post_pending=0` |
-| `IRQ_INTF_ONLY core= pin=` | whether `PROCn_INTF` alone (INTE = 0) raises INTS and the NVIC line | only `pre_pending=0`, `post_pending=0`; `ints`, `nvic`, `need_inte` are findings (`IRQ_INTF_INTE` follows if INTE had to be set) |
+| `IRQ_INTF_ONLY core=0 pin=22` | whether `PROCn_INTF` alone (INTE = 0) raises INTS and the NVIC line | only `pre_pending=0`, `post_pending=0`; `ints`, `nvic`, `need_inte` are findings (`IRQ_INTF_INTE` follows if INTE had to be set) |
+| `IRQ_P0_DBELL`, `IRQ_P1_DBELL` | each declared doorbell's force reaches its handler | pin 26 / 27, `n=1`, `ipsr=16`, pending 0 before and after |
 | `IRQ_P0_GPIO22` | proc0's `IO_BANK0` handler, entered by `PinIrq::force` | `n=100`, `ipsr=16`, pending 0 before and after |
 | `IRQ_WRAP i2c1`, `IRQ_WRAP spi0` | wrapper closed: the unmasked source is active in the controller but not pending; opened by `enable_interrupt`: one handler entry | `pre_pending=0 off_stat=1 off_pending=0 on_n=1`, `ipsr=24` / `35`, `post_pending=0` |
 | `IRQ_CS` | main updates a two-word pair in critical sections against a 10 kHz handler | `iters>=100000`, `isr_n>=1000`, `torn=0`, `control_torn>=1` (the same update unmasked must be caught), `max_masked_us<=100` |
@@ -254,7 +253,41 @@ python3 lab/verify-irq.py --uart0 UART0_CAPTURE --uart10 UART10_CAPTURE
 which checks one boot (the last, or `--nonce HEX`): the values above, the nonce on every
 marker line, the same nonce on the Linux console, `usb_pd_init status 3` and `max-current 3000`
 in that boot's banner, and the Linux-side results (`--proof-only` leaves the SHM regression
-out). It prints `IRQ_PROOF_VERDICT=PASS|FAIL`. Host tests: `python3 lab/test_verify_irq.py`.
+and the notification proofs out). It prints `IRQ_PROOF_VERDICT=PASS|FAIL`. Host tests:
+`python3 lab/test_verify_irq.py`. Strip terminal control sequences (bracketed paste
+`ESC[?2004h` / `ESC[?2004l`, `ESC[200~` / `ESC[201~`, colours) and `\r` from a UART10 capture
+before matching lines with any other tool; `verify-irq.py` does it itself.
+
+### Notification proofs
+
+proc0 owns `host_irq` and doorbell GPIO26 (`down0`), proc1 owns GPIO27 (`down1` and the
+raw echo). Each `IO_BANK0` handler acks before draining and raises again on `More`. The
+firmware raises once after handing each reader to its handler, which can then service data
+queued at open (docs/protocol.md §3.2).
+
+After the SHM and doorbell checks, `check-irq.sh` runs these `shm-linux` commands:
+
+| Command | UART10 result |
+|---|---|
+| `down-irq 1000000` | `DOWNIRQ_PASS` |
+| `down-irq --max 1 --burst 128 100000` | `DOWNIRQ_MORE_PASS` with raises > 0 |
+| `down0-irq 10000` | `DOWN0IRQ_PASS` |
+| `host0-irq 100000` between status checks | `RINGIRQ0_PASS`, SCMI serving, `RP1_HEALTH Ok` |
+| `mix-irq 100000` (main's `events0` and TIMER_0's `tick0`) | `MIXIRQ_PASS`, late ≤ 1 % |
+| `irq-pair` (one process per ring) | two `PAIR_MEMBER` lines, `IRQPAIR_PASS` |
+| 50 killed `down-irq --stream-only` writers, then `down-irq 10000` | `DOWNIRQ_KILLS=50`, `DOWNIRQ_KILL_PASS` |
+| `down-irq --publish-only 8`, then `down-irq --open-only 8` | `DOWNIRQ_UNRUNG_PASS`, `DOWNIRQ_REOPEN_PASS` |
+| `controls` | `CONTROL_J1` / `CONTROL_J2` (readback omitted on the writer / reader, record only) |
+
+The kill loop checks delivery by the next writer. To isolate its open-time notification,
+`--publish-only` leaves eight messages unread for 1 s. `--open-only` sends nothing and
+requires all eight to drain without corruption. If a Linux → RP1 ring has pending data
+and its tail holds still for 1 s, the client fails with `*_STALL`. The RP1 reader has no
+timed re-check.
+
+HW (2026-11-26, cold boot ×1): the transfer, budget, concurrent readers and kill checks
+passed with zero stalls. Both controls recorded zero stalls. Open-only notification has
+host and model coverage (STATIC), with `DOWNIRQ_REOPEN` awaiting hardware.
 
 ## Interrupt sweep image (HW 2026-11-15)
 
@@ -462,20 +495,17 @@ user functions (for example `platform::init` into `main`), so the platform figur
 bound and the user figure an upper bound. The compiler's panic entry symbol is attributed to
 user code by name, including when rp1-rt supplies the handler.
 
-STATIC (2026-11-25, rustc 1.99.1, release `cargo rp1 build`; bytes):
+STATIC (2026-11-26, rustc 1.99.1, release `cargo rp1 build`; bytes):
 
 | Firmware | Image / 49152 | SRAM free | ISRAM / 8192 | Platform code | Runtime code | User code | Unattributed | stack0 (margin) / stack1 | DSRAM free p0 / p1 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| examples/dual-core | 27200 | 21952 | 1136 | 11290 | 6202 | 6176 | 3260 | 2816 (768) / 2048 | 5264 / 6032 |
-| irq-proof | 43768 | 5384 | 4224 | 16604 | 6374 | 15936 | 4514 | 2816 (768) / 2048 | 5104 / 5872 |
-| irq-sweep | 27400 | 21752 | 316 | 8018 | 4746 | 10832 | 3590 | 2816 (768) / 2048 | 5296 / 6064 |
-| pwm-loopback | 18304 | 30848 | 324 | 8134 | 2892 | 5472 | 1578 | 2816 (768) / 2048 | 5304 / 6072 |
-| scmi-starvation | 16264 | 32888 | 536 | 7190 | 2696 | 4482 | 1688 | 2816 (768) / 2048 | 5288 / 6056 |
-| shm-firmware (default) | 44096 | 5056 | 3664 | 17418 | 9110 | 12902 | 4402 | 2816 (768) / 6144 | 5288 / 1960 |
-| shm-firmware (ring-dma) | 44944 | 4208 | 8044 | 20266 | 5622 | 10974 | 3712 | 2816 (768) / 6144 | 5288 / 1960 |
-
-Data and bss are below 130 B per owner in every image except ring-dma's 4136 B of user
-`.shared` data. The stack margin lives in DSRAM, so the SRAM images did not grow with it.
+| examples/dual-core | 27128 | 22024 | 1164 | 11192 | 6202 | 6200 | 3262 | 2816 (768) / 2048 | 5256 / 6024 |
+| irq-proof | 44728 | 4424 | 6512 | 15486 | 6246 | 18750 | 3702 | 2816 (768) / 2048 | 4872 / 5640 |
+| irq-sweep | 27304 | 21848 | 344 | 7906 | 4746 | 10852 | 3592 | 2816 (768) / 2048 | 5288 / 6056 |
+| pwm-loopback | 18352 | 30800 | 352 | 8022 | 2892 | 5620 | 1592 | 2816 (768) / 2048 | 5296 / 6064 |
+| scmi-starvation | 16400 | 32752 | 608 | 7108 | 2706 | 4668 | 1704 | 2816 (768) / 2048 | 5280 / 6048 |
+| shm-firmware (default) | 38688 | 10464 | 3744 | 13860 | 8942 | 12404 | 3212 | 2816 (768) / 6144 | 5280 / 1952 |
+| shm-firmware (ring-dma) | 38784 | 10368 | 8028 | 16164 | 5454 | 10288 | 2504 | 2816 (768) / 6144 | 5280 / 1952 |
 
 ## PWM loopback diagnostic (STATIC / HW 未検証)
 
@@ -484,10 +514,11 @@ and HW test plan](../docs/pwm.md). It reserves PWM0 as one block and reports two
 through UART counters while proc0 services SCMI. It has not been deployed or run on hardware.
 
 Interrupt-notified ring: the `events` ring (`notify = "irq"`, proc1 has `host_irq`) is
-streamed by commands 14 (with `HostIrq::push_slice_notify` for every batch) and 15 (without).
-`shm-linux ring-irq [count]` runs burst / paced / single-message streams with a polling and
-an `RingRx::wait` consumer, checks every message and prints one `RINGIRQ` line per run
-(measured `missing` / `corrupt`, `check=`). Notified irq runs must be woken by interrupts
+streamed by commands 14 (`send_slice` for every batch, which wakes a sleeping reader) and 15
+(`push_slice`, which does not). `shm-linux ring-irq [count]` runs burst / paced /
+single-message streams with a polling and an IRQ consumer (`RingRx::recv_into(out, timeout)`).
+Each run checks every message and prints one `RINGIRQ` line (`missing`, `corrupt`, `check=`).
+Notified IRQ runs must be woken by interrupts
 (`woken > 0`, `late` at most 1 % of the sleeps); the designated `paced-irq` run must also have
 slept (`sleeps > 0`, `woken > 0`), else it is `INCONCLUSIVE` and no `RINGIRQ_PASS` is printed. So a broken notification path fails although
 the 10 ms re-check still delivers the data; `suppressed-irq` (command 15, irq consumer) must

@@ -240,17 +240,17 @@ RMW atomic のメソッドは持たない。
 - **配置（STATIC）**: 今の SCMI shmem（`scmi@d7c0`、0x100 byte）は BAR2 末尾 16 KiB の中にある。link ページ全体を使う前に
   SCMI shmem を移すか、link の配置でその範囲を予約する。
 - **済（HW）**: UIO mmap（BAR2 SRAM）への書き込みは M3 から見える（SCMI 要求 2000/2000 が解釈され応答）。
-- **hwirq58 以外の IRQ 経路（HW 2026-11-04、`<lab-log>`。不安定機能）**: RP1 の 61 本の割り込みはそれぞれ PCIe MSI-X の vector で、
+- **hwirq58 以外の IRQ 経路（HW 2026-11-04、`<lab-log>`）**: RP1 の 61 本の割り込みはそれぞれ PCIe MSI-X の vector で、
   `MSIX_CFG(n)`（PCIE_APBS 0x40108008 + 4n）の TEST bit は割り込み源と OR される（DOC）。Linux のドライバが無く、
   源を RP1 が握れる vector 29（TIMER アラーム 3、2026-11-05 に vector 57 から変更）を使い、proc1 が TEST を SET/CLR エイリアス（0x800/0xc00、Linux の rp1 ドライバと同じ）でパルスし、
   Linux は rp1 ノードの子の generic-uio（`rp1:irq`、`interrupts = <29 1>` 立ち上がりエッジ）で受ける。hwirq58・rp1-mailbox・SCMI
   には触れない（serial@34000 は probe、UART1 送受信も合格）。
-  - 使い方: 宣言でちょうど 1 コアが `host_irq = true` を書き、rp1-link の feature `unstable-host-irq` を有効にする。その
-    コアのリソースに `HostIrq` が 1 つだけ入り、overlay に `rp1:irq` が加わる。`notify_*` は `&mut self` を取る:
-    SET/CLR の 2 回の書き込みが別の呼び出しと交ざると（A の SET → Linux が消費 → B の SET は TEST が既に 1 なのでエッジに
-    ならない → 両方 CLR）起床が 1 回消えるので、所有は 1 つにする（STATIC、コンパイル失敗の試験あり）。
-  - 公開の順序: RP1 の SRAM のデータは `notify_sram`（barrier → パルス）。Linux DDR のデータは同じ窓を
-    `rp1_link::flush_window` で読み戻してから `notify_sram` を呼ぶ（STATIC）。protocol.md §3。
+  - `host_irq = true` は 1 コアだけが宣言できる。生成された `HostIrq` は大きさ 0 で `Copy` なので、
+    同じコアの IRQ 端点に持たせられる。SET と CLR の間に同じコアの別のパルスが入るとエッジが 1 回消えるため、
+    2 回の書き込みを 1 つの critical section で囲む（STATIC）。優先度 0 / 1 の PERSTn と SCMI はこの区間にも入れるが、
+    `HostIrq` を使わない。proc0 の main と TIMER_0 ハンドラが同じ vector を使う `mix-irq` は late 0 %（HW 2026-11-26）。
+  - 端点を通らない SRAM のデータは `HostIrq::pulse_after_sram_write` で知らせる。DDR への posted 書き込みは
+    先に `rp1_link::flush_window` で完了させる（STATIC、protocol.md §3.1）。
   - **割り込み源（TIMER アラーム 3）**: vector 29 の源は `TIMER.INTS` bit 3 =（INTR & INTE）| INTF（DOC、RP2040 と同じ形）。
     `host_irq` が宣言上 `TIMER.ALARM3` を所有し（他のコアの `timer = ["ALARM3"]` は E3）、rp1-hal はその INTE/INTF を立てない
     ので源は 0 のまま（INTR は立っても INTE=0 なら出ない。HW: 実行中 INTR=0x3、INTE=0）。前に動いたファームが残した状態に
@@ -258,7 +258,7 @@ RMW atomic のメソッドは持たない。
     （STATIC: rp1-regdb `timer.toml` の INTE/INTF/INTR と atomic clear +0x3000、`device.toml` TIMER_3 = 29。INTF bit 3 は
     HW 2026-11-05 の devmem で 0x8 → 立つ・0 → 解除の plain RW。PAC の INTF writer は非公開。ARMED の W1C は unverified なので
     アラーム自体は disarm しない。INTE=0 なら発火しても INTR だけ）。Linux の DT に RP1 hwirq 26..29 の
-    利用者は無い（STATIC、標準 DTB + bcm2712d0 + uart1-pi5）。HW（2026-11-05、cold boot 2 回）: Linux から `TIMER.INTF` bit 3 を
+    利用者は無い（STATIC、調査範囲は protocol.md §3.1）。HW（2026-11-05、cold boot 2 回）: Linux から `TIMER.INTF` bit 3 を
     立てると `rp1:irq` が 1 回起床（bit 2 では 0 回）し源の特定を確認、立てたままの間は TEST パルスがエッジにならず 10 回とも
     10 ms の見直しで返答を拾う（missed=10、失敗 0）、解除後は元通り。
   - 旧 vector 57（PROC_MISC）を捨てた理由: 57 は Linux の rp1 ドライバの番号表で `RP1_INT_PROC_MISC`（DOC、dt-bindings rp1.h）
@@ -279,9 +279,10 @@ RMW atomic のメソッドは持たない。
   - 注意: ノードをルートに置くと fw_devlink が rp1 ノードを供給元として待ち続け deferred になる（HW）。rp1 の子に置く。
     UIO の reg は PCIE_APBS の 16 KiB（16K ページのカーネルの最小単位）だが、マップは使わない。
 - **リングの割り込み通知（`notify = "irq"`、RP1 → Linux、HW 2026-11-05、cold boot 3 回、同じファームで 2 回以上）**:
-  宣言は rp1-to-linux の ring に `notify = "irq"`、その core に `host_irq = true`（rp1-build が検査）。RP1 は push / `push_slice`
-  の後に `HostIrq::notify_ring`（`head` の同じ窓の読み戻し → 読み手の眠りカウンタ → 未通知の眠りだけパルス）、Linux は
-  `rp1_linux::Irq` と `RingRx::wait`（arm → 読み戻し → 再確認 → 最長 10 ms 眠る）。手順と競合の議論は protocol.md §2.3。
+  宣言は rp1-to-linux の ring に `notify = "irq"`、その core に `host_irq = true`（rp1-build が検査）。RP1 は端点の `send` /
+  `send_slice` / `flush`（`head` の同じ窓の読み戻し → 読み手の眠りカウンタ → 未通知の眠りだけパルス）、Linux は端点の
+  `recv(timeout)` / `recv_into(out, timeout)`（arm → 読み戻し → 再確認 → 最長 10 ms 眠る）。手順と競合の議論は protocol.md §2.3。
+  端点の API による `ring-irq` の回帰は 10^6 件で欠落・破損 0（HW 2026-11-26、cold boot 1 回）。
   10^6 件 × 各条件、欠落・破損 0、10 ms の見直しでデータを拾った回数（late）0:
 
   | 条件（16 B メッセージ） | 受け手 | MB/s | 受け手 CPU | 割り込み / 件 |

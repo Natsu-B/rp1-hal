@@ -109,7 +109,7 @@ T   payload 8 バイト境界に 0 埋め
 2. スロット `head` に `seq`・payload を書く。`reject` の `len` は書き手の `attach` が全スロットに一度だけ書く（値は変わらないので、未読スロットに同じ値を書き直しても読み手に影響しない）。M3 → DDR の posted 書き込みは 1 語 約 0.54 µs（HW, 2026-10-29）なので 1 件あたり 1 語減らす。
 3. 書き込みの完了を確定する（M3: `dsb`。Linux: Device 属性の書き込みは発行順に出る）。
 4. `head += 1` を書く。
-5. 通知を使うときだけ（`notify = "irq"`）: `head` を同じ窓から読み戻して到達を確定し（`RingTx::wake_needed`）、その後 `waiting`（手元）が奇数で、まだ通知していない値なら通知し、その値を覚える（§3）。1 回の眠りに通知は 1 回まで。追いついている読み手（偶数）には通知しない。バッチ（`push_slice`）なら 1 回に 1 度呼べば足りる。
+5. 通知を使うときだけ（`notify = "irq"`）: `head` を同じ窓から読み戻して到達を確定し（`RingTx::wake_needed`）、その後 `waiting`（手元）が奇数で、まだ通知していない値なら通知し、その値を覚える（§3.1）。1 回の眠りに通知は 1 回まで。追いついている読み手（偶数）には通知しない。バッチ（`push_slice`）なら 1 回に 1 度呼べば足りる。Linux → RP1 では記憶を持たず、奇数なら毎回鳴らす（`RingTx::reader_asleep`、§3.2）。
 
 読み手（`pop`）:
 
@@ -177,30 +177,111 @@ T   payload 8 バイト境界に 0 埋め
 
 | 向き | 方法 | 実測 |
 |---|---|---|
-| Linux → proc1 | GPIO INTF の SET 別名（`IO_BANK0 + 0x2114`、BAR1 経由）に書く。proc1 の ISRAM 上の ISR が受ける | 往復 p50 4.1 µs（HW、ポーリング側） |
-| Linux → proc0 | mailbox（SYSCFG PROC_EVENTS）。ch0 は SCMI が使うので ch1 以降 | 配送は HW。遅延は未測定 |
-| RP1 → Linux | ポーリング（link の返答語）。または不安定機能（`host_irq = true`）として MSI-X vector 29（TIMER アラーム 3）の TEST パルス → `rp1:irq` UIO の IRQ（`rp1_link::notify::HostIrq`、design.md §6.2）。hwirq58 は rp1-mailbox/SCMI が専有したまま | 共有は不可（HW、-EBUSY）。mailbox/SCMI を外せば UIO で受けられ、往復 p50 71 µs（M3 の SCMI 処理込み）、通知ごとに空振り起床 1 回（HW 2026-10-28） |
+| Linux → RP1 | BAR1 の `PROCn_INTF` force → 読み手の `IO_BANK0`（`Doorbell<PIN, CORE>`、§3.2） | HW（2026-11-26、cold boot 1 回） |
+| Linux → proc0 | mailbox（SYSCFG PROC_EVENTS）。ch0 は SCMI が使うので ch1 以降。端点の通知には使わない | 配送は HW。遅延は未測定 |
+| RP1 → Linux | `host_irq = true` のコア（1 つだけ）が MSI-X vector 29（TIMER アラーム 3）の TEST をパルス → `rp1:irq` UIO の IRQ（`rp1_link::notify::HostIrq`、design.md §6.2）。hwirq58 は rp1-mailbox/SCMI が専有したまま | design.md §6.2（往復 p50 約 8.6 µs、HW 2026-11-05） |
 | どちらでも | 通知なし（`notify = "poll"`）。受け手がポーリング | — |
 
-- 通知は「相手の `waiting` が奇数で、まだ通知していない値のときだけ」送る（毎回は送らない。§2.3）。RP1 → Linux のリングでは `notify = "irq"` を宣言し、生産側のコアが `host_irq = true` を持つこと（rp1-build が検査）。RP1 は `HostIrq::notify_ring`（または push と通知を 1 回で行う `HostIrq::push_slice_notify`。呼び忘れても誤りにはならず、Linux は 10 ms の再確認で拾う）、Linux は `rp1_linux::Irq` と `RingRx::wait`。`rp1:irq` は全 irq リングで 1 本なので、`RingRx::wait` は自分のリングしか arm しない（眠っている間、他のリングの書き手は通知しない）。複数のリングを 1 スレッドで待つときは `Irq::wait_any`（全リングを arm → 全リングを再確認 → 1 回眠る）。Linux → RP1 のリングはドアベルかポーリング（`notify = "irq"` は不可）。
-- Linux 側のドアベル書き込みには BAR1 の該当 16 KiB ページを UIO で見せる必要があり、そのページには他の GPIO レジスタも入る
-  （pinctrl と同じページ）。`rp1-linux` はドアベルの別名レジスタにしか書かない。重ねて mmap できるかは未確認（TODO）。
-- UIO の IRQ（`uio_pdrv_genirq`）は割り込みのたびに無効化されるので、`read` の後に `write(1)` で再度有効にする。`poll` / `epoll` も使える。
-- RP1 → Linux の割り込み（`rp1:irq`）は合図であってメッセージではない。
-  - 公開してから通知する。データが Linux DDR（shm のリング・ブロック）にあるなら、同じ窓の読み戻し
-    （`rp1_link::flush_window`）で posted 書き込みを完了させてから鳴らす（`HostIrq::notify_sram`）。barrier だけで足りるのは
-    RP1 の SRAM（link ページ、共有 SRAM 上の領域）にあるデータだけ（`HostIrq::notify_sram`）。barrier は PCIe の posted 書き込みの
-    到着を待たないので、DDR のデータより先に Linux が起きて古い値を読みうる（STATIC）。
+宣言は ring ごとに `notify = "irq"`。rp1-to-linux なら宣言した core が `host_irq = true` を、linux-to-rp1 なら `doorbell` を持つこと
+（rp1-build が検査）。RP1 の端点は通知手段を大きさ 0 の型引数（`Poll` / `HostIrq` / `Doorbell<PIN, CORE>`）で持つ。
+Linux の端点は note に従い `rp1:irq` または `rp1:doorbell` を共有で開く。
+
+### 3.1 RP1 → Linux
+
+- RP1 の `rp1_link::RingTx::send` / `send_slice` / `flush`（と `send_*_dma`、dma.md）は公開の後に §2.3 の書き手 5. を行い、
+  未通知の眠りがあればパルスする。`push` / `push_slice` / `push_with` は鳴らさない（まとめた後に `flush`）。
+- Linux の `rp1_linux::RingRx::recv(timeout)` / `recv_into(out, timeout)` / `wait(timeout)` は §2.3 の「眠る」を行う。
+  1 つの `RingRx` の待ちは自分の ring だけを arm する。複数を 1 スレッドで待つときは
+  `Firmware::wait_any` が全 ring を arm して再確認し、空なら 1 回眠る。
+  `rp1:irq` は共有で開くので、別々のプロセスが別々のリングを同時に待てる（HW 2026-11-26、`events0` と `tick0` の 2 プロセス）。
+- 割り込みは合図であってメッセージではない。
+  - 公開してから通知する。端点の `send*` / `flush` は `head` を同じ窓から読み戻してからパルスする。端点を通らないデータは
+    `HostIrq::pulse_after_sram_write`（barrier → パルス）で知らせる。barrier だけで足りるのは RP1 の SRAM（link ページ、共有 SRAM
+    上の領域）にあるデータだけで、Linux DDR にあるなら先に `rp1_link::flush_window`（同じ窓の読み戻し）で posted 書き込みを
+    完了させる。barrier は PCIe の posted 書き込みの到着を待たないので、DDR のデータより先に Linux が起きて古い値を読みうる（STATIC）。
   - 失う・まとまる: Linux が vector を有効にする前（最初の `write(1)` の前）のパルスは消える。起床から次の `write(1)` までの
     パルスは 1 回にまとまる（lazy disable）。vector 29 の本来の割り込み源（TIMER アラーム 3、`host_irq` が所有し誰も
     立てない）が立っている間のパルスはエッジにならず届かない（design.md §6.2）。
-  - よって受け手は、起床のたびと、起床が無くても上限付きの待ち時間（例: 10 ms）ごとに、待っているデータ（リング・返答語）を
-    見直す。1 回のエッジを無期限に待たない。起床してもデータが無いこと（空振り）も許す。
+  - よって受け手は、起床のたびと、起床が無くても上限付きの待ち時間（10 ms）ごとに、待っているデータを見直す。
+    1 回のエッジを無期限に待たない。起床してもデータが無いこと（空振り）も許す。この向きは通知が失われても遅れるだけで止まらない。
+- UIO の IRQ（`uio_pdrv_genirq`）は割り込みのたびに無効化されるので、`read` の後に `write(1)` で再度有効にする（rp1-linux が行う）。
+- Raspberry Pi OS（2026-04-21 版）の bcm2712 系 DTB 8 個と overlay 363 個を調べた範囲では、
+  RP1 の MSI-X vector 26〜29 に利用者は無い（STATIC、2026-11-26）。overlay 6 個にあった 26・27 は
+  `interrupt-parent = <&gpio>` の GPIO 番号。
+
+### 3.2 Linux → RP1
+
+Linux は note の LINK からピンとコアを取り、`rp1:doorbell`（BAR1 の IO_BANK0、16 KiB）の
+`PROCn_INTF` の SET 別名（`0x2108 + 0xc·n`）へ `1 << pin` を書く。端点ごとの UIO は
+`flock` で排他にする（2 つ目は `Err(Busy)`）。
+
+```
+Linux writer (send / send_slice; at open from W3)    RP1 reader (IO_BANK0 handler)
+  W1 store slots         (BAR2)                        R0 store INTF CLR                  doorbell.ack(), once
+  W2 barrier; store head (BAR2)                        R1 store waiting = even            (outbound window)
+  W3 barrier; load head  (BAR2); barrier               R2 pop: load head (SRAM); barrier; load slot;
+  W4 load waiting        (DDR, local)                         barrier; store tail (window)   ... up to max
+  W5 if odd: store INTF SET (BAR1)                     R3 store waiting = next odd        (outbound window)
+                                                       R4 barrier; load waiting (window); barrier
+                                                       R5 load head (SRAM); if not empty disarm and goto R2
+```
+
+- 書き手（`rp1_linux::RingTx`）: `send` は push の後に、`send_slice` は 1 件以上書けたときに W3〜W5 を 1 回行う
+  （`rp1_proto::shm::RingTx::reader_asleep`）。RP1 → Linux と違い、通知済みの記憶を持たず、奇数なら毎回鳴らす。force はレベルなので、
+  立っている間の再通知は同じ force にまとまる。通知済みの値を覚えないので、カウンタが一巡しても通知できる。
+  費用は 1 件（またはバッチ）ごとに BAR2 の読み戻し 1 回と、読み手が眠っていれば BAR1 への posted 書き込み 1 回。
+- `Firmware::ring_tx` は IRQ 端点を開くと W3〜W5 を 1 回行う。前の書き手が公開と通知の間で終了しても、
+  次の書き手が送信せずに読み手を起こせる。
+- RP1 の `try_open` は R3〜R5 を行う。空なら arm したまま返し、データがあれば arm を解除してドアベルを立てる。
+
+  ```rust
+  // IO_BANK0 handler body; `doorbell`, `down_a` and `down_b` come from the handler's statics.
+  doorbell.ack(); // R0: once, before every ring that shares this doorbell
+  let more = [down_a.drain(16, handle_a), down_b.drain(16, handle_b)];
+  if more.contains(&Ok(Progress::More)) {
+      doorbell.raise(); // a budget ran out and that ring is not armed: run the handler again
+  }
+  ```
+
+  `ack` を ring ごとに行うと、先に arm した ring への通知を次の `ack` が消しうる。
+  `drain` は最大 `max` 件（0 は 1 件）を処理し、空で arm できれば `Idle`、予算を使い切れば arm せず `More` を返す。
+  `More` なら書き手の通知を待たずに `raise()` するか、もう一度 drain する。
+- 端点をハンドラへ渡してから `doorbell.raise()` を 1 回呼ぶ（またはその後で `IO_BANK0` の線を有効にする）。
+  渡す前にハンドラが入ると、端点を処理せず `ack` する。開いた時点でデータがあった ring は arm していないため、そのまま止まる。
+- RP1 の端点は窓へ触る前に手元の `SHM_STATUS` を読み、Ready でなければ `Err(Reset)` を返す（STATIC）。
+  proc0 では判定の後に PERSTn が入る余地がある（`flush_window` と同じ）。
+
+前提。**以下の議論はこの 4 つが成り立つ場合に限る。**
+
+| # | 前提 | 分かっていること |
+|---|---|---|
+| P1 | 窓を通る読み出しは、同じ側が同じ窓へ先に出した書き込みが相手のメモリに届いてから戻る。(a) RP1 の outbound 窓 → DDR、(b) Linux の BAR2 → SRAM | PCIe のリンク上の順序規則は DOC。RP1 内部（AXI ↔ PCIe ブリッジ）と RC 側の経路は HYP。HW（2026-11-26）: (b) と (a) の両方を使う `DOWNIRQ` 10^6 件で停止 0。読み戻しを外した対照（lab の `controls`、記録のみ）も停止 0 で、反例が出ていないだけ |
+| P2 | Linux の UIO mapping は Device 属性で、store は書いた順に 1 つずつ出る | STATIC: `uio_mmap_physical` が `pgprot_noncached`、arm64 では `MT_DEVICE_nGnRnE`（6.12 のソース）。Raspberry Pi のカーネルで同じかは未確認 |
+| P3 | M3 は barrier をはさんだ store → load を書いた順に実行し、outbound 窓（M3 から見て Normal 属性の領域）でも入れ替わらない | HYP（§2.4 の未確認点。RP1 → Linux も同じ前提） |
+| P4 | `PROCn_INTF` の force は CLR 別名に書くまで残る（レベル） | HW（GPIO27 / GPIO26 のドアベル、2026-11-26 の `DOWNIRQ` / `DOWN0IRQ` と自己試験 `IRQ_P0_DBELL` / `IRQ_P1_DBELL`） |
+
+ホストの模型（`rp1-proto` の `shm::tests::notify`、STATIC）は P1 を仮定して、書き手 2 つ・ドアベル 1 本・読み手 1 つの全スケジュールを
+プリエンプション数の上限つきで調べる。`ack` を ring ごとにする・`More` を捨てる・開いた直後の通知を外す・どちらかの読み戻し
+（W3 または R4）を外す、のどれでも停止するスケジュールが見つかり、手順どおりなら見つからない。模型が示すのは「P1 の下で
+手順に抜けが無い」ことだけ。
+
+W3 と R4 の読み戻しにより、W4 が arm を見逃したときは R5 が公開済みの `head` を見る。
+逆に R5 が新しい `head` を見逃したときは W4 が arm を見て鳴らす。R0 で消した通知の `head` はすでに
+SRAM にあり、その後の drain が読む。R0 より後の force は次の `ack` まで残る。
+
+RP1 の読み手に時間での再確認は無い。ドアベルを取りこぼすと ring が止まりうるため、lab はメッセージが
+残ったまま `tail` が 1 s 動かなければ `<NAME>_STALL` で不合格にする。
+
+| 確認項目 | 強さ |
+|---|---|
+| `down1` 10^6 件、予算 1・バースト 128 での `More`、proc0 / GPIO26 の `down0` 10^4 件、書き手 50 回の強制終了後の送受信 | HW（2026-11-26、cold boot 1 回、欠落・破損・停止 0） |
+| 1 本のドアベルで 2 ring を drain、送信せずに開く場合の通知 | STATIC（ホスト試験と模型）。`DOWNIRQ_REOPEN` は実機未確認 |
 
 ## 4. 世代番号（RP1 の起動・再起動）
 
 1. 生成された `rp1::link::try_enable` で RP1 は世代番号を奇数にし、DDR 領域と link ページの割当範囲をゼロ化し、ヘッダーを書き、偶数（前の値 + 2）にする（STATIC）。
-2. Linux 側の `open` は、世代番号が偶数であること、note の SHA-256 が一致することを確かめてから使う。
+2. Linux の `Firmware::open` はローダーの引き継ぎを note と照合する。`wait_ready` が SHM を要求し、
+   ヘッダーの偶数の世代番号と note の SHA-256 を検査してから端点を開けるようにする。
 3. Linux 側は読み取りの前後、書き込みの前に世代番号を見て、変わっていたら `Err(Reset)` を返す。書き込み済みのデータを取り消すことはできない。cold boot 以外の同時リセットからの回復は保証しない。
 4. Linux のプロセスが再起動しても、`tail` は共有メモリに残っているので続きから読める。最初から読み直す `reset` は v0.1 では持たない。
 5. v0.1 は cold boot のみ（PCIe リセットで outbound ATU が消える）。RP1 の再ロードは Linux の再起動を伴う。
@@ -236,10 +317,14 @@ offset 8.. T             8 バイト境界
 | `Lost(n)` | 読み手: `overflow = "overwrite"` で n 件追い越された（エラーではなく通知。続けて読める） |
 | `Corrupt` | 読み手: スロットの `seq` が期待と違う |
 | `Invalid` | 読み手: payload の検査に失敗 |
-| `Reset` | Linux 側: 世代番号が変わった（RP1 が再初期化された） |
+| `Reset` | Linux 側: 世代番号が変わった（RP1 が再初期化された）。RP1 側（rp1-link の端点）: shm の窓が失われた（PERSTn、§3.2） |
 | `NotReady` | Linux 側: 世代番号が奇数 / ヘッダーが無い |
 | `Mismatch` | Linux 側: note の SHA-256・型 ID・名前が合わない |
-| `Timeout` | `recv_timeout` など |
+
+rp1-linux は `rp1_linux::Error` を返す: 上の誤りは `Proto(..)`（`Lost(n)` だけは `Lost(n)`）、ほかに `Io`、`Timeout`（`recv(timeout)`・
+`wait_ready` などの期限切れ）、`Busy`（その端点を別の所有者が開いている）、`Unknown`（note にその端点が無い）、
+`PeerDown { core, state, reason }`（端点を受け持つコアが停止・panic・fault。眠るたびに状態語を見る）、`LinkDown`（BAR2 が
+`0xffff_ffff` を読む）、`Abi`（状態語の版が違う）。
 
 ## 8. 決定（2026-10-23）
 

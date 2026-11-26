@@ -180,7 +180,8 @@ the rp1-hal channel implementation and the staged ring methods in rp1-proto. The
 and the hardware campaign after the review fixes FAILED (sections below). Default builds
 contain none of it; Linux needs nothing, the wire format is the CPU ring's.
 
-`rp1_link::ring_dma::RingDma` moves batches of a `reject` RP1 → Linux ring into Linux DDR by DMA.
+`rp1_link::ring_dma::RingDma` moves batches of a `reject` RP1 → Linux ring endpoint
+(`rp1_link::RingTx`) into Linux DDR by DMA.
 The wire format is unchanged: a ring can mix DMA and CPU batches, and the Linux reader is the
 same (STATIC: rp1-proto tests).
 
@@ -188,15 +189,19 @@ same (STATIC: rp1-proto tests).
 #[unsafe(link_section = ".shared")]
 static STAGE: Stage = Stage(UnsafeCell::new([0; 4096])); // 8-byte aligned, shared SRAM
 let mut ring_dma = RingDma::new(unsafe { &mut *STAGE.0.get() })?;
-let (n, pulsed) = host_irq.push_slice_dma_notify(&mut ring_dma, &mut tx, &mut dma.ch1, &batch);
+let n = tx.send_slice_dma(&mut ring_dma, &mut dma.ch1, &batch)?;
 ```
 
-- `RingDma::push_slice(&mut ring, &mut channel, values)`: batches of at least the threshold
-  (`DEFAULT_THRESHOLD` = 256 staged bytes, `set_threshold`) go by DMA, smaller ones by the
-  CPU (`RingTx::push_slice`). The copier is lent per call (`C: SlotCopy`, normally
-  `&mut Channel<N>` of the declared controller, `dma = {}`). Wrappers can implement the
-  same blocking contract, so lab timing needs no HAL diagnostics. One channel can serve
-  several rings; nothing else may use it during the call. `HostIrq::push_slice_dma_notify` adds `notify_ring` for `notify = "irq"`.
+- `RingTx::send_slice_dma(&mut ring_dma, &mut channel, values)` returns
+  `Result<usize, Staged<C::Error>>`: batches of at least the threshold
+  (`DEFAULT_THRESHOLD` = 256 staged bytes, `RingDma::set_threshold`) go by DMA, smaller ones by
+  the CPU (`RingTx::push_slice`). Then it wakes the reader as `send_slice` does (on a
+  `notify = "irq"` endpoint; also after an error or a full ring, since the reader may have
+  armed meanwhile). `push_slice_dma` is the same without the wake (follow with `flush`).
+  The copier is lent per call (`C: SlotCopy`, normally `&mut Channel<N>` of the declared
+  controller, `dma = {}`). Wrappers can implement the same blocking contract, so lab timing
+  needs no HAL diagnostics. One channel can serve several rings; nothing else may use it
+  during the call. A lost shm window (PERSTn) gives `Staged::Reset` before any access.
 - DMA path (`rp1_proto::shm::RingTx::push_slice_staged` with the `SlotCopy` the channel
   implements): stage whole slot images (`seq`, length, payload, zero padding) in the shared-SRAM
   stage, copy them in one block, or two when the batch wraps around the end of the ring
@@ -221,18 +226,18 @@ let (n, pulsed) = host_irq.push_slice_dma_notify(&mut ring_dma, &mut tx, &mut dm
 ### Direct generation (STATIC)
 
 ```rust
-let (n, pulsed) = host_irq.push_with_dma_notify(
-    &mut ring_dma, &mut tx, &mut dma.ch1, count,
-    |offset, payload| fill_message(first + offset as u32, payload),
-);
+let n = tx.send_with_dma(&mut ring_dma, &mut dma.ch1, count, |offset, payload| {
+    fill_message(first + offset as u32, payload)
+})?;
 // Retry from first + n, using the remaining count.
 ```
 
-`RingDma::push_with` uses the same threshold decision as `push_slice`, based on the actual
+`RingTx::send_with_dma` (and `push_with_dma`, without the wake) uses the same threshold
+decision as `send_slice_dma`, based on the actual
 writable count and stage capacity. Small batches use `RingTx::push_with`; DMA batches use
 `RingTx::push_with_staged`. Overwrite always uses CPU and accepts the full requested count.
-Both notification helpers accept any `C: SlotCopy` and return `Staged<C::Error>`.
-They call `notify_ring` on full rings and errors as well.
+Both return `Result<usize, Staged<C::Error>>`; `send_with_dma` wakes under the same
+conditions as `send_slice_dma`.
 
 The callback follows the contract in `rp1-proto`'s `RingTx::push_with`. Payloads aligned
 up to 8 bytes are generated directly in ordinary stage memory; higher alignments use one

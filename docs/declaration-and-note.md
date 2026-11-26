@@ -57,17 +57,18 @@ timer = ["ALARM1"]
 adc = {}                                  # ピンの無いブロック
 dma = {}                                  # DMA コントローラー全体（8 チャネル、docs/dma.md）
 spi0 = { sck = 11, mosi = 10, miso = 9 }  # ハードの csN は未対応（エラー）
-host_irq = true                           # 不安定: RP1 → Linux 割り込み（rp1-link の unstable-host-irq、design.md §6.2）
+host_irq = true                           # RP1 → Linux 割り込み（1 コアだけ。rp1_link::notify::HostIrq、design.md §6.2）
+doorbell = 26                             # Linux → このコアのドアベル（gpio / gpio_irq と重複不可）
 heartbeat = { period_ms = 100 }           # 任意: このコアが rp1_rt::status::beat() を N ms ごとに呼ぶ。Linux の health 判定に使う（protocol.md §9）
 
 [[package.metadata.rp1.shm]]
-name = "ctl"                              # [a-z][a-z0-9_]{0,23}。UIO 名は rp1:<name>
-kind = "channel"                          # "ring" | "channel" | "block"
+name = "down"                             # [a-z][a-z0-9_]{0,23}。UIO 名は rp1:<name>
+kind = "ring"                             # "ring" | "block"
+direction = "linux-to-rp1"
 core = "proc1"                            # M3 側でハンドルを受け取るコア
-message = "protocol::Cmd"                 # Linux → M3（channel）/ リングの要素（ring）
-reply = "protocol::Reply"                 # M3 → Linux（channel のみ）
+message = "protocol::Cmd"                 # リングの要素
 depth = 16                                # 要素数（2 の冪）
-notify = "irq"                            # "irq" | "poll"。channel は未実装。ring は rp1-to-linux だけ irq 可（core に host_irq = true が要る）
+notify = "irq"                            # "poll" が既定。irq は core の doorbell が要る
 
 [[package.metadata.rp1.shm]]
 name = "samples"
@@ -78,6 +79,7 @@ placement = "reader-local"                # ring のみ: "reader-local"（既定
 core = "proc1"
 message = "protocol::Sample"
 depth = 4096
+notify = "irq"                            # irq は core の host_irq = true が要る
 
 [[package.metadata.rp1.shm]]
 name = "trace"
@@ -123,7 +125,8 @@ HW（2026-10-30、lab ファーム = UART0（log）+ I2C1 + SPI0 + ADC を RP1�
 | インスタンス | `uart0`..`uart4`、`i2c0`..`i2c3`、`spi0`/`spi1`/`spi3`/`spi5`、`adc` | インスタンス全体。信号ごとのピン | IRQ 線、リセットビット、クロック、ラッパー `+0x108`、割り当てたピン |
 | ブロックの一部 | `timer = ["ALARM0".."ALARM3"]` | アラーム単位。タイマーの計数値は全員が読める | 該当 IRQ（26..29） |
 | ピン | `gpio = [..]`、`gpio_irq = [..]` | ピン単位（funcsel、pad、SYS_RIO、イベント選択） | — |
-| RP1 → Linux 割り込み（不安定） | `host_irq = true`（1 コアだけ） | MSI-X vector 29 の `MSIX_CFG.TEST`（`TIMER.ALARM3` も所有） | `rp1_link::notify::HostIrq`（rp1-link の feature `unstable-host-irq`）、overlay の `rp1:irq` UIO |
+| RP1 → Linux 割り込み | `host_irq = true`（1 コアだけ） | MSI-X vector 29 の `MSIX_CFG.TEST`（`TIMER.ALARM3` も所有） | リソース `host_irq: rp1_link::notify::HostIrq`、そのコアの `notify = "irq"` rp1-to-linux 端点、overlay の `rp1:irq` UIO |
+| Linux → RP1 ドアベル | `doorbell = N`（コアごとに 1 本、N は 0..=27） | そのコアの `PROCn_INTF` の bit N とピン N（パッドは使わない） | リソース `doorbell: rp1::DoorbellK`（`rp1_link::notify::Doorbell<N, K>`）、そのコアの `IO_BANK0` 線、`notify = "irq"` linux-to-rp1 端点、note LINK のピン。`Pin` / `PinIrq` は作らない |
 | バンク | 自動 | ピンを 1 本でも持つと、そのバンクの電圧設定は読むだけ | — |
 | システム | `log`、`clock.authority = "rp1"` | RP1 全体（コアに属さない） | UART0 と GPIO 14/15 / クロック生成器 |
 | Linux | `linux.keep`（省略時はボード既定。書くと既定を置き換える） | インスタンスとピン | 宣言できない（E3/E4） |
@@ -183,7 +186,8 @@ IRQ53/57 の上書きは proc0 だけに許す。ハンドラを定義せず線�
 | — | `log` があるのに UART0 が RP1 の所有になれない | `log sink uart0 requires UART0 to be owned by RP1` |
 | — | v0.1 の rpi-cm5 で `clock.authority = "linux"` | `clock.authority = linux is unsupported on the v0.1 rpi-cm5 board; use rp1` |
 | — | ring の `notify = "irq"` で、宣言した core が `host_irq = true` を持たない（RP1 → Linux の割り込みは生産側のコアが鳴らす） | `notify=irq on ring events requires proc1.host_irq = true (the producing core raises rp1:irq)` |
-| — | `notify = "irq"` の ring が linux-to-rp1 | `notify=irq is only for rp1-to-linux rings (linux-to-rp1 uses the doorbell or polling)` |
+| — | linux-to-rp1 の ring の `notify = "irq"` で、宣言した core が `doorbell` を持たない（Linux は読み手のコアのドアベルを鳴らす） | `notify=irq on ring down requires proc1.doorbell (Linux raises the reading core's doorbell)` |
+| E1 | `doorbell` のピンを `gpio`・`gpio_irq`・もう一方のコアの `doorbell` にも書く | `GPIO 27 is claimed by both proc1.gpio and proc1.doorbell` |
 | — | ring の `notify` が `poll`・`irq` 以外 | `invalid notify (poll or irq)` |
 | — | shm の名前が重複・形式違反、depth が 2 の冪でない、kind と項目が合わない | `shm 'ctl': 'direction' is only valid for kind = "ring"` |
 | — | Linux → RP1 のリングが共有 SRAM の予算を超える | `shm 'cmds': linux-to-rp1 ring needs 8.0 KiB of shared SRAM, 2.5 KiB left` |
@@ -231,6 +235,9 @@ pub mod rp1 {
 `#[entry(proc0)]` / `#[entry(proc1)]` は、対応する `rp1::ProcNResources` を受け取る。
 `Proc0Resources` だけが `proc1: rp1_rt::Proc1Launcher` と、`clock.authority = "rp1"` のときの
 `platform: rp1_hal::platform::Token` を持つ。宣言が空でも `ProcNIrq` と `irq` フィールドは生成する。
+`host_irq = true` のコアには `host_irq: rp1_link::notify::HostIrq` が、`doorbell = N` のコアには
+`doorbell: rp1::DoorbellK`（`rp1_link::notify::Doorbell<N, K>` の別名）と `p.irq.IO_BANK0` が入る。
+`p.link.try_open()` が作る端点の型は `notify` で決まる（protocol.md §3）。
 `platform` は生成される `rp1::platform::init(&mut core, p.platform)` に渡す。これがクロック・Linux 側ブロック・
 宣言した log・PCIe エンドポイント・SCMI サーバーを順に立ち上げ（`rp1_hal::platform`）、`System`（`clocks`、`pcie`、`report`）を返す。
 
@@ -269,7 +276,7 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 | 0x0013 | 1 | BOOT | config.txt の SHA-256、cmdline.txt の SHA-256、本来のカーネルのファイル名（文字列） |
 | 0x0020 | 1 | SHM_AREA | 24 bytes: DDR 合計サイズ u32（1 MiB 単位、1..16 MiB）、領域境界 u32（65536）、SRAM ハンドオフアドレス u32、SRAM 使用末尾 u16、予約 0 u16、DDR CPU 物理アドレス u64（STATIC: rpi-cm5 は 0x22000000）。旧 14-byte 形式は拒否 |
 | 0x0021 | 1 | SHM_REGION | 1 件 1 レコード: kind u8、direction u8、core u8、notify u8、linux_map u8、writer u8、overflow u8（1 reject / 2 overwrite）、placement u8（1 reader-local / 2 linux）、DDR オフセット/長さ u32×2、SRAM オフセット/長さ u16×2、要素長 u32、depth u32、型 ID u64（要求/応答で 2 つ）、名前（u8 長さ + UTF-8）、型名（同） |
-| 0x0022 | 0 | LINK | 12 bytes: 版 u8 = 1、予約 u8 = 0、状態語のオフセット u16 = 0x40、コアごとに（proc0、proc1）ドアベルのピン用の予約 u8（0xff）、host_irq の MSI-X vector u8（0 = 無し）、心拍の周期 ms u16（0 = 宣言なし） |
+| 0x0022 | 0 | LINK | 12 bytes: 版 u8 = 1、予約 u8 = 0、状態語のオフセット u16 = 0x40、コアごとに（proc0、proc1）ドアベルのピン u8（0..=27、宣言なしは 0xff）、host_irq の MSI-X vector u8（0 = 無し）、心拍の周期 ms u16（0 = 宣言なし） |
 
 - 文字列は `u8 長さ + UTF-8`（最大 255）。
 - id（ピン番号、ブロック番号）の割り当ては `rp1-proto` の enum が正本。番号は一度決めたら変えない。

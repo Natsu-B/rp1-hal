@@ -35,6 +35,7 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | 宣言 | `ProcNIrq` のフィールド |
 |---|---|
 | `gpio_irq = [..]` | `IO_BANK0: Line<0>` と各ピンの `gpioN: PinIrq<N, CORE>` |
+| `doorbell = N` | `IO_BANK0: Line<0>`（`gpio_irq` と共用で 1 本）。ドアベル自体は `ProcNResources.doorbell: rp1::DoorbellK` |
 | `pwm0` / `pwm1` | `PWM0: Line<5>` / `PWM1: Line<41>` |
 | `i2c0`〜`i2c3` | `I2C0: Line<7>`、`I2C1: Line<8>`、`I2C2: Line<9>`、`I2C3: Line<10>` |
 | `spi0` / `spi1` / `spi3` | `SPI0: Line<19>`、`SPI1: Line<20>`、`SPI3: Line<22>` |
@@ -49,7 +50,11 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
   PROC_MISC（57）・CLOCKS_DEFAULT（59）。53 / 57 のハンドラは proc0 のシステムサービスだけが置ける。
 
 例: `examples/dual-core` は proc0 で `TIMER_0`（1 秒ごとの心拍）、proc1 で `IO_BANK0`（Linux からの GPIO27
-ドアベル）をハンドラで受ける。
+ドアベルを `PinIrq` で受ける）をハンドラで受ける。
+
+`doorbell = N` はピン N の `PROCn_INTF` force を使う。force は `ack()` まで残るので、ハンドラは
+最初に 1 回だけ `ack()` してから、そのドアベルを使う全端点を drain する（protocol.md §3.2）。
+`is_pending()` は force の有無を読む。ほかの `gpio_irq` のピンと線を共用する場合は、その `PinIrq` も見る。
 
 ## 3. 周辺側で開けるもの
 
@@ -89,7 +94,8 @@ NVIC だけを見ている。proc1 で受けたのは TIMER_1・IO_BANK0・SPI0 
 | TIMER_0 / TIMER_1（26 / 27） | proc0 / proc1 のハンドラに 1000 回、1 s で 1000 回、IPSR 一致 | HW（2026-11、cold boot 2 回） |
 | TIMER_2（28） | ハンドラ無し: 既定ハンドラが 1 回入り、線を無効にして記録 | HW（同上） |
 | IO_BANK0（0） | proc0 は GPIO22 の force で 100 回、proc1 は Linux からの GPIO27 ドアベルで 1000 回 | HW（同上） |
-| I2C1 / SPI0（8 / 19） | `+0x108` 閉で pending 0、開でハンドラ 1 回 | HW（同上） |
+| IO_BANK0（0）、`Doorbell` | proc0 の GPIO26 と proc1 の GPIO27: `raise` → ハンドラ 1 回（IPSR 16、前後の pending 0）。Linux からの SET 別名（`0x2108` / `0x2114`）で `down0` 10^4 件・`down1` 10^6 件を欠落・停止 0 で処理 | HW（2026-11-26、cold boot 1 回、lab/irq-proof） |
+| I2C1 / SPI0（8 / 19） | `+0x108` 閉で pending 0、開でハンドラ 1 回 | HW（2026-11、cold boot 2 回） |
 | critical section | 割り込みと競合させて torn 0、最長マスク 4 µs 以下 | HW（同上） |
 | I2C0 / I2C2 / I2C3（7 / 9 / 10）、SPI1 / SPI3（20 / 22） | TX FIFO 空を源に、`+0x108` 閉で 0/3、開で 3/3 | HW（2026-11、2 種のイメージで各 2 起動、同じ結果） |
 | ADC_FIFO（52） | force と内部温度の実変換の両方で 3/3 | HW（同上） |

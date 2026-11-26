@@ -224,10 +224,11 @@ Linux 側:
 
 ```rust
 let fw = rp1_linux::Firmware::open()?;                       // note と UIO ノードを名前で照合
+fw.wait_ready(Duration::from_secs(10))?;                     // RP1 が shm を公開するまで待つ（STATIC）
 let mut samples = fw.ring_rx::<protocol::Sample>("samples")?;
 let trace = fw.block::<protocol::Trace>("trace")?;
-while let Some(s) = samples.pop() { /* ... */ }
-let count = trace.read(|t| t.count);                         // 安全なコピー経由で読む（下記）
+while let Some(s) = samples.try_recv()? { /* ... */ }        // 待つなら recv(Some(timeout))（STATIC）
+let count = trace.read()?.count;                             // 安全なコピー経由で読む（下記）
 ```
 
 #### 置き場所の規則（「書く側から遠く、読む側に近く」）
@@ -371,6 +372,7 @@ use std::time::Duration;
 fn main() -> anyhow::Result<()> {
     // ローダーが note から作った UIO ノードを、通信路の名前で探す（/sys/class/uio/*/name）。
     let fw = Firmware::open()?;
+    fw.wait_ready(Duration::from_secs(10))?;
     let mut ctl = fw.channel::<protocol::Cmd, protocol::Reply>("ctl")?;   // 型と深さを note と照合
 
     ctl.send(&protocol::Cmd::Start { period_us: 1000 })?;                 // ドアベルも鳴らす
