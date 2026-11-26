@@ -15,7 +15,7 @@ pub enum Error {
     Lost(u32),
     /// The deadline passed first.
     Timeout,
-    /// Another owner holds the endpoint.
+    /// Another owner holds the endpoint, or all RPC slots have outstanding requests.
     Busy,
     /// The firmware's note has no such endpoint (or, for status, no LINK record).
     Unknown,
@@ -61,7 +61,7 @@ impl fmt::Display for Error {
             Self::Proto(e) => write!(f, "shared memory: {e}"),
             Self::Lost(n) => write!(f, "{n} messages were overwritten"),
             Self::Timeout => write!(f, "timed out"),
-            Self::Busy => write!(f, "the endpoint is held by another owner"),
+            Self::Busy => write!(f, "the endpoint is held or all RPC slots are outstanding"),
             Self::Unknown => write!(f, "the firmware's note has no such endpoint"),
             Self::PeerDown {
                 core,

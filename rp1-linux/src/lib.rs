@@ -15,9 +15,11 @@ use std::{
     time::{Duration, Instant},
 };
 mod error;
+mod named;
 mod notify;
 mod status;
 pub use error::{Error, Result};
+pub use named::{Channel, Client};
 use notify::{Doorbell, Irq};
 pub use status::{CoreState, CoreStatus, Health, Monitor, PcieState, ScmiState, ShmState, Status};
 
@@ -275,17 +277,8 @@ impl Firmware {
     }
     /// The note's region `name`, checked against the message type.
     fn region<T: Message>(&self, name: &str) -> Result<ShmRegion<'_>> {
-        let r = Note::parse(&self.note)?
-            .records()
-            .filter_map(std::result::Result::ok)
-            .filter(|r| r.kind == SHM_REGION)
-            // Note::parse validated every region.
-            .filter_map(|r| ShmRegion::parse(r.value).ok())
-            .find(|r| r.name == name)
-            .ok_or(Error::Unknown)?;
-        if r.type_id != T::TYPE_ID || r.elem_size as usize != std::mem::size_of::<T>() {
-            return Err(proto::Error::Mismatch.into());
-        }
+        let r = find_region(Note::parse(&self.note)?, name).ok_or(Error::Unknown)?;
+        check_type::<T>(&r)?;
         Ok(r)
     }
     /// [`Firmware::region`] for a ring of `kind`. A name with `-` is unknown here:
@@ -314,12 +307,19 @@ impl Firmware {
     pub fn ring_rx<T: Message>(&self, name: &str) -> Result<RingRx<T>> {
         let session = self.session()?;
         let r = self.ring::<T>(name, ShmKind::RingToLinux)?;
-        let map = Self::map(&r)?;
+        Self::attach_rx(r, Self::map(&r)?, session)
+    }
+
+    fn attach_rx<T: Message>(
+        r: ShmRegion<'_>,
+        map: Rc<Mapping>,
+        session: Rc<Session>,
+    ) -> Result<RingRx<T>> {
         let inner = unsafe {
             shm::RingRx::attach(
                 map.ptr(),
                 map.len,
-                self.link.ptr().add(r.sram_offset as usize),
+                session.link.ptr().add(r.sram_offset as usize),
                 r.sram_len as usize,
                 r.depth,
                 overflow(r.overwrite),
@@ -342,10 +342,18 @@ impl Firmware {
     pub fn ring_tx<T: Message>(&self, name: &str) -> Result<RingTx<T>> {
         let session = self.session()?;
         let r = self.ring::<T>(name, ShmKind::RingToRp1)?;
-        let map = Self::map(&r)?;
+        self.attach_tx(r, Self::map(&r)?, session)
+    }
+
+    fn attach_tx<T: Message>(
+        &self,
+        r: ShmRegion<'_>,
+        map: Rc<Mapping>,
+        session: Rc<Session>,
+    ) -> Result<RingTx<T>> {
         let inner = unsafe {
             shm::RingTx::attach(
-                self.link.ptr().add(r.sram_offset as usize),
+                session.link.ptr().add(r.sram_offset as usize),
                 r.sram_len as usize,
                 map.ptr(),
                 map.len,
@@ -432,6 +440,21 @@ impl Firmware {
         self.monitor.health(window)
     }
 }
+fn find_region<'a>(note: Note<'a>, name: &str) -> Option<ShmRegion<'a>> {
+    note.records()
+        .filter_map(std::result::Result::ok)
+        .filter(|r| r.kind == SHM_REGION)
+        .map(|r| ShmRegion::parse(r.value).expect("validated region"))
+        .find(|r| r.name == name)
+}
+
+fn check_type<T: Message>(r: &ShmRegion<'_>) -> Result<()> {
+    if r.type_id != T::TYPE_ID || r.elem_size as usize != std::mem::size_of::<T>() {
+        return Err(proto::Error::Mismatch.into());
+    }
+    Ok(())
+}
+
 fn overflow(overwrite: bool) -> shm::Overflow {
     if overwrite {
         shm::Overflow::Overwrite
@@ -819,6 +842,10 @@ mod tests {
 
     /// Anonymous memory standing in for a UIO mapping.
     pub(crate) fn anon(len: usize) -> Rc<Mapping> {
+        anon_with_file(len, File::open("/dev/null").unwrap())
+    }
+
+    pub(crate) fn anon_with_file(len: usize, file: File) -> Rc<Mapping> {
         let p = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -833,7 +860,7 @@ mod tests {
         Rc::new(Mapping {
             base: NonNull::new(p.cast()).unwrap(),
             len,
-            _file: File::open("/dev/null").unwrap(),
+            _file: file,
         })
     }
     /// Where the rig's rings keep their link-page side (after the status words).
@@ -852,18 +879,24 @@ mod tests {
         _irq: Option<File>,
     }
     /// A published header and one depth-4 ring, irq or poll; both ends in this process.
-    fn rig(irq: bool) -> Rig {
+    pub(crate) fn new_session() -> Rc<Session> {
         let header = anon(4096);
         let sha = [7u8; 32];
         let mut init = unsafe { shm::HeaderInit::begin(header.ptr(), 0) };
         init.write(&sha, 1, 0);
         init.publish();
         let link = anon(LINK_PAGE);
-        let session = Rc::new(Session {
+        Rc::new(Session {
             header: unsafe { shm::Header::open(header.ptr(), &sha) }.unwrap(),
-            _map: header.clone(),
-            link: link.clone(),
-        });
+            _map: header,
+            link,
+        })
+    }
+
+    fn rig(irq: bool) -> Rig {
+        let session = new_session();
+        let header = session._map.clone();
+        let link = session.link.clone();
         let data = anon(4096);
         let (len, ctrl) = (shm::ring_body_size(4, 4).unwrap(), unsafe {
             link.ptr().add(UP_SRAM)
@@ -899,7 +932,7 @@ mod tests {
         }
     }
     /// An `Irq` on one end of a socket pair; writing 4 bytes to the other end is an event.
-    fn irq_pair() -> (Irq, File) {
+    pub(crate) fn irq_pair() -> (Irq, File) {
         let (a, b) = UnixStream::pair().unwrap();
         (
             Irq::from_file(File::from(OwnedFd::from(a))),
@@ -930,6 +963,15 @@ mod tests {
     /// A valid note with an SHM area, a LINK record (doorbells as given) and these regions,
     /// each a Linux -> RP1 ring of four `u32` on `core` (1 = proc0, 2 = proc1).
     pub(crate) fn note(doorbells: [Option<u8>; 2], rings: &[(&str, u8, bool)]) -> Vec<u8> {
+        named_note(doorbells, rings, &[], 4)
+    }
+
+    pub(crate) fn named_note(
+        doorbells: [Option<u8>; 2],
+        rings: &[(&str, u8, bool)],
+        rpcs: &[&str],
+        depth: u32,
+    ) -> Vec<u8> {
         use proto::note::{self, Link, LinkCore};
         let mut records = Vec::new();
         let mut record = |kind: u16, flags: u16, value: &[u8]| {
@@ -960,19 +1002,28 @@ mod tests {
             ..LinkCore::default()
         });
         record(note::LINK, 0, &Link { cores }.encode());
-        let body = shm::ring_body_size(4, 4).unwrap() as u16;
+        let body = shm::ring_body_size(4, depth as usize).unwrap() as u16;
         for (i, &(name, core, irq)) in rings.iter().enumerate() {
-            let mut v = vec![1, 2, core, irq.into(), 1, 0, 1, 1];
+            let up = name.ends_with("-up");
+            let direction = if up { 1 } else { 2 };
+            let mut v = vec![1, direction, core, irq.into(), 1, 0, 1, 1];
             v.extend((65536 * (i as u32 + 1)).to_le_bytes());
             v.extend(65536u32.to_le_bytes());
             v.extend((0x100 + 0x100 * i as u16).to_le_bytes());
-            v.extend(body.to_le_bytes());
+            v.extend((if up { 128 } else { body }).to_le_bytes());
             v.extend(4u32.to_le_bytes());
-            v.extend(4u32.to_le_bytes());
+            v.extend(depth.to_le_bytes());
             v.extend(<u32 as Message>::TYPE_ID.to_le_bytes());
             v.extend([0; 8]);
             v.extend([&[name.len() as u8], name.as_bytes(), &[3], b"u32"].concat());
             record(SHM_REGION, 1, &v);
+        }
+        for name in rpcs {
+            record(
+                note::RPC,
+                0,
+                &[&[name.len() as u8], name.as_bytes()][..].concat(),
+            );
         }
         let mut bytes = proto::note::MAGIC.to_vec();
         bytes.extend(2u16.to_le_bytes());
