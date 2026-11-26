@@ -11,6 +11,8 @@ fn fixture() -> Declaration {
 schema = 2
 [proc0]
 host_irq = true
+[proc1]
+doorbell = 27
 
 [[shm]]
 name = "type"
@@ -27,6 +29,7 @@ name = "down"
 kind = "ring"
 core = "proc1"
 direction = "linux-to-rp1"
+notify = "irq"
 message = "crate::types::Word"
 depth = 256
 
@@ -70,6 +73,66 @@ fn generated_resources_only_reference_their_link_features() {
     let irq_only = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
     assert!(!irq_only.contains("pub mod link"));
     assert!(irq_only.contains("pub host_irq: ::rp1_link::notify::HostIrq"));
+    // A doorbell exists without shm too: pre-Ready users answer it.
+    assert!(irq_only.contains("pub type Doorbell1 = ::rp1_link::notify::Doorbell<27, 1>;"));
+    assert!(irq_only.contains("pub doorbell: Doorbell1,"));
+    assert!(irq_only.contains("doorbell: unsafe { Doorbell1::new() },"));
+    assert!(!irq_only.contains("Doorbell0"));
+
+    d.proc1.doorbell = None;
+    d.proc0.host_irq = false;
+    let no_notifier = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
+    assert!(!no_notifier.contains("rp1_link"));
+}
+
+#[test]
+fn every_region_has_an_alias_that_names_its_notifier() {
+    let d = fixture();
+    let (body, _) = fragment(&d);
+    for alias in [
+        "pub type Type = transport::RingTx<crate::Word, transport::notify::HostIrq>;",
+        "pub type Down = transport::RingRx<crate::types::Word, super::Doorbell1>;",
+        "pub type Trace = transport::Block<::core::primitive::u32>;",
+        "pub r#type: Type,",
+        "pub down: Down,",
+        "r#type: generated::ring_tx(REGIONS[0])?,",
+        "down: generated::ring_rx(REGIONS[1])?,",
+    ] {
+        assert!(body.contains(alias), "{alias}\n{body}");
+    }
+    let mut poll = d.clone();
+    for r in &mut poll.shm {
+        r.notify = None;
+    }
+    poll.proc0.host_irq = false;
+    let (body, _) = fragment(&poll);
+    assert!(
+        body.contains("pub type Type = transport::RingTx<crate::Word>;"),
+        "{body}"
+    );
+    assert!(
+        body.contains("pub type Down = transport::RingRx<crate::types::Word>;"),
+        "{body}"
+    );
+}
+
+#[test]
+fn aliases_must_be_distinct_and_free() {
+    let mut d = fixture();
+    d.shm[1].name = "ty_pe".into();
+    d.shm[0].name = "ty__pe".into();
+    let error = generate(&d.shm_layout().unwrap(), &[]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "SHM names \"ty__pe\" and \"ty_pe\" both give the type alias TyPe; rename one"
+    );
+    let mut d = fixture();
+    d.shm[1].name = "proc1_link".into();
+    let error = generate(&d.shm_layout().unwrap(), &[]).unwrap_err();
+    assert!(
+        error.to_string().contains("type alias Proc1Link"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -104,7 +167,10 @@ fn write_case(dir: &Path, name: &str, source: String) -> std::path::PathBuf {
     let path = dir.join(format!("{name}.rs"));
     fs::write(
         &path,
-        format!("type Word = [u32; 4];\nmod types {{ pub type Word = super::Word; }}\n{source}"),
+        format!(
+            "type Word = [u32; 4];\nmod types {{ pub type Word = super::Word; }}\n\
+             type Doorbell1 = ::rp1_link::notify::Doorbell<27, 1>;\n{source}"
+        ),
     )
     .unwrap();
     let snapshot = Path::new("tests/ui-link").join(format!("{name}.stderr"));

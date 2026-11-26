@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
-use rp1_hal::{gpio::Doorbell, log};
+use rp1_hal::{gpio::PinIrq, log};
+use rp1_link::{Block, OpenError, flush_window, notify::HostIrq};
 #[cfg(not(feature = "ring-dma"))]
-use rp1_link::RingRx;
-use rp1_link::{Block, OpenError, RingTx, flush_window, notify::HostIrq};
+use rp1_link::{RingRx, RingTx};
 use rp1_proto::{Error, link};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 rp1_rt::bind!();
@@ -252,8 +252,9 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         dma
     };
     VALUES.producer(&mut core).push(42).unwrap();
-    let mut doorbell = Doorbell::new(p.pins.gpio27);
-    let mut host_irq = p.host_irq;
+    // Linux's raw doorbell request: the GPIO27 force bit of proc1.
+    let mut doorbell = p.irq.gpio27;
+    let host_irq = p.host_irq;
     // Linux may ask for an ADC burst before it enables the shm area.
     let mut init = p.link;
     let endpoints = loop {
@@ -287,7 +288,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut last = 0;
     let mut seen = 0;
     loop {
-        let sequence = wait_command(&mut doorbell, &mut host_irq, &control, seen);
+        let sequence = wait_command(&mut doorbell, host_irq, &control, seen);
         serve_proc1(
             #[cfg(feature = "adc")]
             adc.as_mut(),
@@ -314,7 +315,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 let tx = if command == 1 { &mut up } else { &mut latest };
                 for i in 0..count {
                     loop {
-                        match tx.push(&sample(i)) {
+                        match tx.send(&sample(i)) {
                             Ok(()) => break,
                             Err(Error::Full) => {}
                             Err(_) => {
@@ -332,7 +333,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             2 => {
                 let mut i = 0;
                 while i < count {
-                    match down.pop() {
+                    match down.recv() {
                         Ok(Some(s)) => {
                             if s != sample(i) {
                                 errors += 1;
@@ -397,7 +398,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 // Isolated pop cost: Linux filled `down` beforehand and stays off the link page.
                 let mut n = 0;
                 while n < count {
-                    match down.pop() {
+                    match down.recv() {
                         Ok(Some(s)) if s == sample(n) => n += 1,
                         _ => break,
                     }
@@ -407,7 +408,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             8 => {
                 // Isolated push cost: the ring is empty and Linux stays off the link page.
                 for i in 0..count {
-                    if up.push(&sample(i)).is_err() {
+                    if up.send(&sample(i)).is_err() {
                         errors += 1;
                     }
                 }
@@ -415,14 +416,9 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             #[cfg(not(feature = "ring-dma"))]
             10 | 12 => errors = up_batch(&mut up, count, start),
             // `events` stream: seed = batch << 16 | gap_us; 14 notifies after every batch
-            // (HostIrq::notify_ring), 15 does not (polling baseline on the same ring).
+            // (`flush`), 15 does not (polling baseline on the same ring).
             14 | 15 => {
-                let notify = if command == 14 {
-                    Some(&mut host_irq)
-                } else {
-                    None
-                };
-                (errors, extra) = events_stream(&mut events, notify, count, seed, start);
+                (errors, extra) = events_stream(&mut events, command == 14, count, seed, start);
             }
             #[cfg(not(feature = "ring-dma"))]
             11 | 13 => errors = down_batch(&mut down, count, start),
@@ -453,11 +449,9 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     gap_us: request[12],
                     timed: request[13] != 0,
                 };
-                let irq = if p.notify { Some(&mut host_irq) } else { None };
                 use ring_dma::{Run, sample_into, stream, wide};
                 use ring_dma_protocol::BATCH_CAPACITY;
                 let run = Run {
-                    irq,
                     count,
                     p: &p,
                     start,
@@ -563,7 +557,7 @@ fn idle0(
     }
 }
 const BATCH: usize = 32;
-/// Batched RP1→Linux stream: one `head` store per `push_slice`; the loop itself runs from ISRAM.
+/// Batched RP1→Linux stream: one `head` store per `send_slice`; the loop itself runs from ISRAM.
 #[cfg(not(feature = "ring-dma"))]
 #[rp1_rt::isram]
 fn up_batch(tx: &mut RingTx<Sample>, count: u32, start: u32) -> u32 {
@@ -576,7 +570,10 @@ fn up_batch(tx: &mut RingTx<Sample>, count: u32, start: u32) -> u32 {
         }
         let mut done = 0;
         while done < k {
-            done += tx.push_slice(&buf[done..k]);
+            let Ok(n) = tx.send_slice(&buf[done..k]) else {
+                return 1;
+            };
+            done += n;
             if now().wrapping_sub(start) > 180_000_000 {
                 return 1;
             }
@@ -586,13 +583,13 @@ fn up_batch(tx: &mut RingTx<Sample>, count: u32, start: u32) -> u32 {
     0
 }
 /// `events` stream (commands 14/15): batches of `seed >> 16` (1..=32, 0 = 32) messages,
-/// `seed & 0xffff` µs apart, each batch published with one `push_slice` (and notified,
-/// with `notify`, through `HostIrq::push_slice_notify`). Returns (errors, pulses).
+/// `seed & 0xffff` µs apart, each batch published with one `push_slice` (and, with `notify`,
+/// followed by `flush`, which pulses if the reader sleeps). Returns (errors, pulses).
 // The ring-dma image needs this ISRAM for the command 17 loop; there it runs from shared SRAM.
 #[cfg_attr(not(feature = "ring-dma"), rp1_rt::isram)]
 fn events_stream(
-    tx: &mut RingTx<Sample>,
-    mut notify: Option<&mut HostIrq>,
+    tx: &mut rp1::link::Events,
+    notify: bool,
     count: u32,
     seed: u32,
     start: u32,
@@ -612,15 +609,14 @@ fn events_stream(
         }
         let mut done = 0;
         while done < k {
-            // Also while the ring is full: the reader may have armed meanwhile.
-            done += match notify.as_deref_mut() {
-                Some(irq) => {
-                    let (n, pulsed) = irq.push_slice_notify(tx, &buf[done..k]);
-                    pulses += u32::from(pulsed);
-                    n
-                }
-                None => tx.push_slice(&buf[done..k]),
+            let Ok(n) = tx.push_slice(&buf[done..k]) else {
+                return (1, pulses);
             };
+            done += n;
+            // Also while the ring is full: the reader may have armed meanwhile.
+            if notify && tx.flush() == Ok(true) {
+                pulses += 1;
+            }
             if now().wrapping_sub(start) > 180_000_000 {
                 return (1, pulses);
             }
@@ -631,7 +627,7 @@ fn events_stream(
     }
     (0, pulses)
 }
-/// Batched Linux→RP1 stream: one `tail` store per `pop_into`, every message checked.
+/// Batched Linux→RP1 stream: one `tail` store per `recv_into`, every message checked.
 #[cfg(not(feature = "ring-dma"))]
 #[rp1_rt::isram]
 fn down_batch(rx: &mut RingRx<Sample>, count: u32, start: u32) -> u32 {
@@ -640,7 +636,7 @@ fn down_batch(rx: &mut RingRx<Sample>, count: u32, start: u32) -> u32 {
     let mut errors = 0;
     while i < count {
         let want = (count - i).min(BATCH as u32) as usize;
-        match rx.pop_into(&mut buf[..want]) {
+        match rx.recv_into(&mut buf[..want]) {
             Ok(n) => {
                 for b in &buf[..n] {
                     let s = sample(i);
@@ -690,8 +686,8 @@ unsafe fn scan_write(pointer: *mut u32, count: usize, seed: u32) {
 /// Idle cost is one DDR load (not a 17-word read), so the doorbell stays responsive.
 #[rp1_rt::isram]
 fn wait_command(
-    doorbell: &mut Doorbell,
-    host_irq: &mut HostIrq,
+    doorbell: &mut PinIrq<27, 1>,
+    host_irq: HostIrq,
     control: &Block<Control>,
     seen: u32,
 ) -> u32 {
@@ -700,7 +696,7 @@ fn wait_command(
         // image has no room for it in the pre-shm loop, so Linux uses interrupts after shm enable.
         // The reply is in the link page (RP1 SRAM), so the SRAM variant is enough.
         if service_doorbell(doorbell) {
-            host_irq.notify_sram();
+            host_irq.pulse_after_sram_write();
         }
         let sequence = control.sequence();
         if sequence != seen || proc1_request(proof_pending()) {
@@ -709,9 +705,9 @@ fn wait_command(
     }
 }
 #[inline(always)]
-fn service_doorbell(doorbell: &mut Doorbell) -> bool {
-    if doorbell.pending() {
-        doorbell.acknowledge();
+fn service_doorbell(doorbell: &mut PinIrq<27, 1>) -> bool {
+    if doorbell.is_forced() {
+        doorbell.unforce();
         unsafe {
             ((rp1_proto::LINK_START as usize + link::DOORBELL_REPLY) as *mut u32)
                 .write_volatile(link_read(link::DOORBELL_REQUEST));

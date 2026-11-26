@@ -1,6 +1,6 @@
 //! `shm-linux ring-irq [count]`: the `events` ring (notify = "irq") against a polling consumer.
 //! Each run streams `count` messages from RP1 (command 14 notifies after every batch with
-//! `HostIrq::push_slice_notify`, 15 does not) and checks every one. The consumer either
+//! `RingTx::flush`, 15 does not) and checks every one. The consumer either
 //! busy-polls or pops until empty and then sleeps in `RingRx::wait` on `rp1:irq`. Prints one
 //! `RINGIRQ` line per run (measured missing/corrupt, throughput, consumer CPU from getrusage,
 //! wakes, `check=`) and `RINGIRQ_PASS` only if every run's check holds:

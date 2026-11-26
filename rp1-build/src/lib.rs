@@ -237,6 +237,14 @@ fn resources(
         s.push_str("}\n");
     }
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
+        if let Some(pin) = c.doorbell {
+            s.push_str(&format!(
+                "/// proc{index}'s doorbell, which Linux rings (`doorbell = {pin}`).\n\
+                 pub type Doorbell{index} = ::rp1_link::notify::Doorbell<{pin}, {index}>;\n"
+            ));
+        }
+    }
+    for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
         let ty = format!("Proc{index}Resources");
         let has_link = shm.regions.iter().any(|r| usize::from(r.core) == index + 1);
         // Instances come as bundles of their token and pins; `pins` keeps the rest.
@@ -297,6 +305,9 @@ fn resources(
         if c.host_irq {
             s.push_str("pub host_irq: ::rp1_link::notify::HostIrq,\n");
         }
+        if c.doorbell.is_some() {
+            s.push_str(&format!("pub doorbell: Doorbell{index},\n"));
+        }
         if has_link {
             s.push_str(&format!("pub link: link::Proc{index}LinkInit,\n"));
         }
@@ -335,6 +346,9 @@ fn resources(
         }
         if c.host_irq {
             s.push_str("host_irq: unsafe { ::rp1_link::notify::HostIrq::new() },\n");
+        }
+        if c.doorbell.is_some() {
+            s.push_str(&format!("doorbell: unsafe {{ Doorbell{index}::new() }},\n"));
         }
         if has_link {
             s.push_str(&format!("link: link::Proc{index}LinkInit::new(),\n"));

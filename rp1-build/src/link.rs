@@ -63,6 +63,10 @@ pub(crate) fn generate(shm: &ShmLayout<'_>, note: &[u8]) -> Result<String> {
             )
         )?;
     }
+    let aliases = aliases(&shm.regions)?;
+    for (r, alias) in shm.regions.iter().zip(&aliases) {
+        writeln!(output, "pub type {alias} = {};", endpoint_type(r))?;
+    }
     for core in 0..2 {
         let owned: Vec<_> = shm
             .regions
@@ -71,7 +75,7 @@ pub(crate) fn generate(shm: &ShmLayout<'_>, note: &[u8]) -> Result<String> {
             .filter(|(_, r)| r.core == core + 1)
             .collect();
         if !owned.is_empty() {
-            write_core(&mut output, core, &owned)?;
+            write_core(&mut output, core, &owned, &aliases)?;
         }
     }
     Ok(output)
@@ -106,31 +110,93 @@ fn write_region(output: &mut String, r: &ShmRegion<'_>) -> Result<()> {
     Ok(())
 }
 
-fn write_core(output: &mut String, core: u8, regions: &[(usize, &ShmRegion<'_>)]) -> Result<()> {
+/// The endpoint type of `r`, with its notifier: what the field of `ProcNLink` holds.
+fn endpoint_type(r: &ShmRegion<'_>) -> String {
+    let ty = type_path(r.type_name);
+    let core = r.core - 1;
+    match (r.kind, r.notify_irq) {
+        (ShmKind::RingToLinux, false) => format!("transport::RingTx<{ty}>"),
+        (ShmKind::RingToLinux, true) => {
+            format!("transport::RingTx<{ty}, transport::notify::HostIrq>")
+        }
+        (ShmKind::RingToRp1, false) => format!("transport::RingRx<{ty}>"),
+        (ShmKind::RingToRp1, true) => format!("transport::RingRx<{ty}, super::Doorbell{core}>"),
+        (ShmKind::Block { .. }, _) => format!("transport::Block<{ty}>"),
+    }
+}
+
+/// Names the generated link module already uses, which an alias must not take.
+const RESERVED_ALIASES: [&str; 11] = [
+    "Pcie",
+    "EnableError",
+    "Message",
+    "OpenError",
+    "ShmArea",
+    "ShmKind",
+    "ShmRegion",
+    "Proc0Link",
+    "Proc0LinkInit",
+    "Proc1Link",
+    "Proc1LinkInit",
+];
+
+/// The type alias of each region: its name in UpperCamelCase (`wide_64` -> `Wide64`).
+fn aliases(regions: &[ShmRegion<'_>]) -> Result<Vec<String>> {
+    let mut aliases: Vec<String> = Vec::new();
+    for r in regions {
+        let alias: String = r
+            .name
+            .split('_')
+            .map(|word| {
+                let mut chars = word.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_ascii_uppercase().to_string() + chars.as_str()
+                })
+            })
+            .collect();
+        if RESERVED_ALIASES.contains(&alias.as_str()) {
+            return Err(format!(
+                "SHM name {:?} gives the type alias {alias}, which the generated code uses; \
+                 rename this region",
+                r.name
+            )
+            .into());
+        }
+        if let Some(other) = aliases.iter().position(|a| *a == alias) {
+            return Err(format!(
+                "SHM names {:?} and {:?} both give the type alias {alias}; rename one",
+                regions[other].name, r.name
+            )
+            .into());
+        }
+        aliases.push(alias);
+    }
+    Ok(aliases)
+}
+
+fn write_core(
+    output: &mut String,
+    core: u8,
+    regions: &[(usize, &ShmRegion<'_>)],
+    aliases: &[String],
+) -> Result<()> {
     writeln!(
         output,
         "/// Attached endpoints owned by proc{core}.\npub struct Proc{core}Link {{"
     )?;
-    for &(_, r) in regions {
-        let field = field_name(r.name)?;
-        let ty = type_path(r.type_name);
-        let endpoint = match r.kind {
-            ShmKind::RingToLinux => "RingTx",
-            ShmKind::RingToRp1 => "RingRx",
-            ShmKind::Block { writer } => {
-                let owner = match writer {
-                    Writer::Rp1 => "RP1",
-                    Writer::Linux => "Linux",
-                    Writer::Both => "the peer holding writer ownership",
-                };
-                writeln!(
-                    output,
-                    "/// Block whose writer is {owner}. See [`transport::Block::write`]."
-                )?;
-                "Block"
-            }
-        };
-        writeln!(output, "pub {field}: transport::{endpoint}<{ty}>,")?;
+    for &(index, r) in regions {
+        if let ShmKind::Block { writer } = r.kind {
+            let owner = match writer {
+                Writer::Rp1 => "RP1",
+                Writer::Linux => "Linux",
+                Writer::Both => "the peer holding writer ownership",
+            };
+            writeln!(
+                output,
+                "/// Block whose writer is {owner}. See [`transport::Block::write`]."
+            )?;
+        }
+        writeln!(output, "pub {}: {},", field_name(r.name)?, aliases[index])?;
     }
     writeln!(
         output,
@@ -140,23 +206,20 @@ fn write_core(output: &mut String, core: u8, regions: &[(usize, &ShmRegion<'_>)]
          impl Proc{core}LinkInit {{\n\
          pub(super) const fn new() -> Self {{ Self {{ _core: ::core::marker::PhantomData }} }}\n\
          /// The token can be retried while pending. A lost window requires an RP1 reload.\n\
+         /// A doorbell-notified ring is armed when this returns (see [`transport::RingRx`]).\n\
          pub fn try_open(self) -> Result<Proc{core}Link, OpenError<Self>> {{\n\
          unsafe {{ generated::try_open(self, || Ok(Proc{core}Link {{"
     )?;
     for &(index, r) in regions {
-        let field = field_name(r.name)?;
         let attach = match r.kind {
-            ShmKind::RingToLinux => {
-                "transport::RingTx::attach(ddr, r.ddr_len as usize, generated::sram(r), r.sram_len as usize, r.depth, generated::overflow(r))"
-            }
-            ShmKind::RingToRp1 => {
-                "transport::RingRx::attach(generated::sram(r), r.sram_len as usize, ddr, r.ddr_len as usize, r.depth, generated::overflow(r))"
-            }
-            ShmKind::Block { .. } => "transport::Block::attach(ddr, r.ddr_len as usize)",
+            ShmKind::RingToLinux => "ring_tx",
+            ShmKind::RingToRp1 => "ring_rx",
+            ShmKind::Block { .. } => "block",
         };
         writeln!(
             output,
-            "{field}: {{ let r = REGIONS[{index}]; let ddr = generated::ddr(r); {attach}? }},"
+            "{}: generated::{attach}(REGIONS[{index}])?,",
+            field_name(r.name)?
         )?;
     }
     output.push_str("})) }\n}\n}\n");

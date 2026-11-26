@@ -20,15 +20,17 @@
 
         let [tx, rx, block] = REGIONS;
         assert!(tx.overwrite && tx.notify_irq);
-        assert!(!rx.overwrite && !rx.notify_irq);
+        assert!(!rx.overwrite && rx.notify_irq);
         assert_eq!(rx.sram_offset, 0x18c0);
         assert_eq!(block.kind, ShmKind::Block { writer: generated::Writer::Linux });
         for region in [tx, rx, block] {
             assert_eq!(generated::ddr(region) as u32, rp1_proto::SHM_WINDOW + region.ddr_offset);
             assert_eq!(generated::sram(region) as u32, rp1_proto::LINK_START + u32::from(region.sram_offset));
         }
-        let _: fn(Proc0Link) -> transport::RingTx<crate::Word> = |link| link.r#type;
-        let _: fn(Proc1Link) -> transport::RingRx<crate::types::Word> = |link| link.down;
+        let _: fn(Proc0Link) -> transport::RingTx<crate::Word, transport::notify::HostIrq> =
+            |link| link.r#type;
+        let _: fn(Proc1Link) -> transport::RingRx<crate::types::Word, crate::Doorbell1> =
+            |link| link.down;
         let _: fn(Proc1Link) -> transport::Block<u32> = |link| link.trace;
     }
 }

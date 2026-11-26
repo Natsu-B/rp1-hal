@@ -1,9 +1,10 @@
 //! The DMA ring producer: RP1 -> Linux batches copied into Linux DDR by a DMA channel.
+use crate::{RingTx, notify::Notify, ring::window_ready};
 use rp1_hal::dma;
 pub use rp1_proto::shm::{SlotCopy, Staged};
-use rp1_proto::{Message, shm::RingTx};
+use rp1_proto::{Message, shm};
 
-/// Moves RP1 → Linux ring batches into Linux DDR by DMA ([`RingTx::push_slice_staged`]):
+/// Moves RP1 → Linux ring batches into Linux DDR by DMA ([`RingTx::push_slice_dma`]):
 /// the slot images are staged in a shared-SRAM buffer and copied by a channel of the
 /// declared DMA controller (`dma = {}`; the caller lends the channel per call, so the same
 /// channel can serve several rings). `head` is published only after the copy finished and
@@ -19,7 +20,7 @@ impl<'s> RingDma<'s> {
     /// Provisional CPU/DMA crossover in staged bytes; tune per workload.
     pub const DEFAULT_THRESHOLD: usize = 256;
     /// `stage` must be shared SRAM (`#[unsafe(link_section = ".shared")]`) and 8-byte aligned;
-    /// its size bounds one DMA batch ([`RingTx::staged_capacity`]).
+    /// its size bounds one DMA batch ([`shm::RingTx::staged_capacity`]).
     pub fn new(stage: &'s mut [u8]) -> Result<Self, dma::Error> {
         use dma::{BusAddr, Error};
         let start = stage.as_ptr() as usize;
@@ -48,22 +49,17 @@ impl<'s> RingDma<'s> {
     /// Whether up to `requested` messages go by DMA: the batch that fits the stage and the
     /// ring's free slots reaches the threshold.
     #[rp1_rt::isram]
-    fn use_dma<T: Message>(&self, ring: &mut RingTx<T>, requested: usize) -> bool {
+    fn use_dma<T: Message>(&self, ring: &mut shm::RingTx<T>, requested: usize) -> bool {
         let slot = rp1_proto::shm::slot_size(size_of::<T>());
         let min_msgs = self.threshold.div_ceil(slot).max(1);
-        let n = requested.min(RingTx::<T>::staged_capacity(self.stage.len()));
+        let n = requested.min(shm::RingTx::<T>::staged_capacity(self.stage.len()));
         // CPU-only candidates need no tail read before the push checks the free slots.
         n >= min_msgs && ring.writable() as usize >= min_msgs
     }
-    /// Publishes up to `values.len()` messages like [`RingTx::push_slice`] (returns how many):
-    /// by `copy` when the batch reaches the DMA threshold (then at most
-    /// [`RingTx::staged_capacity`] of the stage), otherwise by the CPU. On error nothing was
-    /// published. A channel implements [`SlotCopy`]; a wrapper may also implement that same
-    /// blocking ordering contract.
     #[rp1_rt::isram]
-    pub fn push_slice<T: Message, C: SlotCopy>(
+    fn push_slice<T: Message, C: SlotCopy>(
         &mut self,
-        ring: &mut RingTx<T>,
+        ring: &mut shm::RingTx<T>,
         copy: &mut C,
         values: &[T],
     ) -> Result<usize, Staged<C::Error>> {
@@ -75,15 +71,10 @@ impl<'s> RingDma<'s> {
         }
         ring.push_slice_staged(values, self.stage, copy)
     }
-    /// Generate accepted payloads directly in the stage when the writable batch reaches
-    /// the DMA threshold. Otherwise use [`RingTx::push_with`] (including overwrite rings).
-    /// Follows the [generation tradeoff and callback contract](RingTx::push_with).
-    /// See [`RingTx::push_with_staged`] for alignment, panic and failure semantics.
-    /// No callback is invoked when fenced, full, or when stage validation fails.
     #[rp1_rt::isram]
-    pub fn push_with<T: Message, C: SlotCopy>(
+    fn push_with<T: Message, C: SlotCopy>(
         &mut self,
-        ring: &mut RingTx<T>,
+        ring: &mut shm::RingTx<T>,
         copy: &mut C,
         count: usize,
         fill: impl FnMut(usize, &mut T),
@@ -98,10 +89,74 @@ impl<'s> RingDma<'s> {
     }
 }
 
+impl<T: Message, N: Notify> RingTx<T, N> {
+    /// Publish up to `values.len()` messages like [`RingTx::push_slice`] (returns how many):
+    /// by `copy` when the batch reaches `dma`'s threshold (then at most
+    /// [`shm::RingTx::staged_capacity`] of the stage), otherwise by the CPU. On error nothing
+    /// was published. A channel implements [`SlotCopy`]; a wrapper may also implement that
+    /// same blocking ordering contract. Does not wake the reader; follow with
+    /// [`RingTx::flush`], or use [`RingTx::send_slice_dma`].
+    #[inline(always)]
+    pub fn push_slice_dma<C: SlotCopy>(
+        &mut self,
+        dma: &mut RingDma<'_>,
+        copy: &mut C,
+        values: &[T],
+    ) -> Result<usize, Staged<C::Error>> {
+        window_ready().map_err(|_| Staged::Reset)?;
+        dma.push_slice(&mut self.ring, copy, values)
+    }
+    /// Generate accepted payloads directly in the stage when the writable batch reaches
+    /// the DMA threshold. Otherwise use [`RingTx::push_with`] (including overwrite rings).
+    /// Follows the [generation tradeoff and callback contract](shm::RingTx::push_with).
+    /// See [`shm::RingTx::push_with_staged`] for alignment, panic and failure semantics.
+    /// No callback is invoked when fenced, full, or when stage validation fails.
+    #[inline(always)]
+    pub fn push_with_dma<C: SlotCopy>(
+        &mut self,
+        dma: &mut RingDma<'_>,
+        copy: &mut C,
+        count: usize,
+        fill: impl FnMut(usize, &mut T),
+    ) -> Result<usize, Staged<C::Error>> {
+        window_ready().map_err(|_| Staged::Reset)?;
+        dma.push_with(&mut self.ring, copy, count, fill)
+    }
+    /// [`RingTx::push_slice_dma`], then wake the reader if it sleeps (also after an error or a
+    /// full ring: the reader may have armed meanwhile). The wake reads `head` back; it does not
+    /// verify the payload or establish Channel's AXI-to-PCIe ordering chain (HYP, docs/dma.md).
+    #[inline(always)]
+    pub fn send_slice_dma<C: SlotCopy>(
+        &mut self,
+        dma: &mut RingDma<'_>,
+        copy: &mut C,
+        values: &[T],
+    ) -> Result<usize, Staged<C::Error>> {
+        window_ready().map_err(|_| Staged::Reset)?;
+        let sent = dma.push_slice(&mut self.ring, copy, values);
+        self.notify.wake(&mut self.ring);
+        sent
+    }
+    /// [`RingTx::push_with_dma`], then wake the reader as [`RingTx::send_slice_dma`] does.
+    #[inline(always)]
+    pub fn send_with_dma<C: SlotCopy>(
+        &mut self,
+        dma: &mut RingDma<'_>,
+        copy: &mut C,
+        count: usize,
+        fill: impl FnMut(usize, &mut T),
+    ) -> Result<usize, Staged<C::Error>> {
+        window_ready().map_err(|_| Staged::Reset)?;
+        let sent = dma.push_with(&mut self.ring, copy, count, fill);
+        self.notify.wake(&mut self.ring);
+        sent
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rp1_proto::shm::Overflow;
+    use rp1_proto::shm::{Overflow, RingTx};
 
     #[repr(align(8))]
     struct Mem([u8; 1024]);
@@ -182,7 +237,6 @@ mod tests {
 
     #[test]
     fn cpu_fallback_progresses_without_staging_capacity() {
-        use super::*;
         #[repr(align(8))]
         struct Mem([u8; 2048]);
         // Channel contains only (). The CPU path must not access DMA registers.
@@ -218,7 +272,6 @@ mod tests {
 
     #[test]
     fn overwrite_cpu_batch_ignores_staging_capacity() {
-        use super::*;
         #[repr(align(8))]
         struct Mem([u8; 2048]);
         let (mut data, ctrl, mut stage) = (Mem([0; 2048]), Mem([0; 2048]), Mem([0; 2048]));
@@ -263,5 +316,57 @@ mod tests {
         assert!(matches!(RingDma::new(&mut s.0), Err(Error::NotDmaVisible)));
         assert!(matches!(RingDma::new(&mut s.0[1..]), Err(Error::Invalid)));
         assert!(matches!(RingDma::new(&mut []), Err(Error::Invalid)));
+    }
+
+    /// The endpoint methods: the DMA path (here its CPU fallback) wakes a sleeping reader once,
+    /// and a lost window is reported before any ring access.
+    #[test]
+    fn send_slice_dma_wakes_and_a_lost_window_is_untouched() {
+        use crate::mmio::fake::{self, Access};
+        use crate::notify::{HostIrq, sealed::Notify};
+        use rp1_proto::{LINK_START, link};
+        const STATUS: usize = LINK_START as usize + link::SHM_STATUS;
+        const MSIX_SET: usize = 0x4010_8008 + 4 * rp1_proto::irq::VECTOR as usize + 0x800;
+
+        let (mut data, mut ctrl, mut stage) = (Mem::zeroed(), Mem::zeroed(), Mem::zeroed());
+        let (ring, mut helper) = ring_and_stage(&mut data, &ctrl, &mut stage);
+        helper.set_threshold(usize::MAX);
+        let mut tx = crate::RingTx::new(ring, HostIrq::claim());
+        // The reader sleeps (odd `waiting`).
+        let waiting = unsafe { ctrl.0.as_mut_ptr().add(rp1_proto::shm::WAITING) };
+        unsafe { waiting.cast::<u32>().write_volatile(1) };
+        fake::set(STATUS, link::SHM_READY);
+        fake::take();
+        assert_eq!(
+            tx.send_slice_dma(&mut helper, &mut Fail, &[[1; 4]; 2]),
+            Ok(2)
+        );
+        assert_eq!(
+            tx.send_with_dma(&mut helper, &mut Fail, 1, |_, v| *v = [2; 4]),
+            Ok(1)
+        );
+        let pulses = fake::take();
+        assert_eq!(
+            pulses
+                .iter()
+                .filter(|a| **a == Access::Write(MSIX_SET, 2))
+                .count(),
+            1
+        );
+        assert_eq!(tx.push_slice_dma(&mut helper, &mut Fail, &[[3; 4]]), Ok(1));
+        assert_eq!(fake::take(), []);
+
+        fake::set(STATUS, link::SHM_WINDOW_LOST);
+        let before = data.0;
+        assert_eq!(
+            tx.send_slice_dma(&mut helper, &mut Fail, &[[4; 4]]),
+            Err(Staged::Reset)
+        );
+        assert_eq!(
+            tx.push_with_dma(&mut helper, &mut Fail, 1, |_, _| panic!("filled")),
+            Err(Staged::Reset)
+        );
+        assert_eq!((data.0, tx.head()), (before, 4));
+        assert_eq!(fake::take(), []);
     }
 }

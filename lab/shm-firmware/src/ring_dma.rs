@@ -12,7 +12,9 @@ use rp1_link::{
     notify::HostIrq,
     ring_dma::{RingDma, SlotCopy},
 };
-use rp1_proto::shm::RingTx;
+
+/// The `events`, `wide64` and `wide256` rings (all `notify = "irq"`).
+type RingTx<const W: usize> = rp1_link::RingTx<[u32; W], HostIrq>;
 
 /// All words are verified by Linux, including the sequence and inverted last word.
 #[rp1_rt::isram]
@@ -67,7 +69,6 @@ impl Out {
 }
 
 pub struct Run<'a> {
-    pub irq: Option<&'a mut HostIrq>,
     pub count: u32,
     pub p: &'a Params,
     pub start: u32,
@@ -75,7 +76,7 @@ pub struct Run<'a> {
 
 // Keep the slice comparison's large stack buffer out of the generated path.
 pub fn stream<const W: usize, const B: usize>(
-    tx: &mut RingTx<[u32; W]>,
+    tx: &mut RingTx<W>,
     dma: &mut Dma,
     message: fn(&mut [u32; W], u32),
     run: Run<'_>,
@@ -87,7 +88,7 @@ pub fn stream<const W: usize, const B: usize>(
 }
 #[inline(never)]
 fn slice_stream<const W: usize, const B: usize>(
-    tx: &mut RingTx<[u32; W]>,
+    tx: &mut RingTx<W>,
     dma: &mut Dma,
     message: fn(&mut [u32; W], u32),
     run: Run<'_>,
@@ -97,7 +98,7 @@ fn slice_stream<const W: usize, const B: usize>(
 }
 
 fn run_stream<const W: usize>(
-    tx: &mut RingTx<[u32; W]>,
+    tx: &mut RingTx<W>,
     dma: &mut Dma,
     message: fn(&mut [u32; W], u32),
     run: Run<'_>,
@@ -112,7 +113,7 @@ fn run_stream<const W: usize>(
     }
     // SAFETY: command 16 is not running; this command owns the sole borrow.
     let stage_buf = unsafe { dma_proof::ring_stage() };
-    let cap = RingTx::<[u32; W]>::staged_capacity(stage_buf.len());
+    let cap = rp1_proto::shm::RingTx::<[u32; W]>::staged_capacity(stage_buf.len());
     let generated = p.mode >= GENERATE_DMA;
     let batch = (p.batch as usize).clamp(1, if generated { cap } else { cap.min(buf.len()) });
     let mut stage = RingDma::new(stage_buf).unwrap();
@@ -148,7 +149,8 @@ fn run_stream<const W: usize>(
 /// ISRAM (code in shared SRAM runs several times slower, which a small batch pays in full).
 trait Producer {
     fn head(&self) -> u32;
-    fn notify(&mut self, irq: &mut HostIrq) -> bool;
+    /// Pulse if the reader sleeps; returns whether it did.
+    fn notify(&mut self) -> bool;
     /// Slice modes: write messages `first..first + count` to the batch buffer.
     fn generate(&mut self, count: usize, first: u32);
     /// Publish `messages` (indices within the batch that starts at sequence `first`).
@@ -161,7 +163,7 @@ trait Producer {
     ) -> Result<usize, rp1_proto::shm::Staged<Error>>;
 }
 struct TypedProducer<'a, const W: usize> {
-    tx: &'a mut RingTx<[u32; W]>,
+    tx: &'a mut RingTx<W>,
     message: fn(&mut [u32; W], u32),
     buf: &'a mut [[u32; W]],
     stage: RingDma<'a>,
@@ -171,8 +173,8 @@ impl<const W: usize> Producer for TypedProducer<'_, W> {
     fn head(&self) -> u32 {
         self.tx.head()
     }
-    fn notify(&mut self, irq: &mut HostIrq) -> bool {
-        irq.notify_ring(self.tx)
+    fn notify(&mut self) -> bool {
+        self.tx.flush() == Ok(true)
     }
     #[rp1_rt::isram]
     fn generate(&mut self, count: usize, first: u32) {
@@ -205,10 +207,10 @@ impl<const W: usize> Producer for TypedProducer<'_, W> {
             timed: p.timed,
         };
         if p.mode < GENERATE_DMA {
-            return stage.push_slice(tx, &mut copy, &buf[messages]);
+            return tx.push_slice_dma(stage, &mut copy, &buf[messages]);
         }
         let (message, first) = (*message, first + messages.start as u32);
-        stage.push_with(tx, &mut copy, messages.len(), move |j, value| {
+        tx.push_with_dma(stage, &mut copy, messages.len(), move |j, value| {
             message(value, first + j as u32)
         })
     }
@@ -216,12 +218,7 @@ impl<const W: usize> Producer for TypedProducer<'_, W> {
 
 #[rp1_rt::isram]
 fn run_batches(producer: &mut dyn Producer, run: Run<'_>, batch: usize, depth: u32) -> Out {
-    let Run {
-        mut irq,
-        count,
-        p,
-        start,
-    } = run;
+    let Run { count, p, start } = run;
     let mut out = Out::default();
     // Cumulative over the run; a batch is judged by what its push added.
     let mut stats = CopyStats::default();
@@ -272,9 +269,9 @@ fn run_batches(producer: &mut dyn Producer, run: Run<'_>, batch: usize, depth: u
                     out.account_timed(elapsed, copy_us, publish, blocks);
                 }
             }
-            if let Some(irq) = irq.as_deref_mut() {
+            if p.notify {
                 let t = now();
-                if producer.notify(irq) {
+                if producer.notify() {
                     out.pulses += 1;
                 }
                 out.notify_us = out.notify_us.wrapping_add(now().wrapping_sub(t));

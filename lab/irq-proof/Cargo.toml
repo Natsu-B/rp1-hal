@@ -11,7 +11,7 @@ bench = false
 
 [dependencies]
 rp1-hal = { path = "../../rp1-hal" }
-rp1-link = { path = "../../rp1-link", features = ["unstable-host-irq"] }
+rp1-link = { path = "../../rp1-link" }
 # No default critical section: src/cs_stats.rs supplies one that also times the masked interval.
 rp1-rt = { path = "../../rp1-rt", default-features = false, features = ["default-panic-handler"] }
 rp1-proto = { path = "../../rp1-proto" }

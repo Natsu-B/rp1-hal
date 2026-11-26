@@ -65,6 +65,9 @@ pub enum Staged<E> {
     Copy(E),
     /// An earlier copy failed; this writer cannot publish again.
     Fenced,
+    /// The shm window is gone (PERSTn) and nothing was accessed. Only endpoints that check the
+    /// window status (rp1-link) return it.
+    Reset,
 }
 
 /// Writes the header and padding shared by copied and generated slot images.

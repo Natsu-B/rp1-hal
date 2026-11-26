@@ -1,11 +1,14 @@
 //! Internal support for the declaration code emitted by rp1-build.
 
-use crate::{EnableError, Error, OpenError, Overflow};
+use crate::{
+    Block, EnableError, Error, Message, OpenError, Overflow, RingRx, RingTx,
+    notify::{Notify, Wake, sealed},
+};
 use rp1_hal::platform::Pcie;
 pub use rp1_proto::note::{ShmArea, ShmKind, ShmRegion, Writer};
 use rp1_proto::{
     LINK_START, SHM_WINDOW, barrier, link,
-    shm::{HEADER_SIZE, HeaderInit},
+    shm::{self, HEADER_SIZE, HeaderInit},
 };
 
 /// # Safety
@@ -55,9 +58,9 @@ fn probe_with(
 }
 
 fn read_link(offset: usize) -> u32 {
-    #[cfg(all(target_arch = "arm", target_os = "none"))]
-    return read(LINK_START as usize + offset);
-    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
+    #[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
+    return crate::mmio::read(LINK_START as usize + offset);
+    #[cfg(not(any(test, all(target_arch = "arm", target_os = "none"))))]
     {
         let _ = offset;
         0
@@ -147,6 +150,55 @@ pub(crate) fn read_status() -> u32 {
     read_link(link::SHM_STATUS)
 }
 
+/// Attach the RP1 -> Linux ring `r`, with a copy of its writer's notifier. Inlined, so
+/// the region's constants fold into `try_open` instead of being stored in the image.
+///
+/// # Safety
+/// Generated `try_open` only, once per region, while the window is Ready: the region comes
+/// from this firmware's validated declaration and its notifier's resource was made.
+#[inline(always)]
+pub unsafe fn ring_tx<T: Message, N: Notify>(r: ShmRegion<'_>) -> Result<RingTx<T, N>, Error> {
+    let ring = unsafe {
+        shm::RingTx::attach(
+            ddr(r),
+            r.ddr_len as usize,
+            sram(r),
+            r.sram_len as usize,
+            r.depth,
+            overflow(r),
+        )
+    }?;
+    Ok(RingTx::new(ring, <N as sealed::Notify>::claim()))
+}
+
+/// Attach the Linux -> RP1 ring `r` and make it notifiable ([`RingRx`]).
+///
+/// # Safety
+/// As [`ring_tx`].
+#[inline(always)]
+pub unsafe fn ring_rx<T: Message, W: Wake>(r: ShmRegion<'_>) -> Result<RingRx<T, W>, Error> {
+    let ring = unsafe {
+        shm::RingRx::attach(
+            sram(r),
+            r.sram_len as usize,
+            ddr(r),
+            r.ddr_len as usize,
+            r.depth,
+            overflow(r),
+        )
+    }?;
+    Ok(RingRx::open(ring, <W as sealed::Wake>::claim()))
+}
+
+/// Attach the block `region`.
+///
+/// # Safety
+/// As [`ring_tx`].
+#[inline(always)]
+pub unsafe fn block<T: Message>(region: ShmRegion<'_>) -> Result<Block<T>, Error> {
+    unsafe { Block::attach(ddr(region), region.ddr_len as usize) }
+}
+
 #[inline]
 pub const fn ddr(region: ShmRegion<'_>) -> *mut u8 {
     (SHM_WINDOW + region.ddr_offset) as *mut u8
@@ -157,7 +209,7 @@ pub const fn sram(region: ShmRegion<'_>) -> *mut u8 {
     (LINK_START + region.sram_offset as u32) as *mut u8
 }
 
-pub const fn overflow(region: ShmRegion<'_>) -> Overflow {
+const fn overflow(region: ShmRegion<'_>) -> Overflow {
     if region.overwrite {
         Overflow::Overwrite
     } else {

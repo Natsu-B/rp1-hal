@@ -1,5 +1,5 @@
 error[E0133]: call to unsafe function `HostIrq::new` is unsafe and requires unsafe block
- --> tests/ui-host-irq/host_irq_not_constructible.rs:4:5
+ --> tests/ui-notify/host_irq_not_constructible.rs:4:5
   |
 4 |     HostIrq::new()
   |     ^^^^^^^^^^^^^^ call to unsafe function

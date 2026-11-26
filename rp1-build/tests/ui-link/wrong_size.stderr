@@ -1,5 +1,5 @@
 error[E0080]: evaluation panicked: SHM region type has a Rust type size different from its registration
-  --> $CASE:37:15
+  --> $CASE:38:15
    |
-37 | ... = assert!(::core::mem::size_of::<crate::Word>() == REGIONS[0].elem_size as usize, "SHM region type has a Rust type size different from its registration");
+38 | ... = assert!(::core::mem::size_of::<crate::Word>() == REGIONS[0].elem_size as usize, "SHM region type has a Rust type size different from its registration");
    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `link::_` failed here

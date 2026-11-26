@@ -1,19 +1,25 @@
 //! Firmware-side transport between RP1 and Linux.
+//!
+//! The generated `rp1::link` module attaches the declared endpoints: [`RingTx`], [`RingRx`]
+//! and [`Block`]. A ring's notification ([`notify`]) is part of its type, so `send*` /
+//! `flush` wake Linux by themselves and a doorbell-notified [`RingRx::drain`] re-arms itself.
 
 #![no_std]
 
-#[cfg(feature = "unstable-host-irq")]
+mod mmio;
 pub mod notify;
+mod ring;
 #[cfg(feature = "unstable-ring-dma")]
 pub mod ring_dma;
 
 #[doc(hidden)]
 pub mod generated;
 
+pub use ring::{RingRx, RingTx};
 pub use rp1_hal::platform::EnableError;
 pub use rp1_proto::{
     Error, Message,
-    shm::{Block, BlockReader, BlockWriter, Overflow, RingRx, RingTx, Wait},
+    shm::{Block, BlockReader, BlockWriter, Overflow, Progress},
 };
 
 /// Failure to attach the owning core's shared-memory endpoints.

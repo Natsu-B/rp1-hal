@@ -195,7 +195,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     });
 
     let mut report = REPORT.producer(&mut core);
-    let mut host_irq = p.host_irq;
+    let host_irq = p.host_irq;
     // Keep servicing the doorbell and issuing its report before Linux enables the area.
     let mut init = p.link;
     let rp1::link::Proc1Link {
@@ -211,14 +211,14 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             Err(OpenError::Reset) => panic!("SHM window lost"),
             Err(OpenError::Attach(error)) => panic!("SHM attach: {error:?}"),
         }
-        after_doorbell(&mut host_irq, &mut report, &stack);
+        after_doorbell(host_irq, &mut report, &stack);
     };
     let mut last = 0;
     let mut seen = 0;
     // The command loop of lab/shm-firmware for shm-linux's default suite (commands 1..8, 10..13).
     loop {
-        let sequence = wait_command(&mut host_irq, &control, seen);
-        after_doorbell(&mut host_irq, &mut report, &stack);
+        let sequence = wait_command(host_irq, &control, seen);
+        after_doorbell(host_irq, &mut report, &stack);
         if sequence == seen {
             continue;
         }
@@ -238,7 +238,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 let tx = if command == 1 { &mut up } else { &mut latest };
                 for i in 0..count {
                     loop {
-                        match tx.push(&sample(i)) {
+                        match tx.send(&sample(i)) {
                             Ok(()) => break,
                             Err(Error::Full) => {}
                             Err(_) => {
@@ -256,7 +256,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             2 => {
                 let mut i = 0;
                 while i < count {
-                    match down.pop() {
+                    match down.recv() {
                         Ok(Some(s)) => {
                             if s != sample(i) {
                                 errors += 1;
@@ -320,7 +320,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 // Isolated pop cost: Linux filled `down` beforehand and stays off the link page.
                 let mut n = 0;
                 while n < count {
-                    match down.pop() {
+                    match down.recv() {
                         Ok(Some(s)) if s == sample(n) => n += 1,
                         _ => break,
                     }
@@ -330,7 +330,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             8 => {
                 // Isolated push cost: the ring is empty and Linux stays off the link page.
                 for i in 0..count {
-                    if up.push(&sample(i)).is_err() {
+                    if up.send(&sample(i)).is_err() {
                         errors += 1;
                     }
                 }
@@ -363,12 +363,12 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
 /// What main does for the doorbell handler: wake Linux's `rp1:irq` waiter after a reply, and
 /// send the report once the 1000 doorbells are in.
 fn after_doorbell(
-    host_irq: &mut HostIrq,
+    host_irq: HostIrq,
     report: &mut rp1_rt::sync::Producer<'_, u32, 8, Proc1, Proc0>,
     stack: &stack::Watermark,
 ) {
     if proc1::doorbell_served() {
-        host_irq.notify_sram();
+        host_irq.pulse_after_sram_write();
     }
     if proc1::report_due() {
         proc1::report(report, stack.free_bytes());
@@ -378,10 +378,10 @@ fn after_doorbell(
 /// proc1 idle loop, from ISRAM: until the control block's sequence changes or the report is
 /// due (returns `seen` then). Idle cost is one DDR load, so the `rp1:irq` wake stays prompt.
 #[rp1_rt::isram]
-fn wait_command(host_irq: &mut HostIrq, control: &Block<Control>, seen: u32) -> u32 {
+fn wait_command(host_irq: HostIrq, control: &Block<Control>, seen: u32) -> u32 {
     loop {
         if proc1::doorbell_served() {
-            host_irq.notify_sram();
+            host_irq.pulse_after_sram_write();
         }
         let sequence = control.sequence();
         if sequence != seen || proc1::report_due() {
@@ -391,7 +391,7 @@ fn wait_command(host_irq: &mut HostIrq, control: &Block<Control>, seen: u32) -> 
 }
 
 const BATCH: usize = 32;
-/// Batched RP1→Linux stream: one `head` store per `push_slice`; the loop itself runs from ISRAM.
+/// Batched RP1→Linux stream: one `head` store per `send_slice`; the loop itself runs from ISRAM.
 #[rp1_rt::isram]
 fn up_batch(tx: &mut RingTx<Sample>, count: u32, start: u32) -> u32 {
     let mut buf = [[0u32; 4]; BATCH];
@@ -403,7 +403,10 @@ fn up_batch(tx: &mut RingTx<Sample>, count: u32, start: u32) -> u32 {
         }
         let mut done = 0;
         while done < k {
-            done += tx.push_slice(&buf[done..k]);
+            let Ok(n) = tx.send_slice(&buf[done..k]) else {
+                return 1;
+            };
+            done += n;
             if now().wrapping_sub(start) > 180_000_000 {
                 return 1;
             }
@@ -412,7 +415,7 @@ fn up_batch(tx: &mut RingTx<Sample>, count: u32, start: u32) -> u32 {
     }
     0
 }
-/// Batched Linux→RP1 stream: one `tail` store per `pop_into`, every message checked.
+/// Batched Linux→RP1 stream: one `tail` store per `recv_into`, every message checked.
 #[rp1_rt::isram]
 fn down_batch(rx: &mut RingRx<Sample>, count: u32, start: u32) -> u32 {
     let mut buf = [[0u32; 4]; BATCH];
@@ -420,7 +423,7 @@ fn down_batch(rx: &mut RingRx<Sample>, count: u32, start: u32) -> u32 {
     let mut errors = 0;
     while i < count {
         let want = (count - i).min(BATCH as u32) as usize;
-        match rx.pop_into(&mut buf[..want]) {
+        match rx.recv_into(&mut buf[..want]) {
             Ok(n) => {
                 for b in &buf[..n] {
                     let s = sample(i);
