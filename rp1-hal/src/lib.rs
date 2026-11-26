@@ -1,4 +1,5 @@
 #![no_std]
+pub use fugit;
 pub use rp1_pac as pac;
 
 /// Offsets of registers in a generated PAC block, for tests that tie a driver's own address

@@ -4,7 +4,7 @@
 //!
 //! Instances (DOC §3.6.1): SPI0/1/2/3/5/6/8 are masters, SPI4/7 slave-only. Only the bank-0
 //! masters SPI0, 1, 2, 3, 5 are exposed; SPI6/8 are not on bank 0. The serial clock is clk_sys
-//! divided by an even BAUDR (2..=65534): `sclk = Clocks::sys_hz() / div`, so 100 MHz at most at
+//! divided by an even BAUDR (2..=65534): `sclk = Clocks::sys().raw() / div`, so 100 MHz at most at
 //! 200 MHz. clk_sys belongs to RP1 (clock authority) and is not voted on through SCMI. The
 //! reset is RESETS CTRL1 bit 10 + n, DONE1 the same bit (rp1-regdb resets.toml).
 //!
@@ -181,17 +181,17 @@ word!(u8: U8, u16: U16, u32: U32);
 /// `#[non_exhaustive]`, so fields can be added without breaking callers).
 ///
 /// ```
-/// use rp1_hal::spi::Config;
-/// let c = Config::new(10_000_000, embedded_hal::spi::MODE_3)
+/// use rp1_hal::{fugit::RateExtU32, spi::Config};
+/// let c = Config::new(10.MHz(), embedded_hal::spi::MODE_3)
 ///     .with_frame_bits(16)
 ///     .with_rx_sample_dly(2);
-/// assert_eq!((c.frequency_hz, c.frame_bits, c.rx_sample_dly), (10_000_000, 16, 2));
+/// assert_eq!((c.frequency.raw(), c.frame_bits, c.rx_sample_dly), (10_000_000, 16, 2));
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Config {
     /// Upper bound for SCLK; the rate used is the highest `clk_sys / even divider` not above it.
-    pub frequency_hz: u32,
+    pub frequency: fugit::HertzU32,
     pub mode: Mode,
     /// 4..=16, or 4..=32 when the instance has the 32-bit frame field. Default 8.
     pub frame_bits: u8,
@@ -205,16 +205,16 @@ pub struct Config {
     pub rx_sample_dly: u8,
 }
 impl Config {
-    pub const fn new(frequency_hz: u32, mode: Mode) -> Self {
+    pub const fn new(frequency: fugit::HertzU32, mode: Mode) -> Self {
         Self {
-            frequency_hz,
+            frequency,
             mode,
             frame_bits: 8,
             rx_sample_dly: 0,
         }
     }
-    pub const fn with_frequency_hz(mut self, frequency_hz: u32) -> Self {
-        self.frequency_hz = frequency_hz;
+    pub const fn with_frequency(mut self, frequency: fugit::HertzU32) -> Self {
+        self.frequency = frequency;
         self
     }
     pub const fn with_mode(mut self, mode: Mode) -> Self {
@@ -294,13 +294,13 @@ impl<const N: u8> Token<N> {
     /// the reset is released.
     ///
     /// ```no_run
-    /// # use rp1_hal::{clocks::Clocks, gpio::Pin, spi::{Config, Error, Spi, Token}};
+    /// # use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, spi::{Config, Error, Spi, Token}};
     /// fn bring_up(
     ///     token: Token<0>,
     ///     (sck, mosi, miso): (Pin<11>, Pin<10>, Pin<9>),
     ///     clocks: &Clocks,
     /// ) -> Result<Spi<0, 11, 10, 9>, Error> {
-    ///     let config = Config::new(10_000_000, embedded_hal::spi::MODE_0);
+    ///     let config = Config::new(10.MHz(), embedded_hal::spi::MODE_0);
     ///     // Retry once with 8-bit frames, then give up with `?`.
     ///     match token.init(sck, mosi, miso, clocks, config.with_frame_bits(32)) {
     ///         Ok(spi) => Ok(spi),
@@ -424,7 +424,7 @@ fn start(
     if !io.sys_current_strict(clocks) {
         return Err(Error::Precondition);
     }
-    let div = divider(clocks.sys_hz(), config.frequency_hz)?;
+    let div = divider(clocks.sys().raw(), config.frequency.raw())?;
     // The widest frame any instance takes; the instance's own limit is checked after probe.
     control(config.mode, config.frame_bits, true)?;
     io.release_reset(reset)?;
@@ -598,7 +598,7 @@ fn exchange(
 }
 
 /// The check each public bus call makes once, before any FIFO access: `Precondition` if
-/// clk_sys no longer matches `clocks` (SCLK would not be [`Spi::frequency_hz`]).
+/// clk_sys no longer matches `clocks` (SCLK would not be [`Spi::frequency`]).
 #[inline(always)]
 fn admit(io: &mut impl Io, clocks: &Clocks) -> Result<(), Error> {
     if io.sys_current(clocks) {
@@ -683,18 +683,18 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
         Ok(())
     }
     /// SCLK actually used: clk_sys / BAUDR.
-    pub fn frequency_hz(&self) -> u32 {
-        self.clocks.sys_hz() / self.div
+    pub fn frequency(&self) -> fugit::HertzU32 {
+        fugit::HertzU32::from_raw(self.clocks.sys().raw() / self.div)
     }
     /// BAUDR divider in use.
     pub fn divider(&self) -> u32 {
         self.div
     }
     /// Sets SCLK to at most `hz`; returns the rate used.
-    pub fn set_frequency(&mut self, hz: u32) -> Result<u32, Error> {
-        let div = divider(self.clocks.sys_hz(), hz)?;
+    pub fn set_frequency(&mut self, hz: fugit::HertzU32) -> Result<fugit::HertzU32, Error> {
+        let div = divider(self.clocks.sys().raw(), hz.raw())?;
         self.reconfigure(self.cr0, div)?;
-        Ok(self.frequency_hz())
+        Ok(self.frequency())
     }
     pub fn set_mode(&mut self, mode: Mode) -> Result<(), Error> {
         let cr0 = control(mode, self.frame_bits(), self.dfs32)? | (self.cr0 & ctrlr0::SRL);
@@ -948,13 +948,13 @@ impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
 /// The bus can be owned or lent (`&mut Spi`):
 ///
 /// ```no_run
-/// # use rp1_hal::{gpio::Pin, spi::{Device, Error, Spi}};
+/// # use rp1_hal::{fugit::RateExtU32, gpio::Pin, spi::{Device, Error, Spi}};
 /// use embedded_hal::spi::SpiDevice;
 /// fn lend(spi: &mut Spi<0, 11, 10, 9>, cs: Pin<8>) -> Result<Pin<8>, Error> {
 ///     let mut dev = Device::new(&mut *spi, cs);
 ///     dev.write(&[1u8, 2])?;
 ///     let (_, cs) = dev.free();
-///     spi.set_frequency(1_000_000)?;
+///     spi.set_frequency(1.MHz())?;
 ///     // The chip select comes back as `Pin<8>` and can make a new device.
 ///     let mut dev = Device::new(&mut *spi, cs);
 ///     dev.write(&[3u8])?;
@@ -1036,6 +1036,7 @@ fn transaction<W: Word, B: Bus<W>>(
 mod tests {
     extern crate std;
     use super::*;
+    use fugit::RateExtU32;
     /// Model timer step per `now()`.
     const STEP_US: u32 = 1000;
     /// A bounded wait that started reading the timer at `start` gave up at the first look
@@ -1168,11 +1169,11 @@ mod tests {
         }
         fn sys_current(&mut self, clocks: &Clocks) -> bool {
             self.fast += 1;
-            self.sys == Some(clocks.sys_hz())
+            self.sys == Some(clocks.sys().raw())
         }
         fn sys_current_strict(&mut self, clocks: &Clocks) -> bool {
             self.strict += 1;
-            !self.strict_stale && self.sys == Some(clocks.sys_hz())
+            !self.strict_stale && self.sys == Some(clocks.sys().raw())
         }
         fn release_reset(&mut self, bit: u32) -> Result<(), Error> {
             self.resets.push(bit);
@@ -1322,7 +1323,7 @@ mod tests {
         );
         assert_eq!(RX_SAMPLE_DLY, 0xf0);
         assert_eq!(
-            Config::new(1_000_000, embedded_hal::spi::MODE_0).rx_sample_dly,
+            Config::new(1.MHz(), embedded_hal::spi::MODE_0).rx_sample_dly,
             0
         );
         use embedded_hal::spi::Error as _;
@@ -1383,7 +1384,7 @@ mod tests {
         // Wrapper bit 3 stands for bits the driver must keep.
         let mut m = Model::new(4);
         (m.imr, m.wrap) = (0x3f, 0x9);
-        let config = Config::new(10_000_000, embedded_hal::spi::MODE_0);
+        let config = Config::new(10.MHz(), embedded_hal::spi::MODE_0);
         let spi =
             init_model(unsafe { Token::new() }, &mut m, pins(), config, &mut false).expect("init");
         assert_eq!((m.imr, m.wrap), (0, 0x8));
@@ -1434,7 +1435,7 @@ mod tests {
     /// pins come back and a retry with them succeeds.
     #[test]
     fn init_failure_leaves_reset_and_pinmux_untouched_and_retries() {
-        let config = Config::new(10_000_000, embedded_hal::spi::MODE_0);
+        let config = Config::new(10.MHz(), embedded_hal::spi::MODE_0);
         let mut token = unsafe { Token::<0>::new() };
         let mut pins = pins();
         for (sys, config, want) in [
@@ -1442,12 +1443,12 @@ mod tests {
             (None, config, Error::Precondition),
             (
                 Some(200_000_000),
-                config.with_frequency_hz(0),
+                config.with_frequency(0.Hz()),
                 Error::Invalid,
             ),
             (
                 Some(200_000_000),
-                config.with_frequency_hz(3_051),
+                config.with_frequency(3_051.Hz()),
                 Error::Invalid,
             ),
             (Some(200_000_000), config.with_frame_bits(3), Error::Invalid),
@@ -1499,7 +1500,7 @@ mod tests {
             (spi.fifo_depth(), spi.has_32_bit_frames(), spi.frame_bits()),
             (8, false, 16)
         );
-        assert_eq!((spi.divider(), spi.frequency_hz()), (20, 10_000_000));
+        assert_eq!((spi.divider(), spi.frequency().raw()), (20, 10_000_000));
         assert!(m.writes.ends_with(&[
             (CTRLR0, 15),
             (BAUDR, 20),
@@ -1516,7 +1517,7 @@ mod tests {
     /// a register write or pin routing, and a reconfiguration writes nothing.
     #[test]
     fn init_and_reconfigure_use_the_strict_check() {
-        let config = Config::new(10_000_000, embedded_hal::spi::MODE_0);
+        let config = Config::new(10.MHz(), embedded_hal::spi::MODE_0);
         let mut m = Model::new(64);
         m.strict_stale = true;
         assert!(m.sys_current(&CLOCKS));
@@ -1555,7 +1556,7 @@ mod tests {
     #[test]
     fn spi_bus_rejects_narrow_words_before_cs() {
         let mut m = Model::new(64);
-        let config = Config::new(10_000_000, embedded_hal::spi::MODE_0).with_frame_bits(16);
+        let config = Config::new(10.MHz(), embedded_hal::spi::MODE_0).with_frame_bits(16);
         let mut spi =
             init_model(unsafe { Token::new() }, &mut m, pins(), config, &mut false).expect("init");
         let log = core::cell::RefCell::new(Vec::new());
@@ -1584,7 +1585,7 @@ mod tests {
         (sck, mosi, miso): Pins<11, 10, 9>,
         clocks: &Clocks,
     ) -> Result<Spi<0, 11, 10, 9>, Error> {
-        let config = Config::new(1_000_000, embedded_hal::spi::MODE_0).with_rx_sample_dly(1);
+        let config = Config::new(1.MHz(), embedded_hal::spi::MODE_0).with_rx_sample_dly(1);
         Ok(token.init(sck, mosi, miso, clocks, config)?)
     }
 

@@ -3,6 +3,7 @@
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rp1_hal::{
+    fugit::RateExtU32,
     log,
     timer::{Alarm, Timer},
 };
@@ -98,7 +99,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         .spi0
         .init(
             &sys.clocks,
-            rp1_hal::spi::Config::new(10_000_000, embedded_hal::spi::MODE_0),
+            rp1_hal::spi::Config::new(10.MHz(), embedded_hal::spi::MODE_0),
         )
         .unwrap();
     let mut device = rp1_hal::spi::Device::new(bus, p.pins.gpio8);
@@ -112,7 +113,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     }
     log!(
         "proc0 spi0 {} Hz id={:x?}\n",
-        device.bus_mut().frequency_hz(),
+        device.bus_mut().frequency().raw(),
         id
     )
     .unwrap();

@@ -28,6 +28,7 @@
 //! succeeded. Launch proc1 after init (or let proc1 wait).
 use crate::{Error, read};
 use core::sync::atomic::{AtomicU32, Ordering};
+use fugit::HertzU32;
 
 const CLK_SYS_CTRL: usize = 0x4001_8014;
 const CLK_SYS_DIV_INT: usize = 0x4001_8018;
@@ -41,9 +42,9 @@ const PLL_SYS_FBDIV_INT: usize = 0x4002_0008;
 const PLL_SYS_FBDIV_FRAC: usize = 0x4002_000c;
 const PLL_SYS_PRIM: usize = 0x4002_0010;
 
-pub const XOSC_HZ: u32 = 50_000_000;
+pub(crate) const XOSC_HZ: u32 = 50_000_000;
 /// PLL_SYS primary output: 50 MHz × 20 / 5 / 1. Also the official clk_sys rate.
-pub const PLL_SYS_HZ: u32 = 200_000_000;
+const PLL_SYS_HZ: u32 = 200_000_000;
 
 /// CLK_SYS_CTRL.SRC values and the matching one-hot CLK_SYS_SEL (DOC clk-rp1, HW SEL 1 / 4).
 const SRC_XOSC: u32 = 0;
@@ -62,26 +63,26 @@ pub struct Clocks {
 
 impl Clocks {
     /// clk_sys: the M3 core clock and the I2C `ic_clk`.
-    pub const fn sys_hz(&self) -> u32 {
-        self.sys_hz
+    pub const fn sys(&self) -> HertzU32 {
+        HertzU32::from_raw(self.sys_hz)
     }
     /// clk_uart (UART0..5 functional clock).
-    pub const fn uart_hz(&self) -> u32 {
-        self.uart_hz
+    pub const fn uart(&self) -> HertzU32 {
+        HertzU32::from_raw(self.uart_hz)
     }
     /// The tree still matches what this value was created from (drivers check before use).
     #[inline(never)]
     pub(crate) fn still_current(&self) -> bool {
         self.sys_current_strict() && uart_hz() == Some(self.uart_hz)
     }
-    /// clk_sys alone still decodes to [`Clocks::sys_hz`] ([`sys_hz`]: CTRL/DIV/SEL and the
+    /// clk_sys alone still decodes to [`Clocks::sys`] ([`sys_hz`]: CTRL/DIV/SEL and the
     /// PLL_SYS tuple, read twice). The SPI and I2C init and reconfiguration check: their SCLK
     /// and `ic_clk` depend on clk_sys only, so a different clk_uart does not reject them.
     #[inline(never)]
     pub(crate) fn sys_current_strict(&self) -> bool {
         sys_hz() == Some(self.sys_hz)
     }
-    /// The per-call check of the SPI and I2C bus calls: clk_sys is still [`Clocks::sys_hz`],
+    /// The per-call check of the SPI and I2C bus calls: clk_sys is still [`Clocks::sys`],
     /// judged from one read each of CLK_SYS_SEL (the source actually selected) and
     /// CLK_SYS_DIV_INT, plus PLL_SYS CS (lock), FBDIV_INT and PRIM only when SEL is PLL_SYS.
     /// 2 to 5 register reads; clk_uart is not read. One out-of-line copy for SPI and I2C,
@@ -297,7 +298,7 @@ fn sys_hz_with(mut read: impl FnMut(usize) -> u32) -> Option<u32> {
 }
 
 /// Current clk_sys rate from the registers (read twice), `None` if unknown or changing.
-pub fn sys_hz() -> Option<u32> {
+pub(crate) fn sys_hz() -> Option<u32> {
     sys_hz_with(read)
 }
 
@@ -307,7 +308,7 @@ fn decode_uart(ctrl: u32, div: u32, sel: u32) -> Option<u32> {
 }
 
 /// Current clk_uart rate from the registers (read twice), `None` if unknown or changing.
-pub fn uart_hz() -> Option<u32> {
+pub(crate) fn uart_hz() -> Option<u32> {
     uart_hz_with(&mut read)
 }
 pub(crate) fn uart_hz_with(read: &mut impl FnMut(usize) -> u32) -> Option<u32> {

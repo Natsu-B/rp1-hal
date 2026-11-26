@@ -224,7 +224,7 @@ fn start(io: &mut impl Io, reset: u32, clocks: &Clocks, speed: Speed) -> Result<
     if !io.sys_current_strict(clocks) {
         return Err(Error::Precondition);
     }
-    let counts = timing(clocks.sys_hz(), speed)?;
+    let counts = timing(clocks.sys().raw(), speed)?;
     io.release_reset(reset)?;
     if io.read(TYPE) != 0x4457_0140 {
         return Err(Error::Precondition);
@@ -564,7 +564,7 @@ fn set_speed(
     if !*usable || !io.sys_current_strict(clocks) {
         return Err(Error::Precondition);
     }
-    let counts = timing(clocks.sys_hz(), speed)?;
+    let counts = timing(clocks.sys().raw(), speed)?;
     *usable = false;
     disable(io)?;
     configure(io, counts);
@@ -748,11 +748,11 @@ mod tests {
         }
         fn sys_current(&mut self, clocks: &Clocks) -> bool {
             self.fast += 1;
-            self.sys == Some(clocks.sys_hz())
+            self.sys == Some(clocks.sys().raw())
         }
         fn sys_current_strict(&mut self, clocks: &Clocks) -> bool {
             self.strict += 1;
-            !self.strict_stale && self.sys == Some(clocks.sys_hz())
+            !self.strict_stale && self.sys == Some(clocks.sys().raw())
         }
         fn release_reset(&mut self, bit: u32) -> Result<(), Error> {
             self.resets.push(bit);

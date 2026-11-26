@@ -1,5 +1,7 @@
 #![no_std]
 #![no_main]
+#[cfg(feature = "spi")]
+use rp1_hal::fugit::RateExtU32;
 use rp1_hal::log;
 use rp1_link::{Block, OpenError, Progress, flush_window};
 #[cfg(not(feature = "ring-dma"))]
@@ -87,8 +89,8 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let clocks = sys.clocks;
     log!(
         "proc0 clocks sys_hz={} uart_hz={} clk_sys ctrl=0x{:x} div={} sel=0x{:x}\n",
-        clocks.sys_hz(),
-        clocks.uart_hz(),
+        clocks.sys().raw(),
+        clocks.uart().raw(),
         reg(0x4001_8014),
         reg(0x4001_8018),
         reg(0x4001_8020)
@@ -221,7 +223,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 .spi0
                 .init(
                     &c,
-                    rp1_hal::spi::Config::new(1_000_000, embedded_hal::spi::MODE_0),
+                    rp1_hal::spi::Config::new(1.MHz(), embedded_hal::spi::MODE_0),
                 )
                 .map_err(|e| e.error),
             Err(_) => Err(rp1_hal::spi::Error::Precondition),

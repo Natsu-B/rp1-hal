@@ -17,7 +17,9 @@ spi0 = { sck = 11, mosi = 10, miso = 9 }
 ```rust,ignore
 use embedded_hal::spi::{MODE_0, Operation, SpiDevice};
 // p.spi0: rp1_hal::spi::Parts<0, 11, 10, 9>; GPIO8 stays a plain declared pin.
-let bus = p.spi0.init(&clocks, rp1_hal::spi::Config::new(10_000_000, MODE_0))?;
+use rp1_hal::fugit::RateExtU32;
+
+let bus = p.spi0.init(&clocks, rp1_hal::spi::Config::new(10.MHz(), MODE_0))?;
 let mut dev = rp1_hal::spi::Device::new(bus, p.pins.gpio8);
 dev.transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])?;
 ```
@@ -45,7 +47,7 @@ Wrong or swapped pins fail to compile (`tests/ui/spi_wrong_pins.rs`).
 ## Clock, reset, registers
 
 - DOC §3.6.1 / §2.5.5: master `pclk` and `sclk` are clk_sys; Linux's nodes use
-  `RP1_CLK_SYS` as `ssi_clk`. SCLK = `Clocks::sys_hz() / BAUDR`, BAUDR even, 2..=65534
+  `RP1_CLK_SYS` as `ssi_clk`. SCLK = `Clocks::sys().raw() / BAUDR`, BAUDR even, 2..=65534
   (Linux dw_spi rounds the same way: up, then to even). At 200 MHz: 100 MHz maximum,
   1 MHz = /200, 10 MHz = /20, 25 MHz = /8, 50 MHz = /4; the lowest rate is about 3.05 kHz.
   clk_sys belongs to RP1 (`clock.authority = "rp1"`): no SCMI clock is held or voted for

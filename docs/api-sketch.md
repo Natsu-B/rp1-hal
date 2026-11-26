@@ -92,7 +92,7 @@ pub struct Reply { pub seq: u32, pub value: i32 }
 #![no_std]
 #![no_main]
 
-use rp1_hal::{self as hal, prelude::*};
+use rp1_hal::{self as hal, fugit::RateExtU32, prelude::*};
 use rp1_hal::core::{Proc0, Proc1};
 use rp1_hal::sync::Spsc;
 use rp1_rt::{entry, interrupt, isram, shared};
@@ -116,7 +116,7 @@ fn main(core: Proc0, p: rp1::Proc0Resources) -> ! {
     log!("proc0 up, clk_sys={}", clocks.sys());
 
     // 宣言 uart2 = { tx = 4, rx = 5 } の Parts（Token + Pin<4> + Pin<5>）。表に無い組は型が無い
-    let mut uart = p.uart2.init(&clocks, 115_200).unwrap();
+    let mut uart = p.uart2.init(&clocks, 115_200.Hz()).unwrap();
 
     let samples = SAMPLES.consumer(&core);             // Proc0 トークンでしか取れない
     p.proc1.start();                                    // proc1 の #[entry(proc1)] を起動する
@@ -325,12 +325,14 @@ GPIO の `Pin` と `timer::Alarm` はそれ自体が資源で、解放するド�
 呼び出し側が先に `Line::disable` と `Line::unpend` を行うか、ドライバが無いことをハンドラが許容する。
 
 ```rust
+use rp1_hal::fugit::RateExtU32;
+
 // 送信が終わらなければ uart が戻るので、待ち直すか、あきらめて abort する。
 let parts = match uart.free() {
     Ok(parts) => parts,
     Err(e) => e.driver.abort(),
 };
-let mut uart = parts.init(&clocks, 9_600).unwrap();    // 返った Parts でそのまま初期化し直せる
+let mut uart = parts.init(&clocks, 9_600.Hz()).unwrap();    // 返った Parts でそのまま初期化し直せる
 ```
 
 #### UART のエラーと timeout

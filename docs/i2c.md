@@ -54,7 +54,7 @@ cold bring-up must already have started GPIO bank0 and the raw microsecond timer
 HW: the controller clock (`ic_clk`) is clk_sys. With clk_sys on XOSC it measured
 50 MHz (high period exactly HCNT + SPKLEN + 7 cycles of 20 ns); since
 `platform::init` selects PLL_SYS it is 200 MHz. The driver computes the counts
-from `Clocks::sys_hz()` at init and `set_speed`: SCL high/low targets 4.6/5.4 us,
+from `Clocks::sys()` at init and `set_speed`: SCL high/low targets 4.6/5.4 us,
 0.9/1.6 us and 0.4/0.6 us (I2C minimums kept, nominal 100 kHz, 400 kHz, 1 MHz), a 50 ns
 spike filter (3 cycles at 50 MHz, 10 at 200 MHz) and 100 ns of pull-up rise taken off
 the low period. HW at 200 MHz (2026-10-29, ESP32

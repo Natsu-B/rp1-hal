@@ -50,8 +50,8 @@ const FULL_FIFO_BITS: u64 = 330;
 /// transmitter drains at the baud rate whatever the peer does, so the bound follows from it:
 /// twice a full FIFO, plus 1 ms for a core stalled by the other core or a handler. A bound
 /// set by the caller for reads would cut `free` short and make its `abort` fallback truncate.
-fn tx_bound_us(baud: u32) -> u32 {
-    let full_fifo_us = (FULL_FIFO_BITS * 1_000_000).div_ceil(u64::from(baud));
+fn tx_bound_us(baud: fugit::HertzU32) -> u32 {
+    let full_fifo_us = (FULL_FIFO_BITS * 1_000_000).div_ceil(u64::from(baud.raw()));
     u32::try_from(2 * full_fifo_us + 1_000).unwrap_or(u32::MAX)
 }
 
@@ -154,9 +154,9 @@ impl<const N: u8> Token<N> {
     /// [`Parts`] in [`InitError`](crate::InitError); the pins are not touched before success.
     ///
     /// ```no_run
-    /// # use rp1_hal::{clocks::Clocks, gpio::Pin, uart::{Error, Token, Uart}};
+    /// # use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, uart::{Error, Token, Uart}};
     /// fn bring_up(token: Token<2>, tx: Pin<4>, rx: Pin<5>, clocks: &Clocks) -> Result<Uart<2, 4, 5>, Error> {
-    ///     Ok(token.init(tx, rx, clocks, 115_200)?)
+    ///     Ok(token.init(tx, rx, clocks, 115_200.Hz())?)
     /// }
     /// ```
     pub fn init<const TX: u8, const RX: u8>(
@@ -164,14 +164,14 @@ impl<const N: u8> Token<N> {
         tx: Pin<TX>,
         rx: Pin<RX>,
         clocks: &Clocks,
-        baud: u32,
+        baud: fugit::HertzU32,
     ) -> Result<Uart<N, TX, RX>, crate::InitError<Parts<N, TX, RX>, Error>>
     where
         Pin<TX>: Tx<N>,
         Pin<RX>: Rx<N>,
     {
         let started = if clocks.still_current() {
-            start(&mut Mmio, N, clocks.uart_hz(), baud)
+            start(&mut Mmio, N, clocks.uart(), baud)
         } else {
             Err(Error::Precondition)
         };
@@ -197,7 +197,7 @@ impl<const N: u8> Token<N> {
 /// (`rp1-build`); only routes from the bank-0 pin table can be named.
 ///
 /// ```no_run
-/// # use rp1_hal::{clocks::Clocks, gpio::Pin, uart::{Error, Parts, Token, Uart}};
+/// # use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, uart::{Error, Parts, Token, Uart}};
 /// // The resource generated for `uart2 = { tx = 4, rx = 5 }`:
 /// let uart2: Parts<2, 4, 5> = Parts {
 ///     token: unsafe { Token::new() },
@@ -205,7 +205,7 @@ impl<const N: u8> Token<N> {
 ///     rx: unsafe { Pin::new() },
 /// };
 /// fn bring_up(uart2: Parts<2, 4, 5>, clocks: &Clocks) -> Result<Uart<2, 4, 5>, Error> {
-///     Ok(uart2.init(clocks, 115_200)?)
+///     Ok(uart2.init(clocks, 115_200.Hz())?)
 /// }
 /// ```
 pub struct Parts<const N: u8, const TX: u8, const RX: u8>
@@ -226,7 +226,7 @@ where
     pub fn init(
         self,
         clocks: &Clocks,
-        baud: u32,
+        baud: fugit::HertzU32,
     ) -> Result<Uart<N, TX, RX>, crate::InitError<Parts<N, TX, RX>, Error>> {
         self.token.init(self.tx, self.rx, clocks, baud)
     }
@@ -235,8 +235,13 @@ where
 /// the divisors are valid. LCR_H is only legal to change with no character in progress. Out of
 /// reset (cold, or after [`Uart::free`] / [`Uart::abort`]) UARTEN has been clear since, so none
 /// can be; a UART an earlier image left running is only waited for until its transmitter is idle.
-pub(crate) fn start(io: &mut impl Hardware, n: u8, clock_hz: u32, baud: u32) -> Result<(), Error> {
-    let (integer, fraction) = divisors(clock_hz, baud)?;
+pub(crate) fn start(
+    io: &mut impl Hardware,
+    n: u8,
+    clock: fugit::HertzU32,
+    baud: fugit::HertzU32,
+) -> Result<(), Error> {
+    let (integer, fraction) = divisors(clock, baud)?;
     io.write(RESETS_CLR1, reset_bit(n));
     wait(
         io,
@@ -345,11 +350,11 @@ fn set_mask(io: &mut impl Hardware, n: u8, bits: u32, on: bool) {
     let imsc = io.read(base(n) + IMSC);
     io.write(base(n) + IMSC, if on { imsc | bits } else { imsc & !bits });
 }
-pub fn divisors(clock_hz: u32, baud: u32) -> Result<(u32, u32), Error> {
-    if baud == 0 {
+pub fn divisors(clock: fugit::HertzU32, baud: fugit::HertzU32) -> Result<(u32, u32), Error> {
+    if baud.raw() == 0 {
         return Err(Error::Invalid);
     }
-    let scaled = (u64::from(clock_hz) * 4 + u64::from(baud) / 2) / u64::from(baud);
+    let scaled = (u64::from(clock.raw()) * 4 + u64::from(baud.raw()) / 2) / u64::from(baud.raw());
     if !(64..=(65535 * 64 + 63)).contains(&scaled) {
         return Err(Error::Invalid);
     }
@@ -494,6 +499,7 @@ impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Read for Uart<N, TX, 
 mod tests {
     extern crate std;
     use super::*;
+    use fugit::RateExtU32;
     use std::{collections::BTreeMap, collections::VecDeque, vec::Vec};
 
     const N: u8 = 2;
@@ -624,7 +630,7 @@ mod tests {
     #[test]
     fn start_releases_the_reset_then_programs_8n1_and_enables() {
         let mut f = Fake::new();
-        start(&mut f, N, 50_000_000, 115_200).unwrap();
+        start(&mut f, N, 50_000_000.Hz(), 115_200.Hz()).unwrap();
         let b = base(N);
         assert_eq!(
             f.writes,
@@ -641,7 +647,10 @@ mod tests {
             ]
         );
         let mut f = Fake::new();
-        assert_eq!(start(&mut f, N, 50_000_000, 0), Err(Error::Invalid));
+        assert_eq!(
+            start(&mut f, N, 50_000_000.Hz(), 0.Hz()),
+            Err(Error::Invalid)
+        );
         assert!(f.writes.is_empty());
     }
     #[test]
@@ -650,11 +659,17 @@ mod tests {
         hold_in_reset(&mut f, N);
         f.writes.clear();
         f.reset_stuck = true;
-        assert_eq!(start(&mut f, N, 50_000_000, 115_200), Err(Error::Timeout));
+        assert_eq!(
+            start(&mut f, N, 50_000_000.Hz(), 115_200.Hz()),
+            Err(Error::Timeout)
+        );
         assert_eq!(f.writes, [(RESETS_CLR1, 1 << 28)]);
         let mut f = Fake::new();
         f.busy = true;
-        assert_eq!(start(&mut f, N, 50_000_000, 115_200), Err(Error::Timeout));
+        assert_eq!(
+            start(&mut f, N, 50_000_000.Hz(), 115_200.Hz()),
+            Err(Error::Timeout)
+        );
         assert!((10_000..10_500).contains(&f.elapsed_us));
         assert_eq!(f.writes, [(RESETS_CLR1, 1 << 28)]);
     }
@@ -778,7 +793,7 @@ mod tests {
             } else {
                 assert_eq!(release(&mut f, N, 5_000), Ok(()));
             }
-            start(&mut f, N, 50_000_000, 115_200).unwrap();
+            start(&mut f, N, 50_000_000.Hz(), 115_200.Hz()).unwrap();
             assert_eq!((read_byte(&mut f, N), f.tx_room), (Ok(None), 32));
             assert_eq!(f.accesses_in_reset, 0);
         }
@@ -804,23 +819,23 @@ mod tests {
     /// depend on the read timeout.
     #[test]
     fn the_tx_bound_follows_the_baud_rate() {
-        assert_eq!(tx_bound_us(115_200), 2 * 2_865 + 1_000);
-        assert_eq!(tx_bound_us(1_000_000), 2 * 330 + 1_000);
-        assert_eq!(tx_bound_us(300), 2 * 1_100_000 + 1_000);
+        assert_eq!(tx_bound_us(115_200.Hz()), 2 * 2_865 + 1_000);
+        assert_eq!(tx_bound_us(1.MHz()), 2 * 330 + 1_000);
+        assert_eq!(tx_bound_us(300.Hz()), 2 * 1_100_000 + 1_000);
         let slowest = 50_000_000 * 4 / (65535 * 64 + 63) + 1;
-        assert!(divisors(50_000_000, slowest).is_ok());
-        assert!(tx_bound_us(slowest) > 2 * 330 * 1_000_000 / slowest);
+        assert!(divisors(50_000_000.Hz(), slowest.Hz()).is_ok());
+        assert!(tx_bound_us(slowest.Hz()) > 2 * 330 * 1_000_000 / slowest);
         // A full FIFO at 115200 baud drains within the bound.
         let mut f = Fake::new();
         f.busy = true;
         f.drain_at = Some(2_865);
-        assert_eq!(release(&mut f, N, tx_bound_us(115_200)), Ok(()));
+        assert_eq!(release(&mut f, N, tx_bound_us(115_200.Hz())), Ok(()));
     }
     #[test]
     fn baud_divisor_and_invalid_inputs() {
-        assert_eq!(divisors(50_000_000, 115200), Ok((27, 8)));
-        assert_eq!(divisors(0, 115200), Err(Error::Invalid));
-        assert_eq!(divisors(50_000_000, 0), Err(Error::Invalid));
-        assert_eq!(divisors(50_000_000, 1), Err(Error::Invalid));
+        assert_eq!(divisors(50_000_000.Hz(), 115200.Hz()), Ok((27, 8)));
+        assert_eq!(divisors(0.Hz(), 115200.Hz()), Err(Error::Invalid));
+        assert_eq!(divisors(50_000_000.Hz(), 0.Hz()), Err(Error::Invalid));
+        assert_eq!(divisors(50_000_000.Hz(), 1.Hz()), Err(Error::Invalid));
     }
 }

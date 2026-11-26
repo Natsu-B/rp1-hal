@@ -43,8 +43,8 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let sys = rp1::platform::__init_before_link(&mut core, p.platform, |clocks| {
         log!(
             "proc0 clocks sys_hz={} uart_hz={}\n",
-            clocks.sys_hz(),
-            clocks.uart_hz()
+            clocks.sys().raw(),
+            clocks.uart().raw()
         )
         .unwrap();
         // The drivers' `init` may wait 10 ms, too long for a sweep step, so both run here.

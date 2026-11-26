@@ -8,6 +8,7 @@
 use crate::rp1;
 use embedded_hal::spi::{MODE_0, MODE_3, Operation, SpiBus, SpiDevice};
 use rp1_hal::{
+    fugit::RateExtU32,
     log,
     spi::{Device, Error, Spi},
 };
@@ -82,7 +83,7 @@ pub fn prove(dev: &mut Dev, tag: &str) -> Result<(), Failure> {
     bus.set_loopback(false).map_err(fail(0, 8, "loopback"))?;
     bus.set_mode(MODE_0).map_err(fail(0, 8, "mode"))?;
     bus.set_frame_bits(8).map_err(fail(0, 8, "frame_bits"))?;
-    bus.set_frequency(1_000_000)
+    bus.set_frequency(1.MHz())
         .map_err(fail(0, 8, "frequency"))?;
     let mut ext = [0xa5u8; 16];
     bus.transfer(&mut ext, &[0xff; 16])
@@ -92,7 +93,7 @@ pub fn prove(dev: &mut Dev, tag: &str) -> Result<(), Failure> {
     }
     bus.set_loopback(true).map_err(fail(0, 8, "loopback"))?;
     // u8 words on the bus at 10 MHz.
-    bus.set_frequency(10_000_000)
+    bus.set_frequency(10.MHz())
         .map_err(fail(0, 8, "frequency"))?;
     let tx: [u8; 48] = core::array::from_fn(|i| pattern(5, i) as u8);
     let mut rx = [0u8; 48];
@@ -110,10 +111,10 @@ pub fn prove(dev: &mut Dev, tag: &str) -> Result<(), Failure> {
         let bus = dev.bus_mut();
         bus.set_mode(mode).map_err(fail(want, 0, "mode"))?;
         let hz = bus
-            .set_frequency(want)
+            .set_frequency(want.Hz())
             .map_err(fail(want, 0, "frequency"))?;
         for bits in [8, 12, 16] {
-            report(dev, tag, hz, bits)?;
+            report(dev, tag, hz.raw(), bits)?;
         }
     }
     // In place, and write / delay / read in one CS-framed transaction (the read sends zeros).

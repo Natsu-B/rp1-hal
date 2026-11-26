@@ -11,7 +11,7 @@
 //! to Linux from main and from its alarm handler.
 #![no_std]
 #![no_main]
-use rp1_hal::log;
+use rp1_hal::{fugit::RateExtU32, log};
 use rp1_link::{Block, OpenError, RingRx, RingTx, flush_window};
 use rp1_proto::{Error, link};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
@@ -69,8 +69,8 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     log!(
         "PLAT_INIT ok=1 {} sys_hz={} uart_hz={}\n",
         sys.report,
-        clocks.sys_hz(),
-        clocks.uart_hz()
+        clocks.sys().raw(),
+        clocks.uart().raw()
     )
     .unwrap();
     let (perstn, link) = (sys.report.perstn_wait_us, sys.report.link_wait_us);
@@ -299,7 +299,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             .spi0
             .init(
                 &c,
-                rp1_hal::spi::Config::new(1_000_000, embedded_hal::spi::MODE_0),
+                rp1_hal::spi::Config::new(1.MHz(), embedded_hal::spi::MODE_0),
             )
             .map_err(|e| e.error),
         Err(_) => Err(rp1_hal::spi::Error::Precondition),

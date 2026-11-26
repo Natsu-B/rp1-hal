@@ -125,8 +125,8 @@ pub struct Channels<const N: u8> {
     pub channel3: Channel<N, 3>,
 }
 impl<const N: u8> Channels<N> {
-    pub const fn clock_hz(&self) -> u32 {
-        XOSC_HZ
+    pub const fn clock(&self) -> fugit::HertzU32 {
+        fugit::HertzU32::from_raw(XOSC_HZ)
     }
     /// Disables all channels and returns the token. Clock/reset remain running.
     ///

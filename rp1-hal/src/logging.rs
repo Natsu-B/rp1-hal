@@ -40,7 +40,11 @@ impl Logger {
         }
     }
     /// Called by proc0 before launching proc1. Owns UART0 and pins 14/15 for the image lifetime.
-    pub fn init(&'static self, _core: &mut rp1_rt::Proc0, baud: u32) -> Result<(), Error> {
+    pub fn init(
+        &'static self,
+        _core: &mut rp1_rt::Proc0,
+        baud: fugit::HertzU32,
+    ) -> Result<(), Error> {
         if self.ready.load(Ordering::Acquire) != 0 {
             return Err(Error::Precondition);
         }
@@ -52,12 +56,16 @@ impl Logger {
             write(0x400f_0004 + pin * 4, 0x46);
         }
         // The bring-up fails on the baud rate or on one of its bounded waits.
-        crate::uart::start(&mut crate::linux_blocks::Mmio, 0, uart_hz, baud).map_err(|error| {
-            match error {
-                crate::uart::Error::Invalid => Error::Invalid,
-                crate::uart::Error::Timeout => Error::Timeout,
-                _ => Error::Hardware,
-            }
+        crate::uart::start(
+            &mut crate::linux_blocks::Mmio,
+            0,
+            fugit::HertzU32::from_raw(uart_hz),
+            baud,
+        )
+        .map_err(|error| match error {
+            crate::uart::Error::Invalid => Error::Invalid,
+            crate::uart::Error::Timeout => Error::Timeout,
+            _ => Error::Hardware,
         })?;
         self.ready.store(1, Ordering::Release);
         Ok(())

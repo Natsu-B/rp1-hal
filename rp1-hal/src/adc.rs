@@ -153,8 +153,8 @@ pub struct Adc {
 
 impl Adc {
     /// clk_adc as started by [`Token::init`].
-    pub const fn clock_hz(&self) -> u32 {
-        self.clk_hz
+    pub const fn clock(&self) -> fugit::HertzU32 {
+        fugit::HertzU32::from_raw(self.clk_hz)
     }
 
     /// Powers the temperature sensor (CS.TS_EN) on or off. [`Adc::read`] of
