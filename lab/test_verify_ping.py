@@ -46,6 +46,15 @@ class PingFixtures(unittest.TestCase):
                           for line in console(mode).splitlines())
             self.assertEqual(verify(UART0, raw, mode, BUNDLE, CLIENT, A_ID if mode == "poll" else None), boot)
 
+    def test_capture_started_before_force_boot(self):
+        shutdown = ("[  42.23] reboot: Power down\r\n"
+                    "  0.98 RPi: BOOTSYS release\r\n"
+                    "  1.00 power-on-reset 0\r\n"
+                    "  1.12 Power off\r\n")
+        raw = shutdown + "  0.99 " + console("irq").replace(
+            "RPi: BOOTSYS release\n", "RPi: BOOTSYS release\r\n  1.01 power-on-reset 1\r\n", 1)
+        self.assertEqual(verify(UART0, raw, "irq", BUNDLE, CLIENT), A_ID)
+
     def test_rejects_partial_failed_and_mixed_runs(self):
         valid = console("irq")
         for old, new in [
@@ -55,6 +64,7 @@ class PingFixtures(unittest.TestCase):
             ("core=1 state=Panicked elapsed", "core=0 state=Panicked elapsed"),
             ("before=8 after=91", "before=8 after=8"),
             ("generation=2 phase=after", "generation=4 phase=after"),
+            (f"PING_BOOT_END_ID={A_ID}", f"PING_BOOT_END_ID={B_ID}"),
             (BUNDLE, "0" * 16), (CLIENT, "0" * 64),
             ("PING_CHECK_END", "PING_CHECK_END\nOops: fault"),
             ("PING_CHECK_END", "PING_CHECK_END\n[rp1boot    234] FAIL: bad image"),
@@ -63,6 +73,12 @@ class PingFixtures(unittest.TestCase):
                 verify(UART0, valid.replace(old, new), "irq", BUNDLE, CLIENT)
         with self.assertRaises(ValueError):
             verify(UART0, valid + console("poll"), "irq", BUNDLE, CLIENT)
+        for raw in [valid.replace("RPi: BOOTSYS release\n", ""),
+                    valid.replace("PING_CHECK_EXIT=0", "RPi: BOOTSYS release\nPING_CHECK_EXIT=0"),
+                    "PING_CHECK_EXIT=0\n" + valid,
+                    valid + "RPi: BOOTSYS release\nPING_CHECK_EXIT=0\n"]:
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                verify(UART0, raw, "irq", BUNDLE, CLIENT)
         with self.assertRaises(ValueError):
             verify(UART0, console("poll"), "poll", BUNDLE, CLIENT, B_ID)
         with self.assertRaises(ValueError):

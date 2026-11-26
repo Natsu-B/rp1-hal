@@ -20,8 +20,17 @@ def lines(raw):
 
 def verify(uart0, uart10, mode, bundle, client_sha, previous_boot=None):
     fw, console = lines(uart0), lines(uart10)
-    if sum("RPi: BOOTSYS" in line for line in console) != 1:
-        raise ValueError("expected one bootloader banner")
+    begins = [i for i, line in enumerate(console) if line.startswith("PING_CHECK_BEGIN ")]
+    if len(begins) != 1:
+        raise ValueError("expected one PING_CHECK_BEGIN")
+    banners = [i for i, line in enumerate(console) if "RPi: BOOTSYS" in line]
+    start = max((i for i in banners if i < begins[0]), default=-1)
+    if start == -1:
+        raise ValueError("missing bootloader banner before PING_CHECK_BEGIN")
+    end = next((i for i in banners if i > begins[0]), len(console))
+    if any(line.startswith("PING_") for line in console[:start] + console[end:]):
+        raise ValueError("PING markers outside the selected boot")
+    console = console[start:end]
     if sum(line.startswith("PLAT_INIT ok=1 ") for line in fw) != 1:
         raise ValueError("expected one successful firmware boot")
     if any(re.search(r"\b(?:panic|fault)\b", line, re.I) for line in fw):
