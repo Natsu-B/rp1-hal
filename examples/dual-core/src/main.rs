@@ -144,7 +144,12 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
             match init.try_open() {
                 Ok(link) => channel = Some(link.channel),
                 Err(OpenError::NotReady(init)) => channel_init = Some(init),
-                Err(_) => log!("channel open failed\n").unwrap(),
+                Err(OpenError::Reset) => {
+                    let _ = log!("channel open failed: shared window reset\n");
+                }
+                Err(OpenError::Attach(error)) => {
+                    let _ = log!("channel open failed: {error}\n");
+                }
             }
         }
         if let Some(endpoint) = channel.as_mut()
@@ -164,6 +169,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     }
 }
 
+/// Echo each nonce from `linux-ping --channel` back to Linux.
 fn echo_channel(
     channel: &mut Channel<Nonce, Nonce>,
     pending: &mut Option<Nonce>,

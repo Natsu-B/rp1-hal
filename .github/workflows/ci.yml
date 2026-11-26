@@ -89,6 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - run: rustup show active-toolchain
       - run: rustup target add aarch64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked --release --target aarch64-unknown-linux-musl -p linux-ping -p linux-status

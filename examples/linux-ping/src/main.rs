@@ -45,6 +45,8 @@ fn channel_echo() -> Result<()> {
     let mut bytes = [0; 4];
     File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     let nonce = u32::from_ne_bytes(bytes);
+    // A previous timed-out run may have left a reply in the ring.
+    while channel.try_recv()?.is_some() {}
     channel.send(&nonce)?;
     let reply = channel
         .recv(Some(CALL_TIMEOUT))?
