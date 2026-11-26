@@ -7,6 +7,7 @@ use rp1_hal::{
     clocks::Clocks,
     fugit::{ExtU32, RateExtU32},
     log,
+    pac::pl011::int,
     timer::Timer,
     uart::Parts,
 };
@@ -16,6 +17,15 @@ pub fn run(uart: Parts<1, 0, 1>, clocks: &Clocks) -> Result<(), &'static str> {
         .init(clocks, 115_200.Hz())
         .map_err(|_| "UART1 init failed")?
         .split();
+
+    // Discard startup bytes so the nonce starts at the READY boundary.
+    for _ in 0..32 {
+        if matches!(rx.read_byte(), Ok(None)) {
+            break;
+        }
+    }
+    rx.clear_interrupt(int::FE | int::PE | int::BE | int::OE);
+
     let timer = Timer::new();
     // Use one deadline for the nonce and acknowledgement so an absent peer cannot stall boot.
     let deadline = timer.now_32() + 15.secs();

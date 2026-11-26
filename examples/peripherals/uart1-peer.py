@@ -38,9 +38,9 @@ def main():
     port.rts = False
     port.port = args.port
     with port, args.out.open("xb") as raw:
-        port.reset_input_buffer()
         print("UART_PEER_ARMED", flush=True)
         wait_ready(args.uart0)
+        port.reset_input_buffer()
         print(f"UART_PEER_TX nonce={nonce.hex()}", flush=True)
         if port.write(nonce) != len(nonce):
             sys.exit("UART1 nonce write was short")
