@@ -31,6 +31,7 @@ fn TIMER_0() {
     });
 }
 
+/// Pass the generated `irq.TIMER_0` line for ALARM0.
 pub fn run(mut alarm: Alarm<0>, mut irq: Line<26>) -> Result<(), &'static str> {
     alarm.clear_interrupt();
     irq.unpend();
@@ -69,6 +70,7 @@ fn sample_ticks() -> Result<(), &'static str> {
             }
         }
         let fired = FIRED_AT.load(Relaxed);
+        // The timer runs at 1 MHz, so 18,000–22,000 ticks is 20 ms ± 2 ms.
         if TICKS.load(Relaxed) != count
             || !(18_000..=22_000).contains(&fired.wrapping_sub(previous))
         {

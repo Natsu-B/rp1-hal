@@ -1,7 +1,7 @@
 //! Proc0 declaration: `adc = {}`.
 //! No wiring. Sample the internal temperature input with the native 12-bit one-shot API.
 
-use crate::rp1;
+use crate::rp1; // log! resolves rp1::log in this scope.
 use rp1_hal::{
     adc::{TEMPERATURE, Token},
     clocks::Clocks,

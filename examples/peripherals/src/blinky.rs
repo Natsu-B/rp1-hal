@@ -3,16 +3,12 @@
 //! cycles using embedded-hal digital pins and a typed delay.
 
 use embedded_hal::digital::{InputPin, OutputPin};
-use rp1_hal::{
-    fugit::ExtU32,
-    gpio::{PadConfig, Pin},
-    timer::Timer,
-};
+use rp1_hal::{fugit::ExtU32, gpio::Pin, timer::Timer};
 
 pub fn run(output: Pin<13>, input: Pin<23>) -> Result<(), &'static str> {
     let mut output = output.into_output(false);
-    // A high-impedance input can sample the driven pin without fighting it.
-    let mut input = input.into_input_with_pad(PadConfig::INPUT_DEFAULT);
+    // The default pull-down holds the sense pin low if the jumper is missing.
+    let mut input = input.into_input();
     let timer = Timer::new();
 
     for _ in 0..3 {

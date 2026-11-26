@@ -2,7 +2,7 @@
 //! Cross GPIO0/1 TX/RX with a 3.3 V UART adapter and share ground. At 115200 8N1,
 //! send eight nonce bytes after UART0 logs READY, verify the echo, then send ACK (0x06).
 
-use crate::rp1;
+use crate::rp1; // log! resolves rp1::log in this scope.
 use rp1_hal::{
     clocks::Clocks,
     fugit::{ExtU32, RateExtU32},
@@ -33,11 +33,7 @@ pub fn run(uart: Parts<1, 0, 1>, clocks: &Clocks) -> Result<(), &'static str> {
     for byte in &mut nonce {
         *byte = receive()?;
     }
-    let mut remaining = nonce.as_slice();
-    while !remaining.is_empty() {
-        let written = tx.write(remaining).map_err(|_| "UART1 transmit error")?;
-        remaining = &remaining[written..];
-    }
+    embedded_io::Write::write_all(&mut tx, &nonce).map_err(|_| "UART1 transmit error")?;
     tx.flush().map_err(|_| "UART1 flush error")?;
     if receive()? != 0x06 {
         return Err("UART1 echo not acknowledged");

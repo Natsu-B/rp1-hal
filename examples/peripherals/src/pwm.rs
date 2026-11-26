@@ -5,8 +5,8 @@
 use embedded_hal::{digital::InputPin, pwm::SetDutyCycle};
 use rp1_hal::{
     clocks::Clocks,
-    fugit::{ExtU32, RateExtU32},
-    gpio::{Input, PadConfig, Pin},
+    fugit::{ExtU32, HertzU32, RateExtU32},
+    gpio::{Input, Pin},
     pwm::Token,
     timer::Timer,
 };
@@ -17,10 +17,10 @@ pub fn run(
     input: Pin<22>,
     clocks: &Clocks,
 ) -> Result<(), &'static str> {
-    // GPIO22 is only a sense pin; its pull-down also defines the level if GPIO12 floats.
-    let mut input = input.into_input_with_pad(PadConfig::INPUT_DEFAULT);
+    // The default pull-down holds the sense pin low if the jumper is missing.
+    let mut input = input.into_input();
     let channels = pwm.init(clocks).map_err(|_| "PWM0 init failed")?;
-    let frequency: rp1_hal::fugit::HertzU32 = 1.kHz();
+    let frequency: HertzU32 = 1.kHz();
     let period = channels.clock().raw() / frequency.raw();
     let mut output = channels.channel0.output(output);
     output
