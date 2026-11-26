@@ -6,8 +6,9 @@
 //! such a schedule.
 //!
 //! Three sides are too many for an unbounded search, so it is bounded by preemptions (CHESS
-//! style, [`Sched::drive`]): every negative here stalls within the bound, and so does the
-//! stock handler with either readback (W3 in `reader_asleep`, R4 in `prepare_wait`) removed.
+//! style, [`Sched::drive`]): every negative here stalls within the bound, among them the
+//! stock handler with either readback (W3 in `reader_asleep`, R4 in the arm of `drain`)
+//! removed, through the lab controls' hooks.
 use super::model::{Path, Sched, explore};
 use super::{Mem, mem};
 use crate::shm::*;
@@ -41,6 +42,10 @@ struct Case {
     reopen: Option<bool>,
     /// Bound of the search (see [`Sched::drive`]).
     preemptions: usize,
+    /// Negative when false: the writers skip the readback of `head` in `reader_asleep` (W3).
+    writer_readback: bool,
+    /// Negative when false: the reader skips the readback of its arm in `drain` (R4).
+    reader_readback: bool,
 }
 
 /// One ring: what the reader sees (`data`) and the writer sees (`ctrl`), plus the posted
@@ -92,9 +97,14 @@ fn attach_tx((data, ctrl): (usize, usize)) -> RingTx<u32> {
     unsafe { RingTx::attach(d, LEN, c, CONTROL_SIZE, DEPTH, Overflow::Reject) }.unwrap()
 }
 
-fn send(sched: &Sched, me: usize, tx: &mut RingTx<u32>, value: u32) {
+fn send(sched: &Sched, case: Case, me: usize, tx: &mut RingTx<u32>, value: u32) {
     tx.push(&value).unwrap();
-    if tx.reader_asleep() {
+    let asleep = if case.writer_readback {
+        tx.reader_asleep()
+    } else {
+        tx.__reader_asleep_without_readback()
+    };
+    if asleep {
         sched.raise(me);
     }
 }
@@ -107,7 +117,12 @@ fn handle(sched: &Sched, case: Case, rx: &mut [RingRx<u32>; 2], got: &mut [Vec<u
         if case.handler == Handler::AckPerRing {
             sched.ack(READER);
         }
-        let progress = rx.drain(case.max, |v| got.push(v)).unwrap();
+        let progress = if case.reader_readback {
+            rx.drain(case.max, |v| got.push(v))
+        } else {
+            rx.__drain_without_readback(case.max, |v| got.push(v))
+        }
+        .unwrap();
         if progress == Progress::More && case.handler != Handler::IgnoreMore {
             sched.raise(READER);
         }
@@ -145,7 +160,7 @@ fn check(case: Case) -> (usize, usize) {
                             first = 1;
                         }
                         for k in first..case.sends[me] {
-                            send(sched, me, &mut tx, k);
+                            send(sched, case, me, &mut tx, k);
                         }
                     })
                 });
@@ -187,6 +202,8 @@ const STOCK: Case = Case {
     sends: [1, 1],
     reopen: None,
     preemptions: PREEMPTIONS,
+    writer_readback: true,
+    reader_readback: true,
 };
 
 fn timed(case: Case) -> (usize, usize) {
@@ -264,4 +281,36 @@ fn reopen_without_opening_notify_stalls() {
         ..STOCK
     });
     assert!(stalls > 0);
+}
+
+/// One writer with one message and one preemption: small enough for the readback negatives,
+/// and the stock protocol never stalls there.
+const ONE_MESSAGE: Case = Case {
+    sends: [1, 0],
+    preemptions: 1,
+    ..STOCK
+};
+
+/// Negative: writers that look at the reader without first reading `head` back (W3) can see
+/// it awake before their message has landed, while it arms and re-checks without seeing it
+/// (1,591 of 4,125 runs stall; with both readbacks none of 1,021).
+#[test]
+fn writer_without_readback_stalls() {
+    assert_eq!(timed(ONE_MESSAGE).1, 0);
+    let (runs, stalls) = timed(Case {
+        writer_readback: false,
+        ..ONE_MESSAGE
+    });
+    assert!(stalls > 0, "runs={runs}");
+}
+
+/// Negative: a reader that re-checks without first reading its arm back (R4) can miss a
+/// message whose writer still sees it awake (243 of 1,778 runs stall).
+#[test]
+fn reader_without_readback_stalls() {
+    let (runs, stalls) = timed(Case {
+        reader_readback: false,
+        ..ONE_MESSAGE
+    });
+    assert!(stalls > 0, "runs={runs}");
 }
