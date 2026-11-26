@@ -74,6 +74,81 @@ impl<const N: u8, const CORE: u8> PinIrq<N, CORE> {
     }
 }
 
+/// Pull resistors for a bank-0 pad.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pull {
+    None = 0,
+    Up = 8,
+    Down = 4,
+    BusKeep = 12,
+}
+
+/// Output drive strength.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveStrength {
+    Ma2,
+    Ma4,
+    Ma8,
+    Ma12,
+}
+
+/// Output slew rate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlewRate {
+    Slow,
+    Fast,
+}
+
+/// Electrical settings of a bank-0 pad.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadConfig {
+    pub pull: Pull,
+    pub drive: DriveStrength,
+    pub slew: SlewRate,
+    pub schmitt: bool,
+}
+
+impl PadConfig {
+    /// Electrical settings used by [`Pin::into_input`].
+    pub const INPUT_DEFAULT: Self = Self {
+        pull: Pull::Down,
+        drive: DriveStrength::Ma2,
+        slew: SlewRate::Slow,
+        schmitt: true,
+    };
+    /// Electrical settings used by [`Pin::into_output`].
+    pub const OUTPUT_DEFAULT: Self = Self {
+        drive: DriveStrength::Ma4,
+        ..Self::INPUT_DEFAULT
+    };
+
+    fn bits(self) -> u32 {
+        self.pull as u32 | (self.drive as u32) << 4 | (self.schmitt as u32) << 1 | self.slew as u32
+    }
+
+    fn from_bits(bits: u32) -> Self {
+        Self {
+            pull: [Pull::None, Pull::Down, Pull::Up, Pull::BusKeep][(bits as usize >> 2) & 3],
+            drive: [
+                DriveStrength::Ma2,
+                DriveStrength::Ma4,
+                DriveStrength::Ma8,
+                DriveStrength::Ma12,
+            ][(bits as usize >> 4) & 3],
+            slew: if bits & 1 == 0 {
+                SlewRate::Slow
+            } else {
+                SlewRate::Fast
+            },
+            schmitt: bits & 2 != 0,
+        }
+    }
+}
+
+const fn pad(n: u8) -> usize {
+    0x400f_0004 + n as usize * 4
+}
+
 pub struct Unconfigured;
 pub struct Input;
 pub struct Output;
@@ -84,6 +159,17 @@ pub struct Pin<const N: u8, Mode = Unconfigured> {
     _mode: PhantomData<Mode>,
 }
 impl<const N: u8, M> Pin<N, M> {
+    /// Reads the pad's current electrical settings.
+    pub fn pad_config(&self) -> PadConfig {
+        PadConfig::from_bits(read(pad(N)))
+    }
+
+    /// Changes the electrical settings while preserving the pin's direction, mux and IRQs.
+    /// Configure these settings after routing the pin, which applies the new mode's defaults.
+    pub fn set_pad_config(&mut self, config: PadConfig) {
+        set_pad_config(&mut Mmio, N, config);
+    }
+
     /// Back to the unconfigured state type (the pad and mux stay as they are).
     pub(crate) fn release(self) -> Pin<N> {
         Pin { _mode: PhantomData }
@@ -112,25 +198,50 @@ impl<const N: u8> Pin<N> {
         write(0x400f_0004 + N as usize * 4, pad);
         Pin { _mode: PhantomData }
     }
+    /// Routes the pin as a GPIO output with the default pad settings.
     pub fn into_output(self, high: bool) -> Pin<N, Output> {
-        write(0x4001_7004, 1 << 19);
-        write(if high { 0x400e_2000 } else { 0x400e_3000 }, 1 << N);
-        write(0x400d_0004 + N as usize * 8, 0x85);
-        write(0x400f_0004 + N as usize * 4, 0x56);
-        write(0x400e_2004, 1 << N);
+        self.into_output_with_pad(high, PadConfig::OUTPUT_DEFAULT)
+    }
+
+    /// Routes the pin as a GPIO output with the specified initial level and pad settings.
+    pub fn into_output_with_pad(self, high: bool, config: PadConfig) -> Pin<N, Output> {
+        configure_output(&mut Mmio, N, high, config);
         Pin { _mode: PhantomData }
     }
+
+    /// Routes the pin as a GPIO input with the default pad settings.
     pub fn into_input(self) -> Pin<N, Input> {
-        configure_input(&mut Mmio, N);
+        self.into_input_with_pad(PadConfig::INPUT_DEFAULT)
+    }
+
+    /// Routes the pin as a GPIO input with the specified pad settings.
+    pub fn into_input_with_pad(self, config: PadConfig) -> Pin<N, Input> {
+        configure_input(&mut Mmio, N, config);
         Pin { _mode: PhantomData }
     }
 }
-fn configure_input(io: &mut impl Registers, n: u8) {
+
+fn configure_output(io: &mut impl Registers, n: u8, high: bool, config: PadConfig) {
+    io.write(0x4001_7004, 1 << 19);
+    // Keep the pad disconnected until RIO is driving the initial level.
+    io.write(pad(n), 0xc0 | config.bits());
+    io.write(if high { 0x400e_2000 } else { 0x400e_3000 }, 1 << n);
+    io.write(ctrl(n), 0x85);
+    io.write(0x400e_2004, 1 << n);
+    io.write(pad(n), 0x40 | config.bits());
+}
+
+fn configure_input(io: &mut impl Registers, n: u8, config: PadConfig) {
     io.write(0x4001_7004, 1 << 19);
     // Enable the input buffer and force the pad output off before switching the mux.
-    io.write(0x400f_0004 + n as usize * 4, 0xc6);
+    io.write(pad(n), 0xc0 | config.bits());
     io.write(0x400e_3004, 1 << n);
-    io.write(0x400d_0004 + n as usize * 8, 5);
+    io.write(ctrl(n), 5);
+}
+
+fn set_pad_config(io: &mut impl Registers, n: u8, config: PadConfig) {
+    let current = io.read(pad(n));
+    io.write(pad(n), (current & !0x3f) | config.bits());
 }
 impl<const N: u8, M> ErrorType for Pin<N, M> {
     type Error = Infallible;
@@ -168,21 +279,60 @@ mod tests {
     use super::*;
     use std::{collections::BTreeMap, vec::Vec};
 
+    struct Fake {
+        regs: BTreeMap<usize, u32>,
+        writes: Vec<(usize, u32)>,
+    }
+    impl Registers for Fake {
+        fn read(&mut self, address: usize) -> u32 {
+            self.regs.get(&address).copied().unwrap_or(0)
+        }
+        fn write(&mut self, address: usize, value: u32) {
+            self.regs.insert(address, value);
+            self.writes.push((address, value));
+        }
+    }
+
+    #[test]
+    fn pad_settings_round_trip() {
+        for raw in 0..64 {
+            assert_eq!(PadConfig::from_bits(raw).bits(), raw);
+        }
+    }
+
+    #[test]
+    fn output_drives_initial_level_before_enabling_pad() {
+        let mut io = Fake {
+            regs: BTreeMap::new(),
+            writes: Vec::new(),
+        };
+        configure_output(&mut io, 22, true, PadConfig::OUTPUT_DEFAULT);
+        assert_eq!(
+            io.writes,
+            [
+                (0x4001_7004, 1 << 19),
+                (pad(22), 0xd6),
+                (0x400e_2000, 1 << 22),
+                (ctrl(22), 0x85),
+                (0x400e_2004, 1 << 22),
+                (pad(22), 0x56),
+            ]
+        );
+    }
+
+    #[test]
+    fn pad_update_preserves_direction_and_irq_config() {
+        let mut io = Fake {
+            regs: [(pad(22), 0x1c8), (ctrl(22), 0x0020_0005)].into(),
+            writes: Vec::new(),
+        };
+        assert_eq!(PadConfig::from_bits(io.read(pad(22))).pull, Pull::Up);
+        set_pad_config(&mut io, 22, PadConfig::INPUT_DEFAULT);
+        assert_eq!(io.writes, [(pad(22), 0x1c6)]);
+    }
+
     #[test]
     fn input_enables_buffer_and_disables_pad_output_before_mux() {
-        struct Fake {
-            regs: BTreeMap<usize, u32>,
-            writes: Vec<(usize, u32)>,
-        }
-        impl Registers for Fake {
-            fn read(&mut self, address: usize) -> u32 {
-                self.regs.get(&address).copied().unwrap_or(0)
-            }
-            fn write(&mut self, address: usize, value: u32) {
-                self.regs.insert(address, value);
-                self.writes.push((address, value));
-            }
-        }
         for n in [0, 22, 23, 27] {
             let pad = 0x400f_0004 + n as usize * 4;
             let mux = 0x400d_0004 + n as usize * 8;
@@ -191,7 +341,7 @@ mod tests {
                 regs: [(pad, 0x96)].into(),
                 writes: Vec::new(),
             };
-            configure_input(&mut io, n);
+            configure_input(&mut io, n, PadConfig::INPUT_DEFAULT);
             assert_eq!(io.read(pad) & 0xc0, 0xc0);
             assert_eq!(io.read(mux), 5);
             assert_eq!(

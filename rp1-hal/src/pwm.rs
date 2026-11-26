@@ -218,6 +218,11 @@ pub struct Output<const N: u8, const C: u8, const P: u8> {
     pin: Pin<P, Alternate>,
 }
 impl<const N: u8, const C: u8, const P: u8> Output<N, C, P> {
+    /// Borrows the routed pin to configure its pad before enabling PWM.
+    pub fn pin_mut(&mut self) -> &mut Pin<P, Alternate> {
+        &mut self.pin
+    }
+
     /// Disables the channel and clears its MODE (generate 0), as Linux's `pwm-rp1` free does,
     /// then returns channel and unconfigured pin. The pad stays muxed to the channel, which
     /// then outputs a constant low (DOC/STATIC; HW: not verified). [`Channel::enable`] restores the
