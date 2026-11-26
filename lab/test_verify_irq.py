@@ -89,6 +89,12 @@ DOWNIRQ ring=down1 n=10000 missing=0 corrupt=0 stalls=0 max=16 burst=1 entries=9
 DOWNIRQ_PASS
 DOWNIRQ_KILL_RC=0
 DOWNIRQ_KILL_PASS
+DOWNIRQ_UNRUNG ring=down1 sent=8 pending=8
+DOWNIRQ_UNRUNG_PASS
+DOWNIRQ_UNRUNG_RC=0
+DOWNIRQ_REOPEN ring=down1 n=8 received=8 corrupt=0 stale=0 errors=0 seconds=0.000120
+DOWNIRQ_REOPEN_PASS
+DOWNIRQ_REOPEN_RC=0
 CONTROL_J1 n=20000 stalls=0 late=2 received=20000 corrupt=0 seconds=3.000 (record only)
 CONTROL_J2 n=20000 stalls=1 late=0 received=20000 corrupt=0 seconds=4.000 (record only)
 CONTROLS_RC=0
@@ -262,6 +268,11 @@ class VerifyIrq(unittest.TestCase):
         self.assertFails(failures(uart0(), stall), "DOWNIRQ_STALL")
         stall0 = console("DOWN0IRQ_PASS", "DOWN0IRQ_STALL ring=down0 at=10000 pending=1\nDOWN0IRQ_PASS")
         self.assertFails(failures(uart0(), stall0), "DOWN0IRQ_STALL")
+        # Without the opening notify the reader sleeps on the unrung messages.
+        reopen = console("DOWNIRQ_REOPEN_PASS", "DOWNIRQ_REOPEN_STALL ring=down1 pending=8\nDOWNIRQ_REOPEN_PASS")
+        self.assertFails(failures(uart0(), reopen), "DOWNIRQ_REOPEN_STALL")
+        unrung = console("DOWNIRQ_UNRUNG_PASS", "DOWNIRQ_UNRUNG_FAIL\nDOWNIRQ_UNRUNG_PASS")
+        self.assertFails(failures(uart0(), unrung), "DOWNIRQ_UNRUNG_FAIL")
         for old, new, needle in [
             ("DOWNIRQ ring=down1 n=1000000 missing=0 corrupt=0 stalls=0",
              "DOWNIRQ ring=down1 n=1000000 missing=1 corrupt=0 stalls=0", "(b) DOWNIRQ"),
@@ -273,6 +284,10 @@ class VerifyIrq(unittest.TestCase):
             ("IRQPAIR_PASS\n", "", "(f) IRQPAIR_PASS"),
             ("DOWNIRQ_KILLS=50", "DOWNIRQ_KILLS=12", "(i) 50 killed writers"),
             ("DOWNIRQ_KILL_PASS\n", "", "(i) DOWNIRQ_KILL_PASS"),
+            # The reader took them before the reopen: the step proves nothing.
+            ("sent=8 pending=8", "sent=8 pending=0", "(i) unrung messages left"),
+            ("n=8 received=8", "n=8 received=0", "(i) reopen drained them"),
+            ("DOWNIRQ_REOPEN_PASS\n", "", "(i) DOWNIRQ_REOPEN_PASS"),
         ]:
             with self.subTest(new=new):
                 self.assertFails(failures(uart0(), console(old, new)), needle)

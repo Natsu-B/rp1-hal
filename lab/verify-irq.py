@@ -245,6 +245,10 @@ UART10_NOTIFY = [
     ("(i) 50 killed writers", r"\bDOWNIRQ_KILLS=50\b"),
     ("(i) DOWNIRQ after them", r"\bDOWNIRQ ring=down1 n=10000 missing=0 corrupt=0 stalls=0 "),
     ("(i) DOWNIRQ_KILL_PASS", r"\bDOWNIRQ_KILL_PASS\b"),
+    ("(i) unrung messages left", r"\bDOWNIRQ_UNRUNG ring=down1 sent=8 pending=8\b"),
+    ("(i) DOWNIRQ_UNRUNG_PASS", r"\bDOWNIRQ_UNRUNG_PASS\b"),
+    ("(i) reopen drained them", r"\bDOWNIRQ_REOPEN ring=down1 n=8 received=8 corrupt=0 \S+ errors=0 "),
+    ("(i) DOWNIRQ_REOPEN_PASS", r"\bDOWNIRQ_REOPEN_PASS\b"),
 ]
 UART10_REGRESSION = [
     ("SHM_PASS", r"\bSHM_PASS\b"),
@@ -261,7 +265,7 @@ UART10_POWER = [
     ("3 A supply", r"\bmax-current 3000\b"),
 ]
 UART10_FORBIDDEN = [r"\bCHECK_FAIL\b", r"\bIRQ_CHECK_RESULT=FAIL\b", r"Kernel panic", r"\bSError\b",
-                    r"\b(?:DOWNIRQ|DOWN0IRQ|RINGIRQ0|MIXIRQ|IRQPAIR)_(?:STALL|FAIL)\b"]
+                    r"\b(?:DOWNIRQ|DOWN0IRQ|RINGIRQ0|MIXIRQ|IRQPAIR)(?:_UNRUNG|_REOPEN)?_(?:STALL|FAIL)\b"]
 
 
 def verify_uart10(text, nonce, steps, final_check=None):

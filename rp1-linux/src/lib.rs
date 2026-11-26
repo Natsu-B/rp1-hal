@@ -763,6 +763,14 @@ impl<T: Message> RingTx<T> {
         }
         Ok(())
     }
+    /// Lab control only: publish without waking the reader, as a writer that ends between its
+    /// publish and its doorbell. Only the next writer's opening notify can wake the reader.
+    #[doc(hidden)]
+    pub fn __push_without_wake(&mut self, value: &T) -> Result<()> {
+        self.session.check()?;
+        self.inner.push(value)?;
+        Ok(())
+    }
 }
 pub struct BlockMap<T> {
     inner: shm::Block<T>,
@@ -1226,6 +1234,22 @@ mod tests {
         rp1.finish_wait();
         let _tx = writer(&r, &ddr, Some(&page));
         assert!(!rung(&page));
+    }
+
+    /// The lab's dying writer: its message leaves the sleeping reader unrung, and the next
+    /// writer rings for it at open.
+    #[test]
+    fn a_push_without_wake_is_rung_for_by_the_next_writer() {
+        let r = rig(false);
+        let page = anon(0x4000);
+        let (mut rp1, ddr) = down(&r);
+        let mut tx = writer(&r, &ddr, Some(&page));
+        assert!(rp1.prepare_wait());
+        tx.__push_without_wake(&1).unwrap();
+        assert!(!rung(&page));
+        drop(tx);
+        let _tx = writer(&r, &ddr, Some(&page));
+        assert!(rung(&page));
     }
 
     #[test]

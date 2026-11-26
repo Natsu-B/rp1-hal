@@ -76,8 +76,9 @@ limit 10 /bin/linux-status --health 1000
 rc=$?; echo LINUX_STATUS_RC=$rc; [ $rc -eq 0 ] || fail linux_status
 step MIXIRQ 120 mix-irq 100000
 step IRQPAIR 120 irq-pair
-# A writer killed at a random moment (5..200 ms into its stream) leaves messages it may not
-# have rung for; the next writer's opening notify must still get the reader going.
+# Writers killed at random moments (5..200 ms into their streams) must do no harm: the next
+# full run still goes through. That run sends, so it does not show the opening notify; the
+# open-only step below does.
 i=0
 while [ $i -lt 50 ]; do
     /bin/shm-linux down-irq --stream-only 100000000 &
@@ -90,6 +91,12 @@ done
 echo "DOWNIRQ_KILLS=$i"
 step DOWNIRQ_KILL 60 down-irq 10000
 [ $rc -eq 0 ] && echo DOWNIRQ_KILL_PASS
+# A writer that dies between its publish and its doorbell leaves messages that the sleeping
+# reader was never told about (UNRUNG checks they stay unread for the stall window). The next
+# writer only opens the ring and sends nothing: its opening notify alone must get the reader
+# through them within the stall window.
+step DOWNIRQ_UNRUNG 30 down-irq --publish-only 8
+step DOWNIRQ_REOPEN 30 down-irq --open-only 8
 # Record only: not part of the result.
 limit 30 /bin/shm-linux controls
 echo "CONTROLS_RC=$?"

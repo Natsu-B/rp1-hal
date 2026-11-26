@@ -7,6 +7,12 @@
 //!   of budget) also `DOWNIRQ_MORE raises=.. missing=..` and `DOWNIRQ_MORE_PASS` instead.
 //! - `down-irq --stream-only [count]`: send only, no commands (killed by check-irq.sh at a
 //!   random moment; the next run must still go through).
+//! - `down-irq --publish-only N` then `down-irq --open-only N`: the first starts a run and
+//!   publishes N messages without waking the sleeping reader, as a writer that dies between
+//!   its publish and its doorbell, and checks that they are still unread after [`STALL`]
+//!   (`DOWNIRQ_UNRUNG_PASS`). The second only opens the ring and sends nothing: its opening
+//!   notify alone must get the reader through them (`DOWNIRQ_REOPEN_PASS`, else
+//!   `DOWNIRQ_REOPEN_STALL`).
 //! - `down0-irq [--max N] [--burst N] [count]`: ring `down0`, proc0, doorbell GPIO26, as above
 //!   with `DOWN0IRQ`.
 //! - `controls`: the two record-only control runs on `down1`, `CONTROL_J1` (this writer skips
@@ -99,15 +105,25 @@ fn wait_drained(tx: &RingTx<Message>, depth: u32) -> Drained {
     }
 }
 
+/// What one `down-irq` process does.
+#[derive(PartialEq)]
+enum Mode {
+    Proof,
+    StreamOnly,
+    PublishOnly,
+    OpenOnly,
+}
+
 /// `down-irq` / `down0-irq`.
-pub fn main(ring: &Ring, mut args: impl Iterator<Item = String>) -> Result<()> {
+pub fn main(ring: &Ring, args: impl Iterator<Item = String>) -> Result<()> {
     let mut rest: Vec<String> = Vec::new();
-    let mut stream_only = false;
-    for arg in args.by_ref() {
-        if arg == "--stream-only" {
-            stream_only = true;
-        } else {
-            rest.push(arg);
+    let mut mode = Mode::Proof;
+    for arg in args {
+        match arg.as_str() {
+            "--stream-only" => mode = Mode::StreamOnly,
+            "--publish-only" => mode = Mode::PublishOnly,
+            "--open-only" => mode = Mode::OpenOnly,
+            _ => rest.push(arg),
         }
     }
     let (flags, count) = parse_args(
@@ -118,10 +134,13 @@ pub fn main(ring: &Ring, mut args: impl Iterator<Item = String>) -> Result<()> {
     let (budget, burst) = (flags[0], flags[1].clamp(1, ring.depth));
     let fw = Firmware::open()?;
     fw.wait_ready(READY)?;
+    if mode == Mode::OpenOnly {
+        return open_only(ring, &fw, count);
+    }
     let mut tx = fw.ring_tx::<Message>(ring.name)?;
     let mut ids = Ids::new();
     let generation = ids.next();
-    if stream_only {
+    if mode == Mode::StreamOnly {
         let mut seq = 0;
         while seq < count {
             match tx.send(&message(seq, generation)) {
@@ -135,6 +154,9 @@ pub fn main(ring: &Ring, mut args: impl Iterator<Item = String>) -> Result<()> {
     let mut ctrl = fw.block::<Control>(ring.control)?;
     drop(fw);
     command(&mut ctrl, &mut ids, DOWN_START, budget, generation, &[])?;
+    if mode == Mode::PublishOnly {
+        return publish_only(ring, &mut tx, count, generation);
+    }
 
     let start = Instant::now();
     let mut stalls = 0;
@@ -208,6 +230,59 @@ pub fn main(ring: &Ring, mut args: impl Iterator<Item = String>) -> Result<()> {
     }
     println!("{}_FAIL", ring.label);
     Err(format!("{} failed", ring.label).into())
+}
+
+/// `--publish-only N`: the run is started; publish N messages without waking the reader and
+/// check that they are still unread after [`STALL`], so the reader sleeps on them.
+fn publish_only(ring: &Ring, tx: &mut RingTx<Message>, count: u32, generation: u32) -> Result<()> {
+    if count == 0 || count >= ring.depth {
+        return Err(format!("--publish-only needs 1..{} messages", ring.depth).into());
+    }
+    // This writer's opening notify may have started a handler run: let it end, armed.
+    std::thread::sleep(Duration::from_millis(50));
+    for seq in 0..count {
+        tx.__push_without_wake(&message(seq, generation))?;
+    }
+    std::thread::sleep(STALL);
+    let pending = ring.depth - tx.free();
+    println!(
+        "{}_UNRUNG ring={} sent={count} pending={pending}",
+        ring.label, ring.name
+    );
+    if pending == count {
+        println!("{}_UNRUNG_PASS", ring.label);
+        return Ok(());
+    }
+    println!("{}_UNRUNG_FAIL", ring.label);
+    Err(format!("{}: the reader took unrung messages", ring.label).into())
+}
+
+/// `--open-only N`: open the ring and send nothing. The opening notify alone must get the
+/// reader through the `count` messages that `--publish-only` left.
+fn open_only(ring: &Ring, fw: &Firmware, count: u32) -> Result<()> {
+    let mut ctrl = fw.block::<Control>(ring.control)?;
+    let start = Instant::now();
+    let tx = fw.ring_tx::<Message>(ring.name)?;
+    let drained = wait_drained(&tx, ring.depth);
+    let seconds = start.elapsed().as_secs_f64();
+    let r = command(&mut ctrl, &mut Ids::new(), DOWN_REPORT, 0, 0, &[])?;
+    let (received, corrupt, stale, errors) = (r[8], r[9], r[10], r[13]);
+    println!(
+        "{}_REOPEN ring={} n={count} received={received} corrupt={corrupt} stale={stale} \
+         errors={errors} seconds={seconds:.6}",
+        ring.label, ring.name
+    );
+    if let Drained::Stall { pending } = drained {
+        println!(
+            "{}_REOPEN_STALL ring={} pending={pending}",
+            ring.label, ring.name
+        );
+    } else if received == count && corrupt == 0 && errors == 0 {
+        println!("{}_REOPEN_PASS", ring.label);
+        return Ok(());
+    }
+    println!("{}_REOPEN_FAIL", ring.label);
+    Err(format!("{} reopen failed", ring.label).into())
 }
 
 /// Messages per control run, and the time it may take (check-irq.sh gives `controls` 30 s).
