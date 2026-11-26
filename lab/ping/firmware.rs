@@ -27,7 +27,7 @@ impl Probe {
 fn pause() {
     let timer = rp1_hal::timer::Timer::new();
     let start = timer.now_32().ticks();
-    while (timer.now_32().ticks()).wrapping_sub(start) < 2_000 {
+    while timer.now_32().ticks().wrapping_sub(start) < 2_000 {
         core::hint::spin_loop();
     }
 }

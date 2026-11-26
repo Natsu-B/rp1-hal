@@ -2,6 +2,7 @@
 use crate::rp1;
 use embedded_hal::i2c::{I2c as _, Operation};
 use rp1_hal::{
+    fugit::ExtU32,
     i2c::{Error, I2c, Speed},
     log,
     timer::Timer,
@@ -48,7 +49,7 @@ fn prove(bus: &mut Bus) -> Result<(), Failure> {
     let timer = Timer::new();
     let mut frame = core::array::from_fn::<_, 16, _>(|i| i as u8);
     frame[..4].copy_from_slice(&0x5244_3144u32.to_le_bytes());
-    let gap = || timer.delay(rp1_hal::fugit::MicrosDurationU32::millis(2));
+    let gap = || timer.delay(2.millis());
     // Resync the peer: a STOP-terminated read makes it reload its reply (data unchecked).
     let _ = bus.read(PEER, &mut [0; 64]);
     gap();

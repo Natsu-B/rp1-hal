@@ -7,7 +7,12 @@ use crate::proof::{
 use crate::rings::Reader;
 use crate::rp1;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
-use rp1_hal::{log, spi::Spi, timer::Alarm};
+use rp1_hal::{
+    fugit::ExtU32,
+    log,
+    spi::Spi,
+    timer::{Alarm, Timer},
+};
 use rp1_link::Progress;
 use rp1_rt::{
     Proc0, Proc1, interrupt,
@@ -266,9 +271,7 @@ fn default_handler_test(mut alarm: Alarm<2>, line: &mut Line<28>, idle: &mut dyn
     alarm.clear_interrupt();
     line.unpend();
     let pre = line.is_pending();
-    let _ = alarm.schedule(rp1_hal::fugit::TimerInstantU32::from_ticks(
-        now().wrapping_add(200),
-    ));
+    let _ = alarm.schedule(Timer::new().now_32() + 200.micros());
     alarm.enable_interrupt();
     line.enable();
     wait(|| interrupt::unhandled().is_some(), 10_000, idle);
