@@ -118,7 +118,7 @@ impl<T: Message, N: Notify> RingTx<T, N> {
 ///
 /// ```ignore
 /// let rp1::link::Proc1Link { down, .. } = init.try_open()?;
-/// put(&DOWN, down); // the static that the IO_BANK0 handler drains
+/// DOWN.put(down).ok().unwrap(); // the static Slot that the IO_BANK0 handler drains
 /// doorbell.raise(); // for what came before the handler could reach `down`
 /// ```
 pub struct RingRx<T, W = Poll> {

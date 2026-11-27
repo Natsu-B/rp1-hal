@@ -82,7 +82,7 @@ impl Logger {
             return Err(fmt::Error);
         }
         #[cfg(target_arch = "arm")]
-        let core = (crate::read(0xe00f_f01c) & 1) as usize;
+        let core = (unsafe { crate::pac::core_control::CORE_ID.read_volatile() } & 1) as usize;
         #[cfg(not(target_arch = "arm"))]
         let core = 0usize;
         if !self.lock_or_count_drop(core, rp1_rt::interrupt::in_handler()) {

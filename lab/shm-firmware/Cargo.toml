@@ -50,7 +50,7 @@ doorbell = 27
 timer = ["ALARM1"]
 adc = {}
 spi0 = { sck = 11, mosi = 10, miso = 9 }
-dma = { channels = [0, 1, 2] } # the whole DMA controller (Linux rp1_dma is disabled)
+dma = { channels = [0, 1, 2] } # owns the whole controller; issues channels 0–2 (Linux rp1_dma is disabled)
 host_irq = true # unstable: RP1 -> Linux interrupt on MSI-X vector 29 (TIMER alarm 3, rp1:irq UIO)
 
 [[package.metadata.rp1.shm]]

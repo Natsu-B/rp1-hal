@@ -2,23 +2,25 @@
 //! and I2C1 behind the wrapper. proc0 also runs the system services, so every wait here goes
 //! through `idle`. Once shm is up the IO_BANK0 handler drains `down0` and the alarm handler can
 //! send on `tick0`.
-use crate::proof::{
-    self, Entries, Shared, Wrapped, expect, mark, put, settle, shared, ticker, wait, with,
-};
+use crate::proof::{self, Entries, Wrapped, expect, mark, settle, ticker, wait};
 use crate::rings::{Reader, Ticks};
 use crate::rp1;
 use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use rp1_hal::{gpio::PinIrq, i2c::I2c, timer::Alarm};
-use rp1_rt::{interrupt, interrupt::Line, pac::dw_i2c::intr::TX_EMPTY};
+use rp1_rt::{
+    interrupt,
+    interrupt::{Line, Slot},
+    pac::dw_i2c::intr::TX_EMPTY,
+};
 
 type I2c1 = I2c<1, 2, 3>;
-static ALARM: Shared<Alarm<0>, 0> = shared();
-static PIN: Shared<PinIrq<22, 0>, 0> = shared();
-static I2C: Shared<I2c1, 0> = shared();
-static BELL: Shared<rp1::Doorbell0, 0> = shared();
+static ALARM: Slot<Option<Alarm<0>>, 0> = Slot::empty();
+static PIN: Slot<Option<PinIrq<22, 0>>, 0> = Slot::empty();
+static I2C: Slot<Option<I2c1>, 0> = Slot::empty();
+static BELL: Slot<Option<rp1::Doorbell0>, 0> = Slot::empty();
 /// The `down0` ring and the `tick0` writer, once main has opened them.
-pub static DOWN0: Shared<Reader<26, 0>, 0> = shared();
-pub static TICK0: Shared<Ticks, 0> = shared();
+pub static DOWN0: Slot<Option<Reader<26, 0>>, 0> = Slot::empty();
+pub static TICK0: Slot<Option<Ticks>, 0> = Slot::empty();
 static GPIO: Entries = Entries::new();
 static WRAP: Entries = Entries::new();
 /// Handler entries with the doorbell set.
@@ -30,7 +32,7 @@ static SEND_TICKS: AtomicBool = AtomicBool::new(false);
 fn TIMER_0() {
     ticker::on_alarm(&ALARM, 0);
     if SEND_TICKS.load(Relaxed) {
-        with(&TICK0, |ticks| ticks.on_tick());
+        TICK0.with(|ticks| ticks.on_tick());
     }
 }
 /// GPIO22's forced interrupt, or the doorbell: Linux forced GPIO26 in PROC0_INTF for `down0`.
@@ -38,7 +40,7 @@ fn TIMER_0() {
 /// notification.
 #[interrupt(proc0)]
 fn IO_BANK0() {
-    with(&PIN, |pin| {
+    PIN.with(|pin| {
         if pin.is_forced() {
             pin.unforce();
             // Read back so that the write has finished before the handler returns.
@@ -46,19 +48,19 @@ fn IO_BANK0() {
             GPIO.enter(0);
         }
     });
-    if let Some(bell) = proof::get(&BELL)
+    if let Some(bell) = BELL.with(|bell| *bell)
         && bell.is_pending()
     {
         bell.ack_and_signal();
         BELL_ENTRIES.enter(0);
-        with(&DOWN0, |reader| reader.on_doorbell(bell));
+        DOWN0.with(|reader| reader.on_doorbell(bell));
     }
 }
 
 /// `TICKS`: send `count` messages on `tick0`, one per alarm interrupt every `period_us`.
 pub fn start_ticks(count: u32, period_us: u32, generation: u32) {
     ticker::stop(&ALARM);
-    with(&TICK0, |ticks| ticks.start(generation));
+    TICK0.with(|ticks| ticks.start(generation));
     SEND_TICKS.store(true, Relaxed);
     ticker::start(&ALARM, period_us.max(50), count);
 }
@@ -68,7 +70,7 @@ pub fn tick_late_max_us() -> u32 {
 }
 #[interrupt(proc0)]
 fn I2C1() {
-    with(&I2C, |i2c| {
+    I2C.with(|i2c| {
         i2c.disable_interrupt(TX_EMPTY);
         i2c.interrupt_status();
     });
@@ -85,18 +87,18 @@ pub fn run(
     mut irq: rp1::Proc0Irq,
     idle: &mut dyn FnMut(),
 ) {
-    put(&ALARM, alarm);
+    ALARM.put(alarm).ok().unwrap();
     proof::timer_test(&ALARM, &mut irq.TIMER_0, 0, idle);
 
     proof::intf_only(&mut irq.gpio22, &mut irq.IO_BANK0, idle);
-    put(&PIN, irq.gpio22);
+    PIN.put(irq.gpio22).ok().unwrap();
     forced_pin(&mut irq.IO_BANK0, idle);
-    put(&BELL, doorbell);
+    BELL.put(doorbell).ok().unwrap();
     proof::doorbell_test(doorbell, &BELL_ENTRIES, &mut irq.IO_BANK0, idle);
 
     match i2c {
         Some(i2c) => {
-            put(&I2C, i2c);
+            I2C.put(i2c).ok().unwrap();
             // TX_EMPTY is only reported by an enabled controller. Enabling it starts nothing
             // on the bus: no command is ever written.
             proof::wr(I2C1_ENABLE, 1);
@@ -111,7 +113,9 @@ pub fn run(
                     fail: "p0_wrap_i2c1",
                 },
                 &mut irq.I2C1,
-                &mut || with(&I2C, |i2c| i2c.enable_interrupt(TX_EMPTY)),
+                &mut || {
+                    I2C.with(|i2c| i2c.enable_interrupt(TX_EMPTY));
+                },
                 idle,
             );
             proof::wr(I2C1_ENABLE, 0);
@@ -131,14 +135,14 @@ fn forced_pin(line: &mut Line<0>, idle: &mut dyn FnMut()) {
     let pre = line.is_pending();
     line.enable();
     for n in 1..=100 {
-        with(&PIN, |pin| pin.force());
+        PIN.with(|pin| pin.force());
         if !wait(|| GPIO.count() >= n, 1000, idle) {
             break;
         }
     }
     settle(1000, idle);
     line.disable();
-    with(&PIN, |pin| pin.unforce());
+    PIN.with(|pin| pin.unforce());
     line.unpend();
     let (n, ipsr, post) = (GPIO.count(), GPIO.ipsr(), line.is_pending());
     mark!(

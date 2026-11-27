@@ -72,7 +72,7 @@ pub trait PinRoute<const N: u8, const C: u8>: sealed::Pin {
 /// Sole ownership of a PWM block (not one channel), issued by generated resources.
 #[derive(Debug)]
 pub struct Token<const N: u8> {
-    _private: core::marker::PhantomData<*mut ()>,
+    _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {
@@ -170,7 +170,7 @@ impl<const N: u8> Channels<N> {
 #[derive(Debug)]
 pub struct Channel<const N: u8, const C: u8> {
     period: u32,
-    _core: core::marker::PhantomData<*mut ()>,
+    _core: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 impl<const N: u8, const C: u8> Channel<N, C> {
     fn new() -> Self {

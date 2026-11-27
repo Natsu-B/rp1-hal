@@ -217,12 +217,13 @@ pub(crate) fn stats() -> ScmiStats {
     stats
 }
 
-#[unsafe(no_mangle)]
+// Platform handler: bypasses #[interrupt], which reserves this line.
+#[unsafe(export_name = "__rp1_p0_PROC_MISC")]
 #[cfg_attr(
     all(target_arch = "arm", target_os = "none"),
     unsafe(link_section = ".text.rp1_cold.__rp1_p0_PROC_MISC")
 )]
-unsafe extern "C" fn __rp1_p0_PROC_MISC() {
+unsafe extern "C" fn proc_misc_handler() {
     let state = unsafe { &mut *(&raw mut STATE).cast::<State>() };
     handle(&mut state.server, &mut state.counters, &mut Mmio);
 }

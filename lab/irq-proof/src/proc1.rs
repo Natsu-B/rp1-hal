@@ -1,9 +1,7 @@
 //! proc1's items: its alarm, the critical section and `log!` under a periodic handler, a line
 //! without a handler, SPI0 behind the wrapper, and its doorbell (GPIO27) served by a handler:
 //! the `ping` RPC and the `down1` ring.
-use crate::proof::{
-    self, Entries, Shared, Wrapped, expect, mark, now, put, settle, shared, ticker, wait, with,
-};
+use crate::proof::{self, Entries, Wrapped, expect, mark, now, settle, ticker, wait};
 use crate::rings::Reader;
 use crate::rp1;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
@@ -16,18 +14,18 @@ use rp1_hal::{
 use rp1_link::Progress;
 use rp1_rt::{
     Proc0, Proc1, interrupt,
-    interrupt::{Line, free},
+    interrupt::{Line, Slot, free},
     pac::dw_ssi::int::TXEI,
     sync::Producer,
 };
 
 type Spi0 = Spi<0, 11, 10, 9>;
-static ALARM: Shared<Alarm<1>, 1> = shared();
-static BELL: Shared<rp1::Doorbell1, 1> = shared();
+static ALARM: Slot<Option<Alarm<1>>, 1> = Slot::empty();
+static BELL: Slot<Option<rp1::Doorbell1>, 1> = Slot::empty();
 /// The `down1` ring, once main has opened it.
-pub static DOWN1: Shared<Reader<27, 1>, 1> = shared();
-pub static PING: Shared<rp1::link::Ping, 1> = shared();
-static SPI: Shared<Spi0, 1> = shared();
+pub static DOWN1: Slot<Option<Reader<27, 1>>, 1> = Slot::empty();
+pub static PING: Slot<Option<rp1::link::Ping>, 1> = Slot::empty();
+static SPI: Slot<Option<Spi0>, 1> = Slot::empty();
 static WRAP: Entries = Entries::new();
 /// Handler entries with the doorbell set.
 static BELL_ENTRIES: Entries = Entries::new();
@@ -55,7 +53,7 @@ fn TIMER_1() {
 }
 #[interrupt(proc1)]
 fn SPI0() {
-    with(&SPI, |spi| {
+    SPI.with(|spi| {
         spi.disable_interrupt(TXEI);
         // Read back so that the write has finished before the handler returns.
         spi.interrupt_status();
@@ -65,13 +63,13 @@ fn SPI0() {
 /// Both endpoints share a force bit. Ack before draining either one.
 #[interrupt(proc1)]
 fn IO_BANK0() {
-    let Some(bell) = proof::get(&BELL) else {
+    let Some(bell) = BELL.with(|bell| *bell) else {
         return;
     };
     bell.ack_and_signal();
     BELL_ENTRIES.enter(1);
     let mut more = false;
-    with(&PING, |ping| {
+    PING.with(|ping| {
         let progress = ping.serve(8, |value| {
             PINGS.enter(1);
             value
@@ -82,7 +80,7 @@ fn IO_BANK0() {
             Err(_) => panic!("ping serve failed"),
         };
     });
-    with(&DOWN1, |reader| more |= reader.drain());
+    DOWN1.with(|reader| more |= reader.drain());
     if more {
         bell.raise();
     }
@@ -108,18 +106,18 @@ pub fn run(parts: Parts) {
         mut irq,
     } = parts;
     let idle: &mut dyn FnMut() = &mut || {};
-    put(&ALARM, alarm1);
+    ALARM.put(alarm1).ok().unwrap();
     proof::timer_test(&ALARM, &mut irq.TIMER_1, 1, idle);
     critical_section_test(&mut irq.TIMER_1, idle);
     log_test(&mut irq.TIMER_1);
     default_handler_test(alarm2, &mut irq.TIMER_2, idle);
 
-    put(&BELL, doorbell);
+    BELL.put(doorbell).ok().unwrap();
     proof::doorbell_test(doorbell, &BELL_ENTRIES, &mut irq.IO_BANK0, idle);
 
     match spi {
         Some(spi) => {
-            put(&SPI, spi);
+            SPI.put(spi).ok().unwrap();
             // The driver leaves the controller enabled with an empty TX FIFO: TXEI is active.
             proof::wrap_test(
                 &Wrapped {
@@ -132,7 +130,9 @@ pub fn run(parts: Parts) {
                     fail: "p1_wrap_spi0",
                 },
                 &mut irq.SPI0,
-                &mut || with(&SPI, |spi| spi.enable_interrupt(TXEI)),
+                &mut || {
+                    SPI.with(|spi| spi.enable_interrupt(TXEI));
+                },
                 idle,
             );
         }

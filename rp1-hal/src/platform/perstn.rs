@@ -289,6 +289,7 @@ impl Handlers {
     }
 }
 
+// Platform handler: bypasses #[interrupt], which reserves this line.
 #[unsafe(export_name = "__rp1_p0_PCIE_OUT")]
 #[cfg_attr(
     all(target_arch = "arm", target_os = "none"),

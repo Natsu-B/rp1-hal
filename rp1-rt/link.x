@@ -56,3 +56,6 @@ ASSERT(__image_end <= 0x2000c000, "shared SRAM image exceeds 48 KiB")
 __rp1_fixed_scratch_floor = ORIGIN(LINK);
 ASSERT(__image_end <= __rp1_fixed_scratch_floor, "image overlaps the fixed-address scratch floor (ORIGIN(LINK))")
 ASSERT(__link_end == 0x2000ff00, "link page overlaps ABI reservation")
+
+/* Optional lab instrumentation for priority-ceiling slots. */
+PROVIDE(__rp1_slot_mask_timing = __rp1_no_slot_mask_timing);

@@ -132,6 +132,11 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
     let symbol = format!("__rp1_p{core}_{unraw}");
     let wrapper = format_ident!("{symbol}_trampoline");
     let ownership = format_ident!("__irq_proc{core}");
+    let declared = if unraw == "IO_BANK0" {
+        format_ident!("Bank0Declared")
+    } else {
+        format_ident!("Declared")
+    };
     // SRAM handlers must also be boundaries for the automatic ISRAM planner.
     let section = if sram {
         format!(".text.rp1_cold.{symbol}")
@@ -146,6 +151,11 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
     quote! {
         #(#cfg)*
         const _: ::rp1_rt::pac::Interrupt = ::rp1_rt::pac::Interrupt::#name;
+        #(#cfg)*
+        const _: () = {
+            fn check<T: crate::rp1::#ownership::#declared>() {}
+            let _ = check::<crate::rp1::#ownership::#name>;
+        };
         #(#cfg)*
         impl crate::rp1::#ownership::Handler for crate::rp1::#ownership::#name {}
         #(#attrs)*

@@ -2,8 +2,8 @@ use core::cell::Cell;
 use rp1_rt::interrupt::{Mutex, free};
 
 mod rp1 {
-    pub mod __irq_proc0 { pub trait Handler {} #[allow(non_camel_case_types)] pub enum TIMER_0 {} }
-    pub mod __irq_proc1 { pub trait Handler {} #[allow(non_camel_case_types)] pub enum TIMER_0 {} }
+    pub mod __irq_proc0 { pub trait Handler {} pub trait Declared {} #[allow(non_camel_case_types)] pub enum TIMER_0 {} impl Declared for TIMER_0 {} }
+    pub mod __irq_proc1 { pub trait Handler {} pub trait Declared {} #[allow(non_camel_case_types)] pub enum TIMER_0 {} impl Declared for TIMER_0 {} }
 }
 
 static COUNT: Mutex<Cell<u32>> = Mutex::new(Cell::new(0));

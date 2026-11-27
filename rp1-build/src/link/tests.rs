@@ -65,7 +65,10 @@ fn generated_resources_only_reference_their_link_features() {
     assert!(full.contains("fn doorbell_proc1()"));
     assert!(!full.contains("fn doorbell_proc0()"));
     assert!(full.contains(r#"export_name = "__rp1_p1_IO_BANK0""#));
-    assert_eq!(full.matches("pub enum IO_BANK0").count(), 0);
+    assert_eq!(
+        full.matches("impl sealed::Admitted for IO_BANK0").count(),
+        0
+    );
     d.proc1.gpio = vec![22];
     d.proc1.gpio_irq = vec![22];
     assert!(
@@ -77,7 +80,10 @@ fn generated_resources_only_reference_their_link_features() {
     d.proc1.custom_doorbell_handler = true;
     let custom = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
     assert!(!custom.contains("fn doorbell_proc1()"));
-    assert_eq!(custom.matches("pub enum IO_BANK0").count(), 1);
+    assert_eq!(
+        custom.matches("impl sealed::Admitted for IO_BANK0").count(),
+        1
+    );
     assert!(d.validate().is_ok());
     d.proc1.custom_doorbell_handler = false;
     d.proc1.gpio_irq.clear();
@@ -400,6 +406,7 @@ fn generated_ownership_is_checked_by_rust() {
     let dir = tempfile::tempdir().unwrap();
     let mut d = fixture();
     d.proc0.gpio = vec![22];
+    d.proc0.gpio_irq = vec![22];
     d.proc1.timer = vec!["ALARM0".into()];
     d.proc1.instances.insert(
         "dma".into(),
@@ -433,7 +440,11 @@ fn channels(dma: rp1::Proc1DmaChannels) {{
     let _: rp1_hal::dma::Channel<2> = dma.ch2;
 }}
 fn gpio(p: rp1::Proc0Resources) -> rp1_hal::gpio::Pin<22> {{ p.pins.gpio22 }}
-fn main() {{}}"
+#[rp1_rt::interrupt(proc0)]
+fn IO_BANK0() {{}}
+fn alarm(irq: rp1::proc1_irq::TIMER_0) -> rp1_rt::interrupt::Binding<rp1_rt::interrupt::AlarmIrq<0>, 26, 1> {{ irq }}
+{}",
+            include_str!("../../tests/ui-link/ownership_core_local.inc"),
         ),
     )
     .unwrap();
@@ -467,6 +478,13 @@ fn main() {}
 "#,
         ),
         (
+            "ownership_irq_sealed",
+            r#"use rp1::__irq_proc0::{Declared, TIMER_0};
+impl Declared for TIMER_0 {}
+fn main() {}
+"#,
+        ),
+        (
             "ownership_irq",
             r#"#[rp1_rt::interrupt(proc0)]
 fn TIMER_0() {}
@@ -474,25 +492,13 @@ fn TIMER_0() {}
 fn IO_BANK0() {}
 #[rp1_rt::interrupt(proc1)]
 fn TIMER_0() {}
+#[rp1_rt::interrupt(proc1)]
+fn SPI5() {}
 mod duplicate {
     #[rp1_rt::interrupt(proc1)]
     fn TIMER_0() {}
 }
 fn main() {}
-"#,
-        ),
-        (
-            "ownership_core_local",
-            r#"fn send<T: Send>() {}
-fn sync<T: Sync>() {}
-fn main() {
-    send::<rp1_hal::gpio::Pin<22>>();
-    send::<rp1_hal::uart::Tx<1, 0>>();
-    send::<rp1_hal::timer::Alarm<0>>();
-    send::<rp1_rt::interrupt::Line<26>>();
-    send::<rp1_hal::dma::Channel<0>>();
-    sync::<rp1::Proc0Resources>();
-}
 "#,
         ),
     ] {

@@ -1,0 +1,16 @@
+error[E0277]: `Cell<u32>` cannot be shared between threads safely
+ --> tests/ui/slot_cell_ref.rs:6:14
+  |
+6 | static SLOT: Slot<Option<&'static Cell<u32>>, 0> = Slot::empty();
+  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Cell<u32>` cannot be shared between threads safely
+  |
+  = help: the trait `Sync` is not implemented for `Cell<u32>`
+  = note: if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock` or `std::sync::atomic::AtomicU32` instead
+  = note: required for `&'static Cell<u32>` to implement `Send`
+note: required because it appears within the type `Option<&'static Cell<u32>>`
+ --> $RUST/core/src/option.rs
+  |
+  | pub enum Option<T> {
+  |          ^^^^^^
+  = note: required for `Slot<Option<&'static Cell<u32>>, 0>` to implement `Sync`
+  = note: shared static variables must have a type that implements `Sync`

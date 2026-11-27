@@ -148,7 +148,7 @@ impl sealed::Wake for Poll {
 /// (PERSTn, SCMI) never pulse and cannot reach a `HostIrq`, which lives in user code.
 #[derive(Clone, Copy)]
 pub struct HostIrq {
-    _private: core::marker::PhantomData<*mut ()>,
+    _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 
 impl HostIrq {
@@ -218,7 +218,7 @@ impl sealed::Notify for HostIrq {
 /// it into the core's `notify = "irq"` linux-to-rp1 endpoints. The pin's pad stays unused.
 #[derive(Clone, Copy)]
 pub struct Doorbell<const PIN: u8, const CORE: u8> {
-    _private: core::marker::PhantomData<*mut ()>,
+    _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 
 impl<const PIN: u8, const CORE: u8> Doorbell<PIN, CORE> {

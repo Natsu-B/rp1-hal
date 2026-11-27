@@ -1,27 +1,100 @@
-error[E0425]: cannot find type `TIMER_0` in module `crate::rp1::__irq_proc0`
- --> $CASE:6:4
-  |
-6 | fn TIMER_0() {}
-  |    ^^^^^^^ not found in `crate::rp1::__irq_proc0`
-  |
-help: consider importing this enum
-  |
-2 + use crate::rp1::__irq_proc1::TIMER_0;
-  |
-
-error[E0425]: cannot find type `IO_BANK0` in module `crate::rp1::__irq_proc1`
- --> $CASE:8:4
-  |
-8 | fn IO_BANK0() {}
-  |    ^^^^^^^^ not found in `crate::rp1::__irq_proc1`
-
 error[E0119]: conflicting implementations of trait `__irq_proc1::Handler` for type `__irq_proc1::TIMER_0`
-  --> $CASE:12:5
+  --> $CASE:14:5
    |
  9 | #[rp1_rt::interrupt(proc1)]
    | --------------------------- first implementation here
 ...
-12 |     #[rp1_rt::interrupt(proc1)]
+14 |     #[rp1_rt::interrupt(proc1)]
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `__irq_proc1::TIMER_0`
    |
    = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: __irq_proc0::TIMER_0 is not declared for proc0. Add a supported source to [package.metadata.rp1.proc0]
+   --> $CASE:5:1
+    |
+  5 | #[rp1_rt::interrupt(proc0)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `__irq_proc0::sealed::Admitted` is not implemented for `__irq_proc0::TIMER_0`
+   --> $GENERATED:144:1
+    |
+144 | pub enum TIMER_0 {}
+    | ^^^^^^^^^^^^^^^^
+help: the trait `__irq_proc0::sealed::Admitted` is implemented for `__irq_proc0::IO_BANK0`
+   --> $GENERATED:179:1
+    |
+179 | impl sealed::Admitted for IO_BANK0 {}
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required for `__irq_proc0::TIMER_0` to implement `__irq_proc0::Declared`
+   --> $GENERATED:114:27
+    |
+114 | impl<T: sealed::Admitted> Declared for T {}
+    |         ----------------  ^^^^^^^^     ^
+    |         |
+    |         unsatisfied trait bound introduced here
+note: required by a bound in `_::check`
+   --> $CASE:5:1
+    |
+  5 | #[rp1_rt::interrupt(proc0)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `check`
+    = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: IO_BANK0 is handled by the generated doorbell dispatcher. Set custom_doorbell_handler = true
+   --> $CASE:7:1
+    |
+  7 | #[rp1_rt::interrupt(proc1)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `__irq_proc1::sealed::Admitted` is not implemented for `__irq_proc1::IO_BANK0`
+   --> $GENERATED:259:1
+    |
+259 | pub enum IO_BANK0 {}
+    | ^^^^^^^^^^^^^^^^^
+help: the trait `__irq_proc1::sealed::Admitted` is implemented for `__irq_proc1::TIMER_0`
+   --> $GENERATED:320:1
+    |
+320 | impl sealed::Admitted for TIMER_0 {}
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required for `__irq_proc1::IO_BANK0` to implement `__irq_proc1::Bank0Declared`
+   --> $GENERATED:258:27
+    |
+258 | impl<T: sealed::Admitted> Bank0Declared for T {}
+    |         ----------------  ^^^^^^^^^^^^^     ^
+    |         |
+    |         unsatisfied trait bound introduced here
+note: required by a bound in `_::check`
+   --> $CASE:7:1
+    |
+  7 | #[rp1_rt::interrupt(proc1)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `check`
+    = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: __irq_proc1::SPI5 is not declared for proc1. Add a supported source to [package.metadata.rp1.proc1]
+   --> $CASE:11:1
+    |
+ 11 | #[rp1_rt::interrupt(proc1)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `__irq_proc1::sealed::Admitted` is not implemented for `__irq_proc1::SPI5`
+   --> $GENERATED:283:1
+    |
+283 | pub enum SPI5 {}
+    | ^^^^^^^^^^^^^
+help: the trait `__irq_proc1::sealed::Admitted` is implemented for `__irq_proc1::TIMER_0`
+   --> $GENERATED:320:1
+    |
+320 | impl sealed::Admitted for TIMER_0 {}
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required for `__irq_proc1::SPI5` to implement `__irq_proc1::Declared`
+   --> $GENERATED:255:27
+    |
+255 | impl<T: sealed::Admitted> Declared for T {}
+    |         ----------------  ^^^^^^^^     ^
+    |         |
+    |         unsatisfied trait bound introduced here
+note: required by a bound in `_::check`
+   --> $CASE:11:1
+    |
+ 11 | #[rp1_rt::interrupt(proc1)]
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `check`
+    = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)

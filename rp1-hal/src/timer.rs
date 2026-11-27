@@ -52,7 +52,7 @@ impl DelayNs for Timer {
     }
 }
 pub struct Alarm<const N: u8> {
-    _private: core::marker::PhantomData<*mut ()>,
+    _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 impl<const N: u8> Alarm<N> {
     /// # Safety

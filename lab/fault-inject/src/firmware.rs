@@ -24,8 +24,8 @@ rp1_rt::bind!();
 const PERIOD_US: u32 = 50_000;
 // Ordinary DSRAM static. Each typed entry initializes its own copy before enabling alarms.
 static CORE: AtomicU32 = AtomicU32::new(0);
-static ALARM0: Slot<Option<Alarm<0>>, 0> = Slot::new(None);
-static ALARM1: Slot<Option<Alarm<1>>, 1> = Slot::new(None);
+static ALARM0: Slot<Option<Alarm<0>>, 0> = Slot::empty();
+static ALARM1: Slot<Option<Alarm<1>>, 1> = Slot::empty();
 
 fn word(offset: usize) -> *mut u32 {
     (rp1_proto::LINK_START as usize + offset) as *mut u32
@@ -47,7 +47,7 @@ fn schedule<const N: u8>(alarm: &mut Alarm<N>) {
 }
 
 fn tick<const N: u8, const CORE: u8>(alarm: &Slot<Option<Alarm<N>>, CORE>, offset: usize) {
-    alarm.try_with(|slot| schedule(slot.as_mut().unwrap()));
+    alarm.with(schedule).unwrap();
     // Each word has one ISR writer. Shared SRAM uses plain loads and stores.
     write(offset, read(offset).wrapping_add(1));
 }
@@ -155,7 +155,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let mut alarm = p.TIMER_ALARM0;
     schedule(&mut alarm);
     alarm.enable_interrupt();
-    ALARM0.try_with(|slot| *slot = Some(alarm)).unwrap();
+    ALARM0.put(alarm).ok().unwrap();
     let mut irq = p.irq.TIMER_0;
     irq.set_priority(Priority::new(4).unwrap());
     irq.enable();
@@ -215,7 +215,7 @@ fn main1(_core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut alarm = p.TIMER_ALARM1;
     schedule(&mut alarm);
     alarm.enable_interrupt();
-    ALARM1.try_with(|slot| *slot = Some(alarm)).unwrap();
+    ALARM1.put(alarm).ok().unwrap();
     let mut irq = p.irq.TIMER_1;
     irq.set_priority(Priority::new(4).unwrap());
     irq.enable();

@@ -27,7 +27,7 @@ mod proc1;
 mod proof;
 mod rings;
 mod stack;
-use proof::{mark, now, put, with};
+use proof::{mark, now};
 use rings::{Reader, Ticks, command};
 
 /// proc1's figures for the final lines ([`proc1::Report`]).
@@ -210,8 +210,8 @@ fn open0(
             tick0,
             control0,
         }) => {
-            put(&proc0::DOWN0, Reader::new(down0));
-            put(&proc0::TICK0, Ticks::new(tick0));
+            proc0::DOWN0.put(Reader::new(down0)).ok().unwrap();
+            proc0::TICK0.put(Ticks::new(tick0)).ok().unwrap();
             doorbell.raise();
             Some(Commands0 {
                 control: control0,
@@ -264,7 +264,7 @@ impl Commands0 {
             }
             command::TICK_REPORT => {
                 let mut errors = 1;
-                with(&proc0::TICK0, |ticks| {
+                proc0::TICK0.with(|ticks| {
                     request[8..11].copy_from_slice(&ticks.words());
                     errors = 0;
                 });
@@ -335,8 +335,8 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             Err(OpenError::Attach(error)) => panic!("SHM attach: {error:?}"),
         }
     };
-    put(&proc1::DOWN1, Reader::new(down1));
-    put(&proc1::PING, ping);
+    proc1::DOWN1.put(Reader::new(down1)).ok().unwrap();
+    proc1::PING.put(ping).ok().unwrap();
     // As on proc0: a doorbell before the handler had the reader found nothing to drain.
     doorbell.raise();
     let mut last = 0;

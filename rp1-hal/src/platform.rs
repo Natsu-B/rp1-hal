@@ -44,7 +44,7 @@ pub use perstn::{DetectorReport, LostDetail, PcieState, pcie_state};
 /// The platform resource: one per image, issued to proc0 only. [`Token::init`] consumes it, so
 /// the bring-up runs once.
 pub struct Token {
-    _proc0: PhantomData<*mut ()>,
+    _proc0: PhantomData<core::cell::Cell<()>>,
     linux: linux_blocks::LinuxBlocks,
     sys_hz: u32,
 }
@@ -58,7 +58,7 @@ pub struct System {
 
 /// The PCIe endpoint init brought up. proc0 only (not `Send`).
 pub struct Pcie {
-    _proc0: PhantomData<*mut ()>,
+    _proc0: PhantomData<core::cell::Cell<()>>,
     /// The SHM transaction published the reservation, or outbound region 0 read back wrong:
     /// the window stays as it is until RP1 is reloaded.
     shm_pinned: bool,

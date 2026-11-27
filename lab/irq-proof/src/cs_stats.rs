@@ -1,6 +1,6 @@
 //! This image's critical section: rp1-rt's BASEPRI section, plus the longest time it kept
 //! user interrupts masked on this core. Every `critical_section` user in the image goes through
-//! it, the libraries included, so the figure covers code the proof did not write.
+//! it, the libraries included. Slot raises its own ceiling and uses the timing hook below.
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rp1_rt::interrupt::{__basepri_acquire, __basepri_release};
 
@@ -13,6 +13,19 @@ pub fn max_us() -> u32 {
     MAX_US.load(Relaxed)
 }
 
+#[unsafe(no_mangle)]
+extern "C" fn __rp1_slot_mask_timing(entering: bool) {
+    let now = crate::proof::now();
+    if entering {
+        MASKED_AT.store(now, Relaxed);
+    } else {
+        let us = now.wrapping_sub(MASKED_AT.load(Relaxed));
+        if us > MAX_US.load(Relaxed) {
+            MAX_US.store(us, Relaxed);
+        }
+    }
+}
+
 struct Timed;
 critical_section::set_impl!(Timed);
 
@@ -22,16 +35,13 @@ unsafe impl critical_section::Impl for Timed {
     unsafe fn acquire() -> u8 {
         let saved = unsafe { __basepri_acquire() };
         if saved == 0 {
-            MASKED_AT.store(crate::proof::now(), Relaxed);
+            __rp1_slot_mask_timing(true);
         }
         saved
     }
     unsafe fn release(saved: u8) {
         if saved == 0 {
-            let us = crate::proof::now().wrapping_sub(MASKED_AT.load(Relaxed));
-            if us > MAX_US.load(Relaxed) {
-                MAX_US.store(us, Relaxed);
-            }
+            __rp1_slot_mask_timing(false);
         }
         unsafe { __basepri_release(saved) };
     }

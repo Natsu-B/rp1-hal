@@ -124,7 +124,7 @@ fn receive_error(data: u32) -> Option<Error> {
 }
 
 pub struct Token<const N: u8> {
-    _private: core::marker::PhantomData<*mut ()>,
+    _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 /// A configured UART that owns its TX and RX pins.
 pub struct Uart<const N: u8, const TX: u8, const RX: u8> {
@@ -134,6 +134,7 @@ pub struct Uart<const N: u8, const TX: u8, const RX: u8> {
 
 /// The transmitter and routed TX pin of UART N.
 ///
+/// Can be held in an [`rp1_rt::interrupt::Slot`] to share with the owning core's handler.
 /// Both halves stay on the owning core.
 pub struct Tx<const N: u8, const PIN: u8> {
     pin: Pin<PIN, Alternate>,
@@ -142,6 +143,7 @@ pub struct Tx<const N: u8, const PIN: u8> {
 
 /// The receiver and routed RX pin of UART N.
 ///
+/// Can be held in an [`rp1_rt::interrupt::Slot`] to share with the owning core's handler.
 /// Both halves stay on the owning core.
 pub struct Rx<const N: u8, const PIN: u8> {
     pin: Pin<PIN, Alternate>,
@@ -498,24 +500,33 @@ impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     /// use rp1_hal::uart::{Rx, Tx, Uart};
     /// use rp1_rt::interrupt::Slot;
     ///
-    /// type Receiver = Slot<Option<Rx<2, 5>>, 0>;
+    /// static RX: Slot<Option<Rx<2, 5>>, 0> = Slot::empty();
+    /// # mod rp1 {
+    /// #     pub mod __irq_proc0 {
+    /// #         pub trait Handler {}
+    /// #         pub trait Declared {}
+    /// #         pub enum UART2 {}
+    /// #         impl Declared for UART2 {}
+    /// #     }
+    /// # }
     ///
-    /// fn install_rx(slot: &Receiver, uart: Uart<2, 4, 5>) -> Tx<2, 4> {
+    /// fn install_rx(uart: Uart<2, 4, 5>) -> Tx<2, 4> {
     ///     let (tx, mut rx) = uart.split();
     ///     rx.enable_interrupt();
-    ///     slot.try_with(|rx_slot| *rx_slot = Some(rx)).unwrap();
+    ///     RX.put(rx).ok().unwrap();
     ///     tx
     /// }
     ///
-    /// fn on_rx_irq(slot: &Receiver) {
-    ///     slot.try_with(|rx_slot| {
-    ///         if let Some(rx) = rx_slot {
-    ///             let errors = rx.interrupt_status() & (int::FE | int::PE | int::BE | int::OE);
-    ///             rx.clear_interrupt(errors);
-    ///             // Drain at most the ISR's FIFO service budget.
-    ///         }
+    /// #[rp1_rt::interrupt(proc0)]
+    /// fn UART2() {
+    ///     RX.with(|rx| {
+    ///         let errors = rx.interrupt_status() & (int::FE | int::PE | int::BE | int::OE);
+    ///         rx.clear_interrupt(errors);
+    ///         // Drain the FIFO with rx.read_byte(), handling receive errors.
+    ///         // Stop after a bounded number of bytes so the ISR stays short.
     ///     });
     /// }
+    /// # fn main() {}
     /// ```
     pub fn split(self) -> (Tx<N, TX>, Rx<N, RX>) {
         (self.tx, self.rx)

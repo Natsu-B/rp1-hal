@@ -30,6 +30,9 @@ macro_rules! pin_builder {
         }
 
         impl<const N: u8> Pins<N> {
+            /// Start an empty route set. Add the signals in order (UART: tx, then rx;
+            /// I²C: sda, then scl; SPI: sck, then mosi, then miso).
+            /// Each call accepts only a pin routed to that signal of instance N.
             pub const fn builder() -> Self {
                 Self(())
             }
@@ -37,6 +40,7 @@ macro_rules! pin_builder {
     };
     ($pin:ident, [$($arg:ident: $num:ident),*], $next:ident: $new:ident => $route:ident) => {
         impl<const N: u8, $(const $num: u8,)*> Pins<N, ($($pin<$num>,)*)> {
+            /// Add the pin routed to this signal.
             pub fn $next<const $new: u8>(self, $next: $pin<$new>) -> Pins<N, ($($pin<$num>,)* $pin<$new>,)>
             where
                 $pin<$new>: $route<N>,

@@ -45,6 +45,9 @@
 //! of a transfer: forced, and the rest of the block is discarded. Unlike their `abort` it
 //! is not bounded, for the reason above, and there is no fallible `free` that would return
 //! the buffers of a block that is still running.
+//!
+//! There is no `Dma::free` yet. Returning the controller needs an idle proof that survives
+//! a leaked `Transfer` (v0.2 PR 4).
 use crate::{
     clocks::Clocks,
     linux_blocks::{Hardware, Mmio},
@@ -163,7 +166,7 @@ fn wait(io: &mut impl Hardware, address: usize, mask: u32, value: u32) -> Result
 /// Sole ownership of the DMA controller, issued by generated resources.
 #[derive(Debug)]
 pub struct Token {
-    _private: core::marker::PhantomData<*mut ()>,
+    _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {
@@ -249,9 +252,9 @@ impl Dma {
 }
 
 /// One initialized channel. Linux numbering: channels 0 and 1 have 8-beat FIFOs.
-/// A transfer borrows its channel until it completes or is stopped.
+/// A [`Transfer`] borrows its channel. Dropping the transfer stops it.
 #[derive(Debug)]
-pub struct Channel<const N: u8>(core::marker::PhantomData<*mut ()>);
+pub struct Channel<const N: u8>(core::marker::PhantomData<core::cell::Cell<()>>);
 
 /// Transfer width log2 (bytes) for a copy: the largest power of two dividing both addresses and
 /// the length, at most 16 bytes (Linux `axi_chan_get_xfer_width`).

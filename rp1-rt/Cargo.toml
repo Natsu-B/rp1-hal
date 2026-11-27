@@ -12,6 +12,8 @@ critical-section-single-core = []
 critical-section-primask = ["critical-section-single-core"]
 # `record_panic` also records the panic's file and line (larger image, see its docs).
 panic-location = []
+# Lab IRQ proof only: time the outermost Slot mask with a firmware-provided hook.
+slot-mask-timing = []
 
 [dependencies]
 rp1-pac = { path = "../rp1-pac", features = ["rt"] }

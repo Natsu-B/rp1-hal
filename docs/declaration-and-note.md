@@ -102,9 +102,11 @@ on_conflict = "disable"                   # "disable"（既定）| "refuse"。�
   E4（`UART flow control is not supported yet`）。そのピンを GPIO として使うなら `gpio` に書く。`linux.keep` では Linux のフロー制御
   ピンとして書ける（機能表で検査し、保護する）。
 - ピンは「インスタンスの信号への割り当て」から導き、bank 0 の機能表（`rp1-pinmux`、datasheet・pinctrl-rp1・HAL の表と照合）で
-  検査する。生成される resources はインスタンスを型付きの `Parts`（例 `i2c::Parts<1, 2, 3>`）で渡す。
-  手動組み立ても同じ builder を使う（`i2c::Pins::<1>::builder().sda(sda).scl(scl)` を `Parts::new` に渡す）。
+  検査する。生成される resources はインスタンスを型付きの `Parts`（例 `i2c::Parts<1, 2, 3>`）で渡し、表に無い組はコンパイルできない。
+  手動組み立ても同じ builder を使い、同じ検査を受ける（`i2c::Pins::<1>::builder().sda(sda).scl(scl)` を `Parts::new` に渡す）。
   ピン、IRQ、ドライバーは所有コア内に留める。ISR と共有するドライバーには `interrupt::Slot` を使う。
+  Slot の優先度上限は既定で 4。より緊急度の高い IRQ は割り込み可能なので、Slot にアクセスする IRQ は上限と同じか
+  それより緊急度の低い優先度に設定する。IRQ を関数に渡すときは生成される型名（例 `rp1::proc0_irq::TIMER_0`）を使える。
 - `linux.keep` はピンの保護だけ。Linux 側ノードの有効化は config.txt の `dtoverlay=`（例 `uart1-pi5`）に任せる。
   明示した `keep` はボード既定を置き換える（既定への追加ではない）。既定の UART1 を残したまま追加するなら、同じ table に `uart1` も書く
   （例 `keep = { uart1 = { tx = 0, rx = 1 }, i2c1 = { sda = 2, scl = 3 } }`）。`keep` から `uart1` を外すと GPIO 0/1 を RP1 に渡せる

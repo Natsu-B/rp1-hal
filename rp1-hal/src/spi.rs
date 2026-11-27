@@ -245,7 +245,7 @@ fn divider(sys_hz: u32, hz: u32) -> Result<u32, Error> {
 }
 
 pub struct Token<const N: u8> {
-    _private: core::marker::PhantomData<*mut ()>,
+    _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 /// A configured controller. Each [`SpiBus`] call checks once, before any FIFO access, that
 /// clk_sys still matches the [`Clocks`] it was set up with ([`Error::Precondition`] if not);

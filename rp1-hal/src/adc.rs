@@ -63,7 +63,7 @@ pub enum Error {
 
 /// Ownership of the ADC block, issued by the generated resources for `adc = {}`.
 pub struct Token {
-    _private: core::marker::PhantomData<*mut ()>,
+    _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {

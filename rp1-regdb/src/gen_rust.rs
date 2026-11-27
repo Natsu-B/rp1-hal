@@ -1005,6 +1005,11 @@ fn interrupts(db: &Database) -> String {
         writeln!(out, "    {} = {},", interrupt.name, interrupt.number).unwrap();
     }
     writeln!(out, "}}\n").unwrap();
+    writeln!(out, "/// All named PAC interrupts, in NVIC order.\npub const INTERRUPT_NAMES: [&str; DEFINED_INTERRUPT_COUNT] = [").unwrap();
+    for interrupt in &interrupts {
+        writeln!(out, "    {:?},", interrupt.name).unwrap();
+    }
+    writeln!(out, "];\n").unwrap();
     writeln!(out, "unsafe impl cortex_m::interrupt::InterruptNumber for Interrupt {{\n    #[inline(always)]\n    fn number(self) -> u16 {{ self as u16 }}\n}}\n").unwrap();
 
     writeln!(

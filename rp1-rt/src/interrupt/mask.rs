@@ -47,6 +47,8 @@ pub fn __primask_free<T>(f: impl FnOnce() -> T) -> T {
 
 #[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
 mod basepri;
+#[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
+pub(crate) use basepri::SlotMask;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use basepri::{__basepri_acquire, __basepri_release};
 #[cfg(all(

@@ -300,7 +300,7 @@ fn resources(
             .filter(|p| Some(*p) != c.doorbell)
             .filter(|p| !parts.iter().any(|(_, _, used)| used.contains(p)))
             .collect();
-        s.push_str(&format!("#[non_exhaustive]\npub struct Proc{index}Pins {{\n_private: ::core::marker::PhantomData<*mut ()>,\n"));
+        s.push_str(&format!("pub struct Proc{index}Pins {{\n_private: ::core::marker::PhantomData<::core::cell::Cell<()>>,\n"));
         for pin in &pins {
             s.push_str(&format!("pub gpio{pin}: ::rp1_hal::gpio::Pin<{pin}>,\n"));
         }
@@ -316,22 +316,54 @@ fn resources(
                 }),
             })
             .collect();
+        let undeclared = format!(
+            "{{Self}} is not declared for proc{index}. Add a supported source to [package.metadata.rp1.proc{index}]"
+        );
+        let bank0_error = if doorbell {
+            "IO_BANK0 is handled by the generated doorbell dispatcher. Set custom_doorbell_handler = true"
+        } else {
+            &undeclared
+        };
         writeln!(
             s,
-            "}}\n#[doc(hidden)]\n#[allow(non_camel_case_types)]\npub mod __irq_proc{index} {{\npub trait Handler {{}}"
+            "}}\n#[doc(hidden)]\n#[allow(non_camel_case_types)]\npub mod __irq_proc{index} {{\n\
+             pub trait Handler {{}}\n\
+             mod sealed {{ pub trait Admitted {{}} }}\n\
+             #[diagnostic::on_unimplemented(message = {undeclared:?})]\n\
+             pub trait Declared: sealed::Admitted {{}}\n\
+             impl<T: sealed::Admitted> Declared for T {{}}\n\
+             #[diagnostic::on_unimplemented(message = {bank0_error:?})]\n\
+             pub trait Bank0Declared: sealed::Admitted {{}}\n\
+             impl<T: sealed::Admitted> Bank0Declared for T {{}}"
         )?;
+        for name in rp1_pac::INTERRUPT_NAMES {
+            writeln!(s, "pub enum {name} {{}}")?;
+        }
         for line in &lines {
             if !(doorbell && line.irq == 0) {
-                writeln!(s, "pub enum {} {{}}", line.name)?;
+                writeln!(s, "impl sealed::Admitted for {} {{}}", line.name)?;
             }
         }
-        s.push_str(&format!(
-            "}}\n#[non_exhaustive]\n#[allow(non_snake_case)]\npub struct Proc{index}Irq {{\n_private: ::core::marker::PhantomData<*mut ()>,\n"
-        ));
+        writeln!(
+            s,
+            "}}\n/// Binding types for IRQ resources declared by proc{index}.\n\
+             #[allow(non_camel_case_types)]\npub mod proc{index}_irq {{"
+        )?;
         for line in &lines {
             let board::VerifiedIrq { name, irq, owner } = line;
             let source = owner.source_type();
-            s.push_str(&format!("pub {name}: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::{source}, {irq}, {index}>,\n"));
+            writeln!(
+                s,
+                "pub type {name} = ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::{source}, {irq}, {index}>;"
+            )?;
+        }
+        writeln!(
+            s,
+            "}}\n#[allow(non_snake_case)]\npub struct Proc{index}Irq {{\n_private: ::core::marker::PhantomData<::core::cell::Cell<()>>,"
+        )?;
+        for line in &lines {
+            let name = line.name;
+            writeln!(s, "pub {name}: proc{index}_irq::{name},")?;
         }
         for pin in &c.gpio_irq {
             s.push_str(&format!(
@@ -488,14 +520,18 @@ fn dma_resource(
 ) -> Result<(String, String, Vec<u8>)> {
     let ty = format!("Proc{core}Dma");
     let initialized = format!("Proc{core}DmaChannels");
-    writeln!(source, "#[non_exhaustive]\npub struct {initialized} {{")?;
+    writeln!(
+        source,
+        "/// Initialized channels issued by the proc{core} DMA declaration.\n\
+         #[non_exhaustive]\npub struct {initialized} {{"
+    )?;
     for n in channels {
         writeln!(source, "pub ch{n}: ::rp1_hal::dma::Channel<{n}>,")?;
     }
     writeln!(source, "_controller: ::rp1_hal::dma::Dma,\n}}")?;
     writeln!(
         source,
-        "pub struct {ty}(::rp1_hal::dma::Token);\n\
+        "/// Controller owned by `proc{core}.dma`.\npub struct {ty}(::rp1_hal::dma::Token);\n\
         impl {ty} {{\n\
             pub fn init(self, clocks: &::rp1_hal::clocks::Clocks) -> ::core::result::Result<\
                 {initialized}, ::rp1_hal::InitError<Self, ::rp1_hal::dma::Error>> {{\n\
@@ -571,10 +607,11 @@ mod tests {
                     assert_eq!(kind, rp1_proto::note::ownership_kind::BLOCK);
                     assert_eq!(
                         irq_fields(&source, core),
-                        format!(
-                            "pub {name}: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::BlockIrq<{id}>, {irq}, {core}>,\n"
-                        )
+                        format!("pub {name}: proc{core}_irq::{name},\n")
                     );
+                    assert!(source.contains(&format!(
+                        "pub type {name} = ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::BlockIrq<{id}>, {irq}, {core}>;"
+                    )));
                 } else {
                     assert_eq!(irq_fields(&source, core), "");
                 }
@@ -590,11 +627,12 @@ mod tests {
                 let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
                 assert_eq!(
                     irq_fields(&source, core),
-                    format!(
-                        "pub TIMER_{alarm}: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::AlarmIrq<{alarm}>, {}, {core}>,\n",
-                        26 + alarm
-                    )
+                    format!("pub TIMER_{alarm}: proc{core}_irq::TIMER_{alarm},\n")
                 );
+                assert!(source.contains(&format!(
+                    "pub type TIMER_{alarm} = ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::AlarmIrq<{alarm}>, {}, {core}>;",
+                    26 + alarm
+                )));
                 assert_eq!(irq_fields(&source, 1 - core), "");
             }
         }
@@ -609,9 +647,7 @@ mod tests {
         d.validate().unwrap();
         let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         for (core, pins) in [(0, &[22][..]), (1, &[26, 27][..])] {
-            let mut expected = format!(
-                "pub IO_BANK0: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, {core}>,\n"
-            );
+            let mut expected = format!("pub IO_BANK0: proc{core}_irq::IO_BANK0,\n");
             for pin in pins {
                 expected.push_str(&format!(
                     "pub gpio{pin}: ::rp1_hal::gpio::PinIrq<{pin}, {core}>,\n"
@@ -633,7 +669,7 @@ mod tests {
         let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         assert_eq!(
             irq_fields(&source, 1),
-            "pub IO_BANK0: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 1>,\n\
+            "pub IO_BANK0: proc1_irq::IO_BANK0,\n\
              pub gpio22: ::rp1_hal::gpio::PinIrq<22, 1>,\n"
         );
         assert!(!source.contains("gpio27"), "{source}");
@@ -642,7 +678,7 @@ mod tests {
         let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         assert_eq!(
             irq_fields(&source, 0),
-            "pub IO_BANK0: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 0>,\n"
+            "pub IO_BANK0: proc0_irq::IO_BANK0,\n"
         );
         assert!(!source.contains("gpio26"), "{source}");
     }

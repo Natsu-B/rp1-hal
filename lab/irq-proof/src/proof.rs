@@ -5,28 +5,6 @@ use rp1_hal::{fugit::TimerInstantU32, gpio::PinIrq, timer::Alarm};
 use rp1_link::notify::Doorbell;
 use rp1_rt::interrupt::{Line, Slot};
 
-/// A driver object that main and a handler of the same core share.
-pub type Shared<T, const CORE: u8> = Slot<Option<T>, CORE>;
-pub const fn shared<T, const CORE: u8>() -> Shared<T, CORE> {
-    Slot::new(None)
-}
-pub fn put<T, const CORE: u8>(slot: &Shared<T, CORE>, value: T) {
-    slot.try_with(|slot| *slot = Some(value)).unwrap();
-}
-/// Runs `f` on the object in `slot`, if it holds one.
-pub fn with<T, const CORE: u8>(slot: &Shared<T, CORE>, f: impl FnOnce(&mut T)) {
-    slot.try_with(|slot| {
-        if let Some(value) = slot {
-            f(value)
-        }
-    });
-}
-
-/// A copy of the object in `slot`, if it holds one (for the zero-sized doorbell).
-pub fn get<T: Copy, const CORE: u8>(slot: &Shared<T, CORE>) -> Option<T> {
-    slot.try_with(|slot| *slot).flatten()
-}
-
 static NONCE: AtomicU32 = AtomicU32::new(0);
 pub fn set_nonce(nonce: u32) {
     NONCE.store(nonce, Relaxed);
@@ -85,7 +63,7 @@ fn ipsr() -> u32 {
 }
 /// 0 on proc0, 1 on proc1 (the per-core ID register that `log!` also uses).
 fn core_id() -> u32 {
-    rd(0xe00f_f01c) & 1
+    (unsafe { rp1_rt::pac::core_control::CORE_ID.read_volatile() }) & 1
 }
 
 /// Polls `done` for up to `timeout_us`, running `idle` in between: proc0 keeps its system
@@ -162,7 +140,7 @@ pub mod ticker {
 
     /// Starts ticking every `period_us`; the handler stops by itself after `limit` ticks.
     pub fn start<const N: u8, const CORE: u8>(
-        alarm: &Shared<Alarm<N>, CORE>,
+        alarm: &Slot<Option<Alarm<N>>, CORE>,
         period_us: u32,
         limit: u32,
     ) {
@@ -171,7 +149,7 @@ pub mod ticker {
         RESYNCS.store(0, Relaxed);
         PERIOD_US.store(period_us, Relaxed);
         LIMIT.store(limit, Relaxed);
-        with(alarm, |alarm| {
+        alarm.with(|alarm| {
             let deadline = now().wrapping_add(period_us);
             DEADLINE.store(deadline, Relaxed);
             alarm.clear_interrupt();
@@ -179,22 +157,22 @@ pub mod ticker {
             alarm.enable_interrupt();
         });
     }
-    pub fn stop<const N: u8, const CORE: u8>(alarm: &Shared<Alarm<N>, CORE>) {
-        with(alarm, |alarm| {
+    pub fn stop<const N: u8, const CORE: u8>(alarm: &Slot<Option<Alarm<N>>, CORE>) {
+        alarm.with(|alarm| {
             alarm.disable_interrupt();
             alarm.cancel();
             alarm.clear_interrupt();
         });
     }
     /// The alarm handler of the core that owns `alarm`.
-    pub fn on_alarm<const N: u8, const CORE: u8>(alarm: &Shared<Alarm<N>, CORE>, core: u32) {
+    pub fn on_alarm<const N: u8, const CORE: u8>(alarm: &Slot<Option<Alarm<N>>, CORE>, core: u32) {
         let entered = now();
         let late = entered.wrapping_sub(DEADLINE.load(Relaxed));
         if late > LATE_MAX_US.load(Relaxed) {
             LATE_MAX_US.store(late, Relaxed);
         }
         LAST_AT.store(entered, Relaxed);
-        with(alarm, |alarm| {
+        alarm.with(|alarm| {
             alarm.clear_interrupt();
             if TICKS.count() + 1 >= LIMIT.load(Relaxed) {
                 alarm.disable_interrupt();
@@ -227,7 +205,7 @@ pub mod ticker {
 
 /// `IRQ_Pc_TIMERn`: 1000 alarm interrupts at 1 kHz enter this core's handler and return.
 pub fn timer_test<const N: u8, const IRQ: u8, const CORE: u8>(
-    alarm: &Shared<Alarm<N>, CORE>,
+    alarm: &Slot<Option<Alarm<N>>, CORE>,
     line: &mut Line<IRQ>,
     core: u32,
     idle: &mut dyn FnMut(),

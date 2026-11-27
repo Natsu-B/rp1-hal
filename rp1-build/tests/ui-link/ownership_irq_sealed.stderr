@@ -1,0 +1,21 @@
+error[E0277]: the trait bound `__irq_proc0::TIMER_0: __irq_proc0::sealed::Admitted` is not satisfied
+   --> $CASE:6:19
+    |
+  6 | impl Declared for TIMER_0 {}
+    |                   ^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `__irq_proc0::sealed::Admitted` is not implemented for `__irq_proc0::TIMER_0`
+   --> $GENERATED:144:1
+    |
+144 | pub enum TIMER_0 {}
+    | ^^^^^^^^^^^^^^^^
+help: the trait `__irq_proc0::sealed::Admitted` is implemented for `__irq_proc0::IO_BANK0`
+   --> $GENERATED:179:1
+    |
+179 | impl sealed::Admitted for IO_BANK0 {}
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `__irq_proc0::Declared`
+   --> $GENERATED:113:21
+    |
+113 | pub trait Declared: sealed::Admitted {}
+    |                     ^^^^^^^^^^^^^^^^ required by this bound in `Declared`

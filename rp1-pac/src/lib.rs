@@ -29,7 +29,9 @@ mod interrupts;
 pub mod metadata;
 mod peripherals;
 
-pub use interrupts::{DEFINED_INTERRUPT_COUNT, Interrupt, NVIC_INTERRUPT_COUNT, NVIC_PRIO_BITS};
+pub use interrupts::{
+    DEFINED_INTERRUPT_COUNT, INTERRUPT_NAMES, Interrupt, NVIC_INTERRUPT_COUNT, NVIC_PRIO_BITS,
+};
 pub use metadata::{
     ADDRESS_SPACES, AddressSpace, ClockId, GPIO_BANKS, GpioBank, PCI_DEVICE_ID, PCI_VENDOR_ID,
 };

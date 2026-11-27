@@ -4,5 +4,6 @@
 #[test]
 fn logger_needs_log_ownership() {
     let tests = trybuild::TestCases::new();
+    tests.pass("tests/pass/slot_uart_half.rs");
     tests.compile_fail("tests/ui/*.rs");
 }

@@ -3,15 +3,15 @@
 //! `#[interrupt(proc0)]` and `#[interrupt(proc1)]` bind a PAC interrupt name to a core.
 //! Handlers run from ISRAM by default; `sram` keeps the handler in shared SRAM, including
 //! when using automatic ISRAM placement. `PCIE_OUT`, `PROC_MISC`, and `CLOCKS_DEFAULT`
-//! are reserved for system services. A handler needs a declared line on that core.
-//! Each core can bind a declared line once.
+//! are reserved for system services. A handler needs a line declared for that core.
+//! A second handler for the same line, or a handler for an undeclared line, fails to compile.
 //!
 //! ```
 //! use core::cell::Cell;
 //! use rp1_rt::interrupt::{Mutex, free};
 //! static TICKS: Mutex<Cell<u32>> = Mutex::new(Cell::new(0));
 //!
-//! # mod rp1 { pub mod __irq_proc1 { pub trait Handler {} #[allow(non_camel_case_types)] pub enum TIMER_1 {} } }
+//! # mod rp1 { pub mod __irq_proc1 { pub trait Handler {} pub trait Declared {} #[allow(non_camel_case_types)] pub enum TIMER_1 {} impl Declared for TIMER_1 {} } }
 //! # fn main() {}
 //! #[rp1_rt::interrupt(proc1)]
 //! fn TIMER_1() {
@@ -124,9 +124,11 @@ impl Default for Priority {
 /// Unique ownership of one core's NVIC line.
 ///
 /// Device interrupt masks are separate. Enabling a line without a handler is safe:
-/// the default handler masks it and records [`unhandled`]. The line stays on its owning core.
+/// the default handler masks it and records [`unhandled`].
+/// The line stays on its owning core. Share it with that core's handlers through a [`Slot`].
+/// It implements neither `SharedSafe` nor `Message`, so it cannot cross cores.
 pub struct Line<const IRQ: u8> {
-    _core: core::marker::PhantomData<*mut ()>,
+    _core: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 
 impl<const IRQ: u8> Line<IRQ> {
@@ -174,6 +176,7 @@ impl<const IRQ: u8> Line<IRQ> {
     }
 
     /// Set this line's user priority without changing neighboring lines.
+    /// Keep it at or below the urgency of any [`Slot`] the handler uses.
     pub fn set_priority(&mut self, priority: Priority) {
         Nvic(Hardware).set_priority(IRQ, priority);
     }
@@ -191,6 +194,7 @@ impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
     /// Generated resources only, once on CORE for the verified route from S to IRQ.
     #[doc(hidden)]
     pub const unsafe fn new() -> Self {
+        const { assert!(CORE < 2, "Binding core must be 0 or 1") };
         Self {
             line: unsafe { Line::new() },
             _source: core::marker::PhantomData,

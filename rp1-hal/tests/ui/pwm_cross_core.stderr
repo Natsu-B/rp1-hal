@@ -1,22 +1,21 @@
-error[E0277]: `*mut ()` cannot be sent between threads safely
- --> tests/ui/pwm_cross_core.rs:4:18
+error[E0277]: the trait bound `rp1_hal::pwm::Channel<0, 0>: Message` is not satisfied
+ --> tests/ui/pwm_cross_core.rs:4:21
   |
-4 |     needs_send::<Channel<0, 0>>();
-  |                  ^^^^^^^^^^^^^ `*mut ()` cannot be sent between threads safely
+4 |     needs_message::<Channel<0, 0>>();
+  |                     ^^^^^^^^^^^^^ the trait `Message` is not implemented for `rp1_hal::pwm::Channel<0, 0>`
   |
-  = help: within `rp1_hal::pwm::Channel<0, 0>`, the trait `Send` is not implemented for `*mut ()`
-note: required because it appears within the type `PhantomData<*mut ()>`
- --> $RUST/core/src/marker.rs
+  = help: the following other types implement trait `Message`:
+            [T; N]
+            f32
+            f64
+            i16
+            i32
+            i64
+            i8
+            u16
+          and $N others
+note: required by a bound in `needs_message`
+ --> tests/ui/pwm_cross_core.rs:2:21
   |
-  | pub struct PhantomData<T: PointeeSized>;
-  |            ^^^^^^^^^^^
-note: required because it appears within the type `rp1_hal::pwm::Channel<0, 0>`
- --> src/pwm.rs
-  |
-  | pub struct Channel<const N: u8, const C: u8> {
-  |            ^^^^^^^
-note: required by a bound in `needs_send`
- --> tests/ui/pwm_cross_core.rs:2:18
-  |
-2 | fn needs_send<T: Send>() {}
-  |                  ^^^^ required by this bound in `needs_send`
+2 | fn needs_message<T: rp1_proto::Message>() {}
+  |                     ^^^^^^^^^^^^^^^^^^ required by this bound in `needs_message`

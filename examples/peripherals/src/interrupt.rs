@@ -1,44 +1,40 @@
 //! Proc0 declaration: `timer = ["ALARM0"]`.
 //! No wiring. ALARM0 fires TIMER_0 three times, and main checks the ISR timestamps.
 
+use crate::rp1;
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rp1_hal::{
     fugit::ExtU32,
     timer::{Alarm, Timer},
 };
-use rp1_rt::{
-    interrupt,
-    interrupt::{AlarmIrq, Binding, Slot},
-};
+use rp1_rt::{interrupt, interrupt::Slot};
 
 // These statics live in core-local DSRAM. Only the handler writes the count and timestamp.
-static ALARM: Slot<Option<Alarm<0>>, 0> = Slot::new(None);
+static ALARM: Slot<Option<Alarm<0>>, 0> = Slot::empty();
 static TICKS: AtomicU32 = AtomicU32::new(0);
 static FIRED_AT: AtomicU32 = AtomicU32::new(0);
 
 #[interrupt(proc0)]
 fn TIMER_0() {
-    ALARM.try_with(|slot| {
-        if let Some(alarm) = slot {
-            // Acknowledge at the peripheral to deassert the NVIC line.
-            alarm.clear_interrupt();
-            FIRED_AT.store(Timer::new().now_32().ticks(), Relaxed);
-            TICKS.store(TICKS.load(Relaxed) + 1, Relaxed);
-        }
+    ALARM.with(|alarm| {
+        // Acknowledge at the peripheral to deassert the NVIC line.
+        alarm.clear_interrupt();
+        FIRED_AT.store(Timer::new().now_32().ticks(), Relaxed);
+        TICKS.store(TICKS.load(Relaxed) + 1, Relaxed);
     });
 }
 
 /// Pass the generated `irq.TIMER_0` line for ALARM0.
-pub fn run(mut alarm: Alarm<0>, mut irq: Binding<AlarmIrq<0>, 26, 0>) -> Result<(), &'static str> {
+pub fn run(mut alarm: Alarm<0>, mut irq: rp1::proc0_irq::TIMER_0) -> Result<(), &'static str> {
     alarm.clear_interrupt();
     irq.unpend();
     alarm.enable_interrupt();
-    ALARM.try_with(|slot| *slot = Some(alarm)).unwrap();
+    ALARM.put(alarm).ok().unwrap();
     irq.enable();
 
     let result = sample_ticks();
     irq.disable();
-    let mut alarm = ALARM.try_with(Option::take).flatten().unwrap();
+    let mut alarm = ALARM.take().unwrap();
     alarm.disable_interrupt();
     alarm.cancel();
     alarm.clear_interrupt();
@@ -53,7 +49,7 @@ fn sample_ticks() -> Result<(), &'static str> {
     for count in 1..=3 {
         deadline += 20.millis();
         ALARM
-            .try_with(|slot| slot.as_mut().unwrap().schedule(deadline))
+            .with(|alarm| alarm.schedule(deadline))
             .unwrap()
             .map_err(|_| "could not arm ALARM0")?;
         // Bound the wait so the next demo still runs if the IRQ is never delivered.

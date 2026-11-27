@@ -28,8 +28,10 @@ fn bss_check(marker: u32) -> u32 {
     seen
 }
 
+// Ordinary statics have one DSRAM copy per core, shared only by that core's main and
+// handlers, so a core-local Slot or a plain atomic is enough.
 // Proc0 main installs the alarm before enabling the heartbeat IRQ.
-static ALARM0: Slot<Option<Alarm<0>>, 0> = Slot::new(None);
+static ALARM0: Slot<Option<Alarm<0>>, 0> = Slot::empty();
 static TICKS: AtomicU32 = AtomicU32::new(0);
 type Ping = u32;
 type Pong = u32;
@@ -42,11 +44,9 @@ mod ping_test;
 /// proc0's heartbeat: count the tick, tell Linux (the declared `heartbeat`), arm the next one.
 #[interrupt(proc0)]
 fn TIMER_0() {
-    ALARM0.try_with(|slot| {
-        if let Some(alarm) = slot {
-            alarm.clear_interrupt();
-            alarm.schedule(next_tick()).unwrap();
-        }
+    ALARM0.with(|alarm| {
+        alarm.clear_interrupt();
+        alarm.schedule(next_tick()).unwrap();
     });
     // The handler is the only writer: a load and a store, no read-modify-write.
     TICKS.store(TICKS.load(Relaxed) + 1, Relaxed);
@@ -102,7 +102,7 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let mut alarm = p.TIMER_ALARM0;
     alarm.enable_interrupt();
     alarm.schedule(next_tick()).unwrap();
-    ALARM0.try_with(|slot| *slot = Some(alarm)).unwrap();
+    ALARM0.put(alarm).ok().unwrap();
     p.irq.TIMER_0.enable();
 
     p.proc1.launch(&mut core).unwrap();

@@ -91,7 +91,7 @@ pub trait Scl<const N: u8>: sealed::Pin {
 const PAD: u32 = 0x7a;
 
 pub struct Token<const N: u8> {
-    _private: core::marker::PhantomData<*mut ()>,
+    _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {

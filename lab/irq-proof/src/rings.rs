@@ -5,9 +5,10 @@
 //! Every message is `lab/irq_message.rs`'s. The counters are ordinary statics of the core that
 //! serves the ring (its private DSRAM), and a command copies them into the control block.
 use crate::irq_message::{self, Message};
-use crate::proof::{Shared, now, with};
+use crate::proof::now;
 use rp1_link::{RingRx, RingTx, notify::Doorbell};
 use rp1_proto::shm::Progress;
+use rp1_rt::interrupt::Slot;
 
 /// Request word 1 of the control blocks (`control` for proc1, `control0` for proc0).
 pub mod command {
@@ -148,7 +149,7 @@ impl<const PIN: u8, const CORE: u8> Reader<PIN, CORE> {
 /// `slot` (the handler's), answering in `request`. Returns `None` for any other command, else
 /// the errors: 1 while the reader is not open yet.
 pub fn down_command<const PIN: u8, const CORE: u8>(
-    slot: &Shared<Reader<PIN, CORE>, CORE>,
+    slot: &Slot<Option<Reader<PIN, CORE>>, CORE>,
     request: &mut [u32; 16],
 ) -> Option<u32> {
     let (command, count, seed) = (request[1], request[2], request[3]);
@@ -159,7 +160,7 @@ pub fn down_command<const PIN: u8, const CORE: u8>(
         return None;
     }
     let mut errors = 1;
-    with(slot, |reader| {
+    slot.with(|reader| {
         errors = 0;
         match command {
             command::DOWN_START => reader.start(count, seed, true),
