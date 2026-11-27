@@ -103,10 +103,11 @@ The PAC also describes FCS, FIFO and INTR/INTE/INTF/INTS.
 
 ## Hardware
 
-**HW · 2026-11-28.** The initial IRQ52 parity run on proc0 measured
-27–28 µs for 100 internal temperature reads, 7–8 µs for legacy OneShot,
-8 µs for explicit polling and 1,012–1,013 µs for a 1 ms timeout with the
-completion suppressed. These measure calls from entry through return.
+**HW · 2026-11-28.** During Linux startup on proc0, the IRQ52 parity
+fixture measured 26–27 µs for 100 internal temperature reads, 6–7 µs
+for legacy OneShot, 7–8 µs for explicit polling and 1,012–1,013 µs
+for a 1 ms timeout with the completion suppressed. These measure calls
+from entry through return.
 
 Historical polling measurements, HW (2026-10-29, cold boot ×3, lab `shm-firmware` declaring `ADC` on proc0):
 
