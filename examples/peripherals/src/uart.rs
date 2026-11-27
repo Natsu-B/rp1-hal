@@ -6,16 +6,15 @@ use crate::rp1; // log! resolves rp1::log in this scope.
 use rp1_hal::{
     clocks::Clocks,
     fugit::{ExtU32, RateExtU32},
-    gpio::Pin,
     log,
     pac::pl011::int,
     timer::Timer,
-    uart::{Config, Parts},
+    uart::Parts,
 };
 
-pub fn run(uart: Parts<1, (Pin<0>, Pin<1>)>, clocks: &Clocks) -> Result<(), &'static str> {
+pub fn run(uart: Parts<1, rp1::Uart1Pins>, clocks: &Clocks) -> Result<(), &'static str> {
     let (mut tx, mut rx) = uart
-        .init(clocks, Config::new(115_200.Hz()))
+        .init(clocks, 115_200.Hz())
         .map_err(|_| "UART1 init failed")?
         .split();
 

@@ -367,7 +367,7 @@ fn resources(
                 metadata::Instance::Dma(channels) => {
                     dma_resource(&mut s, index, channels.selected())
                 }
-                _ => instance_resource(name, instance),
+                _ => instance_resource(&mut s, name, instance),
             })
             .collect::<Result<Vec<_>>>()?;
         // The doorbell pin's force bit belongs to the doorbell, not to a `Pin`.
@@ -552,10 +552,11 @@ fn resources(
     Ok(s)
 }
 
-/// Field type, initializer and bundled pins of an instance's resource: `uart::Parts<2, (Pin<4>, Pin<5>)>`
-/// with the token and the TX/RX pins, and so on; the ADC is a bare token. UART CTS/RTS are not
-/// bundled (rp1-hal has no flow control) and stay in `pins`.
+/// Field type, initializer and bundled pins of an instance's resource.
+/// UART, SPI and I²C also emit aliases for the required pin tuple and driver in `rp1`.
+/// UART CTS/RTS stay in `pins` (rp1-hal has no flow control).
 fn instance_resource(
+    source: &mut String,
     name: &str,
     instance: &metadata::Instance,
 ) -> Result<(String, String, Vec<u8>)> {
@@ -563,11 +564,12 @@ fn instance_resource(
     let n = board::find_instance(name)
         .ok_or_else(|| format!("unknown instance {name}"))?
         .number;
-    let (module, signals) = match instance {
-        Instance::Uart(p) => ("uart", [("tx", p.tx), ("rx", p.rx)].to_vec()),
-        Instance::I2c(p) => ("i2c", [("sda", p.sda), ("scl", p.scl)].to_vec()),
+    let (module, driver, signals) = match instance {
+        Instance::Uart(p) => ("uart", "Uart", [("tx", p.tx), ("rx", p.rx)].to_vec()),
+        Instance::I2c(p) => ("i2c", "I2c", [("sda", p.sda), ("scl", p.scl)].to_vec()),
         Instance::Spi(p) => (
             "spi",
+            "Spi",
             [("sck", p.sck), ("mosi", p.mosi), ("miso", p.miso)].to_vec(),
         ),
         // PWM outputs are optional: keep the declared pins in ProcNPins, with a block token.
@@ -593,10 +595,17 @@ fn instance_resource(
         .iter()
         .map(|pin| format!("::rp1_hal::gpio::Pin<{pin}>"))
         .collect::<Vec<_>>();
-    let ty = format!(
-        "::rp1_hal::{module}::Parts<{n}, ({})>",
-        pin_types.join(", ")
-    );
+    let alias = format!("{driver}{n}");
+    let required = format!("{alias}Pins");
+    writeln!(
+        source,
+        "/// Required pin routes for the declared `{name}`.\n\
+         pub type {required} = ({});\n\
+         /// Initialized driver for the declared `{name}`.\n\
+         pub type {alias} = ::rp1_hal::{module}::{driver}<{n}, {required}>;",
+        pin_types.join(", "),
+    )?;
+    let ty = format!("::rp1_hal::{module}::Parts<{n}, {required}>");
     let mut init = format!(
         "::rp1_hal::{module}::Parts::new(unsafe {{ ::rp1_hal::{module}::Token::new() }}, ::rp1_hal::{module}::Pins::<{n}>::builder()"
     );
@@ -829,10 +838,16 @@ spi0 = { sck = 11, mosi = 10, miso = 9 }
         let s = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         for field in [
             "pub TIMER_ALARM0: ::rp1_hal::timer::Alarm<0>,",
-            "pub i2c1: ::rp1_hal::i2c::Parts<1, (::rp1_hal::gpio::Pin<2>, ::rp1_hal::gpio::Pin<3>)>,",
-            "pub uart2: ::rp1_hal::uart::Parts<2, (::rp1_hal::gpio::Pin<4>, ::rp1_hal::gpio::Pin<5>)>,",
+            "pub type I2c1Pins = (::rp1_hal::gpio::Pin<2>, ::rp1_hal::gpio::Pin<3>);",
+            "pub type Uart2Pins = (::rp1_hal::gpio::Pin<4>, ::rp1_hal::gpio::Pin<5>);",
+            "pub type Spi0Pins = (::rp1_hal::gpio::Pin<11>, ::rp1_hal::gpio::Pin<10>, ::rp1_hal::gpio::Pin<9>);",
+            "pub type I2c1 = ::rp1_hal::i2c::I2c<1, I2c1Pins>;",
+            "pub type Uart2 = ::rp1_hal::uart::Uart<2, Uart2Pins>;",
+            "pub type Spi0 = ::rp1_hal::spi::Spi<0, Spi0Pins>;",
+            "pub i2c1: ::rp1_hal::i2c::Parts<1, I2c1Pins>,",
+            "pub uart2: ::rp1_hal::uart::Parts<2, Uart2Pins>,",
             "pub adc: ::rp1_hal::adc::Token,",
-            "pub spi0: ::rp1_hal::spi::Parts<0, (::rp1_hal::gpio::Pin<11>, ::rp1_hal::gpio::Pin<10>, ::rp1_hal::gpio::Pin<9>)>,",
+            "pub spi0: ::rp1_hal::spi::Parts<0, Spi0Pins>,",
             "uart2: ::rp1_hal::uart::Parts::new(unsafe { ::rp1_hal::uart::Token::new() }, \
              ::rp1_hal::uart::Pins::<2>::builder().tx(unsafe { ::rp1_hal::gpio::Pin::new() }).rx(unsafe { ::rp1_hal::gpio::Pin::new() })),",
         ] {

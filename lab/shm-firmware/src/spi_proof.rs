@@ -9,11 +9,10 @@ use crate::rp1;
 use embedded_hal::spi::{MODE_0, MODE_3, Operation, SpiBus, SpiDevice};
 use rp1_hal::{
     fugit::RateExtU32,
-    gpio::Pin,
     log,
     spi::{Device, Error, Polling},
 };
-pub type Dev<'a> = Device<Polling<'a, 0, (Pin<11>, Pin<10>, Pin<9>)>, 8>;
+pub type Dev<'a> = Device<Polling<'a, 0, rp1::Spi0Pins>, 8>;
 /// Transfers per measurement (each of 32 frames).
 const ROUNDS: u32 = 32;
 

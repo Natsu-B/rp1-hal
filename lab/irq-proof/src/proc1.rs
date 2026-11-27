@@ -7,9 +7,7 @@ use crate::rp1;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
 use rp1_hal::{
     fugit::ExtU32,
-    gpio::Pin,
     log,
-    spi::Spi,
     timer::{Alarm, Timer},
 };
 use rp1_link::Progress;
@@ -20,13 +18,12 @@ use rp1_rt::{
     sync::Producer,
 };
 
-type Spi0 = Spi<0, (Pin<11>, Pin<10>, Pin<9>)>;
 static ALARM: Slot<Option<Alarm<1>>, 1> = Slot::empty();
 static BELL: Slot<Option<rp1::Doorbell1>, 1> = Slot::empty();
 /// The `down1` ring, once main has opened it.
 pub static DOWN1: Slot<Option<Reader<27, 1>>, 1> = Slot::empty();
 pub static PING: Slot<Option<rp1::link::Ping>, 1> = Slot::empty();
-static SPI: Slot<Option<Spi0>, 1> = Slot::empty();
+static SPI: Slot<Option<rp1::Spi0>, 1> = Slot::empty();
 static WRAP: Entries = Entries::new();
 /// Handler entries with the doorbell set.
 static BELL_ENTRIES: Entries = Entries::new();
@@ -92,7 +89,7 @@ const SPI0_BASE: usize = 0x4005_0000;
 pub struct Parts {
     pub alarm1: Alarm<1>,
     pub alarm2: Alarm<2>,
-    pub spi: Option<Spi0>,
+    pub spi: Option<rp1::Spi0>,
     pub doorbell: rp1::Doorbell1,
     pub irq: rp1::Proc1Irq,
 }

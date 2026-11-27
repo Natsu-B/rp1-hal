@@ -144,13 +144,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10.millis()).unwrap();
     let mut adc = p.adc.init(&clocks).unwrap();
     log!("proc1 temp_mc={}\n", adc.read_temperature().unwrap()).unwrap();
-    let _i2c = p
-        .i2c1
-        .init(
-            &clocks,
-            rp1_hal::i2c::Config::new(rp1_hal::i2c::Speed::Standard),
-        )
-        .unwrap();
+    let _i2c = p.i2c1.init(&clocks, rp1_hal::i2c::Speed::Standard).unwrap();
     let mut tx = VALUES.producer(&mut core);
     tx.push(increment(core::hint::black_box(41))).unwrap();
     #[cfg(not(feature = "ping-poll"))]

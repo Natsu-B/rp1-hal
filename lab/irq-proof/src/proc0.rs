@@ -6,21 +6,16 @@ use crate::proof::{self, Entries, Wrapped, expect, mark, settle, ticker, wait};
 use crate::rings::{Reader, Ticks};
 use crate::rp1;
 use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use rp1_hal::{
-    gpio::{Pin, PinIrq},
-    i2c::I2c,
-    timer::Alarm,
-};
+use rp1_hal::{gpio::PinIrq, timer::Alarm};
 use rp1_rt::{
     interrupt,
     interrupt::{Line, Slot},
     pac::dw_i2c::intr::TX_EMPTY,
 };
 
-type I2c1 = I2c<1, (Pin<2>, Pin<3>)>;
 static ALARM: Slot<Option<Alarm<0>>, 0> = Slot::empty();
 static PIN: Slot<Option<PinIrq<22, 0>>, 0> = Slot::empty();
-static I2C: Slot<Option<I2c1>, 0> = Slot::empty();
+static I2C: Slot<Option<rp1::I2c1>, 0> = Slot::empty();
 static BELL: Slot<Option<rp1::Doorbell0>, 0> = Slot::empty();
 /// The `down0` ring and the `tick0` writer, once main has opened them.
 pub static DOWN0: Slot<Option<Reader<26, 0>>, 0> = Slot::empty();
@@ -86,7 +81,7 @@ const I2C1_ENABLE: usize = I2C1_BASE + 0x6c;
 
 pub fn run(
     alarm: Alarm<0>,
-    i2c: Option<I2c1>,
+    i2c: Option<rp1::I2c1>,
     doorbell: rp1::Doorbell0,
     mut irq: rp1::Proc0Irq,
     idle: &mut dyn FnMut(),

@@ -3,15 +3,12 @@ use crate::rp1;
 use embedded_hal::i2c::{I2c as _, Operation};
 use rp1_hal::{
     fugit::ExtU32,
-    gpio::Pin,
-    i2c::{Error, I2c, Polling, Speed},
+    i2c::{Error, Polling, Speed},
     log,
     timer::{Timer, WaitTimer},
 };
-type Pins = (Pin<2>, Pin<3>);
-type Bus = I2c<1, Pins>;
 const PEER: u8 = 0x2d;
-pub fn run(bus: Option<&mut Bus>, request: u32, waiter: &mut WaitTimer) {
+pub fn run(bus: Option<&mut rp1::I2c1>, request: u32, waiter: &mut WaitTimer) {
     let result = match bus {
         None => Err(Error::Precondition),
         Some(bus) if request == 1 => prove(&mut bus.polling(), waiter).map_err(|f| {
@@ -49,7 +46,7 @@ fn check(step: &'static str, bytes: &[u8]) -> Result<(), Failure> {
         Some((i, b)) => Err(Failure::Data(step, i, *b)),
     }
 }
-fn prove(bus: &mut Polling<'_, 1, Pins>, waiter: &mut WaitTimer) -> Result<(), Failure> {
+fn prove(bus: &mut Polling<'_, 1, rp1::I2c1Pins>, waiter: &mut WaitTimer) -> Result<(), Failure> {
     let timer = Timer::new();
     let mut frame = core::array::from_fn::<_, 16, _>(|i| i as u8);
     frame[..4].copy_from_slice(&0x5244_3144u32.to_le_bytes());
@@ -117,7 +114,7 @@ fn prove(bus: &mut Polling<'_, 1, Pins>, waiter: &mut WaitTimer) -> Result<(), F
         .unwrap();
     Ok(())
 }
-fn measure(bus: &mut Polling<'_, 1, Pins>, request: u32) -> Result<(), Error> {
+fn measure(bus: &mut Polling<'_, 1, rp1::I2c1Pins>, request: u32) -> Result<(), Error> {
     let speed = match request {
         101 => Speed::Standard,
         102 => Speed::Fast,

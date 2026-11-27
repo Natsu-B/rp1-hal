@@ -2,6 +2,7 @@
 //! GPIO8 is CS. Keep external devices clear of GPIO8–11 unless they can safely share the
 //! bus. Internal loopback needs no jumper and exercises an embedded-hal SPI device transfer.
 
+use crate::rp1;
 use embedded_hal::spi::{MODE_0, SpiDevice};
 use rp1_hal::{
     clocks::Clocks,
@@ -10,11 +11,7 @@ use rp1_hal::{
     spi::{Config, Device, Parts},
 };
 
-pub fn run(
-    spi: Parts<0, (Pin<11>, Pin<10>, Pin<9>)>,
-    cs: Pin<8>,
-    clocks: &Clocks,
-) -> Result<(), &'static str> {
+pub fn run(spi: Parts<0, rp1::Spi0Pins>, cs: Pin<8>, clocks: &Clocks) -> Result<(), &'static str> {
     let mut bus = spi
         .init(clocks, Config::new(1.MHz(), MODE_0))
         .map_err(|_| "SPI0 init failed")?;
