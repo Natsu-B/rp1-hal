@@ -60,6 +60,7 @@ jobs:
           - { package: dual-core, name: ping-poll, features: --features ping-poll }
           - { package: peripherals }
           - { package: pwm-loopback }
+          - { package: timer-parity }
           - { package: irq-proof }
           - { package: irq-sweep }
           - { package: scmi-starvation }

@@ -764,6 +764,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "timer-parity"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "rp1-build",
+ "rp1-hal",
+ "rp1-rt",
+]
+
+[[package]]
 name = "toml"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
