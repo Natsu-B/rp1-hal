@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    driver_irq::{self, CoreState, Instance, Managed, PerCore, Source},
+    driver_irq::{self, CoreState, Instance, Limit, Managed, PerCore, Source},
     timer::{Instant, WaitTimer},
 };
 use rp1_rt::interrupt::{Binding, BlockIrq, Slot};
@@ -146,7 +146,7 @@ fn read_flags() -> u32 {
     Mmio.read(base(UART) + FR)
 }
 
-#[inline(never)]
+#[rp1_rt::isram]
 fn wait_for<const CORE: u8>(
     wait: &mut WaitTimer,
     end: Deadline,
@@ -156,7 +156,9 @@ fn wait_for<const CORE: u8>(
         Operation::Read(_) => RX_INTERRUPTS,
         Operation::Write(..) | Operation::TxRoom => int::TX,
     };
-    StateSlots::wait_for::<CORE, _, _>(&mut Mmio, wait, end, source, |io| operation.probe(io))
+    StateSlots::wait_for::<CORE, _, _>(&mut Mmio, wait, Limit::Absolute(end), source, |io| {
+        operation.probe(io)
+    })
 }
 
 /// Synchronous UART1 I/O using its device IRQ, the dedicated wait alarm and WFE.

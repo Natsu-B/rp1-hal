@@ -109,12 +109,15 @@ fn stale_before_arm_and_completion_during_after_or_without_delivery() {
                 arrival,
             },
             Deadline::at(Instant::from_ticks(1)),
-            || {
+            |final_probe| {
                 let mut f = fixture.borrow_mut();
                 let Fixture {
                     source, io, wakes, ..
                 } = &mut *f;
-                if *wakes != 2 && source.armed && io.regs.starts != 0 {
+                if final_probe {
+                    return io.probe();
+                }
+                if source.armed && io.regs.starts != 0 {
                     return None; // The same unrelated-wake guard as PerCore::wait_for.
                 }
                 crate::driver_irq::probe_and_arm(io, WaitIo::probe, |io| {

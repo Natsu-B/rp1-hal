@@ -583,6 +583,9 @@ trait Io {
     fn read(&mut self, offset: usize) -> u32;
     fn write(&mut self, offset: usize, value: u32);
     fn now(&mut self) -> Instant;
+    fn now_low(&mut self) -> u32 {
+        self.now().ticks() as u32
+    }
     /// clk_sys still matches `clocks`, per bus call ([`Clocks::sys_current`]).
     fn sys_current(&mut self, clocks: &Clocks) -> bool;
     /// clk_sys still matches `clocks`, at init and reconfiguration
@@ -611,6 +614,10 @@ impl Io for Mmio {
     #[inline(always)]
     fn now(&mut self) -> Instant {
         Timer::new().now()
+    }
+    #[inline(always)]
+    fn now_low(&mut self) -> u32 {
+        Timer::new().now_32().ticks()
     }
     #[inline(always)]
     fn sys_current(&mut self, clocks: &Clocks) -> bool {

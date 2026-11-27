@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    driver_irq::{self, CoreState, Instance, Managed, PerCore, Source},
+    driver_irq::{self, CoreState, Instance, Limit, Managed, PerCore, Source},
     timer::WaitTimer,
 };
 use rp1_rt::interrupt::{Binding, BlockIrq, Slot};
@@ -86,9 +86,14 @@ impl<I: Io> Source<I> for SpiSource {
     }
 
     fn retire(&mut self, io: &mut I) {
-        mask_interrupts(io);
-        io.read(ISR); // Order the mask before making another wait eligible.
-        self.mask = 0;
+        if self.mask != 0 {
+            io.write(IMR, 0);
+            self.mask = 0;
+        }
+        // Even when the ISR masked the source, retire the RP1 wrapper.
+        let wrap = io.read(IRQ_WRAP);
+        io.write(IRQ_WRAP, wrap & !irq_wrap::IRQ_EN);
+        io.read(ISR);
     }
 
     fn service(&mut self, io: &mut I) -> u32 {
@@ -267,7 +272,7 @@ impl<P: CompletePins<0>, const CORE: u8> Blocking<'_, P, CORE> {
                 io.write(RXFTLR, watermark);
                 watermark_changed = watermark != 0;
                 match wait_for::<CORE>(self.timer, &mut io, int::RXFI, end) {
-                    Ok(()) => {}
+                    Ok(_) => {}
                     Err(Error::Timeout) => {
                         // Drain a final ready batch only. No new frame may start.
                         return if transfer.step(&mut io, false)? {
@@ -302,13 +307,16 @@ fn flush<const CORE: u8>(
     if status & IDLE == sr::TFE {
         return Ok(());
     }
-    if status & sr::TFE == 0 {
-        wait_for::<CORE>(timer, io, int::TXEI, end)?;
-    }
-    // With TX empty, at most one frame remains. Sleep for that frame once,
-    // then recheck persistent BUSY at one-bit cadence, under the same deadline.
-    let mut delay = frame_delay(bits, hz);
+    let empty = if status & sr::TFE == 0 {
+        wait_for::<CORE>(timer, io, int::TXEI, end)?
+    } else {
+        io.now_low()
+    };
+    // Anchor the first check to TX empty so waiter retirement does not extend
+    // the estimated frame. Start a bit early and let BUSY decide when to return.
+    let frame = frame_delay(bits - 1, hz).ticks();
     let bit = frame_delay(1, hz);
+    let mut first = true;
     loop {
         error(io.read(RISR))?;
         if io.read(SR) & IDLE == sr::TFE {
@@ -316,29 +324,45 @@ fn flush<const CORE: u8>(
         }
         let now = io.now();
         end.check(now)?;
+        let delay = if core::mem::take(&mut first) {
+            tail_delay(frame, empty, now.ticks() as u32)
+        } else {
+            bit
+        };
         timer.delay_until((now + delay).min(end.instant()))?;
-        delay = bit;
     }
+}
+
+fn tail_delay(frame: u32, empty: u32, now: u32) -> Duration {
+    Duration::from_ticks(frame.saturating_sub(now.wrapping_sub(empty)))
 }
 
 fn frame_delay(bits: u8, hz: u32) -> Duration {
     Duration::from_ticks((u32::from(bits) * 1_000_000).div_ceil(hz) + 1)
 }
 
-#[inline(never)]
+#[rp1_rt::isram]
 fn wait_for<const CORE: u8>(
     timer: &mut WaitTimer,
     io: &mut Mmio,
     mask: u32,
     end: Deadline,
-) -> Result<(), Error> {
+) -> Result<u32, Error> {
     let mask = mask | ERRORS;
-    StateSlots::wait_for::<CORE, _, _>(io, timer, end, mask, |io| ready(io, mask))
+    StateSlots::wait_for::<CORE, _, _>(io, timer, Limit::Absolute(end), mask, |io| ready(io, mask))
 }
 
-fn ready(io: &mut impl Io, mask: u32) -> Option<Result<(), Error>> {
+fn ready(io: &mut impl Io, mask: u32) -> Option<Result<u32, Error>> {
     let status = io.read(RISR);
-    (status & mask != 0).then(|| error(status))
+    (status & mask != 0).then(|| {
+        error(status)?;
+        // RX batches only need the ready indication.
+        Ok(if mask & int::TXEI != 0 {
+            io.now_low()
+        } else {
+            0
+        })
+    })
 }
 
 impl<W: Word, P: CompletePins<0>, const CORE: u8> Bus<W> for Blocking<'_, P, CORE> {
@@ -445,5 +469,17 @@ mod tests {
         assert_eq!(source.service(&mut io), 0);
         io.risr = int::RXFI;
         assert_eq!(source.service(&mut io), int::RXFI);
+    }
+
+    #[test]
+    fn tx_empty_timestamp_excludes_waiter_retirement_across_wrap() {
+        let mut io = Model::new(4);
+        let mut clock = Model::new(4);
+        io.risr = int::TXEI;
+        let empty = ready(&mut io, int::TXEI).unwrap().unwrap();
+        assert_eq!(empty, clock.now_low());
+        let before_wrap = u32::MAX - 1;
+        assert_eq!(tail_delay(8, before_wrap, 2).ticks(), 4);
+        assert_eq!(tail_delay(8, before_wrap, 7).ticks(), 0);
     }
 }

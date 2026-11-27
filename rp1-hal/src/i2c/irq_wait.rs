@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    driver_irq::{self, CoreState, Instance, Managed, PerCore, Source},
+    driver_irq::{self, CoreState, Instance, Limit, Managed, PerCore, Source},
     timer::WaitTimer,
 };
 use rp1_rt::interrupt::{Binding, BlockIrq, Slot};
@@ -239,7 +239,13 @@ impl<P: CompletePins<I2C>, const CORE: u8> Blocking<'_, P, CORE> {
                 if mask == RX_FULL {
                     io.write(RX_TL, threshold);
                 }
-                StateSlots::wait_for::<CORE, _, _>(io, self.timer, end, mask, |io| probe(io, mask))
+                StateSlots::wait_for::<CORE, _, _>(
+                    io,
+                    self.timer,
+                    Limit::Absolute(end),
+                    mask,
+                    |io| probe(io, mask),
+                )
             },
         );
         io.write(RX_TL, 0);

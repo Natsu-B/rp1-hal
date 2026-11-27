@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    driver_irq::{self, CoreState, Instance, Managed, PerCore, Source},
+    driver_irq::{self, CoreState, Instance, Limit, Managed, PerCore, Source},
     timer::{WaitConfig, WaitTimer},
 };
 use core::marker::PhantomData;
@@ -172,21 +172,25 @@ impl<const CORE: u8> Blocking<'_, CORE> {
 
     /// Convert one sample with the configured timeout.
     pub fn read(&mut self, channel: impl Channel) -> Result<u16, Error> {
-        let end = Deadline::after(self.config.timeout_or(TIMEOUT))?;
-        self.read_until(channel, end)
+        self.read_with(channel, Limit::Relative(self.config.timeout_or(TIMEOUT)))
     }
 
     /// Convert one sample by an absolute deadline. A timeout retires the IRQ
     /// and attempts to discard the sample. Check [`Adc::is_recovering`] to see
     /// whether [`Adc::try_cancel`] still needs to run.
-    pub fn read_until<C: Channel>(&mut self, _channel: C, end: Deadline) -> Result<u16, Error> {
+    pub fn read_until<C: Channel>(&mut self, channel: C, end: Deadline) -> Result<u16, Error> {
+        self.read_with(channel, Limit::Absolute(end))
+    }
+
+    #[rp1_rt::isram]
+    fn read_with<C: Channel>(&mut self, _channel: C, limit: Limit) -> Result<u16, Error> {
         let mut io = WaitIo {
             regs: Mmio,
             request: Some((&mut self.adc.state, C::SELECT)),
             prepared: false,
         };
         let result =
-            StateSlots::wait_for::<CORE, _, _>(&mut io, self.timer, end, FIFO_IRQ, WaitIo::probe);
+            StateSlots::wait_for::<CORE, _, _>(&mut io, self.timer, limit, FIFO_IRQ, WaitIo::probe);
         if io.prepared && matches!(self.adc.state, State::Converting(_)) {
             let _ = self.adc.try_cancel();
         }

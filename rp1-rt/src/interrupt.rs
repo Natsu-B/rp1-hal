@@ -190,6 +190,11 @@ pub struct OwnedLine {
 }
 
 impl OwnedLine {
+    #[doc(hidden)]
+    pub fn is_enabled(&self) -> bool {
+        Nvic(Hardware).is_enabled(self.irq)
+    }
+
     pub fn disable(&mut self) {
         Nvic(Hardware).disable(self.irq);
     }

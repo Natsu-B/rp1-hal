@@ -67,13 +67,17 @@ impl Deadline {
     }
 
     pub(crate) fn after_ticks(now: Instant, timeout: u32) -> Result<Self, Error> {
-        let end = Self(Instant::from_ticks(
+        if timeout == 0 {
+            return Err(Error::Timeout);
+        }
+        if timeout > MAX_ARM {
+            return Err(Error::InvalidDeadline);
+        }
+        Ok(Self(Instant::from_ticks(
             now.ticks()
                 .checked_add(u64::from(timeout))
                 .ok_or(Error::InvalidDeadline)?,
-        ));
-        end.check(now)?;
-        Ok(end)
+        )))
     }
 
     pub(crate) fn check(self, now: Instant) -> Result<(), Error> {

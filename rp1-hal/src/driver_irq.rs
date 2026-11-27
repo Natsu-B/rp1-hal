@@ -1,6 +1,6 @@
 //! Core-local delivery for generator-owned synchronous device IRQs.
 
-use crate::timer::{self, Deadline, Timer, WaitTimer};
+use crate::timer::{self, Deadline, Duration, Timer, WaitTimer};
 use rp1_rt::interrupt::{Line, Priority, Slot};
 
 const CEILING: u8 = 4;
@@ -9,6 +9,11 @@ const PRIORITY: Priority = Priority::new(CEILING).unwrap();
 pub(crate) enum Error {
     Busy,
     IrqUnavailable,
+}
+
+pub(crate) enum Limit {
+    Absolute(Deadline),
+    Relative(Duration),
 }
 
 pub(crate) trait Source<I> {
@@ -110,7 +115,7 @@ impl<S: Instance<IRQ>, const IRQ: u8> PerCore<S, IRQ> {
     pub(crate) fn wait_for<const CORE: u8, I, T>(
         io: &mut I,
         wait: &mut WaitTimer,
-        end: Deadline,
+        limit: Limit,
         mask: u32,
         mut probe: impl FnMut(&mut I) -> Option<Result<T, S::Error>>,
     ) -> Result<T, S::Error>
@@ -119,20 +124,36 @@ impl<S: Instance<IRQ>, const IRQ: u8> PerCore<S, IRQ> {
     {
         let mut context = wait.thread_context()?;
         Self::check::<CORE>()?;
+        let now = Timer::new().now();
+        let end = match limit {
+            Limit::Absolute(end) => {
+                end.check(now)?;
+                end
+            }
+            Limit::Relative(duration) => Deadline::after_ticks(now, duration.ticks())?,
+        };
         let mut active = false;
         let mut post_alarm_probe = true;
-        // Register the device inside the timer's checked probe so an already
-        // expired call neither touches the peripheral nor enables its IRQ.
-        let result = context.wait_until(end, || {
-            if active && !core::mem::take(&mut post_alarm_probe) {
+        let result = context.wait_accepted(end, |final_probe| {
+            if final_probe {
+                return probe(io);
+            }
+            if active {
+                // The first probe after alarm arm closes the arm/check race.
+                // If it misses, a device IRQ can still leave an event for WFE.
+                if core::mem::take(&mut post_alarm_probe) {
+                    return probe(io);
+                }
                 let fired =
                     Self::with::<CORE, _>(|state| !state.source.is_armed()).unwrap_or(false);
-                if !fired && Timer::new().now() < end.instant() {
+                if !fired {
                     // Unrelated events do not turn an armed wait into polling.
                     return None;
                 }
             }
             probe_and_arm(io, &mut probe, |io| {
+                // Arming can start device work. A preemption before that
+                // point can span a timer wrap.
                 if Timer::new().now() >= end.instant() {
                     return Ok(false);
                 }
@@ -263,12 +284,12 @@ mod tests {
             let f = Fixture::default();
             f.ready.set(matches!(arrival, Arrival::BeforeArm));
             let end = Deadline::at(timer::Instant::from_ticks(1));
-            let result = timer::test_wait(&mut Alarm(&f, arrival), end, || {
+            let result = timer::test_wait(&mut Alarm(&f, arrival), end, |final_probe| {
                 probe_and_arm(
                     &mut (),
                     |_| f.ready.replace(false).then_some(Ok::<_, timer::Error>(())),
                     |_| {
-                        if f.arms.get() != 0 || f.sleeps.get() == 2 {
+                        if final_probe || f.arms.get() != 0 || f.sleeps.get() == 2 {
                             return Ok(false);
                         }
                         f.arms.set(1);

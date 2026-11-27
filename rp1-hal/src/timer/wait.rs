@@ -3,7 +3,7 @@
 use super::{
     ALARM0, ARMED, Alarm, Deadline, Duration, Error, INTE_CLEAR, INTE_SET, INTR, MAX_ARM, Timer,
 };
-use crate::{linux_blocks::Mmio, scmi::Registers, write};
+use crate::{linux_blocks::Mmio, scmi::Registers, write_relaxed};
 use core::sync::atomic::{AtomicU32, Ordering};
 use embedded_hal::delay::DelayNs;
 use rp1_rt::{
@@ -39,7 +39,9 @@ impl WaitConfig {
 /// raises BASEPRI, returns [`Error::Masked`].
 pub struct WaitTimer {
     alarm: u8,
+    clean: bool,
     line: OwnedLine,
+    event: &'static AlarmEvent,
     generation: u32,
 }
 
@@ -55,17 +57,20 @@ impl WaitTimer {
         const { assert!(IRQ == 26 + N && N < 4 && CORE < 2) };
         Self {
             alarm: N,
+            clean: false,
             line: irq.into_owned_line(),
+            event: &EVENTS[usize::from(N)],
             generation: 0,
         }
     }
 
+    #[rp1_rt::isram]
     pub fn thread_context(&mut self) -> Result<WaitContext<'_>, Error> {
         let context = WaitContext {
             timer: self,
             guard: ThreadGuard::new()?,
         };
-        context.check_alarm()?;
+        context.check_alarm_line()?;
         Ok(context)
     }
 
@@ -79,7 +84,7 @@ impl WaitTimer {
 
     /// Sleeps until the deadline. An already reached deadline completes immediately.
     pub fn delay_until(&mut self, end: impl Into<Deadline>) -> Result<(), Error> {
-        self.thread_context()?.delay_until(end)
+        self.thread_context()?.delay_checked(end.into())
     }
 
     /// Waits for a source that publishes retained state and sends an event.
@@ -89,7 +94,7 @@ impl WaitTimer {
         end: impl Into<Deadline>,
         probe: impl FnMut() -> Option<T>,
     ) -> Result<T, Error> {
-        self.thread_context()?.wait_until(end, probe)
+        self.thread_context()?.wait_checked(end.into(), probe)
     }
 
     /// Waits for a bound IRQ after checking that its NVIC line is enabled.
@@ -104,7 +109,7 @@ impl WaitTimer {
     ) -> Result<T, Error> {
         let mut context = self.thread_context()?;
         context.check_irq(irq)?;
-        context.wait_until(end, probe)
+        context.wait_checked(end.into(), probe)
     }
 
     /// # Safety
@@ -145,9 +150,7 @@ impl<'timer> WaitContext<'timer> {
         probe: impl FnMut() -> Option<T>,
     ) -> Result<T, Error> {
         self.check_alarm()?;
-        let end = end.into();
-        end.check(Timer::new().now())?;
-        self.wait_accepted(end, probe)
+        self.wait_checked(end.into(), probe)
     }
 
     pub fn delay(&mut self, duration: Duration) -> Result<(), Error> {
@@ -156,7 +159,11 @@ impl<'timer> WaitContext<'timer> {
 
     pub fn delay_until(&mut self, end: impl Into<Deadline>) -> Result<(), Error> {
         self.check_alarm()?;
-        let end = end.into();
+        self.delay_checked(end.into())
+    }
+
+    #[rp1_rt::isram]
+    fn delay_checked(&mut self, end: Deadline) -> Result<(), Error> {
         match end.check(Timer::new().now()) {
             Err(Error::Timeout) => Ok(()),
             result => {
@@ -172,11 +179,16 @@ impl<'timer> WaitContext<'timer> {
     }
 
     fn check_alarm(&self) -> Result<(), ContextError> {
+        self.guard.check()?;
+        self.check_alarm_line()
+    }
+
+    fn check_alarm_line(&self) -> Result<(), ContextError> {
         // The first arm enables this dedicated line. Later calls leave it enabled between waits.
-        if self.timer.generation == 0 {
-            self.guard.check()
+        if self.timer.generation == 0 || self.timer.line.is_enabled() {
+            Ok(())
         } else {
-            self.guard.check_owned_line(&self.timer.line)
+            Err(ContextError::IrqUnavailable)
         }
     }
 
@@ -189,16 +201,25 @@ impl<'timer> WaitContext<'timer> {
     }
 
     fn delay_accepted(&mut self, end: Deadline) -> Result<(), Error> {
-        match self.wait_accepted(end, || None::<()>) {
+        match self.wait_accepted(end, |_| None::<()>) {
             Err(Error::Timeout) => Ok(()),
             result => result,
         }
     }
 
-    fn wait_accepted<T>(
+    fn wait_checked<T>(
         &mut self,
         end: Deadline,
-        probe: impl FnMut() -> Option<T>,
+        mut probe: impl FnMut() -> Option<T>,
+    ) -> Result<T, Error> {
+        end.check(Timer::new().now())?;
+        self.wait_accepted(end, |_| probe())
+    }
+
+    pub(crate) fn wait_accepted<T>(
+        &mut self,
+        end: Deadline,
+        probe: impl FnMut(bool) -> Option<T>,
     ) -> Result<T, Error> {
         let mut alarm = ActiveAlarm {
             timer: self.timer,
@@ -269,32 +290,41 @@ impl DelayNs for Delay<'_, '_> {
 pub(crate) trait WaitAlarm {
     fn arm(&mut self, end: Deadline) -> Result<(), Error>;
     fn elapsed(&self, end: Deadline) -> bool;
+    fn elapsed_after_arm(&self, end: Deadline) -> bool {
+        self.elapsed(end)
+    }
     fn sleep(&mut self);
 }
 
 pub(crate) fn wait<T>(
     alarm: &mut impl WaitAlarm,
     end: Deadline,
-    mut probe: impl FnMut() -> Option<T>,
+    mut probe: impl FnMut(bool) -> Option<T>,
 ) -> Result<T, Error> {
-    if let Some(value) = probe() {
+    if let Some(value) = probe(false) {
         return Ok(value);
     }
     alarm.arm(end)?;
-    loop {
-        let elapsed = alarm.elapsed(end);
-        if let Some(value) = probe() {
-            return Ok(value);
-        }
-        if elapsed {
-            return Err(Error::Timeout);
-        }
-        alarm.sleep();
+    if let Some(value) = probe(false) {
+        return Ok(value);
     }
+    if !alarm.elapsed_after_arm(end) {
+        loop {
+            alarm.sleep();
+            if let Some(value) = probe(false) {
+                return Ok(value);
+            }
+            if alarm.elapsed(end) {
+                break;
+            }
+        }
+    }
+    probe(true).ok_or(Error::Timeout)
 }
 
 // Ordinary static DSRAM has one copy per core. Each alarm has its own slot. On this
-// core only its ISR publishes, and thread mode changes the generation with that line disabled.
+// core only its ISR publishes, and thread mode invalidates the generation before cleanup.
+// The word carries the entire event. send_event orders the interrupt acknowledgment.
 static EVENTS: [AlarmEvent; 4] = [const { AlarmEvent(AtomicU32::new(0)) }; 4];
 
 struct AlarmEvent(AtomicU32);
@@ -309,12 +339,12 @@ impl AlarmEvent {
         if current == 0 || current & 1 != 0 {
             return false;
         }
-        self.0.store(current | 1, Ordering::Release);
+        self.0.store(current | 1, Ordering::Relaxed);
         true
     }
 
     fn fired(&self, generation: u32) -> bool {
-        self.0.load(Ordering::Acquire) == (generation | 1)
+        self.0.load(Ordering::Relaxed) == (generation | 1)
     }
 }
 
@@ -334,30 +364,26 @@ struct ActiveAlarm<'a> {
 }
 
 impl ActiveAlarm<'_> {
-    fn event(&self) -> &AlarmEvent {
-        &EVENTS[usize::from(self.timer.alarm)]
-    }
-
     // The dedicated NVIC line can be cleared without discarding other devices' IRQs.
-    // Keep higher-priority control interrupts enabled during the MMIO sequence.
+    // The ISR can only acknowledge this same source. Invalidate the event before
+    // clearing it so an IRQ in the retirement window cannot publish a completion.
+    #[rp1_rt::isram]
     fn retire(&mut self) -> bool {
-        self.timer.line.disable();
-        // No ISB: an entry in this window publishes a generation that register(0) discards.
-        rp1_proto::barrier();
-        self.event().register(0);
+        self.timer.event.register(0);
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
         let retired = retire_source(&mut Mmio, self.timer.alarm);
         self.timer.line.unpend();
+        self.timer.clean = retired;
         retired
     }
 
+    #[inline(always)]
     fn finish(&mut self) -> Result<(), Error> {
         if !self.armed {
             return Ok(());
         }
         self.armed = false;
-        let retired = self.retire();
-        self.timer.line.enable();
-        if retired {
+        if self.retire() {
             Ok(())
         } else {
             Err(Error::AlarmUnavailable)
@@ -367,36 +393,54 @@ impl ActiveAlarm<'_> {
 
 fn retire_source(io: &mut impl Registers, alarm: u8) -> bool {
     let bit = 1 << alarm;
-    io.write(INTE_CLEAR, bit);
-    io.write(ARMED, bit);
-    io.write(INTR, bit);
+    io.write_relaxed(INTE_CLEAR, bit);
+    io.write_relaxed(ARMED, bit);
+    io.write_relaxed(INTR, bit);
+    // The first read orders the writes. Verify both states independently.
     (io.read(ARMED) | io.read(INTR)) & bit == 0
 }
 
+fn clean_before_arm(clean: bool, retire: impl FnOnce() -> bool) -> Result<(), Error> {
+    if clean || retire() {
+        Ok(())
+    } else {
+        Err(Error::AlarmUnavailable)
+    }
+}
+
 impl WaitAlarm for ActiveAlarm<'_> {
+    #[rp1_rt::isram]
     fn arm(&mut self, end: Deadline) -> Result<(), Error> {
-        if Timer::new().now().ticks() >= end.instant().ticks() {
-            return Ok(());
-        }
-        if !self.retire() {
-            self.timer.line.enable();
-            return Err(Error::AlarmUnavailable);
-        }
+        clean_before_arm(self.timer.clean, || self.retire())?;
+        let first = self.timer.generation == 0;
         self.timer.generation = self.timer.generation.wrapping_add(2).max(2);
-        self.event().register(self.timer.generation);
+        self.timer.event.register(self.timer.generation);
         self.armed = true;
+        self.timer.clean = false;
         let alarm = usize::from(self.timer.alarm);
-        // A compare that races its tick may miss; the full-width check before WFE
-        // catches it and the retirement sequence disarms it.
-        write(ALARM0 + alarm * 4, end.instant().ticks() as u32);
-        write(INTE_SET, 1 << alarm);
-        self.timer.line.enable();
+        write_relaxed(ALARM0 + alarm * 4, end.instant().ticks() as u32);
+        write_relaxed(INTE_SET, 1 << alarm);
+        rp1_proto::barrier();
+        if first {
+            self.timer.line.enable();
+        }
         Ok(())
     }
 
     fn elapsed(&self, end: Deadline) -> bool {
-        (self.armed && self.event().fired(self.timer.generation))
-            || Timer::new().now().ticks() >= end.instant().ticks()
+        // The post-arm full sample proved the programmed tick was still
+        // ahead. A long preemption that spans a wrap leaves the ISR's event.
+        self.timer.event.fired(self.timer.generation)
+            || (Timer::new()
+                .now_32()
+                .ticks()
+                .wrapping_sub(end.instant().ticks() as u32) as i32)
+                >= 0
+    }
+
+    fn elapsed_after_arm(&self, end: Deadline) -> bool {
+        // A delayed compare write can miss the tick. Do not sleep for a wrap.
+        Timer::new().now().ticks() >= end.instant().ticks()
     }
 
     fn sleep(&mut self) {
@@ -458,8 +502,8 @@ mod tests {
             (2, false, 1, 1, 3, Ok(2)), // Ready between recheck and WFE or while asleep.
             (2, true, 1, 2, 4, Ok(2)),  // A spurious event consumes one WFE.
             (10, false, 1, 1, 3, Ok(10)),
-            (11, false, 1, 1, 3, Err(Error::Timeout)),
-            (u64::MAX, false, 1, 1, 3, Err(Error::Timeout)),
+            (11, false, 1, 1, 4, Err(Error::Timeout)),
+            (u64::MAX, false, 1, 1, 4, Err(Error::Timeout)),
         ] {
             let tick = Cell::new(0);
             let mut alarm = FakeWake {
@@ -471,7 +515,7 @@ mod tests {
                 spurious,
             };
             let mut reads = 0;
-            let result = wait(&mut alarm, end, || {
+            let result = wait(&mut alarm, end, |_| {
                 reads += 1;
                 (tick.get() >= ready_at).then_some(tick.get())
             });
@@ -492,7 +536,7 @@ mod tests {
             spurious: false,
         };
         let end = Deadline(Instant::from_ticks(tick.get() + 1));
-        assert_eq!(wait(&mut alarm, end, || None::<()>), Err(Error::Timeout));
+        assert_eq!(wait(&mut alarm, end, |_| None::<()>), Err(Error::Timeout));
         assert_eq!(alarm.sleeps, 0);
     }
 
@@ -508,7 +552,7 @@ mod tests {
             spurious: false,
         };
         let end = Deadline(Instant::from_ticks(10));
-        let ready = wait(&mut alarm, end, || {
+        let ready = wait(&mut alarm, end, |_| {
             if tick.get() == 1 {
                 // The ISR publishes after the probe read, before the thread can sleep.
                 tick.set(2);
@@ -518,6 +562,110 @@ mod tests {
         });
         assert_eq!(ready, Ok(()));
         assert_eq!((alarm.arms, alarm.sleeps, tick.get()), (1, 1, 2));
+    }
+
+    #[test]
+    fn successful_wake_skips_the_clock_and_timeout_probes_again() {
+        struct Wake<'a> {
+            ready: &'a Cell<bool>,
+            device_first: bool,
+            checks: u8,
+        }
+
+        impl WaitAlarm for Wake<'_> {
+            fn arm(&mut self, _: Deadline) -> Result<(), Error> {
+                Ok(())
+            }
+            fn elapsed_after_arm(&self, _: Deadline) -> bool {
+                false
+            }
+            fn elapsed(&self, _: Deadline) -> bool {
+                assert!(!self.device_first, "a ready wake sampled the clock");
+                self.ready.set(true);
+                true
+            }
+            fn sleep(&mut self) {
+                self.checks += 1;
+                self.ready.set(self.device_first);
+            }
+        }
+
+        for device_first in [false, true] {
+            let ready = Cell::new(false);
+            let mut wake = Wake {
+                ready: &ready,
+                device_first,
+                checks: 0,
+            };
+            let end = Deadline::at(Instant::from_ticks(1));
+            let result = wait(&mut wake, end, |final_probe| {
+                ready.replace(false).then_some(final_probe)
+            });
+            assert_eq!(result, Ok(!device_first));
+            assert_eq!(wake.checks, 1);
+        }
+    }
+
+    #[test]
+    fn missed_compare_is_caught_by_the_full_check_before_wfe() {
+        struct MissedCompare;
+        impl WaitAlarm for MissedCompare {
+            fn arm(&mut self, _: Deadline) -> Result<(), Error> {
+                Ok(())
+            }
+            fn elapsed_after_arm(&self, end: Deadline) -> bool {
+                let now = Instant::from_ticks(1 << 32);
+                now >= end.instant()
+            }
+            fn elapsed(&self, end: Deadline) -> bool {
+                0u32.wrapping_sub(end.instant().ticks() as u32) as i32 >= 0
+            }
+            fn sleep(&mut self) {
+                panic!("slept on a compare tick that was passed while arming");
+            }
+        }
+
+        let end = Deadline::at(Instant::from_ticks(1));
+        assert_eq!(
+            wait(&mut MissedCompare, end, |_| None::<()>),
+            Err(Error::Timeout)
+        );
+    }
+
+    #[test]
+    fn cleanup_is_required_until_retirement_is_verified() {
+        let mut attempts = [false, true].into_iter();
+        let mut retire = || attempts.next().unwrap();
+        assert_eq!(
+            clean_before_arm(false, &mut retire),
+            Err(Error::AlarmUnavailable)
+        );
+        assert_eq!(clean_before_arm(false, &mut retire), Ok(()));
+        assert_eq!(clean_before_arm(true, retire), Ok(()));
+    }
+
+    #[test]
+    fn retirement_orders_posted_writes_before_verifying_both_flags() {
+        struct Posted(u8);
+        impl Registers for Posted {
+            fn read(&mut self, address: usize) -> u32 {
+                assert_eq!(address, [ARMED, INTR][usize::from(self.0 - 3)]);
+                self.0 += 1;
+                0
+            }
+            fn write(&mut self, _: usize, _: u32) {
+                panic!("retirement should use posted writes");
+            }
+            fn write_relaxed(&mut self, address: usize, value: u32) {
+                assert_eq!(address, [INTE_CLEAR, ARMED, INTR][usize::from(self.0)]);
+                assert_eq!(value, 1 << 1);
+                self.0 += 1;
+            }
+        }
+
+        let mut io = Posted(0);
+        assert!(retire_source(&mut io, 1));
+        assert_eq!(io.0, 5);
     }
 
     #[test]
@@ -545,6 +693,7 @@ mod tests {
         pending: u32,
         enabled: u32,
         stuck: u32,
+        stuck_pending: u32,
     }
 
     impl Registers for FakeSources {
@@ -559,7 +708,7 @@ mod tests {
         fn write(&mut self, address: usize, bits: u32) {
             match address {
                 ARMED => self.armed &= !(bits & !self.stuck),
-                INTR => self.pending &= !bits,
+                INTR => self.pending &= !(bits & !self.stuck_pending),
                 INTE_CLEAR => self.enabled &= !bits,
                 _ => panic!("unexpected write"),
             }
@@ -573,6 +722,7 @@ mod tests {
             pending: 0b11,
             enabled: 0b11,
             stuck: 0,
+            stuck_pending: 0,
         };
         let old = 2;
         let new = 4;
@@ -601,6 +751,10 @@ mod tests {
 
         io.armed = 1;
         io.stuck = 1;
+        assert!(!retire_source(&mut io, 0));
+        io.stuck = 0;
+        io.pending = 1;
+        io.stuck_pending = 1;
         assert!(!retire_source(&mut io, 0));
     }
 }
