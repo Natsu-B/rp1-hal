@@ -21,6 +21,17 @@ CANCEL = (
 )
 
 
+INJECTION = (
+    r"mask_before=0x([0-9a-f]{8}) mask_idle=0x([0-9a-f]{8}) "
+    r"int_status_completed=0x00000002 int_status_armed=0x00000000 mask_after=0x([0-9a-f]{8})"
+)
+
+
+def check_injection(fields, channel):
+    before, idle, after = (int(field, 16) for field in fields)
+    if before & TERMINAL_STATUS != TERMINAL_STATUS or idle != before & ~TERMINAL_STATUS or after != idle:
+        raise ValueError(f"terminal mask was not installed and retained on channel {channel}")
+
 def parity(uart0):
     rows = iter(line for line in uart0.splitlines() if line.startswith("PARITY_DMA_"))
     boot = BOOT.fullmatch(next(rows, ""))
@@ -60,11 +71,15 @@ def parity(uart0):
         raise ValueError("no cancelled transfer wrote a proper prefix")
 
     def drop_sample(channel, injected):
-        elapsed, status = row(
+        sample = row(
             "DROP",
             fr"ch={channel} injected={injected} active=1 drop_us=(\d+) quarantined={injected} "
-            r"chen_after=0 int_status_after=0x([0-9a-f]{8}) late_diff=0 ok=1",
+            r"chen_after=0 int_status_after=0x([0-9a-f]{8}) late_diff=0 "
+            + (fr"pair_busy=1 {INJECTION} " if injected else r"pair_busy=0 ") + r"ok=1",
         )
+        elapsed, status, *injection = sample
+        if injected:
+            check_injection(injection, channel)
         if int(status, 16) & (TERMINAL_STATUS | ABORT_STATUS | ERROR_STATUS):
             raise ValueError(f"unexpected interrupt status after active Drop on channel {channel}")
         if not 0 < int(elapsed) <= MAX_DECISION_US:
@@ -78,12 +93,14 @@ def parity(uart0):
     )
     if not int(fault, 16) & SRC_DEC_ERR or (stopped_at_fault == "1" and recovered != "1"):
         raise ValueError("decode fault or recovery proof missing")
-    first, quarantined_us = map(int, row(
+    first, quarantined_us, *injection = row(
         "QUARANTINE",
         r"ch=7 active=1 first_us=(\d+) decision_us=(\d+) rechecked=1 "
         r"ch_status_before=0x[0-9a-f]{8} ch_status_after=0x[0-9a-f]{8} "
-        r"int_status_after=0x00000000 chen_after=0 quarantined=1 leases_claimed=2 ok=1",
-    ))
+        fr"int_status_after=0x00000000 chen_after=0 quarantined=1 leases_claimed=2 {INJECTION} ok=1",
+    )
+    check_injection(injection, 7)
+    first, quarantined_us = int(first), int(quarantined_us)
     if not 0 < first <= quarantined_us <= MAX_DECISION_US:
         raise ValueError("injected quarantine time outside bounds")
     drop_quarantined_us = drop_sample(1, 1)

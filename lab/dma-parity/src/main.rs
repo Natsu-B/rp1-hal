@@ -5,10 +5,10 @@
 #[path = "../../status-nonce.rs"]
 mod status_nonce;
 
-use core::cell::UnsafeCell;
+use core::{cell::UnsafeCell, fmt};
 use rp1_hal::{
     clocks::Clocks,
-    dma::{BusAddr, Channel, Error, Lease, Pool, Transfer},
+    dma::{BusAddr, Channel, Error, Lease, Pool, Transfer, width_log2},
     log,
     pac::dw_axi_dmac::{BASE, CHANNEL_BASE, CHANNEL_STRIDE, ch, common, int},
     timer::{Deadline, Duration, Instant, Timer, WaitTimer},
@@ -99,7 +99,7 @@ fn run(core: Proc1, p: rp1::Proc1Resources, nonce: u32) -> Result<(), Error> {
     }
 
     prepare(&mut buffers, CAPACITY, CANCEL_OFFSET, CANCEL_BYTES)?;
-    drop_trial(&mut dma.ch0, &mut buffers, &mut wait, nonce, false)?;
+    buffers = drop_trial(&mut dma.ch0, buffers, &mut wait, nonce, None)?.unwrap();
 
     // SAFETY: run is entered once on proc1 and these are distinct .shared reservations.
     let [forgotten, drop_fixture] = unsafe { &mut *FIXTURES.0.get() };
@@ -125,17 +125,13 @@ fn run(core: Proc1, p: rp1::Proc1Resources, nonce: u32) -> Result<(), Error> {
 
     inject_bus_error(&mut dma.ch6, nonce)?;
     prepare(&mut buffers, CAPACITY, CANCEL_OFFSET, CANCEL_BYTES)?;
-    quarantine_cancel(&mut dma.ch7, buffers, &pool, &mut wait, nonce)?;
+    let quarantine = quarantine_cancel(&mut dma.ch7, buffers, &pool, &mut wait, nonce);
     let drop_pool = Pool::<2>::new(drop_fixture)?;
     let [src, dst] = drop_pool.leases(512)?;
     let mut buffers = (src, dst);
     prepare(&mut buffers, FIXTURE_SLOT, CANCEL_OFFSET, 512)?;
-    drop_trial(&mut dma.ch1, &mut buffers, &mut wait, nonce, true)?;
-    drop(buffers);
-    if !matches!(drop_pool.leases(4), Err(Error::Busy)) {
-        return Err(Error::Invalid);
-    }
-    Ok(())
+    let dropped = drop_trial(&mut dma.ch1, buffers, &mut wait, nonce, Some(&drop_pool));
+    quarantine.and(dropped.map(|_| ()))
 }
 
 trait Exercise {
@@ -219,41 +215,147 @@ fn timed_cancel<const N: u8>(
 
 fn channel_read<const N: u8>(offset: usize) -> u32 {
     let address = BASE + CHANNEL_BASE + N as usize * CHANNEL_STRIDE + offset;
-    // SAFETY: the caller is exercising its channel on the sole DMA-owning core.
+    read_register(address)
+}
+
+fn channel_enabled(n: u8) -> bool {
+    read_register(BASE + common::CHEN) & (1 << n) != 0
+}
+
+fn read_register(address: usize) -> u32 {
+    // SAFETY: the caller selects an aligned DMA MMIO register on the owning core.
     unsafe { (address as *const u32).read_volatile() }
 }
 
-fn enabled<const N: u8>() -> bool {
-    // SAFETY: reading the DMAC's enable register has no side effects.
-    unsafe { ((BASE + common::CHEN) as *const u32).read_volatile() & (1 << N) != 0 }
+fn write_register(address: usize, value: u32) {
+    // SAFETY: only the sole DMA-owning core runs the fixture, on a reserved channel.
+    unsafe { (address as *mut u32).write_volatile(value) };
 }
 
-fn hide_terminal_status<const N: u8>() -> Result<(), Error> {
-    // The real engine still gets graceful disable. Suppress its terminal evidence to
-    // model a stop the HAL cannot confirm, while retaining bus-error and abort capture.
-    let address = BASE + CHANNEL_BASE + N as usize * CHANNEL_STRIDE + ch::INTSTATUS_ENA;
-    let mask = channel_read::<N>(ch::INTSTATUS_ENA);
-    // SAFETY: the fixture owns this channel and never reuses it after this test.
-    unsafe { (address as *mut u32).write_volatile(mask & !TERMINAL) };
-    if channel_read::<N>(ch::INTSTATUS_ENA) & TERMINAL != 0 {
-        return Err(Error::Precondition);
+struct Injection {
+    mask_before: u32,
+    mask_idle: u32,
+    int_status_completed: u32,
+    int_status_armed: u32,
+    mask_after: u32,
+}
+
+impl fmt::Display for Injection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            " mask_before=0x{:08x} mask_idle=0x{:08x} int_status_completed=0x{:08x} int_status_armed=0x{:08x} mask_after=0x{:08x}",
+            self.mask_before,
+            self.mask_idle,
+            self.int_status_completed,
+            self.int_status_armed,
+            self.mask_after,
+        )
     }
-    Ok(())
 }
 
-fn drop_trial<const N: u8>(
+fn start_injected<'t, const N: u8>(
+    channel: &'t mut Channel<N>,
+    src: &'t mut Lease<'_>,
+    dst: &'t mut Lease<'_>,
+    nonce: u32,
+) -> Result<(Transfer<'t>, Injection), Error> {
+    let source = BusAddr::from_proc(src.as_slice().as_ptr() as usize)?.0;
+    let destination = BusAddr::from_proc(dst.as_slice().as_ptr() as usize)?.0;
+    let bytes = src.as_slice().len() as u32;
+    let transfer = channel.try_start(src, dst)?;
+    let injection = rearm_masked(N, source, destination, bytes, nonce)?;
+    Ok((transfer, injection))
+}
+
+#[inline(never)]
+fn rearm_masked(
+    n: u8,
+    source: u64,
+    destination: u64,
+    bytes: u32,
+    nonce: u32,
+) -> Result<Injection, Error> {
+    // HAL start installs the normal capture mask. Wait for this first block to finish
+    // without polling the Transfer, so the HAL remains Active and both leases stay
+    // engine-owned. Rearm exactly the same SRAM ranges with the terminal mask cleared
+    // while CH_EN=0. The Transfer then issues the real graceful disable as usual.
+    let timer = Timer::new();
+    let start = timer.now_32().ticks();
+    while channel_enabled(n) && timer.now_32().ticks().wrapping_sub(start) < STOP_LIMIT.ticks() {
+        core::hint::spin_loop();
+    }
+    let base = BASE + CHANNEL_BASE + n as usize * CHANNEL_STRIDE;
+    let idle = !channel_enabled(n);
+    let int_status_completed = read_register(base + ch::INTSTATUS);
+    let mask_before = read_register(base + ch::INTSTATUS_ENA);
+    let mut injection = Injection {
+        mask_before,
+        mask_idle: mask_before,
+        int_status_completed,
+        int_status_armed: int_status_completed,
+        mask_after: mask_before,
+    };
+    if idle && int_status_completed == int::DMA_TFR_DONE && mask_before & TERMINAL == TERMINAL {
+        write_register(base + ch::INTCLEAR, int::ALL);
+        write_register(base + ch::INTSTATUS_ENA, mask_before & !TERMINAL);
+        // Restore transfer addresses and count in case the engine advanced them.
+        for (offset, value) in [
+            (ch::SAR, source),
+            (ch::DAR, destination),
+            (
+                ch::BLOCK_TS,
+                u64::from((bytes >> width_log2(source, destination, bytes)) - 1),
+            ),
+        ] {
+            write_register(base + offset, value as u32);
+            write_register(base + offset + 4, (value >> 32) as u32);
+        }
+        let mask_idle = read_register(base + ch::INTSTATUS_ENA);
+        injection.mask_idle = mask_idle;
+        injection.mask_after = mask_idle;
+        injection.int_status_armed = read_register(base + ch::INTSTATUS);
+        if mask_idle == mask_before & !TERMINAL && injection.int_status_armed == 0 {
+            write_register(
+                BASE + common::CHEN,
+                (1 << n) | (1 << (u32::from(n) + common::CHEN_WE_SHIFT)),
+            );
+            injection.int_status_armed = read_register(base + ch::INTSTATUS);
+            return Ok(injection);
+        }
+    }
+    log!(
+        "PARITY_DMA_INJECT_FAIL nonce={nonce:08x} ch={n} idle={}{injection}\n",
+        u32::from(idle)
+    )
+    .unwrap();
+    Err(Error::Precondition)
+}
+
+struct DropInjection(Option<Injection>);
+
+impl fmt::Display for DropInjection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.as_ref().map_or(Ok(()), |snapshot| snapshot.fmt(f))
+    }
+}
+
+fn drop_trial<'a, const N: u8>(
     channel: &mut Channel<N>,
-    (src, dst): &mut Pair<'_>,
+    (mut src, mut dst): Pair<'a>,
     wait: &mut WaitTimer,
     nonce: u32,
-    injected: bool,
-) -> Result<(), Error> {
+    fixture: Option<&Pool<2>>,
+) -> Result<Option<Pair<'a>>, Error> {
     src.as_mut_slice().fill(0x3c);
-    let transfer = channel.try_start(src, dst)?;
-    if injected {
-        hide_terminal_status::<N>()?;
-    }
-    let active = enabled::<N>();
+    let (transfer, mut injection) = if fixture.is_some() {
+        let (transfer, injection) = start_injected(channel, &mut src, &mut dst, nonce)?;
+        (transfer, Some(injection))
+    } else {
+        (channel.try_start(&mut src, &mut dst)?, None)
+    };
+    let injected = injection.is_some();
+    let active = channel_enabled(N);
     let timer = Timer::new();
     let start = timer.now_32().ticks();
     drop(transfer);
@@ -265,7 +367,7 @@ fn drop_trial<const N: u8>(
     let signature = crc32(dst.as_slice());
     wait.delay(Duration::micros(100))?;
     let late_diff = u32::from(signature != crc32(dst.as_slice()));
-    let chen_after = u32::from(enabled::<N>());
+    let chen_after = u32::from(channel_enabled(N));
     let int_status_after = channel_read::<N>(ch::INTSTATUS);
     let good = active
         && valid_claims
@@ -274,12 +376,30 @@ fn drop_trial<const N: u8>(
         && late_diff == 0
         && chen_after == 0
         && int_status_after & (TERMINAL | int::ALL_ERR | int::CH_ABORTED) == 0;
+    let mut buffers = Some((src, dst));
+    let mut good = good;
+    let pair_busy = if let (Some(injection), Some(pool)) = (&mut injection, fixture) {
+        // Release the handles before trying to lease the pair again.
+        drop(buffers.take());
+        let busy = matches!(pool.leases(4), Err(Error::Busy));
+        injection.mask_after = channel_read::<N>(ch::INTSTATUS_ENA);
+        good &=
+            busy && injection.int_status_armed == 0 && injection.mask_after == injection.mask_idle;
+        busy
+    } else {
+        false
+    };
     log!(
-        "PARITY_DMA_DROP nonce={nonce:08x} ch={N} injected={} active={} drop_us={drop_us} quarantined={} chen_after={chen_after} int_status_after=0x{int_status_after:08x} late_diff={late_diff} ok={}\n",
-        u32::from(injected), u32::from(active), u32::from(held), u32::from(good),
+        "PARITY_DMA_DROP nonce={nonce:08x} ch={N} injected={} active={} drop_us={drop_us} quarantined={} chen_after={chen_after} int_status_after=0x{int_status_after:08x} late_diff={late_diff} pair_busy={}{} ok={}\n",
+        u32::from(injected), u32::from(active), u32::from(held), u32::from(pair_busy),
+        DropInjection(injection), u32::from(good),
     )
     .unwrap();
-    if good { Ok(()) } else { Err(Error::Invalid) }
+    if good {
+        Ok(buffers)
+    } else {
+        Err(Error::Invalid)
+    }
 }
 
 fn quarantine_cancel<const N: u8>(
@@ -289,17 +409,22 @@ fn quarantine_cancel<const N: u8>(
     wait: &mut WaitTimer,
     nonce: u32,
 ) -> Result<(), Error> {
-    let mut transfer = channel.try_start(&mut src, &mut dst)?;
-    hide_terminal_status::<N>()?;
-    let active = enabled::<N>();
+    let (mut transfer, mut injection) = start_injected(channel, &mut src, &mut dst, nonce)?;
+    let active = channel_enabled(N);
     let (decision, sample) = timed_cancel::<N>(&mut transfer, wait);
     drop(transfer);
-    let quarantined = src.as_slice().is_empty() && dst.as_mut_slice().is_empty();
+    let quarantined = src.is_quarantined()
+        && dst.is_quarantined()
+        && src.as_slice().is_empty()
+        && dst.as_mut_slice().is_empty();
     drop((src, dst));
     let claimed = matches!(pool.lease(0, 4), Err(Error::Busy))
         && matches!(pool.lease(1, 4), Err(Error::Busy));
-    let chen_after = u32::from(enabled::<N>());
+    let chen_after = u32::from(channel_enabled(N));
+    injection.mask_after = channel_read::<N>(ch::INTSTATUS_ENA);
     let good = active
+        && injection.int_status_armed == 0
+        && injection.mask_after == injection.mask_idle
         && decision == Err(Error::Recovering)
         && sample.rechecked == 1
         && sample.decision_us <= STOP_LIMIT.ticks()
@@ -308,7 +433,7 @@ fn quarantine_cancel<const N: u8>(
         && quarantined
         && claimed;
     log!(
-        "PARITY_DMA_QUARANTINE nonce={nonce:08x} ch={N} active={} first_us={} decision_us={} rechecked={} ch_status_before=0x{:08x} ch_status_after=0x{:08x} int_status_after=0x{:08x} chen_after={chen_after} quarantined={} leases_claimed={} ok={}\n",
+        "PARITY_DMA_QUARANTINE nonce={nonce:08x} ch={N} active={} first_us={} decision_us={} rechecked={} ch_status_before=0x{:08x} ch_status_after=0x{:08x} int_status_after=0x{:08x} chen_after={chen_after} quarantined={} leases_claimed={}{injection} ok={}\n",
         u32::from(active), sample.first_us, sample.decision_us, sample.rechecked,
         sample.before, sample.after, sample.after_ack, u32::from(quarantined),
         2 * u32::from(claimed), u32::from(good),
@@ -338,7 +463,7 @@ fn inject_bus_error(channel: &mut Channel<6>, nonce: u32) -> Result<(), Error> {
         // A status bit may arrive between the wait and this bounded recovery check.
         matches!(retry, Ok(()) | Err(Error::Recovering))
     };
-    let chen_after = u32::from(enabled::<6>());
+    let chen_after = u32::from(channel_enabled(6));
     let good = status & int::SRC_DEC_ERR != 0 && chen_after == 0 && valid_recovery;
     log!(
         "PARITY_DMA_BUS_ERROR nonce={nonce:08x} ch=6 status=0x{status:08x} stopped={stopped} recovered={} chen_after={chen_after} ok={}\n",

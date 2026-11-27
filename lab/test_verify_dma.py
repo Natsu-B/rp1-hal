@@ -4,6 +4,10 @@ from pathlib import Path
 
 verify = runpy.run_path(str(Path(__file__).with_name("verify-dma.py")))
 NONCE = "1234abcd"
+INJECTION = (
+    "mask_before=0xe03f7fe2 mask_idle=0xa03f7fe0 "
+    "int_status_completed=0x00000002 int_status_armed=0x00000000 mask_after=0xa03f7fe0"
+)
 
 
 def parity_capture():
@@ -23,18 +27,18 @@ def parity_capture():
         )
     yield (
         f"PARITY_DMA_DROP nonce={NONCE} ch=0 injected=0 active=1 drop_us=7 "
-        "quarantined=0 chen_after=0 int_status_after=0x00000000 late_diff=0 ok=1"
+        "quarantined=0 chen_after=0 int_status_after=0x00000000 late_diff=0 pair_busy=0 ok=1"
     )
     yield f"PARITY_DMA_RECOVERY nonce={NONCE} forgotten=1 leases_claimed=2 reinit=1"
     yield f"PARITY_DMA_BUS_ERROR nonce={NONCE} ch=6 status=0x00000020 stopped=0 recovered=0 chen_after=0 ok=1"
     yield (
         f"PARITY_DMA_QUARANTINE nonce={NONCE} ch=7 active=1 first_us=6 decision_us=1000 rechecked=1 "
         "ch_status_before=0x00000000 ch_status_after=0x00000010 int_status_after=0x00000000 "
-        "chen_after=0 quarantined=1 leases_claimed=2 ok=1"
+        f"chen_after=0 quarantined=1 leases_claimed=2 {INJECTION} ok=1"
     )
     yield (
         f"PARITY_DMA_DROP nonce={NONCE} ch=1 injected=1 active=1 drop_us=8 "
-        "quarantined=1 chen_after=0 int_status_after=0x00000000 late_diff=0 ok=1"
+        f"quarantined=1 chen_after=0 int_status_after=0x00000000 late_diff=0 pair_busy=1 {INJECTION} ok=1"
     )
     yield f"PARITY_DMA_SINGLE_END nonce={NONCE} channels=8 copies=24000 cancels=100 ok=1"
 
@@ -104,6 +108,14 @@ class DmaCaptureTest(unittest.TestCase):
             log.replace("drop_us=7", "drop_us=1001", 1),
             log.replace("drop_us=8", "drop_us=1001", 1),
             log.replace("injected=1 active=1", "injected=1 active=0", 1),
+            log.replace("pair_busy=1", "pair_busy=0", 1),
+            log.replace("mask_before=0xe03f7fe2", "mask_before=0xa03f7fe0", 1),
+            log.replace("mask_idle=0xa03f7fe0", "mask_idle=0xe03f7fe2", 1),
+            log.replace("mask_idle=0xa03f7fe0", "mask_idle=0xa0000000"),
+            log.replace("mask_after=0xa03f7fe0", "mask_after=0xe03f7fe2"),
+            log.replace("int_status_completed=0x00000002", "int_status_completed=0x00000000"),
+            log.replace("int_status_armed=0x00000000", "int_status_armed=0x40000000"),
+            log.replace(f" {INJECTION}", "", 1),
             log.replace("status=0x00000020", "status=0x00000000", 1),
             log.replace("stopped=0 recovered=0", "stopped=1 recovered=0", 1),
             log.replace("early=0", "early=1", 1),
