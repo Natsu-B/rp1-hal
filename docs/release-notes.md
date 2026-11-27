@@ -116,3 +116,43 @@ together, and a v3 client requires the upcoming link-wake wait backend.
 
 **HYP · 2026-11-27.** Physical delivery through MSI-X/UIO and the posted
 window ordering still require hardware verification.
+
+## UART1 synchronous waits
+
+**STATIC · 2026-11-27.** Declare UART1 and `wait_timer` on the same core.
+The declaration generates the UART1 handler and keeps the IRQ in
+`rp1::Uart1Parts`. The initialized driver and both split halves can use
+`blocking(&mut p.wait_timer)`. For a raw handler, set
+`custom_uart1_handler = true` and supply `#[rp1_rt::interrupt(procN)] fn UART1()`.
+This gives the app `p.irq.UART1` and a UART with immediate I/O and explicit polling.
+See the [peripherals UART example](../examples/peripherals/src/uart.rs).
+
+| Before | v0.2 |
+|---|---|
+| `uart.polling().read(&mut buf)?;` | `uart.blocking(&mut p.wait_timer).read(&mut buf)?;` |
+| `tx.polling().write_all(bytes)?;` | `tx.blocking(&mut p.wait_timer).write_all(bytes)?;` |
+| Manual time checks around `try_read_byte` | Create one `Deadline` and share it across `read_exact_until`, `write_all_until` and `flush_until`. |
+| Polling from an ISR or critical section | **Breaking.** `polling()` read/write/flush, the explicit `*_polling` waits and `free_polling` require unmasked thread mode on every instance. They report `WrongContext` or `Masked` when a wait would run. Use bounded `try_read_byte`, `try_write_byte` and `try_flush` in an ISR. |
+
+UART1's blocking adapter waits for RX watermark, RX timeout or receive error,
+or for the TX watermark when the FIFO is full. Below the RX watermark, a lone
+byte wakes on the PL011 RX timeout about 32 bit times after its stop bit
+(about 280 µs at 115200 baud). Lower IRQ latency needs the planned FIFO and
+watermark configuration. Physical flush uses a baud-derived alarm and confirms
+BUSY has cleared. A TX timeout leaves the queued bytes
+transmitting. Retry flush, or rejoin the halves and request reset. An RX timeout
+retires its wait while keeping incoming bytes and their status available.
+Handler or masked calls fail, and a disabled IRQ or alarm is reported as an
+error. The default RX budget is 100 ms and TX uses its baud-derived FIFO budget.
+Use `with_timeout` to override the adapter budget. Zero expires immediately.
+
+Both synchronous adapters expose embedded-io 0.6 I/O and readiness. Add
+`embedded-io-07` for both 0.6 and 0.7 implementations on the same adapter.
+UART read, write and flush also implement the native nonblocking serial traits
+on the raw driver and its corresponding halves with `eh-nb` or `eh02`.
+Overrun maps to `InvalidData` in both embedded-io versions.
+
+UART0 and UART2–4 offer immediate operations and explicit `polling()`.
+UART0's boot log sink continues to use its dedicated bounded path. UART5 is
+unrouted on bank 0. Polling methods accept an absolute deadline with
+`read_polling`, `write_polling` and `flush_polling`.

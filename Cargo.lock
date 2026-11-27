@@ -174,10 +174,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
 
 [[package]]
+name = "embedded-hal-nb"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fba4268c14288c828995299e59b12babdbe170f6c6d73731af1b4648142e8605"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "nb 1.1.0",
+]
+
+[[package]]
 name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
 
 [[package]]
 name = "equivalent"
@@ -402,7 +418,7 @@ name = "peripherals"
 version = "0.1.0"
 dependencies = [
  "embedded-hal 1.0.0",
- "embedded-io",
+ "embedded-io 0.6.1",
  "rp1-build",
  "rp1-hal",
  "rp1-rt",
@@ -477,7 +493,9 @@ version = "0.1.0"
 dependencies = [
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
- "embedded-io",
+ "embedded-hal-nb",
+ "embedded-io 0.6.1",
+ "embedded-io 0.7.1",
  "fugit",
  "nb 1.1.0",
  "rp1-pac",
@@ -903,6 +921,17 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "uart-parity"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "embedded-io 0.6.1",
+ "rp1-build",
+ "rp1-hal",
+ "rp1-rt",
+]
 
 [[package]]
 name = "unicode-ident"

@@ -11,6 +11,7 @@ use std::{
 };
 pub mod board;
 mod declaration;
+mod driver_irq;
 mod link;
 pub mod metadata;
 pub mod overlay;
@@ -298,6 +299,12 @@ fn custom_irq_assertions(d: &metadata::Declaration) -> String {
                 "ASSERT(__rp1_p{core}_IO_BANK0 != __rp1_default_irq, \"proc{core} needs a custom IO_BANK0 handler\");\n"
             ));
         }
+        for irq in driver_irq::DRIVERS.iter().filter(|irq| irq.is_custom(c)) {
+            let vector = irq.vector;
+            checks.push_str(&format!(
+                "ASSERT(__rp1_p{core}_{vector} != __rp1_default_irq, \"proc{core} needs a custom {vector} handler\");\n"
+            ));
+        }
     }
     checks
 }
@@ -369,6 +376,23 @@ fn resources(
                 }}"
             )?;
         }
+        let managed: Vec<_> = driver_irq::DRIVERS
+            .iter()
+            .filter(|irq| irq.is_managed(c))
+            .collect();
+        for irq in &managed {
+            let vector = irq.vector;
+            let module = irq.module;
+            let instance = irq.instance;
+            writeln!(
+                s,
+                "#[unsafe(export_name = \"__rp1_p{index}_{vector}\")]\n\
+                #[unsafe(link_section = \".isram.text.__rp1_p{index}_{vector}\")]\n\
+                unsafe extern \"C\" fn {instance}_wait_proc{index}() {{\n\
+                    unsafe {{ ::rp1_hal::{module}::__on_interrupt::<{index}>() }};\n\
+                }}"
+            )?;
+        }
         let dma_pool = c.instances.get("dma").and_then(|instance| match instance {
             metadata::Instance::Dma(dma) => dma.pool,
             _ => None,
@@ -390,7 +414,15 @@ fn resources(
                 metadata::Instance::Dma(channels) => {
                     dma_resource(&mut s, index, channels.selected())
                 }
-                _ => instance_resource(&mut s, name, instance),
+                _ => instance_resource(
+                    &mut s,
+                    name,
+                    instance,
+                    managed
+                        .iter()
+                        .any(|irq| irq.instance == name)
+                        .then_some(index),
+                ),
             })
             .collect::<Result<Vec<_>>>()?;
         // The doorbell pin's force bit belongs to the doorbell, not to a `Pin`.
@@ -406,6 +438,7 @@ fn resources(
         }
         let lines: Vec<_> = board::IRQ_VERIFIED
             .iter()
+            .filter(|line| !managed.iter().any(|irq| irq.vector == line.name))
             .filter(|line| match line.owner {
                 board::IrqOwner::GpioBank0 => !c.gpio_irq.is_empty() || c.doorbell.is_some(),
                 board::IrqOwner::Alarm(alarm) => c.timer.contains(&format!("ALARM{alarm}")),
@@ -602,6 +635,7 @@ fn instance_resource(
     source: &mut String,
     name: &str,
     instance: &metadata::Instance,
+    managed_core: Option<usize>,
 ) -> Result<(String, String, Vec<u8>)> {
     use metadata::Instance;
     let n = board::find_instance(name)
@@ -640,22 +674,41 @@ fn instance_resource(
         .collect::<Vec<_>>();
     let alias = format!("{driver}{n}");
     let required = format!("{alias}Pins");
+    let capability = managed_core
+        .map(|core| format!(", ::rp1_hal::{module}::Irq<{core}>"))
+        .unwrap_or_default();
     writeln!(
         source,
         "/// Required pin routes for the declared `{name}`.\n\
          pub type {required} = ({});\n\
          /// Initialized driver for the declared `{name}`.\n\
-         pub type {alias} = ::rp1_hal::{module}::{driver}<{n}, {required}>;",
+         pub type {alias} = ::rp1_hal::{module}::{driver}<{n}, {required}{capability}>;",
         pin_types.join(", "),
     )?;
-    let ty = format!("::rp1_hal::{module}::Parts<{n}, {required}>");
-    let mut init = format!(
-        "::rp1_hal::{module}::Parts::new(unsafe {{ ::rp1_hal::{module}::Token::new() }}, ::rp1_hal::{module}::Pins::<{n}>::builder()"
-    );
+    let parts = format!("::rp1_hal::{module}::Parts<{n}, {required}{capability}>");
+    let token = format!("::rp1_hal::{module}::Token::new()");
+    let mut builder = format!("::rp1_hal::{module}::Pins::<{n}>::builder()");
     for (role, _) in &signals {
-        write!(init, ".{role}(unsafe {{ ::rp1_hal::gpio::Pin::new() }})")?;
+        if managed_core.is_some() {
+            write!(builder, ".{role}(::rp1_hal::gpio::Pin::new())")?;
+        } else {
+            write!(builder, ".{role}(unsafe {{ ::rp1_hal::gpio::Pin::new() }})")?;
+        }
     }
-    init.push(')');
+    let (ty, init) = if managed_core.is_some() {
+        let ty = format!("{alias}Parts");
+        writeln!(
+            source,
+            "/// Declared parts including the driver's IRQ capability.\npub type {ty} = {parts};"
+        )?;
+        let init = format!(
+            "unsafe {{ {ty}::__new({token}, {builder}, ::rp1_rt::interrupt::Binding::new()) }}"
+        );
+        (ty, init)
+    } else {
+        let init = format!("::rp1_hal::{module}::Parts::new(unsafe {{ {token} }}, {builder})");
+        (parts, init)
+    };
     Ok((ty, init, pins))
 }
 
@@ -852,6 +905,66 @@ mod tests {
                 toml::from_str(&format!("schema=2\n{declaration}")).unwrap();
             assert!(d.validate().is_err(), "{declaration}");
         }
+    }
+
+    #[test]
+    fn uart1_wait_handler_follows_the_owning_core_and_preserves_wire_ownership() {
+        for core in 0..2 {
+            let config = format!("schema=2\n[linux]\nkeep={{}}\n[proc{core}]\nuart1={{tx=0,rx=1}}");
+            let with_timer = format!("{config}\nwait_timer='ALARM1'");
+            let managed: metadata::Declaration = toml::from_str(&with_timer).unwrap();
+            let raw: metadata::Declaration =
+                toml::from_str(&format!("{with_timer}\ncustom_uart1_handler=true")).unwrap();
+            let other_timer: metadata::Declaration = toml::from_str(&format!(
+                "{config}\n[proc{}]\nwait_timer='ALARM1'",
+                1 - core
+            ))
+            .unwrap();
+            let generate = |d: &metadata::Declaration| {
+                d.validate().unwrap();
+                resources(d, &[], &d.shm_layout().unwrap()).unwrap()
+            };
+            let source = generate(&managed);
+            let symbol = format!("__rp1_p{core}_UART1");
+            assert!(source.contains(&format!("export_name = \"{symbol}\"")));
+            assert!(source.contains(&format!(".isram.text.{symbol}")));
+            assert!(source.contains(&format!("uart::__on_interrupt::<{core}>()")));
+            assert!(source.contains(&format!(
+                "Uart1Parts = ::rp1_hal::uart::Parts<1, Uart1Pins, ::rp1_hal::uart::Irq<{core}>>"
+            )));
+            assert!(source.contains("Uart1Parts::__new("));
+            assert!(irq_fields(&source, core).is_empty());
+            assert!(!source.contains("impl sealed::Admitted for UART1"));
+            assert!(custom_irq_assertions(&managed).is_empty());
+
+            for d in [&raw, &other_timer] {
+                let source = generate(d);
+                assert!(!source.contains(&symbol));
+                assert!(!source.contains("Uart1Parts"));
+                assert!(source.contains("impl sealed::Admitted for UART1"));
+                assert_eq!(
+                    irq_fields(&source, core),
+                    format!("pub UART1: proc{core}_irq::UART1,\n")
+                );
+            }
+            let checks = custom_irq_assertions(&raw);
+            assert!(checks.contains(&format!("{symbol} != __rp1_default_irq")));
+            let managed_artifacts =
+                super::generate("uart", "0.1", &managed, [0; 32], [0; 20]).unwrap();
+            let raw_artifacts = super::generate("uart", "0.1", &raw, [0; 32], [0; 20]).unwrap();
+            assert_eq!(managed_artifacts.note, raw_artifacts.note);
+            assert_eq!(managed_artifacts.dts, raw_artifacts.dts);
+        }
+
+        let missing: metadata::Declaration =
+            toml::from_str("schema=2\n[proc0]\ncustom_uart1_handler=true").unwrap();
+        assert!(
+            missing
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("needs uart1")
+        );
     }
 
     #[test]

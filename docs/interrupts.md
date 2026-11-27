@@ -41,7 +41,8 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | `spi0` / `spi1` / `spi3` | `SPI0: Line<19>`、`SPI1: Line<20>`、`SPI3: Line<22>` |
 | `timer = ["ALARMn"]` | `TIMER_n: Line<{26+n}>` |
 | `wait_timer = "ALARMn"` | `ProcNResources.wait_timer: WaitTimer` と自動 TIMER_n ハンドラ |
-| `uart1`〜`uart4` | `UARTn: Line<{41+n}>` |
+| `uart1` と同じコアの `wait_timer` | `rp1::Uart1Parts` が線を所有し、ISRAM の UART1 ハンドラを生成 |
+| raw `uart1`、`uart2`〜`uart4` | `UARTn: Line<{41+n}>` |
 | `adc` | `ADC_FIFO: Line<52>` |
 
 - 表は `rp1_build::board::IRQ_VERIFIED`。生成と ELF 検査の両方がこれを使う。
@@ -75,13 +76,21 @@ STATIC（2026-11-27）: 同期待機にはコアごとに `wait_timer` で専有
 `wait_timer = { alarm = "ALARMn", feature = "name" }` は指定の Cargo feature が有効なときだけ
 wait ISR を生成する。他の構成でもアラームは同じコアの raw timer として予約する。
 
+STATIC（2026-11-27）: UART1 は `uart.blocking(&mut p.wait_timer)` で同期待機する。
+同じコアの `uart1` と `wait_timer` から生成されたハンドラが RX/TX の両マスクを所有する。
+独自ハンドラを使う場合は `custom_uart1_handler = true` を指定し、
+`#[rp1_rt::interrupt(procN)] fn UART1()` で担当する源を処理する。
+この構成では `p.irq.UART1` と即時 I/O・明示的な polling が使える。
+IRQ 待機と明示的な polling はマスクされていない thread mode 専用とし、
+ISR では固定時間の `try_read_byte`、`try_write_byte`、`try_flush` を使う。
+
 ## 3. 周辺側で開けるもの
 
 | 線 | 周辺側の操作 | 備考 |
 |---|---|---|
 | GPIO（IO_BANK0） | `PinIrq::enable(Event)`、`force()` | ピンの設定（`into_input` など）は GPIOn_CTRL を書き直してイベントを消すので、`enable` の前に済ませる |
 | TIMER | `Alarm::enable_interrupt`、`clear_interrupt` | |
-| UART | `enable_rx_interrupt` / `enable_tx_interrupt`、`interrupt_status` | |
+| raw UART | `enable_rx_interrupt` / `enable_tx_interrupt`、`interrupt_status` | UART1 の生成ハンドラは待機に属さない asserted 源をマスクする |
 | I2C / SPI | `enable_interrupt(mask)`、`interrupt_status`、`clear_interrupt` | 下の `+0x108` を開ける |
 | PWM / ADC | ドライバに API は無い（初期化で INTE = 0） | 線は所有できる。源を開けるのは PAC の生書き込み（ドライバ化は後回し） |
 
@@ -142,6 +151,6 @@ HW 未確認）。`PCIE_INTE` を bit 1（PERSTn の辺）だけにし、入場�
 
 ## 5. まだ無いもの
 
-- I2C / SPI / UART の割り込み駆動の転送（FIFO 処理・エラー取得・中止を公開 API で）。
+- I2C / SPI / UART0・2〜4 の割り込み駆動の転送。
 - PWM / ADC / DMA の割り込み API と、DMA の周辺転送。
 - 入れ子（システム割り込み + 利用者のハンドラ）のスタック量の実測。

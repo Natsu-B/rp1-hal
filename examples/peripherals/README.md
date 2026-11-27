@@ -14,7 +14,7 @@ The next example runs either way.
 | [adc](src/adc.rs) | No wiring. Three unsaturated internal temperature ADC samples and a temperature reading in millidegrees Celsius. |
 | [pwm](src/pwm.rs) | GPIO12 → 1 kΩ → GPIO22. About 100 rising edges in 100 ms, 45–55% high, and no pulses after disable. |
 | [i2c](src/i2c.rs) | GPIO2 SDA and GPIO3 SCL to ESP32 GPIO21/22 with 3.3 V pull-ups. Check the 16-byte write is ACKed and the [lab peer](../../lab/esp32-i2c-peer) at 0x2d returns its fixed 64-byte read pattern. Check the peer's `bad_frames` counter to validate the write data. |
-| [uart](src/uart.rs) | GPIO0 TX to adapter RX and GPIO1 RX to adapter TX, 3.3 V, 115200 8N1. The [host peer](uart1-peer.py) waits for `UART1 READY` on UART0, sends eight nonce bytes and sends 0x06 only after an exact echo. The firmware allows 15 seconds for the exchange. |
+| [uart](src/uart.rs) | UART1 IRQ and ALARM1-backed I/O. GPIO0 TX to adapter RX and GPIO1 RX to adapter TX, 3.3 V, 115200 8N1. The [host peer](uart1-peer.py) waits for `UART1 READY` on UART0, sends eight nonce bytes and sends 0x06 only after an exact echo. The firmware allows 15 seconds for the exchange. |
 
 Share ground with each external peer. Capture UART0 on GPIO14 TX at 115200
 8N1. Leave Linux UART1 and PWM overlays disabled for this firmware and keep

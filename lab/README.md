@@ -838,3 +838,28 @@ linked stimulus address as its stacked PC. It prints `FAULT_RUN` per boot, `FAUL
 required kind and `PLAT_VERDICT` for the full matrix and static stack bound.
 Exit 0 is PASS, 1 is FAIL, and 3 is INCOMPLETE. Missing evidence or a
 nonce collision across distinct captures needs a fresh capture. `FAULT_DIAG` and `PLAT_LOST=INCOMPLETE` are observational.
+
+## UART1 IRQ parity
+
+`cargo rp1 build --locked -p uart-parity --target thumbv7m-none-eabi --release`
+builds the UART1 parity firmware. GPIO0/1 are UART1 at 115200 8N1.
+GPIO13 strobes at UART1 interrupt entry, GPIO22 brackets the physical flush,
+and GPIO23 brackets the measured wait. The UART1 and probe slots both use
+ceiling 4, with the UART1 IRQ at priority 4. UART0 carries the terminal markers.
+
+Use `uart-parity-peer.py` with a fresh UART0 capture and the crossed 3.3 V peer.
+Pass the calibrated analyzer's actual sample rate as `--sample-rate-hz`
+(at least 10,000,000).
+The verifier requires the peer transcripts, firmware terminal markers and a
+logic analyzer transition CSV with header `us,rx,tx,irq,flush,gate`. Here RX is
+the RP1 UART input and TX is its output. Timestamps are microseconds on one
+timebase. Include the idle levels on both ends of the capture around the
+nonce exchange. `verify-uart-parity.py` decodes both wires and measures each
+of the 1,000 RX watermark, RX timeout and TX IRQs. Each physical flush must
+return from 0.5 µs to one bit time plus 50.5 µs after the final stop bit.
+The two 100,000-byte streams must match byte for byte. The RX stream permits
+up to 7,031 RX and RT IRQs combined, the TX stream permits up to 6,250 TX IRQs,
+and any other stream source fails. `PARITY_UART_IRQ_END` includes the measured
+stream IRQ counts and `flush_late_max_us`. The firmware
+emits `PARITY_UART_NB_END` for 1,000 tries against each empty RX and full TX
+FIFO. The final eight-byte comparison uses `.polling()` explicitly.

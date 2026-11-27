@@ -56,7 +56,7 @@ impl Logger {
             write(gpio::pad(pin), 0x46);
         }
         // The bring-up fails on the baud rate or on one of its bounded waits.
-        crate::uart::start(
+        crate::uart::start::<false>(
             &mut crate::linux_blocks::Mmio,
             0,
             fugit::HertzU32::from_raw(uart_hz),

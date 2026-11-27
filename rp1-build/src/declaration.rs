@@ -331,6 +331,9 @@ pub struct Core {
     /// Use the app's one IO_BANK0 dispatcher for this core's doorbell.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub custom_doorbell_handler: bool,
+    /// Per-driver escape hatches, emitted under their manifest keys.
+    #[serde(flatten)]
+    pub custom_driver_handlers: BTreeMap<&'static str, bool>,
     /// `heartbeat = { period_ms = N }`: this core calls `rp1_rt::status::beat` at least every
     /// N ms, so Linux may judge it stalled (note LINK).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -371,6 +374,13 @@ impl Core {
         }
         if let Some(v) = values.remove("custom_doorbell_handler") {
             core.custom_doorbell_handler = field(v, format!("{owner}.custom_doorbell_handler"))?;
+        }
+        for irq in crate::driver_irq::DRIVERS {
+            if let Some(value) = values.remove(irq.custom)
+                && field(value, format!("{owner}.{}", irq.custom))?
+            {
+                core.custom_driver_handlers.insert(irq.custom, true);
+            }
         }
         if let Some(v) = values.remove("heartbeat") {
             let heartbeat: Heartbeat = field(v, format!("{owner}.heartbeat"))?;
@@ -502,6 +512,11 @@ impl Declaration {
             }
             if core.custom_doorbell_handler && core.doorbell.is_none() {
                 return Err(format!("E5: {owner}.custom_doorbell_handler needs doorbell").into());
+            }
+            for irq in crate::driver_irq::DRIVERS {
+                if irq.is_custom(core) && !core.instances.contains_key(irq.instance) {
+                    return Err(format!("E5: {owner}.{} needs {}", irq.custom, irq.instance).into());
+                }
             }
             if let Some(pin) = core.doorbell {
                 validate_pin(pin)?;

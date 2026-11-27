@@ -1,23 +1,37 @@
 //! PL011 UARTs 0..4 on their bank-0 pins (DOC: RP1 peripherals §3.5). The baud divisors come
 //! from clk_uart as reported by [`Clocks`]. UART5 has no bank-0 pins. The `log!` sink (UART0 on
-//! GPIO14/15) is configured by [`crate::logging::Logger`], not through a [`Token`].
+//! GPIO14/15) keeps its dedicated bounded boot path through [`crate::logging::Logger`].
+//!
+//! | Instance | Synchronous waits in v0.2 | Immediate I/O |
+//! |---|---|---|
+//! | UART1 | [`Uart::blocking`] (IRQ, alarm and WFE) with a generated handler, or explicit [`Uart::polling`] | `try_*` |
+//! | UART0, UART2–4 | Explicit [`Uart::polling`]. IRQ waits need instance-specific hardware proof. | `try_*` |
+//!
+//! Declare UART1 and `wait_timer` on the same core for managed waits. The UART1
+//! handler owns both directions' interrupt masks. The single wait timer
+//! serializes synchronous operations on the joined driver and its split halves.
 use crate::{
     clocks::Clocks,
     gpio::{Alternate, Pin},
     linux_blocks::{Hardware, Mmio},
     pac::pl011::{RegisterBlock, int},
     scmi::Registers,
+    timer::{self, Deadline, Timer},
 };
 use core::{fmt, marker::PhantomData};
 use fugit::{HertzU32, MicrosDurationU32};
-use rp1_rt::interrupt::free;
+use rp1_rt::interrupt::{ThreadGuard, free};
+
+mod irq_wait;
+mod traits;
+pub use irq_wait::{__on_interrupt, Blocking, BlockingRx, BlockingTx, Irq};
 
 macro_rules! offsets {
     ($($name:ident = $field:ident),* $(,)?) => {$(const $name: usize = core::mem::offset_of!(RegisterBlock, $field);)*};
 }
 offsets! {
     DR = dr, ECR = rsr_ecr, FR = fr, IBRD = ibrd, FBRD = fbrd, LCR_H = lcr_h, CR = cr,
-    IMSC = imsc, MIS = mis, ICR = icr,
+    IFLS = ifls, IMSC = imsc, RIS = ris, MIS = mis, ICR = icr,
 }
 /// DR bits 8..=11: the receive status of the character read with them.
 const DR_FE: u32 = 1 << 8;
@@ -27,6 +41,14 @@ const DR_OE: u32 = 1 << 11;
 const FR_BUSY: u32 = 1 << 3;
 const FR_RXFE: u32 = 1 << 4;
 const FR_TXFF: u32 = 1 << 5;
+const FR_TXFE: u32 = 1 << 7;
+const FIFO_SIZE: usize = 32;
+/// RX and TX watermarks at half of their 32-byte FIFOs.
+const IFLS_HALF: u32 = (2 << 3) | 2;
+const TX_WATERMARK: u8 = 16;
+// Clocks admits clk_uart at the XOSC rate. The PL011 bit period is
+// 16 * divisor / clk_uart; the stored divisor is scaled by 64.
+const DIVISOR_PER_BIT_US: u32 = crate::clocks::XOSC_HZ / 250_000;
 /// 8 data bits, FIFOs enabled, no parity, one stop bit.
 const LCR_H_8N1_FIFO: u32 = 0x70;
 /// UARTEN, TXE, RXE.
@@ -46,16 +68,17 @@ const START_TIMEOUT_US: u32 = 10_000;
 pub const DEFAULT_READ_TIMEOUT: MicrosDurationU32 = MicrosDurationU32::millis(100);
 /// Bit times for a full TX FIFO to leave the line: 32 queued characters and the one being
 /// shifted, 10 bits each at 8N1.
-const FULL_FIFO_BITS: u64 = 330;
-const RX_INTERRUPTS: u32 = int::RX | int::RT | int::FE | int::PE | int::BE | int::OE;
+const FULL_FIFO_BITS: u32 = 330;
+const RX_ERRORS: u32 = int::FE | int::PE | int::BE | int::OE;
+const RX_INTERRUPTS: u32 = int::RX | int::RT | RX_ERRORS;
 
 /// Bound of the TX waits (room in the FIFO, drain) at `baud`. Without flow control the
 /// transmitter drains at the baud rate whatever the peer does, so the bound follows from it:
 /// twice a full FIFO, plus 1 ms for a core stalled by the other core or a handler. A bound
 /// set by the caller for reads would cut `free_polling` short and truncate transmission on reset.
 fn tx_bound_us(baud: HertzU32) -> u32 {
-    let full_fifo_us = (FULL_FIFO_BITS * 1_000_000).div_ceil(u64::from(baud.raw()));
-    u32::try_from(2 * full_fifo_us + 1_000).unwrap_or(u32::MAX)
+    let full_fifo_us = (FULL_FIFO_BITS * 1_000_000).div_ceil(baud.raw());
+    2 * full_fifo_us + 1_000
 }
 
 mod sealed {
@@ -100,17 +123,54 @@ pub enum Error {
     Precondition,
     /// The transmitter has not drained, or reset has not been confirmed.
     Busy,
+    /// The absolute deadline is beyond the maximum comparator horizon.
+    InvalidDeadline,
+    /// A synchronous operation was called outside thread mode.
+    WrongContext,
+    /// Interrupts were masked at the synchronous call boundary.
+    Masked,
+    /// The UART line is unavailable, or raw UART1 masks are enabled when a managed wait arms.
+    IrqUnavailable,
+    /// The dedicated alarm could not be retired.
+    AlarmUnavailable,
 }
-/// `Overrun` has no kind of its own in embedded-io and is `Other`: the data read before it is
-/// good, but one or more characters between that data and the next one read are missing.
+
+impl From<timer::Error> for Error {
+    fn from(error: timer::Error) -> Self {
+        match error {
+            timer::Error::Timeout => Self::Timeout,
+            timer::Error::InvalidDeadline => Self::InvalidDeadline,
+            timer::Error::WrongContext => Self::WrongContext,
+            timer::Error::Masked => Self::Masked,
+            timer::Error::IrqUnavailable => Self::IrqUnavailable,
+            timer::Error::AlarmUnavailable => Self::AlarmUnavailable,
+        }
+    }
+}
+
+impl From<rp1_rt::interrupt::ContextError> for Error {
+    fn from(error: rp1_rt::interrupt::ContextError) -> Self {
+        timer::Error::from(error).into()
+    }
+}
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl core::error::Error for Error {}
+
+/// An overrun is invalid data. The data read before it is good, but one or more
+/// characters between that data and the next one read are missing.
 impl embedded_io::Error for Error {
     fn kind(&self) -> embedded_io::ErrorKind {
         use embedded_io::ErrorKind;
         match self {
-            Self::Break | Self::Parity | Self::Framing => ErrorKind::InvalidData,
+            Self::Break | Self::Parity | Self::Framing | Self::Overrun => ErrorKind::InvalidData,
             Self::Timeout => ErrorKind::TimedOut,
-            Self::Invalid => ErrorKind::InvalidInput,
-            Self::Overrun | Self::Precondition | Self::Busy => ErrorKind::Other,
+            Self::Invalid | Self::InvalidDeadline => ErrorKind::InvalidInput,
+            _ => ErrorKind::Other,
         }
     }
 }
@@ -130,25 +190,40 @@ fn receive_error(data: u32) -> Option<Error> {
 pub struct Token<const N: u8> {
     _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
-/// The UART's serial role.
+/// A raw UART without a generated wait IRQ.
+#[derive(Clone, Copy)]
 pub struct Serial {
     _private: (),
 }
 
 /// A configured UART that owns its TX and RX pins.
-/// Immediate byte operations do not wait; use [`Uart::polling`]
-/// for the legacy synchronous engine.
-pub struct Uart<const N: u8, P: CompletePins<N>, Role = Serial> {
-    halves: P::Active,
-    _role: PhantomData<Role>,
+/// Use [`Uart::blocking`] for UART1 synchronous I/O, or [`Uart::polling`] for explicit polling.
+/// Immediate byte operations are available on all instances.
+///
+/// ```compile_fail,E0277
+/// use rp1_hal::{gpio::Pin, uart::Uart};
+/// fn raw_is_not_a_stream(raw: &mut Uart<1, (Pin<0>, Pin<1>)>) {
+///     let _ = embedded_io::Write::write_all(raw, b"x");
+/// }
+/// ```
+pub struct Uart<const N: u8, P: CompletePins<N>, I = Serial> {
+    halves: P::Active<I>,
 }
 
 /// The initialization error retains the block and its pins during recovery.
-pub type InitError<const N: u8, P> =
-    crate::InitError<Parts<N, P>, Error, crate::Recovery<Parts<N, P>>>;
+pub type InitError<const N: u8, P, I = Serial> =
+    crate::InitError<Parts<N, P, I>, Error, crate::Recovery<Parts<N, P, I>>>;
 
 /// Explicit polling access for a UART or either half.
+/// Synchronous operations require unmasked thread mode. In an ISR use the
+/// driver's bounded `try_*` methods.
 pub struct Polling<'a, T>(&'a mut T);
+
+impl<T> Polling<'_, T> {
+    fn driver(&self) -> &T {
+        self.0
+    }
+}
 
 /// 8N1 UART configuration with FIFOs enabled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,10 +247,10 @@ impl From<HertzU32> for Config {
 ///
 /// Can be held in an [`rp1_rt::interrupt::Slot`] to share with the owning core's handler.
 /// Both halves stay on the owning core.
-pub struct Tx<const N: u8, const PIN: u8> {
+pub struct Tx<const N: u8, const PIN: u8, I = Serial> {
     pin: Pin<PIN, Alternate>,
-    bound_us: u32,
-    resetting: bool,
+    irq: I,
+    state: TxState,
     #[cfg(test)]
     cts: Option<crate::gpio::ErasedPin>,
 }
@@ -184,8 +259,21 @@ pub struct Tx<const N: u8, const PIN: u8> {
 ///
 /// Can be held in an [`rp1_rt::interrupt::Slot`] to share with the owning core's handler.
 /// Both halves stay on the owning core.
-pub struct Rx<const N: u8, const PIN: u8> {
+pub struct Rx<const N: u8, const PIN: u8, I = Serial> {
     pin: Pin<PIN, Alternate>,
+    _irq: I,
+    state: RxState,
+}
+
+struct TxState {
+    bound_us: u32,
+    divisor: u32,
+    earliest_end: u32,
+    queued: u8,
+    resetting: bool,
+}
+
+struct RxState {
     timeout: MicrosDurationU32,
     resetting: bool,
 }
@@ -209,14 +297,34 @@ impl<const N: u8> Token<N> {
 pin_builder!(Pin, []);
 pin_builder!(Pin, [], tx: TX => TxPin);
 pin_builder!(Pin, [tx: TX], rx: RX => RxPin);
-complete_pins!(TX: TxPin, RX: RxPin; (Tx<N, TX>, Rx<N, RX>));
+/// The required pin routes for this peripheral.
+pub trait CompletePins<const N: u8>: sealed::CompletePins<N> {
+    #[doc(hidden)]
+    type Active<I>;
+}
+
+impl<const N: u8, const TX: u8, const RX: u8> sealed::CompletePins<N> for PinTuple<TX, RX>
+where
+    Pin<TX>: TxPin<N>,
+    Pin<RX>: RxPin<N>,
+{
+}
+
+impl<const N: u8, const TX: u8, const RX: u8> CompletePins<N> for PinTuple<TX, RX>
+where
+    Pin<TX>: TxPin<N>,
+    Pin<RX>: RxPin<N>,
+{
+    type Active<I> = (Tx<N, TX, I>, Rx<N, RX, I>);
+}
 
 type PinTuple<const TX: u8, const RX: u8> = (Pin<TX>, Pin<RX>);
 
 /// A declared UART N with its bank-0 TX and RX routes.
-pub struct Parts<const N: u8, P: CompletePins<N>> {
+pub struct Parts<const N: u8, P: CompletePins<N>, I = Serial> {
     token: Token<N>,
     pins: Pins<N, P>,
+    irq: I,
 }
 impl<const N: u8, P: CompletePins<N>> Parts<N, P> {
     /// Assemble the owned block and the routed pin bundle.
@@ -234,7 +342,11 @@ impl<const N: u8, P: CompletePins<N>> Parts<N, P> {
     /// }
     /// ```
     pub fn new(token: Token<N>, pins: Pins<N, P>) -> Self {
-        Self { token, pins }
+        Self {
+            token,
+            pins,
+            irq: Serial { _private: () },
+        }
     }
 
     /// Return the block and routed pins for manual assembly.
@@ -242,7 +354,7 @@ impl<const N: u8, P: CompletePins<N>> Parts<N, P> {
         (self.token, self.pins)
     }
 }
-impl<const N: u8, const TX: u8, const RX: u8> Parts<N, (Pin<TX>, Pin<RX>)>
+impl<const N: u8, const TX: u8, const RX: u8, I: Copy> Parts<N, PinTuple<TX, RX>, I>
 where
     Pin<TX>: TxPin<N>,
     Pin<RX>: RxPin<N>,
@@ -283,7 +395,7 @@ where
         self,
         clocks: &Clocks,
         config: impl Into<Config>,
-    ) -> Result<Uart<N, PinTuple<TX, RX>>, InitError<N, PinTuple<TX, RX>>> {
+    ) -> Result<Uart<N, PinTuple<TX, RX>, I>, InitError<N, PinTuple<TX, RX>, I>> {
         if !clocks.still_current() {
             return Err(InitError::new(Error::Precondition, self));
         }
@@ -301,23 +413,32 @@ where
         clock: HertzU32,
         config: Config,
         route: impl FnOnce(Pin<TX>, Pin<RX>) -> (Pin<TX, Alternate>, Pin<RX, Alternate>),
-    ) -> Result<Uart<N, PinTuple<TX, RX>>, InitError<N, PinTuple<TX, RX>>> {
-        match start(io, N, clock, config.baud) {
-            Ok(()) => {
+    ) -> Result<Uart<N, PinTuple<TX, RX>, I>, InitError<N, PinTuple<TX, RX>, I>> {
+        match start::<true>(io, N, clock, config.baud) {
+            Ok((integer, fraction)) => {
                 let (tx, rx) = self.pins.0;
                 let (tx, rx) = route(tx, rx);
                 Ok(Uart::join(
                     Tx {
                         pin: tx,
-                        bound_us: tx_bound_us(config.baud),
-                        resetting: false,
+                        irq: self.irq,
+                        state: TxState {
+                            bound_us: tx_bound_us(config.baud),
+                            divisor: 64 * integer + fraction,
+                            earliest_end: 0,
+                            queued: 0,
+                            resetting: false,
+                        },
                         #[cfg(test)]
                         cts: self.pins.1,
                     },
                     Rx {
                         pin: rx,
-                        timeout: DEFAULT_READ_TIMEOUT,
-                        resetting: false,
+                        _irq: self.irq,
+                        state: RxState {
+                            timeout: DEFAULT_READ_TIMEOUT,
+                            resetting: false,
+                        },
                     },
                 ))
             }
@@ -327,9 +448,9 @@ where
     }
 }
 
-impl<const N: u8, P: CompletePins<N>> InitError<N, P> {
+impl<const N: u8, P: CompletePins<N>, I> InitError<N, P, I> {
     /// Request UART reset and return the parts once reset is confirmed.
-    pub fn try_recover(self) -> Result<Parts<N, P>, Self> {
+    pub fn try_recover(self) -> Result<Parts<N, P, I>, Self> {
         self.recover(|| try_reset(&mut Mmio, N))
     }
 }
@@ -338,12 +459,12 @@ impl<const N: u8, P: CompletePins<N>> InitError<N, P> {
 /// the divisors are valid. LCR_H is only legal to change with no character in progress. Out of
 /// reset (cold, or after [`Uart::try_free`] / [`Uart::try_cancel`]) UARTEN has been clear since, so none
 /// can be; a UART an earlier image left running is only waited for until its transmitter is idle.
-pub(crate) fn start(
+pub(crate) fn start<const SET_WATERMARKS: bool>(
     io: &mut impl Hardware,
     n: u8,
     clock: HertzU32,
     baud: HertzU32,
-) -> Result<(), Error> {
+) -> Result<(u32, u32), Error> {
     let (integer, fraction) = divisors(clock, baud)?;
     io.write(RESETS_CLR1, reset_bit(n));
     wait(
@@ -359,11 +480,15 @@ pub(crate) fn start(
     io.write(base + IMSC, 0);
     io.write(base + ICR, 0x7ff);
     io.write(base + ECR, 0);
+    if SET_WATERMARKS {
+        // Reset value, written so the wait does not depend on the previous configuration.
+        io.write(base + IFLS, IFLS_HALF);
+    }
     io.write(base + IBRD, integer);
     io.write(base + FBRD, fraction);
     io.write(base + LCR_H, LCR_H_8N1_FIFO);
     io.write(base + CR, CR_ENABLE);
-    Ok(())
+    Ok((integer, fraction))
 }
 /// Waits for `address & mask == value` until more than `timeout_us` of the 1 MHz timer have
 /// passed, however many polls that takes.
@@ -395,52 +520,50 @@ fn wait(
         }
     }
 }
-/// Polling write: waits for room for the first byte only.
-fn write(io: &mut impl Hardware, n: u8, bytes: &[u8], timeout_us: u32) -> Result<usize, Error> {
-    if bytes.is_empty() {
-        return Ok(0);
-    }
-    let base = base(n);
-    wait(io, base + FR, FR_TXFF, 0, timeout_us)?;
-    let mut accepted = 0;
-    loop {
-        io.write(base + DR, u32::from(bytes[accepted]));
-        accepted += 1;
-        if accepted == bytes.len() || io.read(base + FR) & FR_TXFF != 0 {
-            return Ok(accepted);
+/// Service at most one FIFO of TX data even if the peripheral drains during the call.
+fn enqueue(io: &mut impl Registers, n: u8, bytes: &[u8]) -> usize {
+    let mut count = 0;
+    for &byte in bytes.iter().take(FIFO_SIZE) {
+        if io.read(base(n) + FR) & FR_TXFF != 0 {
+            break;
         }
+        io.write(base(n) + DR, u32::from(byte));
+        count += 1;
     }
-}
-fn try_write_byte(io: &mut impl Hardware, n: u8, byte: u8) -> bool {
-    if io.read(base(n) + FR) & FR_TXFF != 0 {
-        return false;
-    }
-    io.write(base(n) + DR, u32::from(byte));
-    true
+    count
 }
 
 /// Pops the RX FIFO, which must not be empty.
-fn take(io: &mut impl Hardware, n: u8) -> Result<u8, Error> {
+fn take(io: &mut impl Registers, n: u8) -> Result<u8, Error> {
     let data = io.read(base(n) + DR);
     match receive_error(data) {
         Some(error) => {
+            io.write(base(n) + ICR, (data >> 1) & RX_ERRORS);
             io.write(base(n) + ECR, 0);
             Err(error)
         }
         None => Ok(data as u8),
     }
 }
-fn read_byte(io: &mut impl Hardware, n: u8) -> Result<Option<u8>, Error> {
-    if io.read(base(n) + FR) & FR_RXFE != 0 {
+fn read_byte(io: &mut impl Registers, n: u8) -> Result<Option<u8>, Error> {
+    if io.read(base(n) + FR) & FR_RXFE == 0 {
+        return take(io, n).map(Some);
+    }
+
+    // OE can be asserted without being copied to a FIFO entry if the peer stops.
+    // Read RIS before rechecking FIFO state so a newly arrived DR entry keeps its error bits.
+    let errors = io.read(base(n) + RIS) & RX_ERRORS;
+    if errors == 0 {
         return Ok(None);
     }
-    take(io, n).map(Some)
+    if io.read(base(n) + FR) & FR_RXFE == 0 {
+        return take(io, n).map(Some);
+    }
+    io.write(base(n) + ICR, errors);
+    io.write(base(n) + ECR, 0);
+    receive_error(errors << 1).map_or(Ok(None), Err)
 }
-/// [`embedded_io::Read::read`] of one byte.
-fn read_wait(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<u8, Error> {
-    wait(io, base(n) + FR, FR_RXFE, 0, timeout_us)?;
-    take(io, n)
-}
+
 /// Polling release: nothing is written unless the transmitter is idle in time.
 fn release(io: &mut impl Hardware, n: u8, timeout_us: u32) -> Result<(), Error> {
     wait(io, base(n) + FR, FR_BUSY, 0, timeout_us)?;
@@ -481,7 +604,64 @@ pub fn divisors(clock: HertzU32, baud: HertzU32) -> Result<(u32, u32), Error> {
     }
     Ok(((scaled / 64) as u32, (scaled % 64) as u32))
 }
-impl<const N: u8, const PIN: u8> Tx<N, PIN> {
+impl TxState {
+    // Bound the FIFO tail at the next flush. The latched TX watermark stays
+    // asserted until the FIFO is refilled above half. The shifter is separate.
+    fn pending(&self, flags: u32, ris: u32) -> u8 {
+        if flags & FR_TXFE != 0 {
+            0
+        } else if ris & int::TX != 0 {
+            self.queued.min(TX_WATERMARK)
+        } else {
+            self.queued
+        }
+    }
+
+    fn frame_ticks(&self, count: u8) -> u32 {
+        // Round down only after multiplying the frames. This is a lower
+        // bound on the time it takes to transmit those complete frames.
+        u32::from(count) * 10 * self.divisor / DIVISOR_PER_BIT_US
+    }
+
+    fn remaining_ticks(&self, now: u32) -> u32 {
+        (self.earliest_end.wrapping_sub(now) as i32).max(0) as u32
+    }
+
+    fn record_write(&mut self, flags: u32, ris: u32, count: usize, now: u32) {
+        let previous = self.pending(flags, ris);
+        self.queued = (previous + count as u8).min(FIFO_SIZE as u8);
+
+        // Bound the earliest possible end as well as the FIFO depth. A depth
+        // seen on the last write can be stale by the time flush is called.
+        let remaining = if flags & FR_TXFF != 0 {
+            self.frame_ticks(FIFO_SIZE as u8)
+        } else if flags & FR_TXFE != 0 {
+            0
+        } else {
+            self.remaining_ticks(now)
+        };
+        self.earliest_end = now
+            .wrapping_add(remaining)
+            .wrapping_add(self.frame_ticks(count as u8));
+    }
+
+    fn enqueue(&mut self, n: u8, bytes: &[u8]) -> Option<usize> {
+        // Timestamp before FR so a full FIFO guarantees 32 complete frames
+        // after that tick. Observe RIS before any refill clears its TX bit.
+        let sample = (n == 1).then(|| {
+            let now = Timer::new().now_32().ticks();
+            let flags = Mmio.read(base(n) + FR);
+            (now, flags, Mmio.read(base(n) + RIS))
+        });
+        let count = enqueue(&mut Mmio, n, bytes);
+        if let Some((now, flags, ris)) = sample {
+            self.record_write(flags, ris, count, now);
+        }
+        (count != 0).then_some(count)
+    }
+}
+
+impl<const N: u8, const PIN: u8, I> Tx<N, PIN, I> {
     /// Selects the synchronous polling engine.
     pub fn polling(&mut self) -> Polling<'_, Self> {
         Polling(self)
@@ -489,15 +669,25 @@ impl<const N: u8, const PIN: u8> Tx<N, PIN> {
 
     /// Queues one byte if the FIFO has room. Returns [`Error::Busy`] after a stop request.
     pub fn try_write_byte(&mut self, byte: u8) -> Result<bool, Error> {
-        if self.resetting {
+        if self.state.resetting {
             return Err(Error::Busy);
         }
-        Ok(try_write_byte(&mut Mmio, N, byte))
+        let flags = Mmio.read(base(N) + FR);
+        if flags & FR_TXFF != 0 {
+            return Ok(false);
+        }
+        if N == 1 {
+            let now = Timer::new().now_32().ticks();
+            self.state
+                .record_write(flags, Mmio.read(base(N) + RIS), 1, now);
+        }
+        Mmio.write(base(N) + DR, u32::from(byte));
+        Ok(true)
     }
 
     /// Whether all queued bytes have left the wire. Returns [`Error::Busy`] after a stop request.
     pub fn try_flush(&mut self) -> Result<bool, Error> {
-        if self.resetting {
+        if self.state.resetting {
             return Err(Error::Busy);
         }
         Ok(Mmio.read(base(N) + FR) & FR_BUSY == 0)
@@ -505,21 +695,21 @@ impl<const N: u8, const PIN: u8> Tx<N, PIN> {
 
     /// Unmasks the TX FIFO threshold interrupt. The NVIC line is `irq.UARTn`.
     pub fn enable_interrupt(&mut self) {
-        if !self.resetting {
+        if !self.state.resetting {
             mask_interrupts(N, int::TX, true);
         }
     }
 
     /// Masks the TX interrupt.
     pub fn disable_interrupt(&mut self) {
-        if !self.resetting {
+        if !self.state.resetting {
             mask_interrupts(N, int::TX, false);
         }
     }
 
     /// Pending unmasked TX interrupt, as a [PL011 interrupt bit](int).
     pub fn interrupt_status(&self) -> u32 {
-        if self.resetting {
+        if self.state.resetting {
             0
         } else {
             pending_interrupts(&mut Mmio, N, int::TX)
@@ -528,13 +718,13 @@ impl<const N: u8, const PIN: u8> Tx<N, PIN> {
 
     /// Clears the TX interrupt bit selected by `mask`.
     pub fn clear_interrupt(&mut self, mask: u32) {
-        if !self.resetting {
+        if !self.state.resetting {
             clear_interrupts(&mut Mmio, N, int::TX, mask);
         }
     }
 }
 
-impl<const N: u8, const PIN: u8> Rx<N, PIN> {
+impl<const N: u8, const PIN: u8, I> Rx<N, PIN, I> {
     /// Selects the synchronous polling engine.
     pub fn polling(&mut self) -> Polling<'_, Self> {
         Polling(self)
@@ -543,7 +733,7 @@ impl<const N: u8, const PIN: u8> Rx<N, PIN> {
     /// Pops one character or returns `None` if the FIFO is empty. A character received
     /// with an error is discarded and the error is returned.
     pub fn try_read_byte(&mut self) -> Result<Option<u8>, Error> {
-        if self.resetting {
+        if self.state.resetting {
             return Err(Error::Busy);
         }
         read_byte(&mut Mmio, N)
@@ -553,21 +743,21 @@ impl<const N: u8, const PIN: u8> Rx<N, PIN> {
     /// Receive timeout lets a short message below the threshold raise an interrupt.
     /// Use [`Rx::clear_interrupt`] to acknowledge receive errors. The NVIC line is `irq.UARTn`.
     pub fn enable_interrupt(&mut self) {
-        if !self.resetting {
+        if !self.state.resetting {
             mask_interrupts(N, RX_INTERRUPTS, true);
         }
     }
 
     /// Masks the RX FIFO threshold, receive timeout and receive error interrupts.
     pub fn disable_interrupt(&mut self) {
-        if !self.resetting {
+        if !self.state.resetting {
             mask_interrupts(N, RX_INTERRUPTS, false);
         }
     }
 
     /// Pending unmasked receive interrupts, as [PL011 interrupt bits](int).
     pub fn interrupt_status(&self) -> u32 {
-        if self.resetting {
+        if self.state.resetting {
             0
         } else {
             pending_interrupts(&mut Mmio, N, RX_INTERRUPTS)
@@ -578,7 +768,7 @@ impl<const N: u8, const PIN: u8> Rx<N, PIN> {
     /// Receive error interrupts clear only through the PL011 interrupt-clear register
     /// (UARTICR, DOC: ARM DDI0183 §2.8.5). Draining the FIFO also clears RX and RT.
     pub fn clear_interrupt(&mut self, mask: u32) {
-        if !self.resetting {
+        if !self.state.resetting {
             clear_interrupts(&mut Mmio, N, RX_INTERRUPTS, mask);
         }
     }
@@ -592,7 +782,7 @@ fn clear_interrupts(io: &mut impl Registers, n: u8, direction: u32, mask: u32) {
     io.write(base(n) + ICR, direction & mask);
 }
 
-impl<const N: u8, const TX: u8, const RX: u8> Uart<N, (Pin<TX>, Pin<RX>)>
+impl<const N: u8, const TX: u8, const RX: u8, I> Uart<N, PinTuple<TX, RX>, I>
 where
     Pin<TX>: TxPin<N>,
     Pin<RX>: RxPin<N>,
@@ -634,16 +824,13 @@ where
     /// }
     /// # fn main() {}
     /// ```
-    pub fn split(self) -> (Tx<N, TX>, Rx<N, RX>) {
+    pub fn split(self) -> (Tx<N, TX, I>, Rx<N, RX, I>) {
         self.halves
     }
 
     /// Reunites the halves of UART N without changing its configuration.
-    pub fn join(tx: Tx<N, TX>, rx: Rx<N, RX>) -> Self {
-        Self {
-            halves: (tx, rx),
-            _role: PhantomData,
-        }
+    pub fn join(tx: Tx<N, TX, I>, rx: Rx<N, RX, I>) -> Self {
+        Self { halves: (tx, rx) }
     }
 
     /// Selects the synchronous polling engine.
@@ -688,7 +875,7 @@ where
 
     /// Pending unmasked interrupts (MIS), as [PL011 interrupt bits](int).
     pub fn interrupt_status(&self) -> u32 {
-        if self.halves.0.resetting {
+        if self.halves.0.state.resetting {
             0
         } else {
             Mmio.read(base(N) + MIS)
@@ -699,12 +886,12 @@ where
     /// only through UARTICR (see [`Rx::clear_interrupt`]). RX and RT also clear by draining
     /// the FIFO, TX by refilling it.
     pub fn clear_interrupt(&mut self, mask: u32) {
-        if !self.halves.0.resetting {
+        if !self.halves.0.state.resetting {
             Mmio.write(base(N) + ICR, mask);
         }
     }
 }
-impl<const N: u8, const TX: u8, const RX: u8> Uart<N, (Pin<TX>, Pin<RX>)>
+impl<const N: u8, const TX: u8, const RX: u8, I> Uart<N, PinTuple<TX, RX>, I>
 where
     Pin<TX>: TxPin<N>,
     Pin<RX>: RxPin<N>,
@@ -728,7 +915,7 @@ where
     ///     uart.try_free()
     /// }
     /// ```
-    pub fn try_free(self) -> Result<Parts<N, (Pin<TX>, Pin<RX>)>, crate::FreeError<Self, Error>> {
+    pub fn try_free(self) -> Result<Parts<N, PinTuple<TX, RX>, I>, crate::FreeError<Self, Error>> {
         self.try_free_with(&mut Mmio, false)
     }
 
@@ -736,7 +923,13 @@ where
     /// being shifted, plus 1 ms. The driver is returned on timeout.
     pub fn free_polling(
         self,
-    ) -> Result<Parts<N, (Pin<TX>, Pin<RX>)>, crate::FreeError<Self, Error>> {
+    ) -> Result<Parts<N, PinTuple<TX, RX>, I>, crate::FreeError<Self, Error>> {
+        if let Err(error) = ThreadGuard::new() {
+            return Err(crate::FreeError {
+                driver: self,
+                error: error.into(),
+            });
+        }
         self.try_free_with(&mut Mmio, true)
     }
 
@@ -744,12 +937,12 @@ where
         self,
         io: &mut impl Hardware,
         polling: bool,
-    ) -> Result<Parts<N, (Pin<TX>, Pin<RX>)>, crate::FreeError<Self, Error>> {
+    ) -> Result<Parts<N, PinTuple<TX, RX>, I>, crate::FreeError<Self, Error>> {
         let mut uart = self;
-        let idle = if uart.halves.0.resetting {
+        let idle = if uart.halves.0.state.resetting {
             Ok(())
         } else if polling {
-            release(io, N, uart.halves.0.bound_us)
+            release(io, N, uart.halves.0.state.bound_us)
         } else if io.read(base(N) + FR) & FR_BUSY == 0 {
             Ok(())
         } else {
@@ -774,8 +967,8 @@ where
     }
 
     fn cancel_with(&mut self, io: &mut impl Hardware) -> Result<(), Error> {
-        self.halves.0.resetting = true;
-        self.halves.1.resetting = true;
+        self.halves.0.state.resetting = true;
+        self.halves.1.state.resetting = true;
         if try_reset(io, N) {
             Ok(())
         } else {
@@ -783,26 +976,27 @@ where
         }
     }
 
-    fn into_parts(self) -> Parts<N, (Pin<TX>, Pin<RX>)> {
+    fn into_parts(self) -> Parts<N, PinTuple<TX, RX>, I> {
         let (tx, rx) = self.halves;
-        Parts::new(
-            Token {
+        Parts {
+            token: Token {
                 _private: PhantomData,
             },
-            Pins(
+            pins: Pins(
                 (tx.pin.release(), rx.pin.release()),
                 #[cfg(test)]
                 tx.cts,
             ),
-        )
+            irq: tx.irq,
+        }
     }
 }
 
-impl<const N: u8, const PIN: u8> Polling<'_, Rx<N, PIN>> {
+impl<const N: u8, const PIN: u8, I> Polling<'_, Rx<N, PIN, I>> {
     /// Sets the receive wait, initially [`DEFAULT_READ_TIMEOUT`]. The setting persists on the
     /// receiver across `polling()` borrows.
     pub fn set_read_timeout(&mut self, timeout: MicrosDurationU32) {
-        self.0.timeout = timeout;
+        self.0.state.timeout = timeout;
     }
 }
 
@@ -819,37 +1013,118 @@ where
 impl<T> embedded_io::ErrorType for Polling<'_, T> {
     type Error = Error;
 }
-impl<const N: u8, const PIN: u8> embedded_io::Write for Polling<'_, Tx<N, PIN>> {
-    /// Queues as many bytes as fit, waiting for room for the first byte only.
-    /// On timeout nothing was queued, so the same slice can be retried.
-    fn write(&mut self, b: &[u8]) -> Result<usize, Error> {
-        if self.0.resetting {
-            return Err(Error::Busy);
+// A caller-supplied deadline is admitted before the first UART access. Once admitted,
+// a bounded final probe can still win at the end of the operation.
+fn default_end(timeout: MicrosDurationU32) -> Result<Deadline, Error> {
+    ThreadGuard::new()?;
+    Ok(Deadline::after(timeout)?)
+}
+
+fn poll<T>(end: Deadline, mut probe: impl FnMut() -> Option<T>) -> Result<T, Error> {
+    ThreadGuard::new()?;
+    poll_with(end, &mut (), |_| Timer::new().now(), |_| probe())
+}
+
+fn poll_with<T, S>(
+    end: Deadline,
+    state: &mut S,
+    mut now: impl FnMut(&mut S) -> timer::Instant,
+    mut probe: impl FnMut(&mut S) -> Option<T>,
+) -> Result<T, Error> {
+    end.check(now(state))?;
+    loop {
+        let elapsed = now(state) >= end.instant();
+        if let Some(ready) = probe(state) {
+            return Ok(ready);
         }
-        write(&mut Mmio, N, b, self.0.bound_us)
-    }
-    /// Waits for wire idle. Transmission continues on timeout.
-    fn flush(&mut self) -> Result<(), Error> {
-        if self.0.resetting {
-            return Err(Error::Busy);
+        if elapsed {
+            return Err(Error::Timeout);
         }
-        wait(&mut Mmio, base(N) + FR, FR_BUSY, 0, self.0.bound_us)
     }
 }
-/// Reads at most one byte per call. Receive errors are reported as in [`Rx::try_read_byte`].
-impl<const N: u8, const PIN: u8> embedded_io::Read for Polling<'_, Rx<N, PIN>> {
-    fn read(&mut self, b: &mut [u8]) -> Result<usize, Error> {
-        let Some(first) = b.first_mut() else {
+
+impl<const N: u8, const PIN: u8, I> Tx<N, PIN, I> {
+    /// Poll for space, then queue up to one FIFO of bytes.
+    pub fn write_polling(&mut self, bytes: &[u8], end: Deadline) -> Result<usize, Error> {
+        if bytes.is_empty() {
             return Ok(0);
-        };
-        if self.0.resetting {
+        }
+        if self.state.resetting {
             return Err(Error::Busy);
         }
-        *first = read_wait(&mut Mmio, N, self.0.timeout.ticks())?;
+        poll(end, || self.state.enqueue(N, bytes))
+    }
+
+    /// Poll for wire idle. A timeout leaves queued bytes on their way to the peer.
+    pub fn flush_polling(&mut self, end: Deadline) -> Result<(), Error> {
+        if self.state.resetting {
+            return Err(Error::Busy);
+        }
+        poll(end, || {
+            (Mmio.read(base(N) + FR) & FR_BUSY == 0).then_some(())
+        })
+    }
+}
+
+impl<const N: u8, const PIN: u8, I> Rx<N, PIN, I> {
+    /// Poll for one byte, retaining each byte's receive status until it is read.
+    pub fn read_polling(&mut self, bytes: &mut [u8], end: Deadline) -> Result<usize, Error> {
+        let Some(first) = bytes.first_mut() else {
+            return Ok(0);
+        };
+        *first = poll(end, || self.try_read_byte().transpose())??;
         Ok(1)
     }
 }
-impl<const N: u8, const TX: u8, const RX: u8> Polling<'_, Uart<N, (Pin<TX>, Pin<RX>)>>
+
+impl<const N: u8, const TX: u8, const RX: u8, I> Uart<N, PinTuple<TX, RX>, I>
+where
+    Pin<TX>: TxPin<N>,
+    Pin<RX>: RxPin<N>,
+{
+    /// See [`Rx::read_polling`].
+    pub fn read_polling(&mut self, bytes: &mut [u8], end: Deadline) -> Result<usize, Error> {
+        self.halves.1.read_polling(bytes, end)
+    }
+    /// See [`Tx::write_polling`].
+    pub fn write_polling(&mut self, bytes: &[u8], end: Deadline) -> Result<usize, Error> {
+        self.halves.0.write_polling(bytes, end)
+    }
+    /// See [`Tx::flush_polling`].
+    pub fn flush_polling(&mut self, end: Deadline) -> Result<(), Error> {
+        self.halves.0.flush_polling(end)
+    }
+}
+
+impl<const N: u8, const PIN: u8, I> embedded_io::Write for Polling<'_, Tx<N, PIN, I>> {
+    /// Queues up to one FIFO of bytes, waiting for space for the first byte only.
+    /// On timeout nothing was queued, so the same slice can be retried.
+    fn write(&mut self, b: &[u8]) -> Result<usize, Error> {
+        if b.is_empty() {
+            return Ok(0);
+        }
+        let end = default_end(MicrosDurationU32::micros(self.0.state.bound_us))?;
+        self.0.write_polling(b, end)
+    }
+
+    /// Waits for wire idle. Transmission continues on timeout.
+    fn flush(&mut self) -> Result<(), Error> {
+        let end = default_end(MicrosDurationU32::micros(self.0.state.bound_us))?;
+        self.0.flush_polling(end)
+    }
+}
+
+/// Reads at most one byte per call. Receive errors are reported as in [`Rx::try_read_byte`].
+impl<const N: u8, const PIN: u8, I> embedded_io::Read for Polling<'_, Rx<N, PIN, I>> {
+    fn read(&mut self, b: &mut [u8]) -> Result<usize, Error> {
+        if b.is_empty() {
+            return Ok(0);
+        }
+        let end = default_end(self.0.state.timeout)?;
+        self.0.read_polling(b, end)
+    }
+}
+impl<const N: u8, const TX: u8, const RX: u8, I> Polling<'_, Uart<N, PinTuple<TX, RX>, I>>
 where
     Pin<TX>: TxPin<N>,
     Pin<RX>: RxPin<N>,
@@ -860,8 +1135,8 @@ where
         self.0.halves.1.polling().set_read_timeout(timeout);
     }
 }
-impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Write
-    for Polling<'_, Uart<N, (Pin<TX>, Pin<RX>)>>
+impl<const N: u8, const TX: u8, const RX: u8, I> embedded_io::Write
+    for Polling<'_, Uart<N, PinTuple<TX, RX>, I>>
 where
     Pin<TX>: TxPin<N>,
     Pin<RX>: RxPin<N>,
@@ -873,8 +1148,8 @@ where
         self.0.halves.0.polling().flush()
     }
 }
-impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Read
-    for Polling<'_, Uart<N, (Pin<TX>, Pin<RX>)>>
+impl<const N: u8, const TX: u8, const RX: u8, I> embedded_io::Read
+    for Polling<'_, Uart<N, PinTuple<TX, RX>, I>>
 where
     Pin<TX>: TxPin<N>,
     Pin<RX>: RxPin<N>,
@@ -1027,7 +1302,7 @@ mod tests {
     #[test]
     fn start_releases_the_reset_then_programs_8n1_and_enables() {
         let mut f = Fake::new();
-        start(&mut f, N, 50_000_000.Hz(), 115_200.Hz()).unwrap();
+        start::<true>(&mut f, N, 50_000_000.Hz(), 115_200.Hz()).unwrap();
         let b = base(N);
         assert_eq!(
             f.writes,
@@ -1037,6 +1312,7 @@ mod tests {
                 (b + IMSC, 0),
                 (b + ICR, 0x7ff),
                 (b + ECR, 0),
+                (b + IFLS, IFLS_HALF),
                 (b + IBRD, 27),
                 (b + FBRD, 8),
                 (b + LCR_H, 0x70),
@@ -1045,7 +1321,7 @@ mod tests {
         );
         let mut f = Fake::new();
         assert_eq!(
-            start(&mut f, N, 50_000_000.Hz(), 0.Hz()),
+            start::<true>(&mut f, N, 50_000_000.Hz(), 0.Hz()),
             Err(Error::Invalid)
         );
         assert!(f.writes.is_empty());
@@ -1057,14 +1333,14 @@ mod tests {
         f.writes.clear();
         f.reset_stuck = true;
         assert_eq!(
-            start(&mut f, N, 50_000_000.Hz(), 115_200.Hz()),
+            start::<true>(&mut f, N, 50_000_000.Hz(), 115_200.Hz()),
             Err(Error::Timeout)
         );
         assert_eq!(f.writes, [(RESETS_CLR1, 1 << 28)]);
         let mut f = Fake::new();
         f.busy = true;
         assert_eq!(
-            start(&mut f, N, 50_000_000.Hz(), 115_200.Hz()),
+            start::<true>(&mut f, N, 50_000_000.Hz(), 115_200.Hz()),
             Err(Error::Timeout)
         );
         assert!((10_000..10_500).contains(&f.elapsed_us));
@@ -1098,7 +1374,12 @@ mod tests {
             ]
         );
         // Each error also clears the sticky copy in RSR.
-        assert_eq!(f.writes, [(base(N) + ECR, 0); 4]);
+        let acknowledged: Vec<u32> = f
+            .writes
+            .iter()
+            .filter_map(|&(address, mask)| (address == base(N) + ICR).then_some(mask))
+            .collect();
+        assert_eq!(acknowledged, [int::FE, int::PE, int::BE | int::FE, int::OE]);
     }
     #[test]
     fn error_kinds_for_embedded_io() {
@@ -1108,55 +1389,122 @@ mod tests {
         }
         assert_eq!(Error::Timeout.kind(), ErrorKind::TimedOut);
         assert_eq!(Error::Invalid.kind(), ErrorKind::InvalidInput);
-        assert_eq!(Error::Overrun.kind(), ErrorKind::Other);
+        assert_eq!(Error::Overrun.kind(), ErrorKind::InvalidData);
         assert_eq!(Error::Precondition.kind(), ErrorKind::Other);
     }
+    fn model_poll<T>(
+        io: &mut Fake,
+        timeout: u32,
+        probe: impl FnMut(&mut Fake) -> Option<T>,
+    ) -> Result<T, Error> {
+        let end = Deadline::at(timer::Instant::from_ticks(
+            io.elapsed_us + u64::from(timeout),
+        ));
+        poll_with(
+            end,
+            io,
+            |io| {
+                io.now_us();
+                timer::Instant::from_ticks(io.elapsed_us)
+            },
+            probe,
+        )
+    }
+
     /// embedded-io `write`: a full FIFO ends the call with the count of the bytes queued, and
     /// only a call that queued nothing times out.
     #[test]
     fn a_write_reports_the_prefix_it_queued() {
         let mut f = Fake::new();
         f.tx_room = 3;
-        assert_eq!(write(&mut f, N, b"hello", 1_000), Ok(3));
+        let send = |f: &mut Fake, b: &[u8]| {
+            model_poll(f, 1_000, |f| {
+                let count = enqueue(f, N, b);
+                (count != 0).then_some(count)
+            })
+        };
+        assert_eq!(send(&mut f, b"hello"), Ok(3));
         assert_eq!(f.tx, b"hel");
-        assert_eq!(write(&mut f, N, b"lo", 1_000), Err(Error::Timeout));
+        assert_eq!(send(&mut f, b"lo"), Err(Error::Timeout));
         assert_eq!(f.tx, b"hel");
         f.tx_room = 32;
-        assert_eq!(write(&mut f, N, b"lo", 1_000), Ok(2));
-        assert_eq!(write(&mut f, N, b"", 1_000), Ok(0));
+        assert_eq!(send(&mut f, b"lo"), Ok(2));
+        assert_eq!(enqueue(&mut f, N, b""), 0);
         assert_eq!(f.tx, b"hello");
     }
+
+    #[test]
+    fn absolute_polling_has_a_final_probe_and_checks_admission_before_uart_access() {
+        let mut f = Fake::new();
+        f.step_us = 1;
+        for (now, end, expected) in [
+            (0, 0, Err(Error::Timeout)),
+            (0, 1, Err(Error::Timeout)),
+            (0, u64::from(u32::MAX), Err(Error::InvalidDeadline)),
+            (u64::from(u32::MAX) - 2, u64::from(u32::MAX) + 2, Ok(42)),
+            (u64::from(u32::MAX) + 1, 100, Err(Error::Timeout)),
+        ] {
+            f.elapsed_us = now;
+            let deadline = Deadline::at(timer::Instant::from_ticks(end));
+            assert_eq!(
+                poll_with(
+                    deadline,
+                    &mut f,
+                    |f| {
+                        f.now_us();
+                        timer::Instant::from_ticks(f.elapsed_us)
+                    },
+                    |f| {
+                        assert_eq!(expected, Ok(42));
+                        (f.elapsed_us == end).then_some(42)
+                    }
+                ),
+                expected
+            );
+        }
+    }
+
     /// The bound is time on the timer, not polls: the same wait ends after the same time
     /// whether a poll takes 1 us or 300 us, and across the timer's wrap.
     #[test]
-    fn waits_end_after_the_timeout_in_timer_time() {
+    fn bootstrap_and_release_polling_preserve_their_timer_bound_across_wrap() {
         for (step_us, timeout_us) in [(1, 2_000), (300, 2_000), (7, 0), (1 << 30, u32::MAX)] {
-            let mut f = Fake::new();
-            (f.step_us, f.tx_room, f.busy) = (step_us, 0, true);
-            for stalled in [
-                write(&mut f, N, b"x", timeout_us).map(drop),
-                read_wait(&mut f, N, timeout_us).map(drop),
-                wait(&mut f, base(N) + FR, FR_BUSY, 0, timeout_us),
-            ] {
-                assert_eq!(stalled, Err(Error::Timeout));
+            let mut io = Fake::new();
+            (io.step_us, io.tx_room, io.busy) = (step_us, 0, true);
+            for (mask, value) in [(FR_TXFF, 0), (FR_RXFE, 0), (FR_BUSY, 0)] {
+                let started = io.elapsed_us;
+                assert_eq!(
+                    wait(&mut io, base(N) + FR, mask, value, timeout_us),
+                    Err(Error::Timeout)
+                );
+                // Each wait reads the timer once to start, then runs just past the timeout.
+                let elapsed = io.elapsed_us - started - u64::from(step_us);
+                assert!(elapsed > u64::from(timeout_us));
+                assert!(elapsed <= u64::from(timeout_us) + u64::from(step_us));
             }
-            // Each wait reads the timer once to start, then runs just past the timeout.
-            let each = f.elapsed_us / 3 - u64::from(step_us);
-            assert!(
-                each > u64::from(timeout_us),
-                "{step_us} {timeout_us} {each}"
-            );
-            assert!(each <= u64::from(timeout_us) + u64::from(step_us));
         }
     }
+
+    #[test]
+    fn overrun_is_retained_when_the_peer_stops_without_another_character() {
+        let mut io = Fake::new();
+        io.regs.insert(base(N) + RIS, int::OE);
+        io.rx.push_back(0x41);
+        assert_eq!(read_byte(&mut io, N), Ok(Some(0x41)));
+        assert!(io.writes.is_empty());
+        assert_eq!(read_byte(&mut io, N), Err(Error::Overrun));
+        assert_eq!(io.writes, [(base(N) + ICR, int::OE), (base(N) + ECR, 0)]);
+    }
+
     #[test]
     fn a_read_waits_for_a_byte_that_arrives_in_time() {
         let mut f = Fake::new();
         f.rx_later = Some((40_000, 0x55));
-        assert_eq!(read_wait(&mut f, N, 30_000), Err(Error::Timeout));
-        assert_eq!(read_wait(&mut f, N, 30_000), Ok(0x55));
+        let receive = |f: &mut Fake| read_byte(f, N).transpose();
+        assert_eq!(model_poll(&mut f, 30_000, receive), Err(Error::Timeout));
+        assert_eq!(model_poll(&mut f, 30_000, receive), Ok(Ok(0x55)));
         f.rx_later = Some((0, DR_FE));
-        assert_eq!(read_wait(&mut f, N, 30_000), Err(Error::Framing));
+        assert_eq!(model_poll(&mut f, 30_000, receive), Ok(Err(Error::Framing)));
     }
     /// A transmitter that does not drain in time is not cut off by `free_polling`: nothing is written
     /// and the error is reported, so the caller still has the UART. A reset does not wait for TX.
@@ -1167,14 +1515,23 @@ mod tests {
         f.busy = true;
         let tx = Tx {
             pin: unsafe { Pin::<4>::new() }.assume(),
-            bound_us: 5_000,
-            resetting: false,
+            irq: Serial { _private: () },
+            state: TxState {
+                bound_us: 5_000,
+                divisor: 1736,
+                earliest_end: 0,
+                queued: 0,
+                resetting: false,
+            },
             cts: None,
         };
         let rx = Rx {
             pin: unsafe { Pin::<5>::new() }.assume(),
-            timeout: DEFAULT_READ_TIMEOUT,
-            resetting: false,
+            _irq: Serial { _private: () },
+            state: RxState {
+                timeout: DEFAULT_READ_TIMEOUT,
+                resetting: false,
+            },
         };
         let uart = match Uart::<N, (Pin<4>, Pin<5>)>::join(tx, rx).try_free_with(&mut f, true) {
             Err(e) => {
@@ -1200,14 +1557,23 @@ mod tests {
         io.reset_assert_stuck = true;
         let tx = Tx {
             pin: unsafe { Pin::<4>::new() }.assume(),
-            bound_us: 5000,
-            resetting: false,
+            irq: Serial { _private: () },
+            state: TxState {
+                bound_us: 5_000,
+                divisor: 1736,
+                earliest_end: 0,
+                queued: 0,
+                resetting: false,
+            },
             cts: None,
         };
         let rx = Rx {
             pin: unsafe { Pin::<5>::new() }.assume(),
-            timeout: DEFAULT_READ_TIMEOUT,
-            resetting: false,
+            _irq: Serial { _private: () },
+            state: RxState {
+                timeout: DEFAULT_READ_TIMEOUT,
+                resetting: false,
+            },
         };
         let error = Uart::<N, (Pin<4>, Pin<5>)>::join(tx, rx)
             .try_free_with(&mut io, false)
@@ -1240,7 +1606,7 @@ mod tests {
                 assert_eq!(release(&mut f, N, 5_000), Ok(()));
                 hold_in_reset(&mut f, N);
             }
-            start(&mut f, N, 50_000_000.Hz(), 115_200.Hz()).unwrap();
+            start::<true>(&mut f, N, 50_000_000.Hz(), 115_200.Hz()).unwrap();
             assert_eq!((read_byte(&mut f, N), f.tx_room), (Ok(None), 32));
             assert_eq!(f.accesses_in_reset, 0);
         }
@@ -1250,9 +1616,9 @@ mod tests {
     fn a_uart_held_in_reset_ignores_writes_and_reads_as_reset() {
         let mut f = Fake::new();
         hold_in_reset(&mut f, N);
-        assert_eq!(write(&mut f, N, b"x", 1_000), Ok(1));
+        assert_eq!(enqueue(&mut f, N, b"x"), 1);
         assert_eq!(read_byte(&mut f, N), Ok(None));
-        assert_eq!((f.tx.len(), f.accesses_in_reset), (0, 3));
+        assert_eq!((f.tx.len(), f.accesses_in_reset), (0, 4));
     }
     #[test]
     fn interrupt_mask_updates_keep_the_other_bits() {

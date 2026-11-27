@@ -21,6 +21,14 @@ error[E0277]: `?` couldn't convert the error to `rp1_hal::uart::Error`
   |
   = help: the trait `From<rp1_hal::InitError<rp1_hal::uart::Parts<2, (rp1_hal::gpio::Pin<4>, rp1_hal::gpio::Pin<5>)>, rp1_hal::uart::Error, Recovery<rp1_hal::uart::Parts<2, (rp1_hal::gpio::Pin<4>, rp1_hal::gpio::Pin<5>)>>>>` is not implemented for `rp1_hal::uart::Error`
   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+help: `rp1_hal::uart::Error` implements trait `From<T>`
+ --> src/uart.rs
+  |
+  | impl From<timer::Error> for Error {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `From<rp1_hal::timer::Error>`
+...
+  | impl From<rp1_rt::interrupt::ContextError> for Error {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `From<ContextError>`
 
 error[E0599]: no method named `into_parts` found for struct `rp1_hal::InitError<rp1_hal::i2c::Parts<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>)>, rp1_hal::i2c::Error, Recovery<rp1_hal::i2c::Parts<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>)>>>` in the current scope
   --> tests/ui/recovery_parts.rs:15:19

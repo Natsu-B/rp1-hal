@@ -36,6 +36,7 @@ jobs:
       # The workspace's default-members are the crates that build for the host; firmware-only
       # crates such as irq-proof use thumbv7m inline assembly and are left out.
       - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked -p rp1-hal --all-targets --features eh02,eh-nb,embedded-io-07 -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -46,6 +47,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Includes the trybuild UI tests and rp1-build's no_local_paths check.
       - run: cargo test --locked --workspace
+      - run: cargo test --locked -p rp1-hal --features eh02,eh-nb,embedded-io-07
 
   # The firmware configurations of lab/README.md's size tables. `cargo rp1 build` fails when
   # an image exceeds the 49,152 B shared SRAM image or the 8,192 B ISRAM budget.
@@ -62,6 +64,7 @@ jobs:
           - { package: pwm-loopback }
           - { package: timer-parity }
           - { package: dma-parity }
+          - { package: uart-parity }
           - { package: irq-proof }
           - { package: link-wake-fixture, features: --features firmware }
           - { package: irq-sweep }

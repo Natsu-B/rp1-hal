@@ -1,4 +1,4 @@
-//! UART, SPI and I²C use the explicit polling engines. The alarm demo uses its IRQ.
+//! UART and the alarm demo use IRQ waits. SPI and I²C use explicit polling.
 #![no_std]
 #![no_main]
 
@@ -33,7 +33,7 @@ fn main(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
         pwm::run(p.pwm0, gpio.gpio12, gpio.gpio22, clocks, wait),
     );
     report("i2c", i2c::run(p.i2c1, clocks, wait));
-    report("uart", uart::run(p.uart1, clocks));
+    report("uart", uart::run(p.uart1, clocks, wait));
     loop {
         rp1_rt::wait_for_event();
     }

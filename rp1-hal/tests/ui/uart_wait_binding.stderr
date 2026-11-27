@@ -1,0 +1,43 @@
+error[E0599]: no method named `blocking` found for mutable reference `&mut rp1_hal::uart::Uart<2, (rp1_hal::gpio::Pin<4>, rp1_hal::gpio::Pin<5>)>` in the current scope
+ --> tests/ui/uart_wait_binding.rs:9:18
+  |
+9 |     let _ = uart.blocking(wait);
+  |                  ^^^^^^^^ method not found in `&mut rp1_hal::uart::Uart<2, (rp1_hal::gpio::Pin<4>, rp1_hal::gpio::Pin<5>)>`
+
+error[E0599]: no method named `blocking` found for mutable reference `&mut rp1_hal::uart::Uart<1, (rp1_hal::gpio::Pin<0>, rp1_hal::gpio::Pin<1>)>` in the current scope
+  --> tests/ui/uart_wait_binding.rs:13:18
+   |
+13 |     let _ = uart.blocking(wait);
+   |                  ^^^^^^^^ method not found in `&mut rp1_hal::uart::Uart<1, (rp1_hal::gpio::Pin<0>, rp1_hal::gpio::Pin<1>)>`
+
+error[E0308]: mismatched types
+  --> tests/ui/uart_wait_binding.rs:21:64
+   |
+21 |     let _ = unsafe { Parts::<1, _, Irq<0>>::__new(token, pins, irq) };
+   |                      ----------------------------              ^^^ expected `1`, found `2`
+   |                      |
+   |                      arguments to this function are incorrect
+   |
+   = note: expected struct `Binding<BlockIrq<1>, 42, 0>`
+              found struct `Binding<BlockIrq<2>, 43, 0>`
+note: associated function defined here
+  --> src/uart/irq_wait.rs
+   |
+   |     pub unsafe fn __new(token: Token<UART>, pins: Pins<UART, P>, line: Line<CORE>) -> Self {
+   |                   ^^^^^
+
+error[E0308]: mismatched types
+  --> tests/ui/uart_wait_binding.rs:25:28
+   |
+25 |     let _ = Uart::join(tx, rx);
+   |             ----------     ^^ expected `0`, found `1`
+   |             |
+   |             arguments to this function are incorrect
+   |
+   = note: expected struct `Rx<1, 1, Irq<0>>`
+              found struct `Rx<1, 1, Irq<1>>`
+note: associated function defined here
+  --> src/uart.rs
+   |
+   |     pub fn join(tx: Tx<N, TX, I>, rx: Rx<N, RX, I>) -> Self {
+   |            ^^^^

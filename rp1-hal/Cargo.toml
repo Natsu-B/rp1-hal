@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+eh02 = ["eh02-adc"]
+eh-nb = ["dep:embedded-hal-nb", "dep:nb"]
+embedded-io-07 = ["dep:embedded-io-07"]
 eh02-adc = ["dep:embedded-hal-0-2", "dep:nb"]
 # DMA ring producer's `SlotCopy` adapter on `dma::Channel`. Unstable: the DMA
 # ordering chain is a hypothesis and the last hardware campaign failed (docs/dma.md).
@@ -21,6 +24,8 @@ fugit = { version = "0.3.9", default-features = false }
 embedded-hal-0-2 = { package = "embedded-hal", version = "0.2.7", features = ["unproven"], optional = true }
 nb = { version = "1", optional = true }
 embedded-io = "0.6"
+embedded-io-07 = { package = "embedded-io", version = "0.7.1", optional = true }
+embedded-hal-nb = { version = "1", optional = true }
 
 [dev-dependencies]
 trybuild = "1"

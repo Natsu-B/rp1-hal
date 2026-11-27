@@ -176,7 +176,8 @@ STATIC（2026-11-27）: `ProcNResources.irq` は、宣言でそのコアに割�
 |---|---|
 | `timer = ["ALARMn"]` | `TIMER_n: Binding<AlarmIrq<n>, {26+n}, CORE>` |
 | `gpio_irq = [..]`（空でない） | `IO_BANK0: Binding<Bank0Irq, 0, CORE>` と、各ピンの `gpioN: rp1_hal::gpio::PinIrq<N, CORE>` |
-| `uart1`..`uart4` | `UARTn: Binding<BlockIrq<ID>, {41+n}, CORE>` |
+| `uart1` と同じコアの `wait_timer` | `rp1::Uart1Parts` が線を所有し、UART1 ハンドラを生成 |
+| raw `uart1`、`uart2`..`uart4` | `UARTn: Binding<BlockIrq<ID>, {41+n}, CORE>` |
 | `i2c0`..`i2c3` | `I2Cn: Binding<BlockIrq<ID>, {7+n}, CORE>` |
 | `spi0` / `spi1` / `spi3` | `SPIn: Binding<BlockIrq<ID>, {19+n}, CORE>` |
 | `pwm0` / `pwm1` | `PWM0: Binding<BlockIrq<48>, 5, CORE>` / `PWM1: Binding<BlockIrq<49>, 41, CORE>` |
@@ -205,6 +206,11 @@ IRQ53/57 はプラットフォーム専用。ハンドラを定義せず線を�
 `#[interrupt(procN)]` は同じコア・線に 1 個。IRQ で受信する link のドアベルは、既定で生成ハンドラが ack して起床を通知する。
 GPIO との共有や独自処理が必要な場合は `custom_doorbell_handler = true` を宣言し、
 そのコアの `IO_BANK0` で `doorbell.ack_and_signal()` と各 GPIO source を処理する。
+
+STATIC（2026-11-27）: 同じコアで `uart1` と `wait_timer` を宣言すると、
+生成された UART1 ハンドラと `uart.blocking(&mut p.wait_timer)` が同期 I/O を受け持つ。
+`custom_uart1_handler = true` を指定すると `p.irq.UART1` を受け取り、
+そのコアの `#[interrupt(procN)] fn UART1()` の定義がリンク時に必須になる。
 
 ### 1.4 ビルド時のエラー（build.rs が止める）
 

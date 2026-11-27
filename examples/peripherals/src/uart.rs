@@ -8,46 +8,40 @@ use rp1_hal::{
     fugit::{ExtU32, RateExtU32},
     log,
     pac::pl011::int,
-    timer::Timer,
-    uart::Parts,
+    timer::{Deadline, WaitTimer},
 };
 
-pub fn run(uart: Parts<1, rp1::Uart1Pins>, clocks: &Clocks) -> Result<(), &'static str> {
-    let (mut tx, mut rx) = uart
+pub fn run(
+    uart: rp1::Uart1Parts,
+    clocks: &Clocks,
+    wait: &mut WaitTimer,
+) -> Result<(), &'static str> {
+    let mut uart = uart
         .init(clocks, 115_200.Hz())
-        .map_err(|_| "UART1 init failed")?
-        .split();
+        .map_err(|_| "UART1 init failed")?;
 
     // Discard startup bytes so the nonce starts at the READY boundary.
     for _ in 0..32 {
-        if matches!(rx.try_read_byte(), Ok(None)) {
+        if matches!(uart.try_read_byte(), Ok(None)) {
             break;
         }
     }
-    rx.clear_interrupt(int::FE | int::PE | int::BE | int::OE);
+    uart.clear_interrupt(int::FE | int::PE | int::BE | int::OE);
+    let mut uart = uart.blocking(wait);
 
-    let timer = Timer::new();
-    // Use one deadline for the nonce and acknowledgement so an absent peer cannot stall boot.
-    let deadline = timer.now_32() + 15.secs();
-    let mut receive = || loop {
-        if timer.now_32() >= deadline {
-            return Err("UART1 peer timeout");
-        }
-        if let Some(byte) = rx.try_read_byte().map_err(|_| "UART1 receive error")? {
-            return Ok(byte);
-        }
-    };
-
+    // Share one deadline across the exchange so an absent peer cannot stall boot.
+    let end = Deadline::after(15.secs()).map_err(|_| "UART1 deadline")?;
     let _ = log!("UART1 READY\n");
     let mut nonce = [0; 8];
-    for byte in &mut nonce {
-        *byte = receive()?;
-    }
-    use embedded_io::Write;
-    let mut tx = tx.polling();
-    tx.write_all(&nonce).map_err(|_| "UART1 transmit error")?;
-    tx.flush().map_err(|_| "UART1 flush error")?;
-    if receive()? != 0x06 {
+    uart.read_exact_until(&mut nonce, end)
+        .map_err(|_| "UART1 receive error")?;
+    uart.write_all_until(&nonce, end)
+        .map_err(|_| "UART1 transmit error")?;
+    uart.flush_until(end).map_err(|_| "UART1 flush error")?;
+    let mut ack = [0];
+    uart.read_until(&mut ack, end)
+        .map_err(|_| "UART1 acknowledgement timeout")?;
+    if ack != [0x06] {
         return Err("UART1 echo not acknowledged");
     }
     Ok(())

@@ -223,6 +223,11 @@ impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
     }
 
     #[doc(hidden)]
+    pub fn into_line(self) -> Line<IRQ> {
+        self.line
+    }
+
+    #[doc(hidden)]
     pub fn into_owned_line(self) -> OwnedLine {
         OwnedLine {
             irq: IRQ,
