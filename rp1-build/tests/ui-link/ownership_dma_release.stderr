@@ -31,7 +31,7 @@ error[E0382]: use of moved value: `dma`
     |             ^^^ value used here after move
     |
 note: `rp1::Proc1DmaChannels::try_free` takes ownership of the receiver `self`, which moves `dma`
-   --> $GENERATED:259:21
+   --> $GENERATED:257:21
     |
-259 | pub fn try_free(mut self) -> Result<Proc1Dma, ::rp1_hal::FreeError<Self, ::rp1_hal::dma::Error>> {
+257 | pub fn try_free(mut self) -> Result<Proc1Dma, ::rp1_hal::FreeError<Self, ::rp1_hal::dma::Error>> {
     |                     ^^^^
