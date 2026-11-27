@@ -229,9 +229,12 @@ and has a separate native compare path. Import `pwm::{Config, DutyTicks}` and
 | `output.set_period_ticks(50_000)?` | `let actual = output.configure(Config::from_frequency(1.kHz()))?` while disabled |
 | `output.period_ticks()` | `output.actual().range_ticks()` |
 | `output.set_duty_ticks(12_500)?` | `output.try_set_duty_ticks(DutyTicks::new(12_500))?` |
-| `output.enable()?` | `let mut output = output.enable()?` |
-| `output.disable()?` | `let mut output = output.disable()?` |
-| `output.free()?` | `let (channel, pin) = output.disable()?.try_free()?` in a function whose error can retain either owner |
+| `output.enable()?` | `let mut output = output.enable().map_err(\|e\| *e.error())?` to return a plain `pwm::Error` |
+| `output.disable()?` | Match `output.disable()`. On error, recover the running owner and retry or call `e.into_driver().abort()`. |
+| `output.free()?` | After disabling, call `output.try_free()`. Handle its `FreeError` to recover the disabled output on failure. |
+| `output.abort()` | Available in either state. A bare running channel can also call `channel.abort()`. |
+| `output.pin_mut()` | Call while disabled. |
+| Exhaustive match on `pwm::Error` | Add a wildcard arm for the `#[non_exhaustive]` enum. |
 
 `enable` and `disable` return the original state through `TransitionError` on failure.
 Use `e.into_driver()` to retry, or `e.into_parts()` to recover the state and error.

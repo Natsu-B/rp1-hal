@@ -118,6 +118,13 @@ impl<const N: u8> Token<N> {
 /// or [`Self::abort`].
 /// Channels are exclusive resources. They can move into a core-local interrupt slot,
 /// and cannot be shared or sent through the inter-core link.
+///
+/// ```compile_fail,E0308
+/// use rp1_hal::pwm::{Channel, Channels, Running};
+/// fn restore(channels: Channels<0>, channel0: Channel<0, 0, Running>) -> Channels<0> {
+///     Channels { channel0, ..channels }
+/// }
+/// ```
 #[derive(Debug)]
 pub struct Channels<const N: u8> {
     pub channel0: Channel<N, 0>,
@@ -234,7 +241,7 @@ impl Config {
 }
 
 // All callers bound the numerator and denominator before rounding.
-fn round_nearest(numerator: u64, denominator: u64) -> u64 {
+const fn round_nearest(numerator: u64, denominator: u64) -> u64 {
     (numerator + denominator / 2) / denominator
 }
 
@@ -251,6 +258,7 @@ impl Actual {
     }
 
     /// Denominator of the exact programmed frequency, `clock() / cycle_ticks()`.
+    /// The RANGE endpoint convention is HW unverified.
     pub const fn cycle_ticks(self) -> u64 {
         self.range as u64
     }
@@ -264,8 +272,8 @@ impl Actual {
     }
 
     /// Whole-Hz display, rounded to nearest with ties up. May be zero for long periods.
-    pub fn frequency_hz(self) -> HertzU32 {
-        HertzU32::from_raw(round_nearest(u64::from(XOSC_HZ), self.cycle_ticks()) as u32)
+    pub const fn frequency_hz(self) -> HertzU32 {
+        HertzU32::from_raw(round_nearest(XOSC_HZ as u64, self.cycle_ticks()) as u32)
     }
 }
 
@@ -306,10 +314,17 @@ impl<const N: u8, const C: u8> Channel<N, C, Disabled> {
 
     /// Transitions to running after checking clk_pwm.
     pub fn enable(self) -> Result<Channel<N, C, Running>, TransitionError<Self>> {
-        self.transition(true)
+        self.transition(&mut Mmio, true)
     }
 
     /// Routes and retains an owned pin while the channel is disabled.
+    ///
+    /// ```compile_fail,E0599
+    /// use rp1_hal::{gpio::Pin, pwm::{Channel, Running}};
+    /// fn route(channel: Channel<0, 0, Running>, pin: Pin<12>) {
+    ///     let _ = channel.output(pin);
+    /// }
+    /// ```
     pub fn output<const P: u8>(self, pin: Pin<P>) -> Output<N, C, P>
     where
         Pin<P>: PinRoute<N, C>,
@@ -324,7 +339,13 @@ impl<const N: u8, const C: u8> Channel<N, C, Disabled> {
 impl<const N: u8, const C: u8> Channel<N, C, Running> {
     /// Requests disable after checking clk_pwm. The pin transition is asynchronous.
     pub fn disable(self) -> Result<Channel<N, C>, TransitionError<Self>> {
-        self.transition(false)
+        self.transition(&mut Mmio, false)
+    }
+
+    /// Issues the stop without checking clk_pwm. With clk_pwm stopped, the
+    /// disable may fail to latch and the output may retain its level (HW unverified).
+    pub fn abort(self) -> Channel<N, C> {
+        self.abort_with(&mut Mmio)
     }
 }
 
@@ -333,21 +354,34 @@ impl<const N: u8, const C: u8, State> Channel<N, C, State> {
         self.actual
     }
 
+    /// Checks that clk_pwm is enabled with the expected 50 MHz clock configuration.
+    /// Use this in a slow supervisor loop outside the control ISR.
+    pub fn check_clock(&self) -> Result<(), Error> {
+        clock_current(&mut Mmio, N)
+    }
+
     /// Native 32-bit compare, 0..=range. Zero is low and range is continuously high
     /// in normal polarity. DUTY has its own strobe and, per the datasheet (Table 26),
     /// takes effect at the next overflow of a running channel (HW: not verified).
-    /// SET_UPDATE is still written as in the Linux driver. Return means the writes
-    /// were issued, with waveform application at a later hardware boundary.
+    /// Each call writes block-global SET_UPDATE as in the Linux driver. Calls
+    /// across channels can latch on different periods. Synchronized commits
+    /// are deferred to the M2 Group API.
     ///
     /// This path relies on the PWM clock held by the declaration and checked during
     /// setup. It performs one range check followed by two ordered MMIO writes.
+    /// Success means the writes were issued. A stopped clock can leave the output
+    /// at its last level and keep the writes from latching (HW unverified).
     #[inline(always)]
     pub fn try_set_duty_ticks(&mut self, duty: DutyTicks) -> Result<(), Error> {
         set_duty(&mut Mmio, N, C, self.actual.range, duty.ticks())
     }
 
-    fn transition<Next>(self, enabled: bool) -> Result<Channel<N, C, Next>, TransitionError<Self>> {
-        match set_enabled(&mut Mmio, N, C, enabled) {
+    fn transition<Next>(
+        self,
+        io: &mut impl Hardware,
+        enabled: bool,
+    ) -> Result<Channel<N, C, Next>, TransitionError<Self>> {
+        match set_enabled(io, N, C, enabled) {
             Ok(()) => Ok(Channel {
                 actual: self.actual,
                 _state: core::marker::PhantomData,
@@ -355,6 +389,19 @@ impl<const N: u8, const C: u8, State> Channel<N, C, State> {
             }),
             Err(error) => Err(TransitionError::new(self, error)),
         }
+    }
+
+    fn into_disabled(self) -> Channel<N, C> {
+        Channel {
+            actual: self.actual,
+            _state: core::marker::PhantomData,
+            _core: core::marker::PhantomData,
+        }
+    }
+
+    fn abort_with(self, io: &mut impl Hardware) -> Channel<N, C> {
+        stop_channel(io, N, C);
+        self.into_disabled()
     }
 }
 
@@ -385,38 +432,61 @@ impl<const N: u8, const C: u8, const P: u8> Output<N, C, P, Disabled> {
     }
 
     pub fn enable(self) -> Result<Output<N, C, P, Running>, TransitionError<Self>> {
-        let Self { channel, pin } = self;
-        match channel.enable() {
-            Ok(channel) => Ok(Output { channel, pin }),
-            Err(e) => {
-                let (channel, error) = e.into_parts();
-                Err(TransitionError::new(Output { channel, pin }, error))
-            }
-        }
+        self.map_channel(Channel::enable)
     }
 
     /// Disables the channel and clears its MODE (generate 0), as Linux's `pwm-rp1` free does,
     /// then returns channel and unconfigured pin. The pad stays muxed to the channel, which
     /// then outputs a constant low (DOC/STATIC; HW: not verified). [`Self::enable`] restores the
-    /// trailing-edge mode. If the clock check fails, the error retains the output.
+    /// trailing-edge mode. If the clock check fails, no registers are written and
+    /// the error retains the output.
     pub fn try_free(self) -> Result<(Channel<N, C>, Pin<P>), crate::FreeError<Self, Error>> {
         match release_channel(&mut Mmio, N, C) {
             Ok(()) => Ok((self.channel, self.pin.release())),
             Err(error) => Err(crate::FreeError::new(self, error)),
         }
     }
-
-    /// [`Self::try_free`] without the clock check, with the limits of [`Channels::abort`].
-    /// Reconfiguring the returned pin (for example [`Pin::into_input`]) takes it off PWM.
-    pub fn abort(self) -> (Channel<N, C>, Pin<P>) {
-        stop_channel(&mut Mmio, N, C);
-        (self.channel, self.pin.release())
-    }
 }
 impl<const N: u8, const C: u8, const P: u8> Output<N, C, P, Running> {
+    /// Requests disable after checking clk_pwm. A failed check writes nothing
+    /// and returns the running output in the error.
     pub fn disable(self) -> Result<Output<N, C, P>, TransitionError<Self>> {
+        self.map_channel(Channel::disable)
+    }
+}
+impl<const N: u8, const C: u8, const P: u8, State> Output<N, C, P, State> {
+    /// Issues the stop without checking clk_pwm, in either state.
+    /// The returned pad stays muxed to PWM, which may retain its last level if
+    /// clk_pwm has stopped (HW unverified). [`Pin::into_input`] takes it off PWM.
+    ///
+    /// ```no_run
+    /// use rp1_hal::pwm::{Channel, Output, Running};
+    /// fn stop(output: Output<0, 0, 12, Running>) -> Channel<0, 0> {
+    ///     let (channel, pin) = match output.disable() {
+    ///         Ok(output) => output.try_free().unwrap_or_else(|e| e.into_driver().abort()),
+    ///         Err(e) => e.into_driver().abort(),
+    ///     };
+    ///     let _input = pin.into_input();
+    ///     channel
+    /// }
+    /// ```
+    pub fn abort(self) -> (Channel<N, C>, Pin<P>) {
+        self.abort_with(&mut Mmio)
+    }
+
+    fn abort_with(self, io: &mut impl Hardware) -> (Channel<N, C>, Pin<P>) {
+        (self.channel.abort_with(io), self.pin.release())
+    }
+
+    fn map_channel<Next>(
+        self,
+        transition: impl FnOnce(
+            Channel<N, C, State>,
+        )
+            -> Result<Channel<N, C, Next>, TransitionError<Channel<N, C, State>>>,
+    ) -> Result<Output<N, C, P, Next>, TransitionError<Self>> {
         let Self { channel, pin } = self;
-        match channel.disable() {
+        match transition(channel) {
             Ok(channel) => Ok(Output { channel, pin }),
             Err(e) => {
                 let (channel, error) = e.into_parts();
@@ -449,7 +519,7 @@ impl<const N: u8, const C: u8, const P: u8, State> SetDutyCycle for Output<N, C,
         u16::MAX
     }
     fn set_duty_cycle(&mut self, duty: u16) -> Result<(), Error> {
-        clock_current(&mut Mmio, N)?;
+        self.check_clock()?;
         let ticks = scale_duty(self.actual().range, duty);
         self.try_set_duty_ticks(DutyTicks::new(ticks))
     }
@@ -824,6 +894,46 @@ mod tests {
         assert_eq!(set_enabled(&mut f, 0, 0, false), Err(Error::Precondition));
         assert_eq!(set_enabled(&mut f, 0, 0, true), Err(Error::Precondition));
         assert!(f.writes.is_empty());
+    }
+
+    #[test]
+    fn failed_disable_retains_owner_and_abort_issues_stop_regardless_of_clock() {
+        for (index, divider) in [None, Some(2)].into_iter().enumerate() {
+            let mut f = Fake::running(0);
+            let channel: Channel<0, 0, Running> = Channel::new().transition(&mut f, true).unwrap();
+            set_enabled(&mut f, 0, 1, true).unwrap();
+            match divider {
+                Some(divider) => f.regs.insert(generator(0).ctrl + 4, divider),
+                None => f.regs.insert(generator(0).ctrl, 2 << 5),
+            };
+            f.writes.clear();
+            let error = channel.transition::<Disabled>(&mut f, false).unwrap_err();
+            assert_eq!(*error.error(), Error::Precondition);
+            assert!(f.writes.is_empty());
+
+            let running = error.into_driver();
+            let channel = if index == 0 {
+                running.abort_with(&mut f)
+            } else {
+                let output = Output {
+                    channel: running,
+                    // Only the type and pin return are exercised on the host.
+                    pin: unsafe { Pin::<12>::new() }.assume(),
+                };
+                let (channel, _pin): (Channel<0, 0>, Pin<12>) = output.abort_with(&mut f);
+                channel
+            };
+            assert_eq!(channel.actual().range_ticks(), DEFAULT_PERIOD);
+            assert_eq!(f.regs[&base(0)] & 0xf, 0b10);
+            assert_eq!(
+                f.writes,
+                [
+                    (base(0) + CLR, 1),
+                    (base(0) + CHAN_CTRL + CLR, MODE_MASK),
+                    (base(0) + SET, UPDATE),
+                ]
+            );
+        }
     }
     #[test]
     fn reset_and_clock_failures_are_bounded() {

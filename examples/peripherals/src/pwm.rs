@@ -32,7 +32,11 @@ pub fn run(
     let output = output.enable().map_err(|_| "PWM enable failed")?;
     timer.delay_ms(3); // Let the range and duty latch at overflow.
     let (rising, high, total) = sample(&mut input);
-    let _output = output.disable().map_err(|_| "PWM disable failed")?;
+    let _output = output.disable().map_err(|e| {
+        let (_, pin) = e.into_driver().abort();
+        let _input = pin.into_input();
+        "PWM disable failed"
+    })?;
     if !(95..=105).contains(&rising) || !(45..=55).contains(&(100 * high / total)) {
         return Err("PWM frequency or duty out of range");
     }

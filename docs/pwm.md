@@ -77,12 +77,20 @@ remains **HW 未検証**.
 
 `try_set_duty_ticks(DutyTicks)` accepts 0..=RANGE in either state. Under the declared,
 held PWM clock it checks a single 32-bit bound and issues two ordered MMIO writes. The
-Cortex-M3 disassembly gate checks this call path for the absence of calls, loops, sleep,
-allocation, logging, and divide instructions. The stores use the normal RP1 MMIO barriers,
+Cortex-M3 disassembly gate checks this call path in the `motor-api` release build for
+one load from the channel, the exact store addresses, and the absence of calls, loops,
+sleep, allocation, logging, and division. The stores use the normal RP1 MMIO barriers,
 so bus service time contributes to call latency. For general use, embedded-hal
 `SetDutyCycle` retains the clock check and normalized 0..=65535 conversion rounded down
 to native ticks. 65535 maps to RANGE even above 65535 ticks. Small periods have coarse
 resolution.
+
+Use `check_clock()` in a slow supervisor loop, for example at 10–100 Hz. It
+returns `Error::Precondition` when the clock is disabled or its selected rate has
+changed. The ISR setter can still return success for an in-range compare after
+loss of the clock hold. With the clock stopped, writes may remain pending and the
+output may hold its last level. At a different rate, the waveform may run at the
+wrong frequency. These fault behaviors are HW unverified.
 
 ### State transitions and release
 
@@ -96,13 +104,23 @@ request SET_UPDATE (GLOBAL_CTRL bit 31, self-clearing), following the Linux driv
 DUTY and RANGE have separate write strobes. The RP1 datasheet (Table 26) places their
 running-channel updates at counter overflow. The setter returns after issuing the writes.
 Waveform application occurs in hardware. Its precise timing is **HW 未検証**.
+The driver returns immediately because waiting for a period boundary could take
+about 86 s at the maximum RANGE.
+
+SET_UPDATE applies to the whole PWM block. Each `try_set_duty_ticks` call issues
+one DUTY write and one SET_UPDATE strobe. A period boundary between two calls can
+expose the new duty on one channel and the old duty on another for one period.
+Synchronized multi-channel commits are deferred to the M2 `Group` API.
 
 Stop a running output with `disable` before `try_free`. The latter clears MODE
 (0 = generate 0) and returns the channel and pin. The pad stays muxed and is expected
 to read low (DOC/STATIC, HW 未検証). `enable` restores the trailing-edge CTRL value.
 `Channels::free` and `Output::try_free` check the clock first and return the owner on
-`Precondition`. On a disabled output or whole block, `abort` issues the stop without
-checking the clock. With the clock stopped the disable may fail to latch.
+`Precondition` without issuing any writes. `abort` is available on an output in
+either state, a running channel, or the whole block. It issues the stop without a
+clock check. With the clock stopped, the disable may fail to latch. The pin
+returned by `Output::abort` stays muxed to PWM until the caller reconfigures it,
+for example as an input.
 `Token::init` starts the clock and disables all channels. Its bounded reset wait may
 return `Timeout` with partial initialization and the original token in `InitError`.
 Dropping a running output leaves the hardware configured. Fault handling that requires
@@ -188,14 +206,26 @@ default pull-down before enabling PWM. Run `python3 lab/verify-pwm.py --uart0 CA
 to check the three readbacks against the boot nonce and verify the waveform sequence.
 
 **HYP · 2026-11-27.** Build the same package with `--features motor-api` for the M6 campaign.
-ALARM1 schedules 100,000 native updates at 1 ms intervals across five duty plateaus.
+ALARM1 schedules 100,000 native updates at 1 ms intervals across five duty plateaus
+in the order 25%, 100%, 50%, 0%, 75%. It then alternates 25% and 75% at 1,001 µs
+intervals to sweep through a 1,000 µs PWM period.
 GPIO22 and GPIO23 are inputs on the 1 kΩ loopbacks. Use
 `python3 lab/verify-motor-api.py --uart0 CAPTURE` to check each 25%, 50%, and 75% cycle
-against 990–1010 µs and ±1 percentage point, the constant 0% and 100% levels, and
-100 rejected configurations and 100 rejected native compares. The latency bound is
-10 µs including a 1 µs timer quantization allowance. The relative measurement uses
-the RP1 timer. Absolute frequency against an independent timebase, a 20 ns discrepancy
-and edges shorter than the GPIO sampling interval require separate instrumentation.
+against 990–1010 µs and ±1 percentage point. The 0% and 100% windows each need
+50,000 samples or more with gaps of 10 µs or less and no opposite levels. The
+sweep needs 1,000 or more complete cycles at 990–1010 µs, at least 400 high times
+in each of 250 ±10 µs and 750 ±10 µs, and zero outside these bands.
+The verifier also checks 100 rejected configurations, 100 rejected native compares,
+and a 10 µs latency bound with a 1 µs timer quantization allowance.
+
+With ALARM1 off, the fixture counts 200,000 cycles at RANGE=2,500. The RP1
+[datasheet](https://datasheets.raspberrypi.com/rp1/rp1-peripherals.pdf) §3.8 describes
+the timer tick source as `clk_ref` at nominal XOSC frequency. The fixture records
+the running timer's divider of 50 and PWM0's XOSC / 1 configuration alongside the
+span. The RANGE convention predicts 10,000,000 ±100 µs on that timebase, and
+RANGE+1 predicts 10,004,000 µs. If the common clock basis cannot be established,
+the convention result is unverified. Absolute frequency, exact latch timing and
+pulses shorter than the GPIO sampling interval require separate instrumentation.
 
 The results above cover the two-channel loopback subset. The remaining checks below are
 an extended plan, not a claim that all routes, periods or PWM1 have been verified.
