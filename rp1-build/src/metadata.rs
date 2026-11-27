@@ -695,6 +695,12 @@ impl Declaration {
 }
 
 impl Region<'_> {
+    pub(crate) fn receives_doorbell(&self, core: u8) -> bool {
+        self.core() == core + 1
+            && self.spec.direction.as_deref() == Some("linux-to-rp1")
+            && self.spec.notify() == Some("irq")
+    }
+
     pub(crate) fn wire(&self) -> Result<ShmRegion<'_>> {
         let spec = &self.spec;
         let kind = match (spec.direction.as_deref(), spec.writer.as_deref()) {

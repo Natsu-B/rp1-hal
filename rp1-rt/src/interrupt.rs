@@ -190,6 +190,30 @@ pub fn in_handler() -> bool {
     false
 }
 
+/// Run a thread-mode wait with events on transitions to pending, even for disabled lines.
+/// Used for a temporary startup alarm. System and user IRQ delivery are unchanged.
+#[doc(hidden)]
+pub fn __with_events_on_pending<T>(wait: impl FnOnce() -> T) -> T {
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    let _restore = {
+        const SCR: *mut u32 = 0xe000_ed10 as *mut u32;
+        const SEVONPEND: u32 = 1 << 4;
+        struct Restore(u32);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                unsafe { SCR.write_volatile(self.0) };
+            }
+        }
+        unsafe {
+            let previous = SCR.read_volatile();
+            SCR.write_volatile(previous | SEVONPEND);
+            core::arch::asm!("dsb sy", "isb sy", options(nostack, preserves_flags));
+            Restore(previous)
+        }
+    };
+    wait()
+}
+
 const ISER: usize = 0xe000_e100;
 const ICER: usize = 0xe000_e180;
 const ISPR: usize = 0xe000_e200;

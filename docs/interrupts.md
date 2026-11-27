@@ -49,12 +49,21 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 - 渡さない線: `log` の UART0、`host_irq = true` のときの `TIMER_3`、システム用の PCIE_OUT（53）・
   PROC_MISC（57）・CLOCKS_DEFAULT（59）。53 / 57 のハンドラは proc0 のシステムサービスだけが置ける。
 
-STATIC: `examples/dual-core` は proc0 の `TIMER_0` で 1 秒ごとの心拍を出し、proc1 の `IO_BANK0`
-で `Doorbell::ack` と `SEV` を行う。main が `ping.serve` を呼び、`Idle` なら `WFE` で待つ。
+STATIC: `notify = "irq"` の Linux → RP1 リングがあるコアでは、生成された `link.open(&mut irq.IO_BANK0)`
+が線を有効にし、共有窓が Ready になるまで WFE で待つ。標準の `IO_BANK0` はドアベルを ack し、
+`rp1_rt::send_event()` で両コアを起こす。処理はスレッド側で行い、同じドアベルを使う端点をすべて確認してから
+`wait_for_event()` を呼ぶ。`Progress::More` があればすぐにもう一度処理する（protocol.md §3.2）。
 
-`doorbell = N` はピン N の `PROCn_INTF` force を使う。force は `ack()` まで残るので、ハンドラは
-最初に 1 回だけ `ack()` してから、そのドアベルを使う全端点を drain / serve する（protocol.md §3.2）。
-`is_pending()` は force の有無を読む。ほかの `gpio_irq` のピンと線を共用する場合は、その `PinIrq` も見る。
+同じバンクの GPIO 割り込みも使う場合は、通常の `#[rp1_rt::interrupt(procN)] fn IO_BANK0()` を置く。
+このハンドラが生成された既定ハンドラより優先される。最初に `doorbell.ack_and_signal()` を 1 回呼んでから、
+各ピンの `PinIrq` を処理する。ドアベルだけを見分けたい場合は `doorbell.is_pending()` で確認できる。
+端点をハンドラ内で処理する構成では `try_open`、`ack`、`raise` で明示的に構成できる。
+
+STATIC: `link::enable(&mut pcie, &mut alarm, &mut irq.TIMER_N)` は proc0 で SHM 要求を待つ。
+現行 Linux の `wait_ready` は IRQ リングのドアベルを鳴らし、既存のドアベル割り込みが proc0 にもイベントを送る。
+ドアベルなしの構成や旧クライアント向けには、10 ms ごとに未使用アラームで WFE から復帰する。
+NVIC 線は無効のまま、起動中だけ SEVONPEND を使い、アラームと pending を解除して返す。
+`try_enable` は独自の起動処理向けの非ブロッキング API。
 
 ## 3. 周辺側で開けるもの
 

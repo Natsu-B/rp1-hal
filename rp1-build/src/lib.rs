@@ -214,11 +214,12 @@ fn generate_with_layout(
 ) -> Result<Artifacts> {
     let note = wire::descriptor_with_layout(name, version, d, hash, source, shm)?;
     let layout = format!(
-        "__stack_size0 = {};\n__stack_size1 = {};\n__stack_margin0 = {};\n{}\n{}",
+        "__stack_size0 = {};\n__stack_size1 = {};\n__stack_margin0 = {};\n{}\n{}{}",
         d.stack_size(0)?,
         d.stack_size(1)?,
         metadata::Declaration::stack_margin(0),
         include_str!("../../rp1-rt/link.x"),
+        link::irq_defaults(shm)?,
         include_str!("../../rp1-pac/irq.x")
     );
     let dts = overlay::dts_with_layout(d, &note, shm)?;

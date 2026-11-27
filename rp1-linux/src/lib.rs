@@ -251,6 +251,9 @@ impl Firmware {
             return Ok(session.header.generation());
         }
         self.link.write(proto::link::SHM_REQUEST, 1);
+        if self.link.read(proto::link::SHM_STATUS) == 0 {
+            self.signal_enable_request();
+        }
         let deadline = Instant::now() + timeout;
         loop {
             match self.link.read(proto::link::SHM_STATUS) {
@@ -265,6 +268,29 @@ impl Firmware {
         *self.session.borrow_mut() = Some(Rc::new(session));
         Ok(generation)
     }
+    /// Ring each declared IRQ reader once. Its handler wakes proc0 even if the ring
+    /// belongs to proc1. A missing doorbell device still allows legacy startup.
+    fn signal_enable_request(&self) {
+        let Ok(note) = Note::parse(&self.note) else {
+            return;
+        };
+        let mut notify = [false; 2];
+        for record in note.records().filter_map(std::result::Result::ok) {
+            if record.kind == SHM_REGION
+                && let Ok(region) = ShmRegion::parse(record.value)
+                && region.kind == ShmKind::RingToRp1
+                && region.notify_irq
+            {
+                notify[usize::from(region.core - 1)] = true;
+            }
+        }
+        for (core, enabled) in notify.into_iter().enumerate() {
+            if enabled && let Ok(doorbell) = self.doorbell(core as u8) {
+                doorbell.ring();
+            }
+        }
+    }
+
     /// The session [`Firmware::wait_ready`] opened; `Err(Proto(NotReady))` before.
     fn session(&self) -> Result<Rc<Session>> {
         let session = self
@@ -328,6 +354,7 @@ impl Firmware {
         Ok(RingRx {
             inner,
             irq: r.notify_irq.then(Irq::open).transpose()?,
+            space_doorbell: None,
             peer: Peer {
                 link: session.link.clone(),
                 core: r.core - 1,
@@ -532,6 +559,8 @@ pub struct RingRx<T> {
     inner: shm::RingRx<T>,
     /// `notify = "irq"`: the interrupt its writer raises.
     irq: Option<Irq>,
+    /// Named IRQ channel: notify the writer when the reader releases reply slots.
+    space_doorbell: Option<Doorbell>,
     peer: Peer,
     spin: Duration,
     stats: WaitStats,
@@ -544,6 +573,9 @@ impl<T: Message> RingRx<T> {
         self.session.check()?;
         let r = self.inner.pop()?;
         self.session.check()?;
+        if r.is_some() {
+            self.notify_space();
+        }
         Ok(r)
     }
     /// The oldest message, waiting up to `timeout` for one (`None`: no deadline). `Ok(None)`
@@ -565,6 +597,9 @@ impl<T: Message> RingRx<T> {
         self.session.check()?;
         let n = self.inner.pop_into(out)?;
         self.session.check()?;
+        if n != 0 {
+            self.notify_space();
+        }
         Ok(n)
     }
     /// [`RingRx::try_recv_into`], waiting up to `timeout` for the first message (`None`: no
@@ -584,8 +619,24 @@ impl<T: Message> RingRx<T> {
             return (0, Some(e));
         }
         let (n, error) = self.inner.pop_into_report(out);
-        let error = error.map(Error::from);
-        (n, error.or_else(|| self.session.check().err()))
+        let result = error
+            .map(Error::from)
+            .or_else(|| self.session.check().err());
+        if n != 0
+            && self.space_doorbell.is_some()
+            && (result.is_none() || self.session.check().is_ok())
+        {
+            self.notify_space();
+        }
+        (n, result)
+    }
+
+    fn notify_space(&self) {
+        if let Some(doorbell) = &self.space_doorbell {
+            // Order the posted tail store before setting the force bit.
+            barrier();
+            doorbell.ring();
+        }
     }
     /// Newest published slot and its index, without consuming it (reject rings only).
     pub fn newest(&self) -> Result<Option<(u32, Result<T>)>> {
@@ -913,6 +964,7 @@ mod tests {
         let rx = RingRx {
             inner: inner.unwrap(),
             irq,
+            space_doorbell: None,
             peer: Peer {
                 link: link.clone(),
                 core: 1,
@@ -931,6 +983,24 @@ mod tests {
             _irq: peer,
         }
     }
+    #[test]
+    fn releasing_channel_replies_rings_the_shared_doorbell() {
+        let mut rig = rig(false);
+        const PROC1_SET: usize = 0x2114;
+        let page = anon(0x4000);
+        rig.rx.space_doorbell = Some(Doorbell::new(page.clone(), 1, 27));
+        assert_eq!(rig.rx.try_recv().unwrap(), None);
+        assert_eq!(page.read(PROC1_SET), 0);
+        assert_eq!(rig.tx.push_slice(&[12, 34]), 2);
+        assert_eq!(rig.rx.try_recv().unwrap(), Some(12));
+        assert_eq!(page.read(PROC1_SET), 1 << 27);
+        page.write(PROC1_SET, 0);
+        let mut batch = [0; 2];
+        assert_eq!(rig.rx.try_recv_into(&mut batch).unwrap(), 1);
+        assert_eq!(batch[0], 34);
+        assert_eq!(page.read(PROC1_SET), 1 << 27);
+    }
+
     /// An `Irq` on one end of a socket pair; writing 4 bytes to the other end is an event.
     pub(crate) fn irq_pair() -> (Irq, File) {
         let (a, b) = UnixStream::pair().unwrap();

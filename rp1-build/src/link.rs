@@ -8,6 +8,24 @@ use rp1_proto::note::{ShmKind, ShmRegion, Writer};
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
+/// Provide the link handler as a default so existing GPIO bank handlers retain precedence.
+pub(crate) fn irq_defaults(shm: &ShmLayout<'_>) -> Result<String> {
+    let mut defaults = String::new();
+    for core in 0..2 {
+        if shm
+            .regions
+            .iter()
+            .any(|region| region.receives_doorbell(core))
+        {
+            writeln!(
+                defaults,
+                "PROVIDE(__rp1_p{core}_IO_BANK0 = __rp1_link_p{core}_IO_BANK0);"
+            )?;
+        }
+    }
+    Ok(defaults)
+}
+
 pub(crate) fn generate(shm: &ShmLayout<'_>, note: &[u8]) -> Result<String> {
     let mut output = String::from(
         "use ::rp1_hal::platform::Pcie;\n\
@@ -50,6 +68,12 @@ pub(crate) fn generate(shm: &ShmLayout<'_>, note: &[u8]) -> Result<String> {
          pub fn try_enable(pcie: &mut Pcie) -> Result<u32, EnableError> {\n\
              unsafe { generated::try_enable(pcie, AREA, &SRAM_RANGES, &DIGEST) }\n\
          }\n\
+         /// Wait for Linux's request and publish Ready. The alarm and its matching disabled\n\
+         /// NVIC line must be idle. Call in thread mode with IRQs enabled. The alarm\n\
+         /// rechecks requests from older clients every 10 ms until startup completes.\n\
+         pub fn enable<const N: u8, const IRQ: u8>(pcie: &mut Pcie, alarm: &mut ::rp1_hal::timer::Alarm<N>, line: &mut generated::Line<IRQ>) -> Result<u32, EnableError> {\n\
+             generated::enable(alarm, line, || try_enable(pcie))\n\
+         }\n\
          #[doc(hidden)]\n\
          pub fn __map_for_probe(pcie: &mut Pcie) -> Result<u32, EnableError> {\n\
              unsafe { generated::map_probe(pcie, AREA) }\n\
@@ -87,7 +111,11 @@ pub(crate) fn generate(shm: &ShmLayout<'_>, note: &[u8]) -> Result<String> {
             .filter(|(endpoint, _)| regions[endpoint.first].core == core + 1)
             .collect();
         if !owned.is_empty() {
-            write_core(&mut output, core, &regions, &owned)?;
+            let irq = shm
+                .regions
+                .iter()
+                .any(|region| region.receives_doorbell(core));
+            write_core(&mut output, core, &regions, &owned, irq)?;
         }
     }
     Ok(output)
@@ -211,7 +239,18 @@ fn write_core(
     core: u8,
     regions: &[ShmRegion<'_>],
     endpoints: &[(&Endpoint<'_>, &String)],
+    irq: bool,
 ) -> Result<()> {
+    if irq {
+        writeln!(
+            output,
+            "#[unsafe(no_mangle)]\n\
+             #[unsafe(link_section = \".isram.text.__rp1_link_p{core}_IO_BANK0\")]\n\
+             unsafe extern \"C\" fn __rp1_link_p{core}_IO_BANK0() {{\n\
+                 unsafe {{ super::Doorbell{core}::new() }}.ack_and_signal();\n\
+             }}"
+        )?;
+    }
     writeln!(
         output,
         "/// Attached endpoints owned by proc{core}.\npub struct Proc{core}Link {{"
@@ -236,8 +275,30 @@ fn write_core(
          /// The owning core's one right to attach these endpoints.\n\
          pub struct Proc{core}LinkInit {{ _core: ::core::marker::PhantomData<*mut ()> }}\n\
          impl Proc{core}LinkInit {{\n\
-         pub(super) const fn new() -> Self {{ Self {{ _core: ::core::marker::PhantomData }} }}\n\
-         /// The token can be retried while pending. A lost window requires an RP1 reload.\n\
+         pub(super) const fn new() -> Self {{ Self {{ _core: ::core::marker::PhantomData }} }}",
+    )?;
+    if irq {
+        writeln!(
+            output,
+            "/// Enable the doorbell and sleep in thread mode until proc0 publishes the window.\n\
+             /// A custom IO_BANK0 handler must acknowledge the doorbell and signal an event.\n\
+             pub fn open(self, irq: &mut generated::Line<0>) -> Result<Proc{core}Link, OpenError<::core::convert::Infallible>> {{\n\
+                 irq.enable();\n\
+                 generated::open(self, Self::try_open)\n\
+             }}"
+        )?;
+    } else {
+        writeln!(
+            output,
+            "/// Sleep until proc0 publishes the window. The attached rings can be polled.\n\
+             pub fn open(self) -> Result<Proc{core}Link, OpenError<::core::convert::Infallible>> {{\n\
+                 generated::open(self, Self::try_open)\n\
+             }}"
+        )?;
+    }
+    writeln!(
+        output,
+        "/// The token can be retried while pending. A lost window requires an RP1 reload.\n\
          /// A doorbell ring is armed when this returns: give it to its handler, then raise the doorbell once ([`transport::RingRx`]).\n\
          pub fn try_open(self) -> Result<Proc{core}Link, OpenError<Self>> {{\n\
          let attach = || Ok(Proc{core}Link {{"

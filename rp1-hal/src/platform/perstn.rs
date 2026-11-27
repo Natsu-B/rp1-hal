@@ -292,6 +292,9 @@ impl Handlers {
 #[rp1_rt::interrupt(proc0, __platform, sram)]
 fn PCIE_OUT() {
     handle(&mut Mmio);
+    if matches!(pcie_state(), PcieState::Lost { .. }) {
+        rp1_rt::send_event();
+    }
 }
 
 #[cfg(test)]

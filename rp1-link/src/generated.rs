@@ -4,12 +4,17 @@ use crate::{
     Block, Channel, EnableError, Error, Message, OpenError, Overflow, RingRx, RingTx, Server,
     notify::{Notify, Wake, sealed::Token},
 };
-use rp1_hal::platform::Pcie;
+use rp1_hal::{
+    fugit::ExtU32,
+    platform::{Pcie, PcieState},
+    timer::{Alarm, Timer},
+};
 pub use rp1_proto::note::{ShmArea, ShmKind, ShmRegion, Writer};
 use rp1_proto::{
     LINK_START, SHM_WINDOW, barrier, link,
     shm::{self, HEADER_SIZE, HeaderInit},
 };
+pub use rp1_rt::interrupt::Line;
 
 /// # Safety
 /// The area, SRAM ranges and digest must come from this firmware's validated declaration and
@@ -20,11 +25,75 @@ pub unsafe fn try_enable(
     sram_ranges: &[(u16, u16)],
     digest: &[u8; 32],
 ) -> Result<u32, EnableError> {
-    enable_with(read_link(link::SHM_REQUEST), || unsafe {
+    let generation = enable_with(read_link(link::SHM_REQUEST), || unsafe {
         pcie.__publish_shm(area.phys, area.size, || {
             initialize(area.size, sram_ranges, digest)
         })
-    })
+    })?;
+    rp1_rt::send_event();
+    Ok(generation)
+}
+
+/// Wait for Linux's doorbell or a startup-only timer event.
+pub fn enable<const N: u8, const IRQ: u8>(
+    alarm: &mut Alarm<N>,
+    line: &mut Line<IRQ>,
+    mut try_enable: impl FnMut() -> Result<u32, EnableError>,
+) -> Result<u32, EnableError> {
+    const { assert!(IRQ == N + 26, "use TIMER_N with ALARMN") };
+    assert!(
+        !line.is_enabled(),
+        "link startup needs an idle alarm and disabled IRQ"
+    );
+    let timer = Timer::new();
+    // A disabled NVIC line can latch a WFE event without taking over its handler.
+    let result = rp1_rt::interrupt::__with_events_on_pending(|| {
+        alarm.enable_interrupt();
+        let mut armed = false;
+        loop {
+            match try_enable() {
+                Err(EnableError::NotRequested) => {}
+                result => break result,
+            }
+            let state = rp1_hal::platform::pcie_state();
+            if state != PcieState::Up {
+                break Err(EnableError::Detector(state));
+            }
+            if !armed || alarm.finished() {
+                alarm.clear_interrupt();
+                barrier();
+                line.unpend();
+                armed = alarm.schedule(timer.now_32() + 10.millis()).is_ok();
+                if !armed {
+                    continue;
+                }
+            }
+            rp1_rt::wait_for_event();
+        }
+    });
+    alarm.disable_interrupt();
+    alarm.cancel();
+    alarm.clear_interrupt();
+    barrier();
+    line.unpend();
+    result
+}
+
+pub fn open<I, T>(
+    mut init: I,
+    mut try_open: impl FnMut(I) -> Result<T, OpenError<I>>,
+) -> Result<T, OpenError<core::convert::Infallible>> {
+    loop {
+        match try_open(init) {
+            Ok(endpoints) => return Ok(endpoints),
+            Err(OpenError::Reset) => return Err(OpenError::Reset),
+            Err(OpenError::Attach(error)) => return Err(OpenError::Attach(error)),
+            Err(OpenError::NotReady(token)) => {
+                init = token;
+                rp1_rt::wait_for_event();
+            }
+        }
+    }
 }
 
 fn enable_with(

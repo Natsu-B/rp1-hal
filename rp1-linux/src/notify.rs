@@ -97,6 +97,7 @@ const INTF_SET: usize = 0x2108;
 /// One core's doorbell: Linux interrupts it by setting the force bit of its doorbell pin in
 /// `PROCn_INTF` (pin and core from the note's LINK record). The force is a level that stays
 /// until RP1 acks it, so setting it again while set costs nothing and adds no interrupt.
+#[derive(Clone)]
 pub(crate) struct Doorbell {
     page: Rc<Mapping>,
     offset: usize,

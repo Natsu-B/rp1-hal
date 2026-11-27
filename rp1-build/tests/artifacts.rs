@@ -572,7 +572,7 @@ fn in_tree_declarations_have_stable_notes() {
     for (manifest, expected) in [
         (
             "examples/dual-core/Cargo.toml",
-            "02ba276461b1cf43dc1687ad0fbf70834fb440867c89f5a6ca47813618acc10e",
+            "e54262bfda73416c2ba101df4e7debf483745f7d725befaa0f1c18a0f7f1c1da",
         ),
         (
             "lab/shm-firmware/Cargo.toml",

@@ -62,6 +62,13 @@ fn generated_resources_only_reference_their_link_features() {
     let full = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
     assert!(full.contains("pub link: link::Proc0LinkInit"));
     assert!(full.contains("pub link: link::Proc1LinkInit"));
+    assert!(full.contains("fn __rp1_link_p1_IO_BANK0()"));
+    assert!(!full.contains("fn __rp1_link_p0_IO_BANK0()"));
+    let defaults = irq_defaults(&d.shm_layout().unwrap()).unwrap();
+    assert_eq!(
+        defaults,
+        "PROVIDE(__rp1_p1_IO_BANK0 = __rp1_link_p1_IO_BANK0);\n"
+    );
 
     d.shm.remove(0);
     let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();

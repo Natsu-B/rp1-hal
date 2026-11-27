@@ -31,9 +31,14 @@ impl Firmware {
         let (down, up) = pair::<Tx, Rx>(Note::parse(&self.note)?, name, rpc)?;
         let up_map = map(&up)?;
         let down_map = map(&down)?;
-        let rx = Self::attach_rx(up, up_map, session.clone())?;
+        let mut rx = Self::attach_rx(up, up_map, session.clone())?;
         // Attaching the writer notifies for any request that the previous owner left pending.
         let tx = self.attach_tx(down, down_map, session)?;
+        if !rpc && up.notify_irq && !up.overwrite {
+            rx.space_doorbell.clone_from(&tx.doorbell);
+            // A previous reader may have exited between publishing tail and the IRQ.
+            rx.notify_space();
+        }
         Ok((Channel { tx, rx }, down.depth))
     }
 }

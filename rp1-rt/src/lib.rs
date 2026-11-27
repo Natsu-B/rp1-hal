@@ -131,7 +131,7 @@ impl Proc1Launcher {
                 }
                 core::hint::spin_loop();
             }
-            core::arch::asm!("dsb sy", "sev", options(nostack, preserves_flags));
+            send_event();
             if released {
                 Ok(())
             } else {
@@ -156,10 +156,24 @@ macro_rules! bind {
     };
 }
 
+/// Complete preceding memory accesses, then signal an event to both RP1 cores.
+///
+/// An event wakes a core in [`wait_for_event`] or remains latched until its next wait.
+/// Events can coalesce, so publish state before signaling and recheck it after waking.
+#[inline]
+pub fn send_event() {
+    #[cfg(target_arch = "arm")]
+    unsafe {
+        core::arch::asm!("dsb sy", "sev", options(nostack, preserves_flags));
+    }
+}
+
+/// Wait for a latched event. A wake may be unrelated to the condition being waited on.
+#[inline]
 pub fn wait_for_event() {
     #[cfg(target_arch = "arm")]
     unsafe {
-        core::arch::asm!("wfe", options(nomem, nostack, preserves_flags));
+        core::arch::asm!("wfe", options(nostack, preserves_flags));
     }
     #[cfg(not(target_arch = "arm"))]
     core::hint::spin_loop();

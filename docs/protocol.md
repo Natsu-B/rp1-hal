@@ -178,6 +178,13 @@ T   payload 8 バイト境界に 0 埋め
 `<name>-dn` は Linux → RP1、`<name>-up` は RP1 → Linux。どちらも `reader-local` と
 `reject` を使う。Linux は up、dn の順に UIO をロックする。channel は両端点を `split` できる。
 
+IRQ の名前付き channel では、Linux が応答の `tail` を公開してから既存のドアベルを鳴らす。
+成功した読み取り 1 回（バッチなら 1 バッチ）につき BAR1 への posted 書き込み 1 回で、空読みと RPC では鳴らさない。
+再 open 時にも 1 回通知し、`tail` の公開直後に前の読み手が終了した場合を扱う。
+`Channel::respond` は返答の空きを処理予算にして、満杯なら要求を消費せず `Idle` を返す。
+両リングが IRQ の場合は、この通知で処理を再開できる。旧クライアントにはこの通知がないため、
+`examples/dual-core` は既存の 1 秒の心拍でもイベントを送る。応答待ち専用のアラームは使わない。
+
 RPC は同じ深さの 2 本を使う。ファームの `Server::serve` は要求順に 1 件ずつ応答する。
 応答の publish に失敗したら drain を止め、以後 `Reset` を返す。Linux の `Client::call` は
 送信時の `dn.head` と受信時の `up.tail` を比較する。未回収数 `dn.head.wrapping_sub(up.tail)`
@@ -246,7 +253,10 @@ Linux writer (send / send_slice; at open from W3)    RP1 reader (IO_BANK0 handle
   費用は 1 件（またはバッチ）ごとに BAR2 の読み戻し 1 回と、読み手が眠っていれば BAR1 への posted 書き込み 1 回。
 - `Firmware::ring_tx` は IRQ 端点を開くと W3〜W5 を 1 回行う。前の書き手が公開と通知の間で終了しても、
   次の書き手が送信せずに読み手を起こせる。
-- RP1 の `try_open` は R3〜R5 を行う。空なら arm したまま返し、データがあれば arm を解除してドアベルを立てる。
+- RP1 の `link.open(&mut irq.IO_BANK0)` は Ready まで WFE で待ち、生成ハンドラでドアベルを ack して
+  スレッドを起こす。全端点が `Idle` のときに WFE へ戻る。`try_open` は R3〜R5 を行う。
+  空なら arm したまま返し、データがあれば arm を解除してドアベルを立てる。
+  端点をハンドラで処理する場合は、次のように明示的に制御する。
 
   ```rust
   // IO_BANK0 handler body; `doorbell`, `down_a` and `down_b` come from the handler's statics.
@@ -295,7 +305,9 @@ RP1 の読み手に時間での再確認は無い。ドアベルを取りこぼ�
 
 1. 生成された `rp1::link::try_enable` で RP1 は世代番号を奇数にし、DDR 領域と link ページの割当範囲をゼロ化し、ヘッダーを書き、偶数（前の値 + 2）にする（STATIC）。
 2. Linux の `Firmware::open` はローダーの引き継ぎを note と照合する。`wait_ready` が SHM を要求し、
-   ヘッダーの偶数の世代番号と note の SHA-256 を検査してから端点を開けるようにする。
+   IRQ リングがあればそのドアベルでも要求を通知する。proc0 の `link::enable` はそのイベントで起きる。
+   旧クライアント向けに起動中だけ 10 ms のアラームを併用する。Linux はヘッダーの偶数の世代番号と
+   note の SHA-256 を検査してから端点を開けるようにする。
 3. Linux 側は読み取りの前後、書き込みの前に世代番号を見て、変わっていたら `Err(Reset)` を返す。書き込み済みのデータを取り消すことはできない。cold boot 以外の同時リセットからの回復は保証しない。
 4. Linux のプロセスが再起動しても、`tail` は共有メモリに残っているので続きから読める。最初から読み直す `reset` は v0.1 では持たない。
 5. v0.1 は cold boot のみ（PCIe リセットで outbound ATU が消える）。RP1 の再ロードは Linux の再起動を伴う。

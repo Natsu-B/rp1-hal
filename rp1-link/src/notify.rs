@@ -245,6 +245,15 @@ impl<const PIN: u8, const CORE: u8> Doorbell<PIN, CORE> {
     pub fn ack(self) {
         write(Self::INTF_CLR, Self::BIT);
     }
+    /// Acknowledge the doorbell and wake threads waiting for the link on either core.
+    ///
+    /// Call first in a custom `IO_BANK0` handler on this core, then service the GPIO pins.
+    #[inline]
+    pub fn ack_and_signal(self) {
+        self.ack();
+        rp1_rt::send_event();
+    }
+
     /// Force this core's own doorbell bit: the handler runs again (after [`Progress::More`]).
     /// Raise it once after handing the endpoint to its handler ([`RingRx`](crate::RingRx)).
     pub fn raise(self) {

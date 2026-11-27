@@ -139,10 +139,7 @@ impl Handoff {
         self.sys_hz.store(clocks.sys_hz, Ordering::Relaxed);
         self.uart_hz.store(clocks.uart_hz, Ordering::Relaxed);
         self.ready.store(READY, Ordering::Release);
-        #[cfg(target_arch = "arm")]
-        unsafe {
-            core::arch::asm!("dsb sy", "sev", options(nostack, preserves_flags));
-        }
+        rp1_rt::send_event();
     }
     fn take(&self) -> Option<Clocks> {
         if self.ready.load(Ordering::Acquire) != READY {

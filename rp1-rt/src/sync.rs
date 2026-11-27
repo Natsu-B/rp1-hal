@@ -63,10 +63,7 @@ impl<T: Message, const N: usize, P: Core, C: Core> Producer<'_, T, N, P, C> {
             (*q.slots[head as usize & (N - 1)].get()).write(value);
         }
         q.head.store(head.wrapping_add(1), Ordering::Release);
-        #[cfg(target_arch = "arm")]
-        unsafe {
-            core::arch::asm!("dsb sy", "sev", options(nostack, preserves_flags));
-        }
+        crate::send_event();
         Ok(())
     }
 }
