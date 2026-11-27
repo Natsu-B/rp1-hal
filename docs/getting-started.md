@@ -1,7 +1,8 @@
 # Getting started
 
-**HW · 2026-11-27.** The template's polling `ping` RPC returned 1,000 matching replies on a CM5 Lite
-with Raspberry Pi OS Lite arm64 (trixie) and stock Linux `6.12.75+rpt-rpi-2712` over TFTP/NFS.
+**HW · 2026-11-27.** An earlier build of the IRQ template returned 1,000 matching `ping` replies
+and generated 1,000 Linux interrupts on a CM5 Lite with Raspberry Pi OS Lite arm64 (trixie) and
+stock Linux `6.12.75+rpt-rpi-2712` over TFTP/NFS. [Evidence runs](linux-compatibility.md#evidence-runs)
 **HYP · 2026-11-27.** An end-to-end replay with the pinned
 [example template](https://github.com/Natsu-B/rp1-hal-example) and HAL is pending.
 
@@ -11,7 +12,8 @@ with Raspberry Pi OS Lite arm64 (trixie) and stock Linux `6.12.75+rpt-rpi-2712` 
   path. Check the bootloader's UART output to see which mode it selected.
 - Use the stock 2712 arm64 kernel, its CM5 Lite IO board DTB (`bcm2712-rpi-cm5l-cm5io.dtb`) and the
   overlays shipped with that kernel. The template uses `clock.authority = "rp1"` and owns RP1
-  UART0 on GPIO14/15. Check any extra overlays against your firmware's pin declarations.
+  UART0 on GPIO14/15. Keep GPIO27 free for the software doorbell and check any extra overlays
+  against the firmware's pin declarations.
 - **Hands-on.** Connect a 3.3 V serial adapter RX to GPIO14 (RP1 UART0 TX) and connect ground.
   Leave GPIO15 free for this guide. Connect a second 3.3 V adapter to the IO board debug UART
   (BCM2712 UART10). Both ports use 115200 8N1.
@@ -42,7 +44,8 @@ Start at the root of a clean `rp1-hal` checkout and use the template's HAL pin f
 
 ```bash
 HAL=$PWD
-git -C "$HAL" checkout --detach 17fe4133871795299a22969a92b274919952f5a2
+HAL_REV=2e4fedc0a68c7aeed2cdeeb67b60ae5e0f125e25
+git -C "$HAL" checkout --detach "$HAL_REV"
 WORK=$(mktemp -d "$HAL/../rp1-start.XXXXXX")
 export CARGO_BUILD_JOBS=2
 ```
@@ -155,20 +158,21 @@ manually. The load order is `rp1-mailbox`, `scmi-core`, `scmi-module`,
 `/firmware/scmi` with RP1 mailbox channel 0, shared SRAM and clock protocol `@14`, and switches
 the retained clock consumers. Use the stock DTB directly. The generated overlay supplies the SCMI
 entries. For userspace, load `uio_pdrv_genirq` with `of_id=generic-uio`. Its `uio` dependency is
-loaded by modprobe when it is a module. The client needs access to the matching `/dev/uio*` nodes.
+loaded by modprobe when it is a module.
 
 ## 3. Build firmware and boot set inputs
 
 Keep `cargo-rp1`, the template firmware, the Linux client and `rp1boot` on the template's HAL pin.
-The template uses polling RPC, so the first run needs no external peer.
+The first run needs no external peer. Linux wakes RP1 through the software doorbell.
+Proc1 sleeps between requests and Linux waits for replies on the UIO interrupt.
 
 ```bash
 TEMPLATE="$WORK/example"
 git clone https://github.com/Natsu-B/rp1-hal-example "$TEMPLATE"
-git -C "$TEMPLATE" checkout --detach 0ba84ed9d380dded2f6f437d669a62b13aa2ff56
+git -C "$TEMPLATE" checkout --detach 365e1f98a187a06d08b71b914e0284fddd71b3b2
 cd "$TEMPLATE"
 cargo install --locked --git https://github.com/Natsu-B/rp1-hal \
-  --rev 17fe4133871795299a22969a92b274919952f5a2 --root "$WORK/tools" cargo-rp1
+  --rev "$HAL_REV" --root "$WORK/tools" cargo-rp1
 export PATH="$WORK/tools/bin:$PATH"
 cargo rp1 build --locked -p firmware --target thumbv7m-none-eabi --release
 cargo build-linux
@@ -351,7 +355,8 @@ sudo umount "$SD_BOOT" "$ROOTFS"
 
 On UART10 look for `bundle ok` with the ID in `cmdline.txt`, then
 `jumping to Linux at EL2`. On UART0 expect `proc0: platform ready`,
-`proc1: hello`, then `proc0: from proc1: 42`. The manifest sets
+`proc1: hello`, then `proc0: from proc1: 42` once the first Linux client enables
+shared memory. The manifest sets
 `log = { sink = "uart0", baudrate = 115200 }`. Proc0 calls
 `log!("proc0: platform ready {}\n", sys.report)` after successful platform init.
 
@@ -363,16 +368,24 @@ findmnt /
 dmesg | grep -Ei 'scmi_mailbox_transport|SCMI Protocol|scmi.*clk'
 ls -l /sys/bus/scmi_protocol/drivers/scmi-clocks/
 for d in /sys/class/uio/uio*; do
-  if [ -r "$d/name" ]; then printf '%s ' "${d##*/}"; cat "$d/name"; fi
+  [ -r "$d/name" ] || continue
+  name=$(cat "$d/name")
+  case "$name" in rp1:*) printf '%s ' "$name"; ls -l "/dev/${d##*/}" ;; esac
 done
+grep -E '[[:space:]]rp1:irq$' /proc/interrupts
 /usr/local/bin/linux-app 10
 printf 'linux-app exit=%s\n' "$?"
+grep -E '[[:space:]]rp1:irq$' /proc/interrupts
 ```
 
 Expect the release above and an NFSv3 root for step 4 or ext4 for step 5. The Linux SCMI clock
-driver should bind and the UIO names should include `rp1:link`, `rp1:header`,
-`rp1:ping-dn` and `rp1:ping-up`. Expect ten per-call timings, a `ping rtt n=10` summary
-and exit 0. The client checks that each reply equals the value it sent.
+driver should bind. The six UIO names used by the client are `rp1:link`, `rp1:header`,
+`rp1:ping-dn` (requests), `rp1:ping-up` (replies), `rp1:doorbell` (Linux to RP1) and
+`rp1:irq` (RP1 to Linux). The account running the client needs read/write access to all six
+matching `/dev/uioN` nodes. Find them by name after each boot.
+
+Expect ten per-call timings, a `ping rtt n=10` summary and exit 0. The client checks that each
+reply equals the value it sent. The total across CPU columns for `rp1:irq` should rise during the run.
 
 | Symptom | Check |
 |---|---|
@@ -380,7 +393,10 @@ and exit 0. The client checks that each reply equals the value it sent.
 | Loader rejects DT or bundle placement | Check the UART10 reason. Match config, cmdline, loader and bundle from one build. Rerun `cargo rp1 check` against the board DTB with the selected overlays. Resolve pin/console conflicts before staging again. |
 | `invalid module format` or unknown symbol | Read dmesg and compare `uname -r`, module vermagic, package versions and the stock `Module.symvers`. Rebuild the modules and initramfs together after a kernel update. |
 | Clock probe defers before DHCP | Check for all four SCMI modules in the NFS initramfs and a usable RP1 mailbox driver. Verify `BOOT=nfs`, the interface name, the SCMI node and the absence of `ip=` in the cmdline. |
-| UIO missing or permission denied | Verify `modprobe uio_pdrv_genirq` and `of_id=generic-uio`, then compare sysfs names with the corresponding `/dev/uio*` permissions. Run the first check as root. |
+| UIO names missing | Check `uio_pdrv_genirq.of_id=generic-uio` in `/proc/cmdline` and the `device/driver` links under `/sys/class/uio/uio*`. If the driver is an unloaded module, run `modprobe uio_pdrv_genirq of_id=generic-uio` as root and recheck the names. |
+| Permission denied | Match the sysfs names to the device nodes above. Run the first check as root. For regular use, grant the intended user or group read/write access to those six nodes. |
+| Waiting for shared memory times out | Check `proc0: platform ready` and panic output on UART0, and the `rp1:link` and `rp1:doorbell` UIO nodes. |
+| Ping times out or `rp1:irq` stays flat | Check `proc1: hello` and panic output on UART0. Verify that `rp1:doorbell` and `rp1:irq` are bound to `uio_pdrv_genirq`, GPIO27 is reserved and the ELF and Linux client come from the same pins. |
 | Linux console present, RP1 messages missing | Check the UART0 adapter on GPIO14 and ground at 115200. Linux and loader messages come from UART10. |
 
 For NFS rollback, stop the test boot and restore the verified TFTP backup. Use the same confirmed
