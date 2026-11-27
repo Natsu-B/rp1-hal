@@ -77,14 +77,14 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     log!("proc0 ready private={} bss=0x{:x}\n", private, bss).unwrap();
     LOCAL.get(&core).set(1);
     // SPI0 on proc0 with its own Clocks: SCLK/MOSI/MISO = GPIO11/10/9, GPIO8 as chip select.
-    let bus = p
+    let mut bus = p
         .spi0
         .init(
             &sys.clocks,
             rp1_hal::spi::Config::new(10.MHz(), embedded_hal::spi::MODE_0),
         )
         .unwrap();
-    let mut device = rp1_hal::spi::Device::new(bus, p.pins.gpio8);
+    let mut device = rp1_hal::spi::Device::new(bus.polling(), p.pins.gpio8);
     let mut id = [0u8; 2];
     {
         use embedded_hal::spi::{Operation, SpiDevice};
@@ -144,7 +144,13 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10.millis()).unwrap();
     let mut adc = p.adc.init(&clocks).unwrap();
     log!("proc1 temp_mc={}\n", adc.read_temperature().unwrap()).unwrap();
-    let _i2c = p.i2c1.init(&clocks, rp1_hal::i2c::Speed::Standard).unwrap();
+    let _i2c = p
+        .i2c1
+        .init(
+            &clocks,
+            rp1_hal::i2c::Config::new(rp1_hal::i2c::Speed::Standard),
+        )
+        .unwrap();
     let mut tx = VALUES.producer(&mut core);
     tx.push(increment(core::hint::black_box(41))).unwrap();
     #[cfg(not(feature = "ping-poll"))]

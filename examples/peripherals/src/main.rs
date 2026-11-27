@@ -1,3 +1,4 @@
+//! UART, SPI and I²C use the explicit polling engines. The alarm demo uses its IRQ.
 #![no_std]
 #![no_main]
 

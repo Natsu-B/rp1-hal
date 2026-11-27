@@ -1,6 +1,6 @@
 # I2C master
 
-STATIC: `rp1_hal::i2c` implements embedded-hal 1.0 seven-bit `I2c` with polling.
+STATIC (2026-11-27). Select `i2c.polling()` for embedded-hal 1.0 seven-bit `I2c`.
 `write`, `read`, and `write_read` use the shared `transaction` implementation.
 Empty buffers are skipped, adjacent operations of the same direction continue,
 direction changes issue repeated START, and the final byte issues STOP. Reads can
@@ -16,9 +16,10 @@ i2c1 = { sda = 2, scl = 3 }
 
 ```rust,ignore
 use embedded_hal::i2c::I2c;
-// p.i2c1: rp1_hal::i2c::Parts<1, 2, 3>, the token with the declared SDA/SCL pins.
-let mut bus = p.i2c1.init(&clocks, rp1_hal::i2c::Speed::Standard)?;
-bus.write_read(0x2d, &request, &mut response)?;
+use rp1_hal::i2c::{Config, Speed};
+
+let mut bus = p.i2c1.init(&clocks, Config::new(Speed::Standard))?;
+bus.polling().write_read(0x2d, &request, &mut response)?;
 ```
 
 STATIC: the generated token has one declared core owner. Initialization consumes
@@ -71,14 +72,15 @@ only the fast one). The counts are computed in whole MHz
 in 32-bit arithmetic: an `ic_clk` that is not a whole number of MHz is `Invalid`; for every
 whole-MHz `ic_clk` the result (counts or `Invalid`) equals the earlier 64-bit formula's
 (STATIC, host test over all whole-MHz u32 values). `Clocks` only gives 50 or 200 MHz.
-`init` checks clk_sys and the speed before it releases the reset; on any error it returns
-`rp1_hal::InitError` whose `resources` are the token and the untouched pins as the `Parts` that
-`free` returns, so the caller can retry (`?` converts it to `Error`). STATIC (host model through an injected register interface): a stale
-clk_sys or an impossible speed writes no register, leaves the reset asserted and routes no
-pin, and the returned `Parts` initialise on retry.
+`init` checks clk_sys and the speed before releasing reset. Use `error.try_into_parts()`
+when the token and untouched pins can be reused. If recovery is pending,
+`error.try_recover()` repeats the disable request once reset is released and checks
+for a disabled and idle controller before returning the parts.
+STATIC (host model). A stale clock or impossible speed writes no register and routes
+no pin. The returned parts initialize on retry.
 A controller declared under `[proc1]` takes its `Clocks` from
 `Clocks::wait_from_proc0(&core, timeout)` (the value proc0's `platform::init` published;
-see `docs/adc.md`, "Clocks on proc1"). STATIC: compile-checked in `examples/dual-core`.
+see `docs/adc.md`, "Clocks on proc1"). STATIC: compile-checked in `examples/peripherals` and the lab firmware.
 
 STATIC: address NACK, data NACK and arbitration loss map to embedded-hal's matching
 error kinds. Other aborts retain `IC_TX_ABRT_SOURCE`. FIFO errors are reported as
@@ -88,15 +90,13 @@ the controller and acknowledges interrupt state. A failed disable poisons the
 handle; further transactions return `Precondition`. There is no GPIO bus-clear sequence
 or interrupt-driven/DMA transfer.
 
-Release (STATIC, host model): `free()` masks the interrupts, closes the RP1 wrapper and
-returns `Parts` (token and pins, still muxed) for a new `init`; the reset stays released.
-The controller is disabled between transactions, so only a poisoned handle has something
-to wait for: `free()` requests the disable again, waits up to 100 ms, and on `Timeout`
-returns `FreeError { driver, error }` with the interrupt mask unchanged, so the call can be repeated once
-the slave lets go of SCL. `abort()` does not wait: it repeats the disable request (a failed
-transaction has already requested the abort, and ABORT is ignored while IC_ENABLE.ENABLE is
-0, DOC), masks the interrupts and returns `Parts`; while the
-controller is still active, `init` fails with `Timeout` and returns the parts again.
+Release (STATIC, host model). `try_free()` checks for disable and master idle,
+masks the interrupts, closes the RP1 wrapper and returns the still-muxed pins and
+token. `free_polling()` repeats the disable request and waits up to 100 ms,
+retaining the controller and its interrupt mask on timeout. `try_cancel()` repeats
+disable without waiting and masks the interrupts. The controller can stay active
+while a target holds SCL. `try_free()` returns the owner in `FreeError` until the
+controller stops.
 
 STATIC: the polling loop is an `#[isram]` root; `cargo rp1 build` places its callees
 within the 8 KiB budget. Host tests cover FIFO boundaries, operation directions,

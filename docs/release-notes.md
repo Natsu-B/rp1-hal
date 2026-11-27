@@ -22,7 +22,7 @@ STATIC
   including Slot borrows. Use `p.wait_timer.delay(10.millis())?` to handle errors or
   `Timer::delay_polling` to choose a busy wait explicitly.
 - Use `fugit::ExtU32` for durations such as `10.millis()` in `WaitTimer::delay`,
-  `Deadline::after`, `Uart::set_read_timeout` and the DMA wait APIs.
+  `Deadline::after`, `uart.polling().set_read_timeout` and the DMA wait APIs.
 - `spi::Device` busy-waits for `Operation::DelayNs` and returns `Precondition` in a
   handler or masked context. IRQ-backed CS delays arrive with the SPI wait PR.
 - Proc0 gets its clocks from `rp1::platform::init`. Proc1 uses
@@ -31,6 +31,26 @@ STATIC
   Each half exposes its own IRQ status and mask operations. Both `Uart::enable_rx_interrupt`
   and `Rx::enable_interrupt` enable the RX threshold, timeout and error interrupts.
   Acknowledge receive error interrupts with `clear_interrupt`. Use `Uart::join` before
-  calling `free` or `abort`. The pin route traits are `TxPin` and `RxPin`.
+  releasing or cancelling the UART. The pin route traits are `TxPin` and `RxPin`.
 - Enable `rp1-hal/eh02-adc` for the embedded-hal 0.2 `OneShot` ADC adapter or migrate to
   `Adc::read`.
+
+
+## Peripheral migration
+
+STATIC (2026-11-27). UART, SPI and I²C expose the existing synchronous engines
+through `.polling()`. The controller types and `Parts` name the required pin tuple.
+
+| Before | After |
+| --- | --- |
+| `p.uart1.init(&clocks, 115_200.Hz())?` | `p.uart1.init(&clocks, uart::Config::new(115_200.Hz()))?` |
+| `tx.write_all(bytes)?` and `rx.read_byte()?` | `tx.polling().write_all(bytes)?` and `rx.try_read_byte()?` |
+| `spi::Device::new(bus, cs)` | `spi::Device::new(bus.polling(), cs)` |
+| `p.i2c1.init(&clocks, Speed::Standard)?` and `bus.write(addr, bytes)?` | `p.i2c1.init(&clocks, i2c::Config::new(Speed::Standard))?` and `bus.polling().write(addr, bytes)?` |
+| `spi::Parts<0, 11, 10, 9>` | `spi::Parts<0, (Pin<11>, Pin<10>, Pin<9>)>` |
+| `token.init(tx, rx, &clocks, baud)` | `uart::Parts::new(token, uart::Pins::builder().tx(tx).rx(rx)).init(&clocks, uart::Config::new(baud))` |
+| `driver.free()` and `driver.abort()` | `driver.try_free()` for an immediate check or `driver.free_polling()` for the bounded wait. Use `driver.try_cancel()` to request stop before collecting parts. |
+| `e.resources` and `e.driver` | `e.try_into_parts()` or `e.try_recover()` on a peripheral initialization error. `e.into_parts()` returns the driver and cause on a release error. |
+
+Propagate UART, SPI and I²C initialization errors with an outer error that
+retains the owner, or explicitly handle recovery.

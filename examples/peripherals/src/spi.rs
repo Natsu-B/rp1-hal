@@ -10,10 +10,15 @@ use rp1_hal::{
     spi::{Config, Device, Parts},
 };
 
-pub fn run(spi: Parts<0, 11, 10, 9>, cs: Pin<8>, clocks: &Clocks) -> Result<(), &'static str> {
+pub fn run(
+    spi: Parts<0, (Pin<11>, Pin<10>, Pin<9>)>,
+    cs: Pin<8>,
+    clocks: &Clocks,
+) -> Result<(), &'static str> {
     let mut bus = spi
         .init(clocks, Config::new(1.MHz(), MODE_0))
         .map_err(|_| "SPI0 init failed")?;
+    let mut bus = bus.polling();
     bus.set_loopback(true)
         .map_err(|_| "SPI0 loopback setup failed")?;
     let mut device = Device::new(bus, cs);

@@ -9,10 +9,11 @@ use crate::rp1;
 use embedded_hal::spi::{MODE_0, MODE_3, Operation, SpiBus, SpiDevice};
 use rp1_hal::{
     fugit::RateExtU32,
+    gpio::Pin,
     log,
-    spi::{Device, Error, Spi},
+    spi::{Device, Error, Polling},
 };
-pub type Dev = Device<Spi<0, 11, 10, 9>, 8>;
+pub type Dev<'a> = Device<Polling<'a, 0, (Pin<11>, Pin<10>, Pin<9>)>, 8>;
 /// Transfers per measurement (each of 32 frames).
 const ROUNDS: u32 = 32;
 
@@ -43,7 +44,7 @@ fn fail(hz: u32, bits: u8, what: &'static str) -> impl FnOnce(Error) -> Failure 
 
 /// `ROUNDS` CS-framed transfers of 32 frames of `bits` (in u16 words) at `hz`, checked, then
 /// `SPI_PASS` with the measured rate (bits on the wire per µs of transfer calls).
-fn report(dev: &mut Dev, tag: &str, hz: u32, bits: u8) -> Result<(), Failure> {
+fn report(dev: &mut Dev<'_>, tag: &str, hz: u32, bits: u8) -> Result<(), Failure> {
     dev.bus_mut()
         .set_frame_bits(bits)
         .map_err(fail(hz, bits, "frame_bits"))?;
@@ -77,7 +78,7 @@ fn report(dev: &mut Dev, tag: &str, hz: u32, bits: u8) -> Result<(), Failure> {
     Ok(())
 }
 
-pub fn prove(dev: &mut Dev, tag: &str) -> Result<(), Failure> {
+pub fn prove(dev: &mut Dev<'_>, tag: &str) -> Result<(), Failure> {
     // Loopback off: MISO is pulled down, so the data path really is the internal loop below.
     let bus = dev.bus_mut();
     bus.set_loopback(false).map_err(fail(0, 8, "loopback"))?;
@@ -154,7 +155,7 @@ pub fn log_result(what: &str, result: &Result<(), Failure>) {
     .unwrap();
 }
 
-pub fn run(dev: Option<&mut Dev>, request: u32) {
+pub fn run(dev: Option<&mut Dev<'_>>, request: u32) {
     let result = match dev {
         Some(dev) => prove(dev, "P1REQ"),
         None => Err(Failure(0, 0, "init", 0x100 + Error::Precondition as u32)),

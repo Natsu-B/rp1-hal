@@ -1,26 +1,31 @@
 error[E0308]: mismatched types
- --> tests/ui/spi_wrong_pins.rs:8:18
+ --> tests/ui/spi_wrong_pins.rs:5:38
   |
-8 |         unsafe { Pin::<10>::new() },
-  |                  ^^^^^^^^^^^^^^^^ expected `11`, found `10`
+5 |     let _ = Pins::<0>::builder().sck(mosi);
+  |                                  --- ^^^^ expected `11`, found `10`
+  |                                  |
+  |                                  arguments to this method are incorrect
   |
   = note: expected struct `Pin<11>`
              found struct `Pin<10>`
+note: method defined here
+ --> src/spi.rs
+  |
+  | pin_builder!(Pin, [], sck: SCK => Sck);
+  |                       ^^^
 
 error[E0308]: mismatched types
- --> tests/ui/spi_wrong_pins.rs:9:18
+ --> tests/ui/spi_wrong_pins.rs:6:59
   |
-9 |         unsafe { Pin::<11>::new() },
-  |                  ^^^^^^^^^^^^^^^^ expected `10`, found `11`
+6 |     let _ = Pins::<0>::builder().sck(sck).mosi(mosi).miso(wrong_miso);
+  |                                                      ---- ^^^^^^^^^^ expected `9`, found `5`
+  |                                                      |
+  |                                                      arguments to this method are incorrect
   |
-  = note: expected struct `Pin<10>`
-             found struct `Pin<11>`
-
-error[E0308]: mismatched types
-  --> tests/ui/spi_wrong_pins.rs:10:18
-   |
-10 |         unsafe { Pin::<5>::new() },
-   |                  ^^^^^^^^^^^^^^^ expected `9`, found `5`
-   |
-   = note: expected struct `Pin<9>`
-              found struct `Pin<5>`
+  = note: expected struct `Pin<9>`
+             found struct `Pin<5>`
+note: method defined here
+ --> src/spi.rs
+  |
+  | pin_builder!(Pin, [sck: SCK, mosi: MOSI], miso: MISO => Miso);
+  |                                           ^^^^

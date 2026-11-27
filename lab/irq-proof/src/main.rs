@@ -86,7 +86,10 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     p.proc1.launch(&mut core).unwrap();
     let i2c = p
         .i2c1
-        .init(&clocks, rp1_hal::i2c::Speed::Standard)
+        .init(
+            &clocks,
+            rp1_hal::i2c::Config::new(rp1_hal::i2c::Speed::Standard),
+        )
         .map_err(|e| *e.error());
     log!("p0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
 

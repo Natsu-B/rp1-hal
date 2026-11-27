@@ -46,19 +46,19 @@ error[E0277]: IO_BANK0 is handled by the generated doorbell dispatcher. Set cust
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
     |
 help: the trait `__irq_proc1::sealed::Admitted` is not implemented for `__irq_proc1::IO_BANK0`
-   --> $GENERATED:259:1
+   --> $GENERATED:257:1
     |
-259 | pub enum IO_BANK0 {}
+257 | pub enum IO_BANK0 {}
     | ^^^^^^^^^^^^^^^^^
 help: the trait `__irq_proc1::sealed::Admitted` is implemented for `__irq_proc1::TIMER_0`
-   --> $GENERATED:320:1
+   --> $GENERATED:318:1
     |
-320 | impl sealed::Admitted for TIMER_0 {}
+318 | impl sealed::Admitted for TIMER_0 {}
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required for `__irq_proc1::IO_BANK0` to implement `__irq_proc1::Bank0Declared`
-   --> $GENERATED:258:27
+   --> $GENERATED:256:27
     |
-258 | impl<T: sealed::Admitted> Bank0Declared for T {}
+256 | impl<T: sealed::Admitted> Bank0Declared for T {}
     |         ----------------  ^^^^^^^^^^^^^     ^
     |         |
     |         unsatisfied trait bound introduced here
@@ -76,19 +76,19 @@ error[E0277]: __irq_proc1::SPI5 is not declared for proc1. Add a supported sourc
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
     |
 help: the trait `__irq_proc1::sealed::Admitted` is not implemented for `__irq_proc1::SPI5`
-   --> $GENERATED:283:1
+   --> $GENERATED:281:1
     |
-283 | pub enum SPI5 {}
+281 | pub enum SPI5 {}
     | ^^^^^^^^^^^^^
 help: the trait `__irq_proc1::sealed::Admitted` is implemented for `__irq_proc1::TIMER_0`
-   --> $GENERATED:320:1
+   --> $GENERATED:318:1
     |
-320 | impl sealed::Admitted for TIMER_0 {}
+318 | impl sealed::Admitted for TIMER_0 {}
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required for `__irq_proc1::SPI5` to implement `__irq_proc1::Declared`
-   --> $GENERATED:255:27
+   --> $GENERATED:253:27
     |
-255 | impl<T: sealed::Admitted> Declared for T {}
+253 | impl<T: sealed::Admitted> Declared for T {}
     |         ----------------  ^^^^^^^^     ^
     |         |
     |         unsatisfied trait bound introduced here

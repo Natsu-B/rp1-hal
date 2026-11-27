@@ -6,14 +6,18 @@ use crate::proof::{self, Entries, Wrapped, expect, mark, settle, ticker, wait};
 use crate::rings::{Reader, Ticks};
 use crate::rp1;
 use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use rp1_hal::{gpio::PinIrq, i2c::I2c, timer::Alarm};
+use rp1_hal::{
+    gpio::{Pin, PinIrq},
+    i2c::I2c,
+    timer::Alarm,
+};
 use rp1_rt::{
     interrupt,
     interrupt::{Line, Slot},
     pac::dw_i2c::intr::TX_EMPTY,
 };
 
-type I2c1 = I2c<1, 2, 3>;
+type I2c1 = I2c<1, (Pin<2>, Pin<3>)>;
 static ALARM: Slot<Option<Alarm<0>>, 0> = Slot::empty();
 static PIN: Slot<Option<PinIrq<22, 0>>, 0> = Slot::empty();
 static I2C: Slot<Option<I2c1>, 0> = Slot::empty();

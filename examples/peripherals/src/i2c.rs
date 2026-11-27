@@ -6,19 +6,21 @@
 use embedded_hal::{delay::DelayNs, i2c::I2c};
 use rp1_hal::{
     clocks::Clocks,
-    i2c::{Parts, Speed},
+    gpio::Pin,
+    i2c::{Config, Parts, Speed},
     timer::WaitTimer,
 };
 
 pub fn run(
-    i2c: Parts<1, 2, 3>,
+    i2c: Parts<1, (Pin<2>, Pin<3>)>,
     clocks: &Clocks,
     timer: &mut WaitTimer,
 ) -> Result<(), &'static str> {
     const PEER: u8 = 0x2d;
     let mut bus = i2c
-        .init(clocks, Speed::Standard)
+        .init(clocks, Config::new(Speed::Standard))
         .map_err(|_| "I2C1 init failed")?;
+    let mut bus = bus.polling();
     // D1DR is the lab peer's frame tag. It counts bad frames and always serves 0x31 + 29*i.
     let mut frame: [u8; 16] = core::array::from_fn(|i| i as u8);
     frame[..4].copy_from_slice(b"D1DR");

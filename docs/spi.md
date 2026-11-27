@@ -1,9 +1,8 @@
 # SPI master
 
-STATIC: `rp1_hal::spi` drives the RP1 DesignWare APB SSI blocks as polling SPI masters:
-embedded-hal 1.0 `SpiBus<u8 | u16 | u32>` on `Spi`, and `SpiDevice` on `spi::Device`, which
-adds a GPIO chip select (active low) and owns the bus exclusively, either an owned `Spi` or a
-lent `&mut Spi` (`Device::new(&mut spi, cs)`; other buses are not accepted).
+STATIC (2026-11-27). Select `spi.polling()` for the synchronous embedded-hal 1.0
+`SpiBus<u8 | u16 | u32>` engine. `spi::Device` takes this adapter and drives an
+active-low GPIO chip select while borrowing the controller exclusively.
 
 ```toml
 [package.metadata.rp1]
@@ -16,15 +15,14 @@ spi0 = { sck = 11, mosi = 10, miso = 9 }
 
 ```rust,ignore
 use embedded_hal::spi::{MODE_0, Operation, SpiDevice};
-// p.spi0: rp1_hal::spi::Parts<0, 11, 10, 9>; GPIO8 stays a plain declared pin.
 use rp1_hal::fugit::RateExtU32;
 
-let bus = p.spi0.init(&clocks, rp1_hal::spi::Config::new(10.MHz(), MODE_0))?;
-let mut dev = rp1_hal::spi::Device::new(bus, p.pins.gpio8);
+let mut bus = p.spi0.init(&clocks, rp1_hal::spi::Config::new(10.MHz(), MODE_0))?;
+let mut dev = rp1_hal::spi::Device::new(bus.polling(), p.pins.gpio8);
 dev.transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])?;
 ```
 
-`examples/dual-core` uses SPI0 on proc0 this way (compile-checked).
+`examples/peripherals` uses SPI0 on proc0 this way (compile-checked).
 
 ## Which blocks
 
@@ -98,30 +96,28 @@ clk_sys), then drives CS low, runs the operations (`DelayNs` flushes first), flu
 drives CS high even after an error. A failed check returns before CS moves. The unchecked
 operations behind this (the hidden `spi::Bus` methods) take arguments only rp1-hal can
 make, so code outside the crate cannot call them and skip the check (STATIC, trybuild and
-doctest compile-fail cases, through a generic bound and on `Spi`).
+doctest compile-fail cases, through a generic bound and on the polling adapter).
 
 `set_frequency`, `set_mode`, `set_frame_bits` and `set_loopback` (CTRLR0.SRL internal
 loopback) wait for the bus to be idle and reprogram the disabled controller.
 
-`init` checks clk_sys, the rate and the frame size (up to 32 bits; the instance's own
-limit after the probe) before it releases the reset. On any error it returns `rp1_hal::InitError`
-whose `resources` are the token and the untouched pins as the `Parts` that `free` returns, so
-the caller can retry (`?` converts it to `Error`).
-STATIC (host model through an injected register interface): a stale clk_sys, a zero or too
-low rate and 3- or 33-bit frames write no register, leave the reset asserted and route no
-pin; 32-bit frames on a 16-bit instance fail after the probe, still without routing, and the
-`Parts` in the returned `InitError` initialise the controller on retry.
+`init` checks clk_sys, the rate and the frame size before releasing reset. The controller's
+own frame limit is checked with SSI disabled after the probe. Use `error.try_into_parts()`
+to get the token and untouched pins when they are ready for reuse. If reset or the probe
+failed, `error.try_recover()` requests reset and returns the parts once confirmed.
 
-Build the `#[non_exhaustive]` `Config` with `Config::new(frequency, mode)` and the `with_*`
-setters. The frequency is a `HertzU32`.
-`Spi` has no `Drop`: dropping it without `free` or `abort` leaves the controller enabled and
-the pins on the SPI function, and the token is gone.
-Release (STATIC, host model): `free()` waits for the bus to be idle (TX FIFO empty and not
-BUSY, 100 ms bound), then masks the interrupts, disables the controller and returns `Parts`
-(token and pins, still muxed) for a new `init`. If the controller stays busy it changes
-nothing and returns `FreeError { driver, error: Error::Timeout }`, so the call can be repeated
-on `driver`. `abort()` disables
-at once: a frame on the wire is cut short and both FIFOs are emptied.
+STATIC (host model). A stale clk_sys, a zero or too-low rate and 3- or 33-bit frames
+write no register and route no pin. A 32-bit frame on a 16-bit instance fails after the
+probe, leaving the controller disabled and the pins untouched for a retry.
+
+Build `Config` with `Config::new(frequency, mode)` and the `with_*` setters. The frequency
+is a `HertzU32`. Dropping the controller leaves it enabled and the pins muxed.
+`try_free()` checks TX FIFO empty and BUSY clear before disabling. `free_polling()`
+waits up to 100 ms for the same wire-idle condition. Both return the controller
+in `FreeError` until stop is confirmed. `try_cancel()` requests disable immediately.
+This can truncate a frame and discard both FIFOs. Collect the parts with `try_free()`
+after confirming stop.
+
 `Device::free` returns the bus and the chip select as an unconfigured `Pin<CS>` (still driven
 high), so the same pin can make a new `Device` (STATIC: a host compile test).
 
@@ -134,8 +130,7 @@ larger value is unverified (recalled, not checked: the databook treats it as no 
 STATIC (host tests): init, reconfiguration and transactions are checked against a model whose
 fast and strict clock checks are counted apart and can disagree (a drift only the strict
 check sees): init and reconfiguration use only the strict one and fail before the reset,
-the pin mux or any register write; transactions use only the fast one. The real `Spi` bus
-impls (owned and `&mut`) return `Invalid` for words narrower than the frame before any
+the pin mux or any register write; transactions use only the fast one. The polling bus impls return `Invalid` for words narrower than the frame before any
 register access and before CS moves.
 `Device::transaction` checks clk_sys once, then drives CS low, runs the
 operations, flushes, then drives CS high; with a stale clk_sys it returns `Precondition` with
@@ -145,7 +140,7 @@ The model keeps BUSY after the last frame is received, so `flush` must wait it o
 delay itself waits at least the requested time (the 1 MHz timer is read for `us + 1` steps,
 since the first step can come right after the start).
 
-There is no interrupt-driven transfer, DMA, dual/quad mode, or slave support. The controller
+The transfer engine uses polling. The controller
 interrupt itself can be unmasked (`enable_interrupt`, which also opens the RP1 `+0x108` output
 enable) for a handler on the `SPIn` line; see `docs/interrupts.md`.
 

@@ -1,0 +1,133 @@
+error[E0277]: the trait bound `rp1_hal::uart::Uart<1, (rp1_hal::gpio::Pin<0>, rp1_hal::gpio::Pin<1>)>: embedded_io::Write` is not satisfied
+ --> tests/ui/polling_required.rs:4:43
+  |
+4 |     let _ = embedded_io::Write::write_all(raw, b"x");
+  |             ----------------------------- ^^^ the trait `embedded_io::Write` is not implemented for `rp1_hal::uart::Uart<1, (rp1_hal::gpio::Pin<0>, rp1_hal::gpio::Pin<1>)>`
+  |             |
+  |             required by a bound introduced by this call
+  |
+help: the following other types implement trait `embedded_io::Write`
+ --> src/uart.rs
+  |
+  |   impl<const N: u8, const PIN: u8> embedded_io::Write for Polling<'_, Tx<N, PIN>> {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::uart::Polling<'_, Tx<N, PIN>>`
+...
+  | / impl<const N: u8, const TX: u8, const RX: u8> embedded_io::Write
+  | |     for Polling<'_, Uart<N, (Pin<TX>, Pin<RX>)>>
+  | | where
+  | |     Pin<TX>: TxPin<N>,
+  | |     Pin<RX>: RxPin<N>,
+  | |______________________^ `rp1_hal::uart::Polling<'_, rp1_hal::uart::Uart<N, (rp1_hal::gpio::Pin<TX>, rp1_hal::gpio::Pin<RX>)>>`
+  |
+ ::: $CARGO/embedded-io-$VERSION/src/impls/slice_mut.rs
+  |
+  |   impl Write for &mut [u8] {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^ `&mut [u8]`
+  |
+ ::: $CARGO/embedded-io-$VERSION/src/lib.rs
+  |
+  |   impl<T: ?Sized + Write> Write for &mut T {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut T`
+
+error[E0277]: the trait bound `rp1_hal::uart::Uart<1, (rp1_hal::gpio::Pin<0>, rp1_hal::gpio::Pin<1>)>: embedded_io::ErrorType` is not satisfied
+ --> tests/ui/polling_required.rs:4:13
+  |
+4 |     let _ = embedded_io::Write::write_all(raw, b"x");
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `embedded_io::ErrorType` is not implemented for `rp1_hal::uart::Uart<1, (rp1_hal::gpio::Pin<0>, rp1_hal::gpio::Pin<1>)>`
+  |
+help: the following other types implement trait `embedded_io::ErrorType`
+ --> src/uart.rs
+  |
+  | impl<T> embedded_io::ErrorType for Polling<'_, T> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::uart::Polling<'_, T>`
+  |
+ ::: $CARGO/embedded-io-$VERSION/src/lib.rs
+  |
+  | impl<T: ?Sized + ErrorType> ErrorType for &mut T {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut T`
+  |
+ ::: $CARGO/embedded-io-$VERSION/src/impls/slice_mut.rs
+  |
+  | impl ErrorType for &mut [u8] {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut [u8]`
+  |
+ ::: $CARGO/embedded-io-$VERSION/src/impls/slice_ref.rs
+  |
+  | impl ErrorType for &[u8] {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]`
+
+error[E0277]: the trait bound `Spi<0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>)>: SpiBus<_>` is not satisfied
+ --> tests/ui/polling_required.rs:8:46
+  |
+8 |     let _ = embedded_hal::spi::SpiBus::write(raw, &[1u8]);
+  |             -------------------------------- ^^^ the trait `SpiBus<_>` is not implemented for `Spi<0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>)>`
+  |             |
+  |             required by a bound introduced by this call
+  |
+help: the following other types implement trait `SpiBus<Word>`
+ --> src/spi.rs
+  |
+  | impl<W: Word, const N: u8, P: CompletePins<N>> SpiBus<W> for Polling<'_, N, P> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::spi::Polling<'_, N, P>` implements `SpiBus<W>`
+  |
+ ::: $CARGO/embedded-hal-$VERSION/src/spi.rs
+  |
+  | impl<T: SpiBus<Word> + ?Sized, Word: Copy + 'static> SpiBus<Word> for &mut T {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut T` implements `SpiBus<Word>`
+
+error[E0277]: the trait bound `Spi<0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>)>: embedded_hal::spi::ErrorType` is not satisfied
+ --> tests/ui/polling_required.rs:8:13
+  |
+8 |     let _ = embedded_hal::spi::SpiBus::write(raw, &[1u8]);
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+  |
+  = help: the trait `embedded_hal::spi::ErrorType` is not implemented for `Spi<0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>)>`
+help: the following other types implement trait `embedded_hal::spi::ErrorType`
+ --> src/spi.rs
+  |
+  | impl<const N: u8, P: CompletePins<N>> ErrorType for Polling<'_, N, P> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::spi::Polling<'_, N, P>`
+...
+  | impl<B, const CS: u8> ErrorType for Device<B, CS> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Device<B, CS>`
+  |
+ ::: $CARGO/embedded-hal-$VERSION/src/spi.rs
+  |
+  | impl<T: ErrorType + ?Sized> ErrorType for &mut T {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut T`
+
+error[E0277]: the trait bound `rp1_hal::i2c::I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>)>: embedded_hal::i2c::I2c<_>` is not satisfied
+  --> tests/ui/polling_required.rs:12:43
+   |
+12 |     let _ = embedded_hal::i2c::I2c::write(raw, 0x2d, &[1]);
+   |             ----------------------------- ^^^ the trait `embedded_hal::i2c::I2c<_>` is not implemented for `rp1_hal::i2c::I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>)>`
+   |             |
+   |             required by a bound introduced by this call
+   |
+help: the following other types implement trait `embedded_hal::i2c::I2c<A>`
+  --> src/i2c.rs
+   |
+   | impl<const N: u8, P: CompletePins<N>> embedded_hal::i2c::I2c for Polling<'_, N, P> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Polling<'_, N, P>` implements `embedded_hal::i2c::I2c`
+   |
+  ::: $CARGO/embedded-hal-$VERSION/src/i2c.rs
+   |
+   | impl<A: AddressMode, T: I2c<A> + ?Sized> I2c<A> for &mut T {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut T` implements `embedded_hal::i2c::I2c<A>`
+
+error[E0277]: the trait bound `rp1_hal::i2c::I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>)>: embedded_hal::i2c::ErrorType` is not satisfied
+  --> tests/ui/polling_required.rs:12:13
+   |
+12 |     let _ = embedded_hal::i2c::I2c::write(raw, 0x2d, &[1]);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `embedded_hal::i2c::ErrorType` is not implemented for `rp1_hal::i2c::I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>)>`
+   |
+help: the following other types implement trait `embedded_hal::i2c::ErrorType`
+  --> src/i2c.rs
+   |
+   | impl<const N: u8, P: CompletePins<N>> embedded_hal::i2c::ErrorType for Polling<'_, N, P> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Polling<'_, N, P>`
+   |
+  ::: $CARGO/embedded-hal-$VERSION/src/i2c.rs
+   |
+   | impl<T: ErrorType + ?Sized> ErrorType for &mut T {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut T`

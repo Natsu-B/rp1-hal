@@ -1,6 +1,7 @@
-use rp1_hal::{clocks::Clocks, gpio::Pin, i2c::{Speed, Token}};
-fn wrong(clocks: &Clocks) {
-    let token = unsafe { Token::<1>::new() };
-    let _ = token.init(unsafe { Pin::<3>::new() }, unsafe { Pin::<2>::new() }, clocks, Speed::Standard);
+use rp1_hal::{gpio::Pin, i2c::Pins};
+
+fn wrong(sda: Pin<2>, scl: Pin<3>, wrong_scl: Pin<1>) {
+    let _ = Pins::<1>::builder().sda(scl);
+    let _ = Pins::<1>::builder().sda(sda).scl(wrong_scl);
 }
 fn main() {}

@@ -1,15 +1,8 @@
-use rp1_hal::fugit::RateExtU32;
-use rp1_hal::{clocks::Clocks, gpio::Pin, spi::{Config, Token}};
-fn wrong(clocks: &Clocks) {
-    // SCLK and MOSI swapped; SPI3's MISO pin given to SPI0.
-    let token = unsafe { Token::<0>::new() };
-    let config = Config::new(1.MHz(), embedded_hal::spi::MODE_0);
-    let _ = token.init(
-        unsafe { Pin::<10>::new() },
-        unsafe { Pin::<11>::new() },
-        unsafe { Pin::<5>::new() },
-        clocks,
-        config,
-    );
+use rp1_hal::{gpio::Pin, spi::Pins};
+
+fn wrong(mosi: Pin<10>, sck: Pin<11>, wrong_miso: Pin<5>) {
+    // SPI3's MISO pin cannot be used on SPI0.
+    let _ = Pins::<0>::builder().sck(mosi);
+    let _ = Pins::<0>::builder().sck(sck).mosi(mosi).miso(wrong_miso);
 }
 fn main() {}

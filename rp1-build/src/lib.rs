@@ -589,16 +589,14 @@ fn instance_resource(
         .iter()
         .map(|(role, pin)| pin.ok_or_else(|| format!("{name}.{role} is missing").into()))
         .collect::<Result<Vec<u8>>>()?;
-    let numbers: Vec<String> = pins.iter().map(u8::to_string).collect();
-    let ty = if module == "uart" {
-        let pins = numbers
-            .iter()
-            .map(|pin| format!("::rp1_hal::gpio::Pin<{pin}>"))
-            .collect::<Vec<_>>();
-        format!("::rp1_hal::{module}::Parts<{n}, ({})>", pins.join(", "))
-    } else {
-        format!("::rp1_hal::{module}::Parts<{n}, {}>", numbers.join(", "))
-    };
+    let pin_types = pins
+        .iter()
+        .map(|pin| format!("::rp1_hal::gpio::Pin<{pin}>"))
+        .collect::<Vec<_>>();
+    let ty = format!(
+        "::rp1_hal::{module}::Parts<{n}, ({})>",
+        pin_types.join(", ")
+    );
     let mut init = format!(
         "::rp1_hal::{module}::Parts::new(unsafe {{ ::rp1_hal::{module}::Token::new() }}, ::rp1_hal::{module}::Pins::<{n}>::builder()"
     );
@@ -831,10 +829,10 @@ spi0 = { sck = 11, mosi = 10, miso = 9 }
         let s = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         for field in [
             "pub TIMER_ALARM0: ::rp1_hal::timer::Alarm<0>,",
-            "pub i2c1: ::rp1_hal::i2c::Parts<1, 2, 3>,",
+            "pub i2c1: ::rp1_hal::i2c::Parts<1, (::rp1_hal::gpio::Pin<2>, ::rp1_hal::gpio::Pin<3>)>,",
             "pub uart2: ::rp1_hal::uart::Parts<2, (::rp1_hal::gpio::Pin<4>, ::rp1_hal::gpio::Pin<5>)>,",
             "pub adc: ::rp1_hal::adc::Token,",
-            "pub spi0: ::rp1_hal::spi::Parts<0, 11, 10, 9>,",
+            "pub spi0: ::rp1_hal::spi::Parts<0, (::rp1_hal::gpio::Pin<11>, ::rp1_hal::gpio::Pin<10>, ::rp1_hal::gpio::Pin<9>)>,",
             "uart2: ::rp1_hal::uart::Parts::new(unsafe { ::rp1_hal::uart::Token::new() }, \
              ::rp1_hal::uart::Pins::<2>::builder().tx(unsafe { ::rp1_hal::gpio::Pin::new() }).rx(unsafe { ::rp1_hal::gpio::Pin::new() })),",
         ] {

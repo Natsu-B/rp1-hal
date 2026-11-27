@@ -16,12 +16,17 @@ pub fn nonce() -> u32 {
 /// another boot in the same capture.
 macro_rules! mark {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {
-        $crate::rp1::log::write(core::format_args!(
+        $crate::proof::write_marker(core::format_args!(
             concat!($fmt, " nonce={:08x}\n") $(, $arg)*, $crate::proof::nonce()
-        )).unwrap()
+        ))
     };
 }
 pub(crate) use mark;
+
+#[inline(never)]
+pub fn write_marker(args: core::fmt::Arguments<'_>) {
+    crate::rp1::log::write(args).unwrap();
+}
 
 /// Adds one to a counter with a single writer context: main only, or handlers only (they
 /// share one priority, so they do not preempt each other). A plain load and store is enough

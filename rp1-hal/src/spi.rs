@@ -1,6 +1,6 @@
 //! Polling SPI master on the RP1 DesignWare APB SSI blocks (DOC: RP1 peripherals §3.6, Linux
-//! spi-dw-core). embedded-hal 1.0 [`SpiBus`] on [`Spi`], [`SpiDevice`] on [`Device`] with a GPIO
-//! chip select.
+//! spi-dw-core). Select [`Spi::polling`] for embedded-hal 1.0 [`SpiBus`] or a [`Device`]
+//! with GPIO chip select.
 //!
 //! Instances (DOC §3.6.1): SPI0/1/2/3/5/6/8 are masters, SPI4/7 slave-only. Only the bank-0
 //! masters SPI0, 1, 2, 3, 5 are exposed; SPI6/8 are not on bank 0. The serial clock is clk_sys
@@ -15,6 +15,7 @@ use crate::{
     gpio::{Alternate, Output, Pin, Unconfigured},
     read, write,
 };
+use core::marker::PhantomData;
 use embedded_hal::spi::{
     ErrorKind, ErrorType, Mode, Operation, Phase, Polarity, SpiBus, SpiDevice,
 };
@@ -30,6 +31,7 @@ offsets! {
 }
 /// No progress for this long fails a transfer (one 32-bit frame at the slowest rate is 10 ms).
 const TIMEOUT_US: u32 = 100_000;
+const RESETS_SET1: usize = 0x4001_4000 + 0x2000 + 4;
 const RESETS_CLR1: usize = 0x4001_4000 + 0x3000 + 4;
 const RESETS_DONE1: usize = 0x4001_4000 + 0x1c;
 const fn reset_bit(n: u8) -> u32 {
@@ -40,6 +42,7 @@ const fn base(n: u8) -> usize {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// No transfer progress within 100 ms, or the controller stayed busy.
     Timeout,
@@ -49,6 +52,8 @@ pub enum Error {
     Precondition,
     /// RX/TX FIFO overflow or underflow flagged by the controller.
     Overrun,
+    /// The controller has not stopped.
+    Busy,
 }
 impl embedded_hal::spi::Error for Error {
     fn kind(&self) -> ErrorKind {
@@ -62,15 +67,10 @@ impl embedded_hal::spi::Error for Error {
 mod sealed {
     pub trait Pin {}
     impl<const N: u8> Pin for crate::gpio::Pin<N> {}
+    pub trait CompletePins<const N: u8> {}
     pub trait Bus {}
-    impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus
-        for super::Spi<N, SCK, MOSI, MISO>
-    {
-    }
-    impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus
-        for &mut super::Spi<N, SCK, MOSI, MISO>
-    {
-    }
+    impl<const N: u8, P: super::CompletePins<N>> Bus for super::Polling<'_, N, P> {}
+    impl<B: Bus + ?Sized> Bus for &mut B {}
     /// Lets a [`super::Bus::admit`] call through; only `spi` can make one, so code outside
     /// this crate cannot call any [`super::Bus`] method.
     pub struct Key(pub(in crate::spi) ());
@@ -176,7 +176,7 @@ macro_rules! word {
 }
 word!(u8: U8, u16: U16, u32: U32);
 
-/// [`Token::init`] settings: `Config::new(hz, mode)` plus the `with_*` setters (the struct is
+/// [`Parts::init`] settings: `Config::new(hz, mode)` plus the `with_*` setters (the struct is
 /// `#[non_exhaustive]`, so fields can be added without breaking callers).
 ///
 /// ```
@@ -246,15 +246,13 @@ fn divider(sys_hz: u32, hz: u32) -> Result<u32, Error> {
 pub struct Token<const N: u8> {
     _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
-/// A configured controller. Each [`SpiBus`] call checks once, before any FIFO access, that
-/// clk_sys still matches the [`Clocks`] it was set up with ([`Error::Precondition`] if not);
-/// `transfer_in_place` checks once for the whole buffer, and [`Device`] once per transaction.
-/// Dropping it without [`Spi::free`] or [`Spi::abort`] leaves the controller enabled
-/// and the pins on the SPI function; the token is gone, so it cannot be initialised again.
-pub struct Spi<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> {
-    _sck: Pin<SCK, Alternate>,
-    _mosi: Pin<MOSI, Alternate>,
-    _miso: Pin<MISO, Alternate>,
+/// The SPI controller role.
+pub struct Controller;
+
+/// A configured controller. Use [`Spi::polling`] to run the synchronous engine.
+/// Dropping it leaves the controller enabled and the pins muxed.
+pub struct Spi<const N: u8, P: CompletePins<N>, Role = Controller> {
+    pins: P::Active,
     clocks: Clocks,
     depth: usize,
     dfs32: bool,
@@ -263,13 +261,15 @@ pub struct Spi<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> {
     cr0: u32,
     div: u32,
     rsd: u32,
+    stopping: bool,
+    _role: PhantomData<Role>,
 }
-/// `?` on a failed [`Token::init`].
-impl<R> From<crate::InitError<R, Error>> for Error {
-    fn from(e: crate::InitError<R, Error>) -> Self {
-        *e.error()
-    }
-}
+
+/// The initialization error retains the block and its pins during recovery.
+pub type InitError<const N: u8, P> = crate::InitError<Parts<N, P>, Error, Parts<N, P>>;
+
+/// Explicit polling access to the SPI bus.
+pub struct Polling<'a, const N: u8, P: CompletePins<N>>(&'a mut Spi<N, P>);
 
 impl<const N: u8> Token<N> {
     /// # Safety
@@ -286,45 +286,55 @@ impl<const N: u8> Token<N> {
             _private: core::marker::PhantomData,
         }
     }
-    /// Checks clk_sys and the configuration, releases only this controller's reset, checks
-    /// the block, detects the FIFO depth and frame field, then routes the typed pins. GPIO bank0
-    /// and the raw microsecond timer must already run (cold bring-up); `clocks` may come from
-    /// proc0 ([`crate::clocks::Clocks::wait_from_proc0`]). On error the token and the pins come back
-    /// as the [`Parts`] in [`InitError`](crate::InitError); the pins are not touched before
-    /// success, and a stale clk_sys or an invalid frequency / frame size is reported before
-    /// the reset is released.
+}
+
+pin_builder!(Pin, []);
+pin_builder!(Pin, [], sck: SCK => Sck);
+pin_builder!(Pin, [sck: SCK], mosi: MOSI => Mosi);
+pin_builder!(Pin, [sck: SCK, mosi: MOSI], miso: MISO => Miso);
+complete_pins!(SCK: Sck, MOSI: Mosi, MISO: Miso; PinTuple<SCK, MOSI, MISO, Alternate>);
+
+/// A declared SPI N with its pins, as the generated resources hand it out.
+pub struct Parts<const N: u8, P: CompletePins<N>> {
+    token: Token<N>,
+    pins: Pins<N, P>,
+}
+impl<const N: u8, P: CompletePins<N>> Parts<N, P> {
+    /// Assemble the owned block and the routed pin bundle.
+    pub fn new(token: Token<N>, pins: Pins<N, P>) -> Self {
+        Self { token, pins }
+    }
+
+    /// Return the block and pins for manual assembly.
+    pub fn into_parts(self) -> (Token<N>, Pins<N, P>) {
+        (self.token, self.pins)
+    }
+}
+
+/// SCK, MOSI and MISO.
+type PinTuple<const SCK: u8, const MOSI: u8, const MISO: u8, M = Unconfigured> =
+    (Pin<SCK, M>, Pin<MOSI, M>, Pin<MISO, M>);
+
+impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Parts<N, PinTuple<SCK, MOSI, MISO>>
+where
+    Pin<SCK>: Sck<N>,
+    Pin<MOSI>: Mosi<N>,
+    Pin<MISO>: Miso<N>,
+{
+    /// Checks clk_sys and the configuration, releases only this controller's reset,
+    /// detects FIFO depth and frame width, then routes the typed pins. GPIO bank 0 and
+    /// the raw microsecond timer must already run. [`Clocks::wait_from_proc0`] provides
+    /// the clock description for proc1.
     ///
-    /// ```no_run
-    /// # use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, spi::{Config, Error, Spi, Token}};
-    /// fn bring_up(
-    ///     token: Token<0>,
-    ///     (sck, mosi, miso): (Pin<11>, Pin<10>, Pin<9>),
-    ///     clocks: &Clocks,
-    /// ) -> Result<Spi<0, 11, 10, 9>, Error> {
-    ///     let config = Config::new(10.MHz(), embedded_hal::spi::MODE_0);
-    ///     // Retry once with 8-bit frames, then give up with `?`.
-    ///     match token.init(sck, mosi, miso, clocks, config.with_frame_bits(32)) {
-    ///         Ok(spi) => Ok(spi),
-    ///         Err(e) => Ok(e.into_parts().init(clocks, config)?),
-    ///     }
-    /// }
-    /// ```
-    pub fn init<const SCK: u8, const MOSI: u8, const MISO: u8>(
+    /// A stale clock or impossible configuration is rejected before releasing reset
+    /// where possible. Pins are muxed only on success.
+    pub fn init(
         self,
-        sck: Pin<SCK>,
-        mosi: Pin<MOSI>,
-        miso: Pin<MISO>,
         clocks: &Clocks,
         config: Config,
-    ) -> Result<Spi<N, SCK, MOSI, MISO>, crate::InitError<Parts<N, SCK, MOSI, MISO>, Error>>
-    where
-        Pin<SCK>: Sck<N>,
-        Pin<MOSI>: Mosi<N>,
-        Pin<MISO>: Miso<N>,
-    {
+    ) -> Result<Spi<N, PinTuple<SCK, MOSI, MISO>>, InitError<N, PinTuple<SCK, MOSI, MISO>>> {
         self.init_on(
             &mut Mmio { base: base(N) },
-            (sck, mosi, miso),
             clocks,
             config,
             |(sck, mosi, miso)| {
@@ -336,125 +346,59 @@ impl<const N: u8> Token<N> {
             },
         )
     }
-    /// [`Token::init`] on `io`; `route` muxes the pins and runs only once the controller is set up.
-    fn init_on<const SCK: u8, const MOSI: u8, const MISO: u8>(
+
+    fn init_on(
         self,
         io: &mut impl Io,
-        pins: PinTuple<SCK, MOSI, MISO>,
         clocks: &Clocks,
         config: Config,
         route: impl FnOnce(PinTuple<SCK, MOSI, MISO>) -> PinTuple<SCK, MOSI, MISO, Alternate>,
-    ) -> Result<Spi<N, SCK, MOSI, MISO>, crate::InitError<Parts<N, SCK, MOSI, MISO>, Error>>
-    where
-        Pin<SCK>: Sck<N>,
-        Pin<MOSI>: Mosi<N>,
-        Pin<MISO>: Miso<N>,
-    {
-        match start(io, reset_bit(N), clocks, config) {
-            Ok((depth, dfs32, cr0, div)) => {
-                let (_sck, _mosi, _miso) = route(pins);
-                Ok(Spi {
-                    _sck,
-                    _mosi,
-                    _miso,
-                    clocks: *clocks,
-                    depth,
-                    dfs32,
-                    bits: config.frame_bits,
-                    cr0,
-                    div,
-                    rsd: config.rx_sample_dly.into(),
-                })
-            }
-            Err(error) => {
-                let (sck, mosi, miso) = pins;
-                Err(crate::InitError::new(
-                    error,
-                    Parts {
-                        token: self,
-                        sck,
-                        mosi,
-                        miso,
-                    },
-                ))
-            }
+    ) -> Result<Spi<N, PinTuple<SCK, MOSI, MISO>>, InitError<N, PinTuple<SCK, MOSI, MISO>>> {
+        if !io.sys_current_strict(clocks) {
+            return Err(InitError::new(Error::Precondition, self));
         }
-    }
-}
-pin_builder!(Pin, []);
-pin_builder!(Pin, [], sck: SCK => Sck);
-pin_builder!(Pin, [sck: SCK], mosi: MOSI => Mosi);
-pin_builder!(Pin, [sck: SCK, mosi: MOSI], miso: MISO => Miso);
-
-/// A declared SPI N with its pins, as the generated resources hand it out (`rp1-build`).
-pub struct Parts<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8>
-where
-    Pin<SCK>: Sck<N>,
-    Pin<MOSI>: Mosi<N>,
-    Pin<MISO>: Miso<N>,
-{
-    token: Token<N>,
-    sck: Pin<SCK>,
-    mosi: Pin<MOSI>,
-    miso: Pin<MISO>,
-}
-impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Parts<N, SCK, MOSI, MISO>
-where
-    Pin<SCK>: Sck<N>,
-    Pin<MOSI>: Mosi<N>,
-    Pin<MISO>: Miso<N>,
-{
-    /// Assemble the owned block and the routed pin bundle.
-    pub fn new(token: Token<N>, pins: Pins<N, (Pin<SCK>, Pin<MOSI>, Pin<MISO>)>) -> Self {
-        let (sck, mosi, miso) = pins.0;
-        Self {
-            token,
-            sck,
-            mosi,
-            miso,
+        let div = match divider(clocks.sys().raw(), config.frequency.raw())
+            .and_then(|div| control(config.mode, config.frame_bits, true).map(|_| div))
+        {
+            Ok(div) => div,
+            Err(error) => return Err(InitError::new(error, self)),
+        };
+        if let Err(error) = io.release_reset(reset_bit(N)) {
+            return Err(InitError::recovering(error, self));
         }
-    }
-
-    /// Return the block and pins for manual assembly.
-    pub fn into_parts(self) -> (Token<N>, Pins<N, (Pin<SCK>, Pin<MOSI>, Pin<MISO>)>) {
-        (self.token, Pins((self.sck, self.mosi, self.miso)))
-    }
-
-    /// [`Token::init`] with the declared pins.
-    pub fn init(
-        self,
-        clocks: &Clocks,
-        config: Config,
-    ) -> Result<Spi<N, SCK, MOSI, MISO>, crate::InitError<Parts<N, SCK, MOSI, MISO>, Error>> {
-        self.token
-            .init(self.sck, self.mosi, self.miso, clocks, config)
+        mask_interrupts(io);
+        let Some((depth, dfs32)) = probe(io) else {
+            return Err(InitError::recovering(Error::Precondition, self));
+        };
+        let cr0 = match control(config.mode, config.frame_bits, dfs32) {
+            Ok(cr0) => cr0,
+            Err(error) => return Err(InitError::new(error, self)),
+        };
+        let rsd = config.rx_sample_dly.into();
+        setup(io, cr0, div, rsd);
+        Ok(Spi {
+            pins: route(self.pins.0),
+            clocks: *clocks,
+            depth,
+            dfs32,
+            bits: config.frame_bits,
+            cr0,
+            div,
+            rsd,
+            stopping: false,
+            _role: PhantomData,
+        })
     }
 }
-/// SCK, MOSI and MISO.
-type PinTuple<const SCK: u8, const MOSI: u8, const MISO: u8, M = Unconfigured> =
-    (Pin<SCK, M>, Pin<MOSI, M>, Pin<MISO, M>);
 
-/// The register part of [`Token::init`]: (depth, dfs32, CTRLR0, BAUDR). Nothing is written,
-/// and the reset stays asserted, unless clk_sys matches and the frequency and frame size are
-/// possible on some instance.
-fn start(
-    io: &mut impl Io,
-    reset: u32,
-    clocks: &Clocks,
-    config: Config,
-) -> Result<(usize, bool, u32, u32), Error> {
-    if !io.sys_current_strict(clocks) {
-        return Err(Error::Precondition);
+impl<const N: u8, P: CompletePins<N>> InitError<N, P> {
+    /// Request SPI reset and return the parts once reset is confirmed.
+    pub fn try_recover(self) -> Result<Parts<N, P>, Self> {
+        self.recover(|| {
+            write(RESETS_SET1, reset_bit(N));
+            read(RESETS_DONE1) & reset_bit(N) == 0
+        })
     }
-    let div = divider(clocks.sys().raw(), config.frequency.raw())?;
-    // The widest frame any instance takes; the instance's own limit is checked after probe.
-    control(config.mode, config.frame_bits, true)?;
-    io.release_reset(reset)?;
-    mask_interrupts(io);
-    let (depth, dfs32) = probe(io).ok_or(Error::Precondition)?;
-    let cr0 = control(config.mode, config.frame_bits, dfs32)?;
-    setup(io, cr0, div, config.rx_sample_dly.into());
-    Ok((depth, dfs32, cr0, div))
 }
 
 /// Depth of the FIFO behind threshold register `reg` (0..depth-1 read back, as Linux's TXFTLR
@@ -477,6 +421,9 @@ fn fifo_depth(io: &mut impl Io, reg: usize) -> u32 {
 /// like a DW SSI (no FIFO).
 fn probe(io: &mut impl Io) -> Option<(usize, bool)> {
     io.write(SSIENR, 0);
+    if io.read(SSIENR) & 1 != 0 || io.read(SR) & sr::BUSY != 0 {
+        return None;
+    }
     let depth = fifo_depth(io, TXFTLR).min(fifo_depth(io, RXFTLR));
     io.write(CTRLR0, u32::MAX);
     let dfs32 = io.read(CTRLR0) & ctrlr0::DFS_MASK == 0;
@@ -665,16 +612,15 @@ fn wait_idle(io: &mut impl Io) -> Result<(), Error> {
     }
 }
 
-/// [`Spi::free`]: nothing is written unless the bus is idle in time.
-fn release(io: &mut impl Io) -> Result<(), Error> {
-    wait_idle(io)?;
-    stop(io);
-    Ok(())
-}
-/// Masks the interrupts and disables the controller.
-fn stop(io: &mut impl Io) {
+/// Masks the interrupts and disables the controller. A frame on the wire may be truncated.
+fn stop(io: &mut impl Io) -> Result<(), Error> {
     mask_interrupts(io);
     io.write(SSIENR, 0);
+    if io.read(SSIENR) & 1 == 0 && io.read(SR) & sr::BUSY == 0 {
+        Ok(())
+    } else {
+        Err(Error::Busy)
+    }
 }
 
 /// A new CTRLR0 / BAUDR: the strict clk_sys check first (`Precondition`, nothing written),
@@ -694,16 +640,15 @@ fn reconfigure(
     Ok(())
 }
 
-impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOSI, MISO> {
+impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
     fn io(&self) -> Mmio {
         Mmio { base: base(N) }
     }
-    fn reconfigure(&mut self, cr0: u32, div: u32) -> Result<(), Error> {
-        reconfigure(&mut self.io(), &self.clocks, cr0, div, self.rsd)?;
-        self.cr0 = cr0;
-        self.div = div;
-        Ok(())
+    /// Selects the synchronous polling engine.
+    pub fn polling(&mut self) -> Polling<'_, N, P> {
+        Polling(self)
     }
+
     /// SCLK actually used: clk_sys / BAUDR.
     pub fn frequency(&self) -> fugit::HertzU32 {
         fugit::HertzU32::from_raw(self.clocks.sys().raw() / self.div)
@@ -712,42 +657,10 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
     pub fn divider(&self) -> u32 {
         self.div
     }
-    /// Sets SCLK to at most `frequency` and returns the rate used.
-    pub fn set_frequency(&mut self, frequency: fugit::HertzU32) -> Result<fugit::HertzU32, Error> {
-        let div = divider(self.clocks.sys().raw(), frequency.raw())?;
-        self.reconfigure(self.cr0, div)?;
-        Ok(self.frequency())
-    }
-    pub fn set_mode(&mut self, mode: Mode) -> Result<(), Error> {
-        let cr0 = control(mode, self.frame_bits(), self.dfs32)? | (self.cr0 & ctrlr0::SRL);
-        self.reconfigure(cr0, self.div)
-    }
     /// Frame size, 4..=16 (4..=32 with [`Spi::has_32_bit_frames`]). `SpiBus<W>` needs
     /// `frame_bits <= W::BITS`.
-    pub fn set_frame_bits(&mut self, bits: u8) -> Result<(), Error> {
-        let mut mode = embedded_hal::spi::MODE_0;
-        if self.cr0 & ctrlr0::SCPH != 0 {
-            mode.phase = Phase::CaptureOnSecondTransition;
-        }
-        if self.cr0 & ctrlr0::SCPOL != 0 {
-            mode.polarity = Polarity::IdleHigh;
-        }
-        let cr0 = control(mode, bits, self.dfs32)? | (self.cr0 & ctrlr0::SRL);
-        self.reconfigure(cr0, self.div)?;
-        self.bits = bits;
-        Ok(())
-    }
     pub fn frame_bits(&self) -> u8 {
         self.bits
-    }
-    /// Internal loopback (CTRLR0.SRL): received data is the transmitted data, not MISO.
-    pub fn set_loopback(&mut self, on: bool) -> Result<(), Error> {
-        let cr0 = if on {
-            self.cr0 | ctrlr0::SRL
-        } else {
-            self.cr0 & !ctrlr0::SRL
-        };
-        self.reconfigure(cr0, self.div)
     }
     /// FIFO depth in frames (detected at init).
     pub fn fifo_depth(&self) -> usize {
@@ -759,6 +672,9 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
     /// Once per public call, before any FIFO access: the frame fits `word_bits`
     /// (`Invalid`) and clk_sys still matches (`Precondition`).
     fn check(&self, word_bits: u8) -> Result<(), Error> {
+        if self.stopping {
+            return Err(Error::Busy);
+        }
         if self.frame_bits() > word_bits {
             return Err(Error::Invalid);
         }
@@ -787,11 +703,11 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
     }
     /// Unmasks the [`int`] bits in `mask` and opens the RP1 wrapper
     /// that routes the controller interrupt to the cores; the NVIC line comes from the generated
-    /// `irq` resources. Blocking transfers mask every interrupt while they run and restore the
+    /// `irq` resources. Polling transfers mask every interrupt while they run and restore the
     /// mask afterwards.
     ///
     /// The masking is per exchange: between the operations of a `Device` transaction a handler
-    /// can run with CS asserted. Mixing interrupt-driven and blocking use of one controller is
+    /// can run with CS asserted. Mixing interrupt-driven and polling use of one controller is
     /// unsupported.
     pub fn enable_interrupt(&mut self, mask: u32) {
         enable_interrupt(&mut self.io(), mask);
@@ -811,87 +727,162 @@ impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOS
         self.io().read(ICR);
     }
 }
-impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, SCK, MOSI, MISO>
+impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
+    /// Mask interrupts and request stop. Disabling flushes both FIFOs and can truncate
+    /// a frame on the wire. Collect the parts with [`Self::try_free`] once stopped.
+    pub fn try_cancel(&mut self) -> Result<(), Error> {
+        self.stopping = true;
+        stop(&mut self.io())
+    }
+}
+
+impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, PinTuple<SCK, MOSI, MISO>>
 where
     Pin<SCK>: Sck<N>,
     Pin<MOSI>: Mosi<N>,
     Pin<MISO>: Miso<N>,
 {
-    /// Waits for the last frame to leave the wire ([`SpiBus::flush`]), then masks the
-    /// interrupts, disables the controller and gives back the token and the (still muxed)
-    /// pins, ready for [`Parts::init`]. The reset stays released.
-    ///
-    /// [`Error::Timeout`]: the controller stayed busy for 100 ms and nothing was changed;
-    /// the driver comes back in [`FreeError`](crate::FreeError) with the error, to retry or to
-    /// [`Spi::abort`].
-    ///
-    /// The driver does not own its NVIC line (an `rp1_rt::interrupt::Line` in the generated
-    /// resources): an interrupt that was already pending stays pending after this and after
-    /// [`Spi::abort`], so its handler may run once more. Disable and unpend the line first,
-    /// or write the handler so that it accepts the controller being gone.
-    pub fn free(self) -> Result<Parts<N, SCK, MOSI, MISO>, crate::FreeError<Self, Error>> {
-        match release(&mut self.io()) {
-            Ok(()) => Ok(self.into_parts()),
-            Err(error) => Err(crate::FreeError {
+    /// Return the parts after checking wire idle and disabling the controller.
+    /// The pins stay muxed and reset stays released. The NVIC line is separately owned:
+    /// disable and unpend it first, or ensure its handler accepts the controller being gone.
+    pub fn try_free(
+        self,
+    ) -> Result<Parts<N, PinTuple<SCK, MOSI, MISO>>, crate::FreeError<Self, Error>> {
+        self.free_with(false)
+    }
+
+    /// Poll for wire idle for up to 100 ms before disabling. On failure the driver is returned.
+    pub fn free_polling(
+        self,
+    ) -> Result<Parts<N, PinTuple<SCK, MOSI, MISO>>, crate::FreeError<Self, Error>> {
+        self.free_with(true)
+    }
+
+    fn free_with(
+        mut self,
+        polling: bool,
+    ) -> Result<Parts<N, PinTuple<SCK, MOSI, MISO>>, crate::FreeError<Self, Error>> {
+        let idle = if self.stopping {
+            Ok(())
+        } else if polling {
+            wait_idle(&mut self.io())
+        } else if self.io().read(SR) & (sr::BUSY | sr::TFE) == sr::TFE {
+            Ok(())
+        } else {
+            Err(Error::Busy)
+        };
+        if let Err(error) = idle.and_then(|()| self.try_cancel()) {
+            return Err(crate::FreeError {
                 driver: self,
                 error,
-            }),
+            });
         }
-    }
-    /// [`Spi::free`] without the wait. Disabling the controller empties both FIFOs and
-    /// stops the shifter, so a frame on the wire is cut short and frames not yet sent or
-    /// read are dropped. The interrupts are masked and SCK no longer toggles.
-    pub fn abort(self) -> Parts<N, SCK, MOSI, MISO> {
-        stop(&mut self.io());
-        self.into_parts()
-    }
-    fn into_parts(self) -> Parts<N, SCK, MOSI, MISO> {
-        Parts {
-            token: Token {
-                _private: core::marker::PhantomData,
+        let (sck, mosi, miso) = self.pins;
+        Ok(Parts::new(
+            Token {
+                _private: PhantomData,
             },
-            sck: self._sck.release(),
-            mosi: self._mosi.release(),
-            miso: self._miso.release(),
-        }
+            Pins((sck.release(), mosi.release(), miso.release())),
+        ))
     }
 }
-impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> ErrorType
-    for Spi<N, SCK, MOSI, MISO>
-{
+
+impl<const N: u8, P: CompletePins<N>> Polling<'_, N, P> {
+    /// SCLK actually used, in hertz.
+    pub fn frequency(&self) -> fugit::HertzU32 {
+        self.0.frequency()
+    }
+
+    /// BAUDR divider in use.
+    pub fn divider(&self) -> u32 {
+        self.0.divider()
+    }
+
+    /// FIFO depth in frames.
+    pub fn fifo_depth(&self) -> usize {
+        self.0.fifo_depth()
+    }
+
+    /// Whether the controller supports frames up to 32 bits.
+    pub fn has_32_bit_frames(&self) -> bool {
+        self.0.has_32_bit_frames()
+    }
+
+    fn reconfigure(&mut self, cr0: u32, div: u32) -> Result<(), Error> {
+        if self.0.stopping {
+            return Err(Error::Busy);
+        }
+        reconfigure(&mut self.0.io(), &self.0.clocks, cr0, div, self.0.rsd)?;
+        self.0.cr0 = cr0;
+        self.0.div = div;
+        Ok(())
+    }
+    /// Sets SCLK to at most `frequency` and returns the rate used.
+    pub fn set_frequency(&mut self, frequency: fugit::HertzU32) -> Result<fugit::HertzU32, Error> {
+        let div = divider(self.0.clocks.sys().raw(), frequency.raw())?;
+        self.reconfigure(self.0.cr0, div)?;
+        Ok(self.0.frequency())
+    }
+    pub fn set_mode(&mut self, mode: Mode) -> Result<(), Error> {
+        let cr0 = control(mode, self.0.frame_bits(), self.0.dfs32)? | (self.0.cr0 & ctrlr0::SRL);
+        self.reconfigure(cr0, self.0.div)
+    }
+    pub fn set_frame_bits(&mut self, bits: u8) -> Result<(), Error> {
+        let mut mode = embedded_hal::spi::MODE_0;
+        if self.0.cr0 & ctrlr0::SCPH != 0 {
+            mode.phase = Phase::CaptureOnSecondTransition;
+        }
+        if self.0.cr0 & ctrlr0::SCPOL != 0 {
+            mode.polarity = Polarity::IdleHigh;
+        }
+        let cr0 = control(mode, bits, self.0.dfs32)? | (self.0.cr0 & ctrlr0::SRL);
+        self.reconfigure(cr0, self.0.div)?;
+        self.0.bits = bits;
+        Ok(())
+    }
+    /// Internal loopback (CTRLR0.SRL): received data is the transmitted data, not MISO.
+    pub fn set_loopback(&mut self, on: bool) -> Result<(), Error> {
+        let cr0 = if on {
+            self.0.cr0 | ctrlr0::SRL
+        } else {
+            self.0.cr0 & !ctrlr0::SRL
+        };
+        self.reconfigure(cr0, self.0.div)
+    }
+}
+impl<const N: u8, P: CompletePins<N>> ErrorType for Polling<'_, N, P> {
     type Error = Error;
 }
-impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> SpiBus<W>
-    for Spi<N, SCK, MOSI, MISO>
-{
-    /// Sends zero frames. Each call checks clk_sys once (see [`Spi`]).
+impl<W: Word, const N: u8, P: CompletePins<N>> SpiBus<W> for Polling<'_, N, P> {
+    /// Sends zero frames. Each call checks clk_sys once before any FIFO access.
     fn read(&mut self, words: &mut [W]) -> Result<(), Error> {
-        self.check(W::BITS)?;
-        self.run(words, &[])
+        self.transfer(words, &[])
     }
     fn write(&mut self, words: &[W]) -> Result<(), Error> {
-        self.check(W::BITS)?;
-        self.run(&mut [], words)
+        self.transfer(&mut [], words)
     }
     fn transfer(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error> {
-        self.check(W::BITS)?;
-        self.run(read, write)
+        self.0.check(W::BITS)?;
+        self.0.run(read, write)
     }
     /// One clock check for the whole buffer, then 32-frame chunks.
     fn transfer_in_place(&mut self, words: &mut [W]) -> Result<(), Error> {
-        self.check(W::BITS)?;
-        self.run_in_place(words)
+        self.0.check(W::BITS)?;
+        self.0.run_in_place(words)
     }
-    /// Every call returns only after all frames were received, so this waits for BUSY to clear.
+    /// All frames have been received, so wait for BUSY to clear on the wire.
     fn flush(&mut self) -> Result<(), Error> {
-        wait_idle(&mut self.io())
+        if self.0.stopping {
+            return Err(Error::Busy);
+        }
+        wait_idle(&mut self.0.io())
     }
 }
 
 /// The bus side of [`Device`]: one admission (frame size, clk_sys) per transaction, before the
-/// chip select moves, then the operations without a check of their own. Sealed: [`Spi`] and
-/// `&mut Spi` only. The methods take arguments only this crate can make, so they cannot be
-/// called from outside it, neither on [`Spi`] nor through a generic bound:
+/// chip select moves, then the operations without a check of their own. Implemented by
+/// [`Polling`] and mutable references to it. The methods take arguments only this crate
+/// can make, so they cannot be called directly or through a generic bound:
 ///
 /// ```compile_fail,E0061
 /// fn skip_the_check<B: rp1_hal::spi::Bus<u8>>(bus: &mut B, rx: &mut [u8], tx: &[u8]) {
@@ -900,7 +891,7 @@ impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> SpiBus
 /// ```
 ///
 /// ```compile_fail,E0061
-/// fn admit_by_hand(spi: &mut rp1_hal::spi::Spi<0, 11, 10, 9>) {
+/// fn admit_by_hand(spi: &mut rp1_hal::spi::Polling<'_, 0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>)>) {
 ///     let _ = rp1_hal::spi::Bus::<u8>::admit(spi);
 /// }
 /// ```
@@ -923,11 +914,9 @@ pub trait Bus<W: Word>: sealed::Bus {
     #[doc(hidden)]
     fn wait_idle(&mut self, ok: sealed::Admitted<W>) -> Result<(), Error>;
 }
-impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
-    for Spi<N, SCK, MOSI, MISO>
-{
+impl<W: Word, const N: u8, P: CompletePins<N>> Bus<W> for Polling<'_, N, P> {
     fn admit(&mut self, _: sealed::Key) -> Result<sealed::Admitted<W>, Error> {
-        self.check(W::BITS)?;
+        self.0.check(W::BITS)?;
         Ok(sealed::Admitted(core::marker::PhantomData))
     }
     fn exchange(
@@ -936,19 +925,17 @@ impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
         read: &mut [W],
         write: &[W],
     ) -> Result<(), Error> {
-        self.run(read, write)
+        self.0.run(read, write)
     }
     fn exchange_in_place(&mut self, _: sealed::Admitted<W>, words: &mut [W]) -> Result<(), Error> {
-        self.run_in_place(words)
+        self.0.run_in_place(words)
     }
     fn wait_idle(&mut self, _: sealed::Admitted<W>) -> Result<(), Error> {
-        wait_idle(&mut self.io())
+        wait_idle(&mut self.0.io())
     }
 }
-/// Lends the bus: `Device::new(&mut spi, cs)`, as embedded-hal's `&mut` [`SpiBus`].
-impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
-    for &mut Spi<N, SCK, MOSI, MISO>
-{
+/// A transaction can also borrow a polling adapter.
+impl<W: Word, B: Bus<W> + ?Sized> Bus<W> for &mut B {
     fn admit(&mut self, key: sealed::Key) -> Result<sealed::Admitted<W>, Error> {
         Bus::<W>::admit(&mut **self, key)
     }
@@ -968,19 +955,18 @@ impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
     }
 }
 
-/// An [`Spi`] bus with a GPIO chip select (active low) for one device: [`SpiDevice`].
-/// The bus can be owned or lent (`&mut Spi`):
+/// A bus with an active-low GPIO chip select for one [`SpiDevice`].
 ///
 /// ```no_run
 /// # use rp1_hal::{fugit::RateExtU32, gpio::Pin, spi::{Device, Error, Spi}};
 /// use embedded_hal::spi::SpiDevice;
-/// fn lend(spi: &mut Spi<0, 11, 10, 9>, cs: Pin<8>) -> Result<Pin<8>, Error> {
-///     let mut dev = Device::new(&mut *spi, cs);
+/// fn lend(spi: &mut Spi<0, (Pin<11>, Pin<10>, Pin<9>)>, cs: Pin<8>) -> Result<Pin<8>, Error> {
+///     let mut dev = Device::new(spi.polling(), cs);
 ///     dev.write(&[1u8, 2])?;
 ///     let (_, cs) = dev.free();
-///     spi.set_frequency(1.MHz())?;
+///     spi.polling().set_frequency(1.MHz())?;
 ///     // The chip select comes back as `Pin<8>` and can make a new device.
-///     let mut dev = Device::new(&mut *spi, cs);
+///     let mut dev = Device::new(spi.polling(), cs);
 ///     dev.write(&[3u8])?;
 ///     Ok(dev.free().1)
 /// }
@@ -1108,6 +1094,7 @@ mod tests {
         resets: Vec<u32>,
         imr: u32,
         wrap: u32,
+        stuck_enabled: bool,
     }
     impl Model {
         fn new(depth: usize) -> Self {
@@ -1134,6 +1121,7 @@ mod tests {
                 resets: Vec::new(),
                 imr: 0,
                 wrap: 0,
+                stuck_enabled: false,
             }
         }
     }
@@ -1150,6 +1138,7 @@ mod tests {
                 }
                 DR => self.rx.pop_front().expect("RX underflow"),
                 RISR => self.risr,
+                SSIENR => u32::from(self.stuck_enabled),
                 SR => {
                     if self.stalled {
                         sr::BUSY
@@ -1215,17 +1204,20 @@ mod tests {
         let stopped = [(IMR, 0), (IRQ_WRAP, 0x8), (SSIENR, 0)];
         let mut m = Model::new(8);
         (m.imr, m.wrap, m.busy_left) = (int::RXFI, 0x9, 3);
-        assert_eq!(release(&mut m), Ok(()));
+        assert_eq!(wait_idle(&mut m).and_then(|()| stop(&mut m)), Ok(()));
         assert_eq!((m.busy_left, m.writes.as_slice()), (0, &stopped[..]));
 
         let mut m = Model::new(8);
         (m.imr, m.wrap, m.stalled) = (int::RXFI, 0x9, true);
-        assert_eq!(release(&mut m), Err(Error::Timeout));
+        assert_eq!(
+            wait_idle(&mut m).and_then(|()| stop(&mut m)),
+            Err(Error::Timeout)
+        );
         assert!(m.writes.is_empty());
         assert_timed_out(m.tick, u32::MAX - 50);
         // `abort` is the old `free`: no look at the bus.
         let before = m.tick;
-        stop(&mut m);
+        assert_eq!(stop(&mut m), Err(Error::Busy));
         assert_eq!((m.tick, m.writes.as_slice()), (before, &stopped[..]));
     }
 
@@ -1451,8 +1443,8 @@ mod tests {
         pins: PinTuple<11, 10, 9>,
         config: Config,
         routed: &mut bool,
-    ) -> Result<Spi<0, 11, 10, 9>, crate::InitError<Parts<0, 11, 10, 9>, Error>> {
-        token.init_on(m, pins, &CLOCKS, config, |(sck, mosi, miso)| {
+    ) -> Result<Spi<0, PinTuple<11, 10, 9>>, InitError<0, PinTuple<11, 10, 9>>> {
+        Parts::new(token, Pins(pins)).init_on(m, &CLOCKS, config, |(sck, mosi, miso)| {
             *routed = true;
             (sck.assume(), mosi.assume(), miso.assume())
         })
@@ -1493,15 +1485,10 @@ mod tests {
                 .err()
                 .expect("init must fail");
             let error = *e.error();
-            let Parts {
-                token: t,
-                sck,
-                mosi,
-                miso,
-            } = e.into_parts();
+            let (t, pins_back) = e.try_into_parts().unwrap().into_parts();
             assert_eq!(error, want, "{sys:?} {config:?}");
             assert!(m.resets.is_empty() && m.writes.is_empty() && !routed);
-            (token, pins) = (t, (sck, mosi, miso));
+            (token, pins) = (t, pins_back.into_pins());
         }
         // A 16-bit instance asked for 32-bit frames: the reset is released and the block
         // probed, but the pins are still not routed; the retry with 16 bits succeeds.
@@ -1514,13 +1501,8 @@ mod tests {
         assert_eq!(*e.error(), Error::Invalid);
         assert_eq!((m.resets.as_slice(), routed), (&[reset_bit(0)][..], false));
         let config = config.with_frame_bits(16).with_rx_sample_dly(3);
-        let Parts {
-            token,
-            sck,
-            mosi,
-            miso,
-        } = e.into_parts();
-        let spi = init_model(token, &mut m, (sck, mosi, miso), config, &mut routed).expect("retry");
+        let (token, pins) = e.try_into_parts().unwrap().into_parts();
+        let spi = init_model(token, &mut m, pins.into_pins(), config, &mut routed).expect("retry");
         assert!(routed);
         assert_eq!(
             (spi.fifo_depth(), spi.has_32_bit_frames(), spi.frame_bits()),
@@ -1536,6 +1518,37 @@ mod tests {
         ]));
         // One strict clock check per init, never the fast one.
         assert_eq!((m.strict, m.fast), (2, 0));
+    }
+
+    #[test]
+    fn init_with_unconfirmed_disable_keeps_the_pins() {
+        let config = Config::new(1.MHz(), embedded_hal::spi::MODE_0);
+        let mut model = Model::new(8);
+        model.stuck_enabled = true;
+        let mut routed = false;
+        let error = init_model(
+            unsafe { Token::new() },
+            &mut model,
+            pins(),
+            config,
+            &mut routed,
+        )
+        .err()
+        .expect("disable is stuck");
+        assert_eq!(*error.error(), Error::Precondition);
+        assert!(!routed);
+        assert!(
+            model
+                .writes
+                .iter()
+                .all(|(reg, _)| matches!(*reg, IMR | IRQ_WRAP | SSIENR))
+        );
+        let error = error.try_into_parts().err().expect("pins are still owned");
+        let error = error
+            .recover(|| false)
+            .err()
+            .expect("reset is not confirmed");
+        assert!(error.recover(|| true).is_ok());
     }
 
     /// Review 8: init and reconfiguration use the strict check only. clk_sys drifted in a way
@@ -1576,7 +1589,7 @@ mod tests {
         assert_eq!((m.strict, m.fast), (2, 0));
     }
 
-    /// Review 8: the real `Bus` / `SpiBus` impls of [`Spi`] (owned and lent) reject words
+    /// The `Bus` and `SpiBus` polling impls reject words
     /// narrower than the frame with `Invalid` before any register access and before CS moves.
     /// (On the host the controller is not mapped: any access would fault.)
     #[test]
@@ -1585,6 +1598,7 @@ mod tests {
         let config = Config::new(10.MHz(), embedded_hal::spi::MODE_0).with_frame_bits(16);
         let mut spi =
             init_model(unsafe { Token::new() }, &mut m, pins(), config, &mut false).expect("init");
+        let mut spi = spi.polling();
         let log = core::cell::RefCell::new(Vec::new());
         let mut cs = |high| log.borrow_mut().push(high);
         let mut ops = [Operation::<u8>::Write(&[1, 2]), Operation::DelayNs(10)];
@@ -1602,17 +1616,6 @@ mod tests {
             SpiBus::<u8>::transfer_in_place(&mut spi, &mut [1]),
             Err(Error::Invalid)
         );
-    }
-
-    /// `?` on an init error inside a function returning the bus error (compile check).
-    #[allow(dead_code)]
-    fn init_with_question_mark(
-        token: Token<0>,
-        (sck, mosi, miso): PinTuple<11, 10, 9>,
-        clocks: &Clocks,
-    ) -> Result<Spi<0, 11, 10, 9>, Error> {
-        let config = Config::new(1.MHz(), embedded_hal::spi::MODE_0).with_rx_sample_dly(1);
-        Ok(token.init(sck, mosi, miso, clocks, config)?)
     }
 
     #[test]

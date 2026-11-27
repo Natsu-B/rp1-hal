@@ -116,7 +116,10 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let mut i2c = {
         let i2c = p
             .i2c1
-            .init(&clocks, rp1_hal::i2c::Speed::Standard)
+            .init(
+                &clocks,
+                rp1_hal::i2c::Config::new(rp1_hal::i2c::Speed::Standard),
+            )
             .map_err(|e| *e.error());
         log!("p0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
         i2c.ok()
@@ -222,7 +225,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         adc
     };
     #[cfg(feature = "spi")]
-    let mut spi = {
+    let mut spi_bus = {
         let spi = match clocks {
             Ok(c) => p
                 .spi0
@@ -238,14 +241,16 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             Err(e) => log!("p1 spi0 init Err 0x{:x}\n", 0x100 + *e as u32),
         }
         .unwrap();
-        let mut spi = spi
-            .ok()
-            .map(|bus| rp1_hal::spi::Device::new(bus, p.pins.gpio8));
-        if let Some(dev) = spi.as_mut() {
-            spi_proof::log_result("boot", &spi_proof::prove(dev, "P1BOOT"));
-        }
-        spi
+        spi.ok()
     };
+    #[cfg(feature = "spi")]
+    let mut spi = spi_bus
+        .as_mut()
+        .map(|bus| rp1_hal::spi::Device::new(bus.polling(), p.pins.gpio8));
+    #[cfg(feature = "spi")]
+    if let Some(dev) = spi.as_mut() {
+        spi_proof::log_result("boot", &spi_proof::prove(dev, "P1BOOT"));
+    }
     #[cfg(any(feature = "dma", feature = "ring-dma"))]
     #[allow(unused_mut)]
     let mut dma = {

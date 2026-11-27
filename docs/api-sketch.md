@@ -116,14 +116,14 @@ fn main(core: Proc0, p: rp1::Proc0Resources) -> ! {
     log!("proc0 up, clk_sys={}", clocks.sys());
 
     // 宣言 uart2 = { tx = 4, rx = 5 } の Parts（Token + Pin<4> + Pin<5>）。表に無い組は型が無い
-    let mut uart = p.uart2.init(&clocks, 115_200.Hz()).unwrap();
+    let mut uart = p.uart2.init(&clocks, rp1_hal::uart::Config::new(115_200.Hz())).unwrap();
 
     let samples = SAMPLES.consumer(&core);             // Proc0 トークンでしか取れない
     p.proc1.start();                                    // proc1 の #[entry(proc1)] を起動する
 
     loop {
         while let Some(v) = samples.dequeue() {
-            writeln!(uart, "sample {v}").ok();
+            writeln!(uart.polling(), "sample {v}").ok();
         }
         hal::arch::wfe();
     }
@@ -282,44 +282,32 @@ PCIe の書き込みは posted で速く、読み出しは往復が要って遅�
 
 ### 4.4 ドライバの解放・中止・エラー
 
-この節は実装済みの契約（STATIC: 偽レジスタを使うホスト試験。HW 未検証）。名前は rp-hal に合わせ、丁寧な解放は `free`、
-強制的な停止は `abort` とする。
+STATIC（2026-11-27、ホストモデル）。UART・SPI・I2C の所有権は停止を確認した後に回収する。
+`FreeError::error()` で原因を確認し、`into_parts()` でドライバとエラーを取り出して再試行できる。
 
-| 操作 | 形 | 意味 |
-|---|---|---|
-| 丁寧な解放 | `fn free(self) -> Result<資源, FreeError<Self, Error>>` | ハードが静止するまで（上限つき、経過時間で）待ち、割り込みをマスクし、ブロックを止めて資源を返す。失敗時は何も止めずにドライバ自身（`driver`）をエラー（`error`）と一緒に返すので、呼び出し側はやり直せる。`FreeError` の `Debug` はエラーだけを出すので `.unwrap()` / `.expect()` が使える。`?` で捨てると動作中のハードを持つドライバが失われるので、`From` は実装しない |
-| 中止 | `fn abort(self) -> 資源` | 待たない・失敗しない。何が捨てられ、何が保証されるかを各ドライバの doc に書く |
-| 失敗しない解放 | `fn free(self) -> 資源` | 待つものが無いドライバ（`Adc`、`Dma`、`spi::Device`）。`abort` は無い |
-| 初期化の失敗 | `Err(rp1_hal::InitError { error, resources })` | 全ドライバ共通の 1 つの型（`FreeError` と同じく crate 直下）。`init` が消費したものを `resources` に入れて返す: uart / i2c / spi は解放と同じ `Parts`（token とピン）、pwm / adc / dma は token。どれも `e.resources.init(..)` でやり直せる。`?` は `InitError` をそのドライバの `Error` に変換する |
+| 操作 | UART・SPI・I2C の契約 |
+|---|---|
+| `try_free(self)` | 待たずに停止条件を確認する。未確認なら `FreeError` がドライバを保持する |
+| `free_polling(self)` | 上限つきで静止を待ってから解放を試みる |
+| `try_cancel(&mut self)` | 待たずに停止を要求する。資源回収には `try_free` を使う |
+| 初期化の失敗 | `InitError::error()` で原因を確認する。`try_into_parts()` は再利用できる場合だけ返す。回復中は `try_recover()` を再試行する |
 
-返る資源は `init` が消費したもの: `uart::Parts` / `i2c::Parts` / `spi::Parts`（そのまま `init` し直せる）、`pwm::Token`、
-PWM 出力は `(Channel, Pin)`、ADC と DMA は `Token`。
+UART の停止はこの UART のみをリセットする。通常解放は送信側の BUSY が消えるのを確認し、受信途中と未読の文字を捨てる。
+強制停止は送信中の文字を切断し、相手に framing error が見えることがある。PL011 は送受信中の LCR_H 変更を禁じるため、
+FEN を落として FIFO を空ける方法は使わない。SPI の通常解放は TFE かつ BUSY=0 を確認する。強制停止では
+送出中のフレームと両 FIFO を捨てうる。I2C は転送失敗時に ABORT を要求する。`try_cancel` は disable を再要求し、
+ターゲットが SCL を解放してコントローラが停止するまでピンを返さない。
 
-| ドライバ | `free` が待つもの（失敗） | `abort` で捨てられるもの | `abort` 後の状態 |
-|---|---|---|---|
-| `Uart` | 送信完了 BUSY=0（`Timeout`）。その後 `abort` と同じくこの UART のリセットを掛け、受信途中の文字と未読の受信分を捨てる | TX FIFO の未送信分、未読の受信分、送受信途中の文字（途中で切れるので相手には framing error に見えうる） | この UART だけをリセット保持（RESETS CTRL1 の自分のビット。他の UART と clk_uart には触れない）。割り込みマスク・無効・FIFO 空はリセット値による（DOC）。`init` がリセットを解除する。PL011 は文字の送受信中に LCR_H を変えることを禁じるので、FEN を落として FIFO を空ける方法は使わない |
-| `I2c` | 通常は無し。disable が timeout した（毒された）ハンドルだけ再度 100 ms 待つ（`Timeout`） | 無し（転送の失敗時に `transaction` が ABORT を要求済み。`abort` は disable 要求を繰り返すだけ） | 割り込みマスク、disable 要求済み。スレーブが SCL を離すまでコントローラは動作中のままで、その間の `init` は `Timeout` |
-| `Spi` | バスの静止 TFE かつ BUSY=0、100 ms（`Timeout`） | 送出中のフレーム（途中で切れる）と両 FIFO | 割り込みマスク、コントローラ無効、SCK 停止 |
-| `pwm::Channels` / `Output` | clk_pwm が 50 MHz で動作中であること（`Precondition`） | — | 停止を書くが、クロックが止まっていると反映されないことがある（HW 未検証）。`Token::init` がクロックを起動し直して全チャネルを止める |
-| DMA の `Transfer` | — | `cancel()` がブロックの残りを捨てる | 他と違い上限が無い: DMAC がバッファに触れなくなるまで戻らない（[dma.md](dma.md)）。動作中のブロックのバッファを返す `free` は無い |
-
-一般の契約（静止を待つ → 割り込みマスク → 停止）から外れるドライバ（STATIC: コードから読んだもの。HW 未検証）:
-
-- `Uart`: `free` が待つのは送信側（BUSY）だけで、受信途中の文字は待たない。止め方も「無効化」ではなく
-  この UART のリセット保持で、割り込みマスクはリセット値による（上の表）。
-- `I2c`: `free` は先に disable を要求してから、その完了（ENABLE_STATUS=0）を待ち、そのあとで割り込みをマスクする。
-  `Timeout` のとき disable は要求済みのまま戻る（「失敗時は何も止めない」の例外）。コントローラは転送の合間には
-  disable されているので、通常は待たずに終わる。
-- `pwm::Channels` / `Output`: `free` が確かめるのは clk_pwm が動いていることだけで、停止（GLOBAL_CTRL のクリアと
-  UPDATE）を書いたら戻る。出力が実際に止まったこと（周期の終わりで反映されたこと）は観測しない。
-- `Dma`: `free` はチャネルがすべて戻っていれば失敗しないが、コントローラ（DMAC_CFG.DMAC_EN）・クロック・リセットは
-  有効のまま残す。次の `Token::init` はコントローラをソフトリセットしてから設定し直す。
-- `Adc`: `free` は CS = 0（電源断）を書くだけで待たない。`read` が `Timeout` を返した後は変換が続いている可能性があり、
-  それを止める処理は無いので、`free` 後の ADC が静止しているとは言えない（CS 書き込みの効果は HW 未検証）。
+- `pwm::Channels` / `Output` の `free` は clk_pwm が動いていることを確認して停止を書き込む。周期終端での反映は
+  HW 未検証。PWM 出力は `(Channel, Pin)` を返す。
+- `Adc::free` は電源断を書き込む。変換停止までの挙動は HW 未検証。
+- DMA の `Transfer::cancel` は DMAC がバッファに触れなくなるまで戻らない。コントローラの回収は
+  [DMA の所有権](dma.md) を参照。
+- ADC・PWM・DMA の初期化失敗では `InitError::into_parts()` が token を返す。
 
 GPIO の `Pin` と `timer::Alarm` はそれ自体が資源で、解放するドライバを持たない。
 
-割り込みを使うドライバ（`Uart` / `I2c` / `Spi`）の `free` / `abort` は周辺側のマスクを閉じるが、NVIC の線
+割り込みを使うドライバ（`Uart` / `I2c` / `Spi`）の `try_free` / `try_cancel` は周辺側のマスクを閉じるが、NVIC の線
 （生成資源の `rp1_rt::interrupt::Line`）はドライバが持たないので触らない。ARMv7-M では一度 pending になった割り込みは
 要因が消えても pending のまま残る（DOC）ので、ハンドラが解放後にもう 1 回走りうる（RP1 では HW 未検証）。
 呼び出し側が先に `Line::disable` と `Line::unpend` を行うか、ドライバが無いことをハンドラが許容する。
@@ -327,26 +315,22 @@ GPIO の `Pin` と `timer::Alarm` はそれ自体が資源で、解放するド�
 ```rust
 use rp1_hal::fugit::RateExtU32;
 
-// 送信が終わらなければ uart が戻るので、待ち直すか、あきらめて abort する。
-let parts = match uart.free() {
-    Ok(parts) => parts,
-    Err(e) => e.driver.abort(),
-};
-let mut uart = parts.init(&clocks, 9_600.Hz()).unwrap();    // 返った Parts でそのまま初期化し直せる
+// 送信が終わっていれば資源を回収し、新しい baud で初期化する。
+let parts = uart.try_free().unwrap();
+let mut uart = parts.init(&clocks, rp1_hal::uart::Config::new(9_600.Hz())).unwrap();
 ```
 
 #### UART のエラーと timeout
 
 - `uart::Error` は受信エラーを `Overrun` / `Break` / `Parity` / `Framing` に分け、ほかに `Timeout` / `Invalid`（baud）/
-  `Precondition`（クロック）を持つ。`embedded_io::ErrorKind` は `Break`・`Parity`・`Framing` → `InvalidData`、`Timeout` → `TimedOut`、
-  `Invalid` → `InvalidInput`、`Overrun`・`Precondition` → `Other`（overrun は、それまでに読めた文字は正しいが、エラーを付けて届いた文字より前の 1 文字以上が FIFO 満杯で失われたという意味で、対応する kind が無い。エラーを付けて届いた文字自体も捨てる）。
+  `Precondition`（クロック）と `Busy`（停止未確認）を持つ。`embedded_io::ErrorKind` は `Break`・`Parity`・`Framing` → `InvalidData`、`Timeout` → `TimedOut`、
+  `Invalid` → `InvalidInput`、`Overrun`・`Precondition`・`Busy` → `Other`（overrun は、それまでに読めた文字は正しいが、エラーを付けて届いた文字より前の 1 文字以上が FIFO 満杯で失われたという意味で、対応する kind が無い。エラーを付けて届いた文字自体も捨てる）。
   エラー付きで受信した文字は捨て、その位置でエラーを返す。
 - 待ちはすべて 1 MHz タイマーの経過時間で測る（ポーリング回数ではない）。受信待ち（`embedded_io::Read`）の上限は
-  `Uart::set_read_timeout`（既定 100 ms、0 でポーリング）。送信側の待ち（`write` の FIFO 空き待ち、`flush`、`free`）は
+  `uart.polling().set_read_timeout`（既定 100 ms）。送信側の待ち（`write` の FIFO 空き待ち、`flush`、`free_polling`）は
   利用者が変えられず、`init` の baud から決まる: FIFO 満杯の送信時間（330 ビット時間）の 2 倍 + 1 ms。フロー制御が無いので
-  送信は相手によらず baud の速さで進む。読み取り用に短くした timeout で `free` が `Timeout` になり、`abort` に落ちて
-  出力が切れることはない。
-- `Uart::write(&[u8]) -> Result<usize, Error>` は embedded-io の `write` と同じ: 最初の 1 byte 分だけ FIFO の空きを待ち、待たずに入る分を
+  送信は相手によらず baud の速さで進み、受信 timeout とは独立する。
+- `uart.polling()` の embedded-io `write`: 最初の 1 byte 分だけ FIFO の空きを待ち、待たずに入る分を
   入れて、入れた数を返す。`Timeout` は 1 byte も入らなかったときだけなので、同じデータを書き直しても重複しない。
   「FIFO に入った」と「線に出終わった」は別で、後者は `flush`（BUSY=0 を待つ）。`embedded_io::Read::read` は 1 回に 1 byte。
 

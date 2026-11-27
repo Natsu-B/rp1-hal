@@ -7,6 +7,7 @@ use crate::rp1;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
 use rp1_hal::{
     fugit::ExtU32,
+    gpio::Pin,
     log,
     spi::Spi,
     timer::{Alarm, Timer},
@@ -19,7 +20,7 @@ use rp1_rt::{
     sync::Producer,
 };
 
-type Spi0 = Spi<0, 11, 10, 9>;
+type Spi0 = Spi<0, (Pin<11>, Pin<10>, Pin<9>)>;
 static ALARM: Slot<Option<Alarm<1>>, 1> = Slot::empty();
 static BELL: Slot<Option<rp1::Doorbell1>, 1> = Slot::empty();
 /// The `down1` ring, once main has opened it.

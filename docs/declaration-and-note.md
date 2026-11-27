@@ -102,7 +102,7 @@ on_conflict = "disable"                   # "disable"（既定）| "refuse"。�
   E4（`UART flow control is not supported yet`）。そのピンを GPIO として使うなら `gpio` に書く。`linux.keep` では Linux のフロー制御
   ピンとして書ける（機能表で検査し、保護する）。
 - ピンは「インスタンスの信号への割り当て」から導き、bank 0 の機能表（`rp1-pinmux`、datasheet・pinctrl-rp1・HAL の表と照合）で
-  検査する。生成される resources はインスタンスを型付きの `Parts`（例 `i2c::Parts<1, 2, 3>`）で渡し、表に無い組はコンパイルできない。
+  検査する。生成される resources はインスタンスを型付きの `Parts`（例 `i2c::Parts<1, (Pin<2>, Pin<3>)>`）で渡し、表に無い組はコンパイルできない。
   手動組み立ても同じ builder を使い、同じ検査を受ける（`i2c::Pins::<1>::builder().sda(sda).scl(scl)` を `Parts::new` に渡す）。
   ピン、IRQ、ドライバーは所有コア内に留める。ISR と共有するドライバーには `interrupt::Slot` を使う。
   Slot の優先度上限は既定で 4。より緊急度の高い IRQ は割り込み可能なので、Slot にアクセスする IRQ は上限と同じか
@@ -261,7 +261,7 @@ pub mod rp1 {
         pub pins: Proc1Pins,
         pub irq: Proc1Irq,
         pub TIMER_ALARM1: ::rp1_hal::timer::Alarm<1>,
-        pub spi0: ::rp1_hal::spi::Parts<0, 11, 10, 9>,
+        pub spi0: ::rp1_hal::spi::Parts<0, (Pin<11>, Pin<10>, Pin<9>)>,
     }
 }
 ```
