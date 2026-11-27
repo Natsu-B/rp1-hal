@@ -5,6 +5,7 @@ pub mod bundle;
 pub mod note;
 pub mod shm;
 pub mod status;
+pub mod wake;
 pub use rp1_macros::Message;
 
 pub const SRAM_START: u32 = 0x2000_0000;

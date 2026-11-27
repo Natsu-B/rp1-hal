@@ -1,14 +1,18 @@
 //! The DDR region header: RP1 initializes and publishes it, Linux opens and checks it.
 use super::HEADER_SIZE;
 use super::access::{aligned, ld, st};
-use crate::{Error, barrier};
+use crate::{
+    Error, barrier,
+    wake::{self, Session, SessionError},
+};
 
 const MAGIC: [u8; 8] = *b"RP1SHM\0\0";
 const VERSION: u32 = 1;
+const WAKE_VERSION: u32 = 2;
 
 /// RP1's initializing handle for the DDR region header (protocol.md §1.3).
 ///
-/// Only [`HeaderInit::begin`] creates it, under a writable-mapping contract; Linux's
+/// [`HeaderInit::begin`] and [`HeaderInit::begin_v2`] create it, under a writable-mapping contract; Linux's
 /// read-only [`Header`] has no write path, so a `PROT_READ` mapping stays sound.
 pub struct HeaderInit {
     base: *mut u8,
@@ -29,6 +33,43 @@ impl HeaderInit {
         barrier();
         Self { base, generation }
     }
+    /// Begin v2 initialization without reusing a generation.
+    ///
+    /// # Safety
+    /// As for [`Self::begin`]. Old CPU writers and posted writes/DMA must be drained
+    /// before reusing the reservation. This reads the odd generation back through
+    /// the header window before the caller can modify an already-visible reservation.
+    pub unsafe fn begin_v2(base: *mut u8, previous: u32) -> Result<Self, SessionError> {
+        let generation = Session::next_generation(previous)?;
+        unsafe { st(base, 12, generation - 1) };
+        barrier();
+        let _ = unsafe { ld(base, 12) };
+        barrier();
+        Ok(Self { base, generation })
+    }
+
+    /// Write a v2 header with the boot and negotiated capability fields.
+    pub fn write_v2(
+        &mut self,
+        note_sha256: &[u8; 32],
+        regions: u32,
+        uptime_us: u32,
+        epoch: u32,
+        accepted_caps: u32,
+    ) -> Result<(), SessionError> {
+        Session::new(epoch, self.generation)?;
+        if accepted_caps & !wake::KNOWN_CAPS != 0 {
+            return Err(SessionError::Unsupported);
+        }
+        self.write(note_sha256, regions, uptime_us);
+        unsafe {
+            st(self.base, 8, ((HEADER_SIZE as u32) << 16) | WAKE_VERSION);
+            st(self.base, 56, epoch);
+            st(self.base, 60, accepted_caps);
+        }
+        Ok(())
+    }
+
     /// The generation [`HeaderInit::publish`] will write.
     pub fn generation(&self) -> u32 {
         self.generation
@@ -66,6 +107,15 @@ impl HeaderInit {
         barrier();
         self.generation
     }
+
+    /// Commit the even v2 generation and complete publication through the header window.
+    pub fn publish_v2(self) -> u32 {
+        let base = self.base;
+        let generation = self.publish();
+        let _ = unsafe { ld(base, 12) };
+        barrier();
+        generation
+    }
 }
 
 /// Linux's read-only view of a published DDR region header.
@@ -81,6 +131,37 @@ impl Header {
     /// # Safety
     /// `base` stays a readable aligned 64-byte mapping for the lifetime of the handle.
     pub unsafe fn open(base: *const u8, note_sha256: &[u8; 32]) -> Result<Self, Error> {
+        unsafe { Self::open_version(base, note_sha256, VERSION) }
+    }
+
+    /// Open a v2 header and match the committed session and negotiated capability bits.
+    ///
+    /// # Safety
+    /// As for [`Self::open`]. The caller verifies the matching mailbox result and link status.
+    pub unsafe fn open_v2(
+        base: *const u8,
+        note_sha256: &[u8; 32],
+        session: Session,
+        accepted_caps: u32,
+    ) -> Result<Self, Error> {
+        let header = unsafe { Self::open_version(base, note_sha256, WAKE_VERSION) }?;
+        if header.generation != session.generation()
+            || unsafe { ld(base, 56) } != session.epoch()
+            || unsafe { ld(base, 60) } != accepted_caps
+            || accepted_caps & !wake::KNOWN_CAPS != 0
+        {
+            return Err(Error::Mismatch);
+        }
+        barrier();
+        header.check()?;
+        Ok(header)
+    }
+
+    unsafe fn open_version(
+        base: *const u8,
+        note_sha256: &[u8; 32],
+        version: u32,
+    ) -> Result<Self, Error> {
         if !aligned(base) {
             return Err(Error::Invalid);
         }
@@ -94,7 +175,7 @@ impl Header {
         if generation & 1 != 0
             || generation == 0
             || magic != MAGIC
-            || unsafe { ld(base, 8) } != ((HEADER_SIZE as u32) << 16) | VERSION
+            || unsafe { ld(base, 8) } != ((HEADER_SIZE as u32) << 16) | version
         {
             return Err(Error::NotReady);
         }

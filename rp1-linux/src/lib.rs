@@ -214,12 +214,13 @@ impl Firmware {
     /// endpoints after [`Firmware::wait_ready`].
     pub fn open() -> Result<Self> {
         let note = fs::read(NOTE)?;
-        let area = ShmArea::parse(
-            Note::parse(&note)?
-                .get(SHM_AREA)
-                .ok_or(proto::Error::Invalid)?
-                .value,
-        )?;
+        let parsed = Note::parse(&note)?;
+        if parsed.version() != proto::note::LEGACY_VERSION {
+            return Err(Error::setup(
+                "experimental link-wake NOTE requires a link-wake client",
+            ));
+        }
+        let area = ShmArea::parse(parsed.get(SHM_AREA).ok_or(proto::Error::Invalid)?.value)?;
         let link = Mapping::link(Access::Shared)?;
         let magic = link.read(proto::link::HANDOFF_MAGIC);
         if magic == u32::MAX {

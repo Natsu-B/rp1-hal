@@ -14,6 +14,7 @@ use std::{
 #[serde(default, deny_unknown_fields)]
 struct InputDeclaration {
     schema: Option<u32>,
+    link_wake: Option<LinkWakeProfile>,
     board: String,
     clock: Clock,
     log: Option<Log>,
@@ -28,6 +29,7 @@ impl Default for InputDeclaration {
     fn default() -> Self {
         Self {
             schema: None,
+            link_wake: None,
             board: "rpi-cm5".into(),
             clock: Clock::default(),
             log: None,
@@ -40,10 +42,18 @@ impl Default for InputDeclaration {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LinkWakeProfile {
+    Experimental,
+}
+
 /// Normalized schema 2 declaration.
 #[derive(Clone, Debug, Serialize)]
 pub struct Declaration {
     pub schema: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_wake: Option<LinkWakeProfile>,
     pub board: String,
     pub clock: Clock,
     pub log: Option<Log>,
@@ -60,6 +70,7 @@ impl Default for Declaration {
     fn default() -> Self {
         Self {
             schema: 2,
+            link_wake: None,
             board: "rpi-cm5".into(),
             clock: Clock::default(),
             log: None,
@@ -96,6 +107,7 @@ impl Declaration {
         }
         Ok(Self {
             schema: 2,
+            link_wake: input.link_wake,
             board: input.board,
             clock: input.clock,
             log: input.log,
@@ -108,6 +120,15 @@ impl Declaration {
             types: BTreeMap::new(),
         })
     }
+    pub(crate) fn wake_config(&self) -> Option<rp1_proto::note::LinkWake> {
+        self.link_wake.map(|_| rp1_proto::note::LinkWake {
+            required_caps: rp1_proto::wake::LATCHED_WAKE,
+            offered_caps: rp1_proto::wake::LATCHED_WAKE,
+            owner: u8::from(self.proc1.host_irq),
+            startup_doorbell: None,
+        })
+    }
+
     /// Warnings emitted by build.rs; also available to manifest inspection tools.
     pub fn warnings(&self) -> Vec<&'static str> {
         let mut warnings = Vec::new();
@@ -475,6 +496,9 @@ impl Declaration {
         self.stack_size(0)?;
         self.stack_size(1)?;
         self.validate_ownership()?;
+        if self.link_wake.is_some() && !(self.proc0.host_irq || self.proc1.host_irq) {
+            return Err("experimental link_wake requires one host_irq owner".into());
+        }
         let mut names = BTreeSet::new();
         let mut region_count = 0;
         for r in &self.shm {
@@ -623,7 +647,12 @@ impl Declaration {
 
     pub(crate) fn shm_layout(&self) -> Result<ShmLayout<'_>> {
         let mut ddr = 65536usize; // Region header is in the first independently mapped page.
-        let mut sram = SRAM_ALLOC_START;
+        let sram_start = if self.link_wake.is_some() {
+            rp1_proto::wake::mailbox::END
+        } else {
+            SRAM_ALLOC_START
+        };
+        let mut sram = sram_start;
         let mut regions = Vec::new();
         let mut endpoints = Vec::with_capacity(self.shm.len());
         for logical in &self.shm {
@@ -691,7 +720,7 @@ impl Declaration {
             handoff: rp1_proto::HANDOFF,
             sram_end: regions
                 .last()
-                .map_or(SRAM_ALLOC_START as u16, |r| r.sram_offset + r.sram_len),
+                .map_or(sram_start as u16, |r| r.sram_offset + r.sram_len),
             phys: rp1_proto::SHM_PHYS,
         };
         Ok(ShmLayout {

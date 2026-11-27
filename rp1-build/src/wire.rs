@@ -125,6 +125,9 @@ pub(crate) fn descriptor_with_layout(
         cores: [core(&d.proc0), core(&d.proc1)],
     };
     tlv(&mut out, LINK, false, &link.encode());
+    if let Some(wake) = d.wake_config() {
+        tlv(&mut out, LINK_WAKE, true, &wake.encode());
+    }
     tlv(&mut out, SHM_AREA, true, &shm.area.encode());
     for region in &shm.regions {
         let r = region.wire()?;
@@ -169,7 +172,12 @@ pub(crate) fn descriptor_with_layout(
         tlv(&mut out, RPC, false, &v);
     }
     out[..8].copy_from_slice(MAGIC);
-    out[8..10].copy_from_slice(&2u16.to_le_bytes());
+    let version = if d.link_wake.is_some() {
+        WAKE_VERSION
+    } else {
+        LEGACY_VERSION
+    };
+    out[8..10].copy_from_slice(&version.to_le_bytes());
     out[10..12].copy_from_slice(&32u16.to_le_bytes());
     let len = out.len() as u32;
     out[12..16].copy_from_slice(&len.to_le_bytes());
@@ -182,7 +190,14 @@ pub fn elf_note(desc: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     word(&mut out, 4);
     word(&mut out, desc.len() as u32);
-    word(&mut out, ELF_TYPE);
+    word(
+        &mut out,
+        if u16_at(desc, 8) == Ok(WAKE_VERSION) {
+            ELF_TYPE_V3
+        } else {
+            ELF_TYPE
+        },
+    );
     out.extend(b"RP1\0");
     out.extend(desc);
     while out.len() % 4 != 0 {

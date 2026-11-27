@@ -2,6 +2,7 @@
 extern crate std;
 
 mod block;
+mod event;
 pub(super) mod model;
 mod notify;
 mod overwrite;
@@ -9,6 +10,7 @@ mod ring;
 #[cfg(feature = "unstable-ring-dma")]
 mod staged;
 mod wait;
+mod wake;
 
 #[repr(C, align(8))]
 struct Mem<const N: usize>([u8; N]);

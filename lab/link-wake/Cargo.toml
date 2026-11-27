@@ -1,0 +1,46 @@
+[package]
+name = "link-wake-fixture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+firmware = ["rp1-rt/experimental-link-wake"]
+
+[[bin]]
+name = "link-wake-fixture"
+path = "src/main.rs"
+required-features = ["firmware"]
+test = false
+bench = false
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp1-hal = { path = "../../rp1-hal" }
+rp1-link = { path = "../../rp1-link" }
+rp1-proto = { path = "../../rp1-proto" }
+rp1-rt = { path = "../../rp1-rt" }
+
+[build-dependencies]
+rp1-build = { path = "../../rp1-build" }
+
+[package.metadata.rp1]
+schema = 2
+link_wake = "experimental"
+
+[package.metadata.rp1.proc0]
+doorbell = 26
+custom_doorbell_handler = true
+
+[package.metadata.rp1.proc1]
+doorbell = 27
+custom_doorbell_handler = true
+host_irq = true
+
+[[package.metadata.rp1.shm]]
+name = "wake_probe"
+kind = "ring"
+core = "proc1"
+direction = "rp1-to-linux"
+message = "u32"
+depth = 4
+notify = "irq"

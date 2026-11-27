@@ -106,6 +106,51 @@ pub fn stop(code: u32) -> ! {
         crate::wait_for_event();
     }
 }
+/// Publish a deliberate stop before the vector owner delivers the terminal wake and parks.
+#[cfg(feature = "experimental-link-wake")]
+#[doc(hidden)]
+pub fn __record_stop_before_park(code: u32) {
+    finish(
+        CORE.load(Relaxed),
+        CoreState::Stopped,
+        code,
+        0,
+        0,
+        clear_file,
+    );
+}
+
+/// An immutable terminal record read from SRAM after its state is committed.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Terminal {
+    pub epoch: u32,
+    pub state: CoreState,
+    pub reason: u32,
+}
+
+/// Scan before waiting for events, including when the vector owner starts late.
+#[doc(hidden)]
+pub fn terminal(core: u8) -> Option<Terminal> {
+    let epoch = word(s::EPOCH).load(Relaxed);
+    if epoch == 0 || epoch & 1 != 0 || core > 1 {
+        return None;
+    }
+    barrier();
+    let state = CoreState::from_word(field(u32::from(core), s::STATE).load(Relaxed));
+    if !state.is_terminal() {
+        return None;
+    }
+    barrier();
+    let reason = field(u32::from(core), s::REASON).load(Relaxed);
+    barrier();
+    (word(s::EPOCH).load(Relaxed) == epoch).then_some(Terminal {
+        epoch,
+        state,
+        reason,
+    })
+}
+
 /// Report a panic. For a panic handler; it does not park the core.
 ///
 /// With the `panic-location` feature it also records the file and line. That costs 2.5..4.7 KiB
@@ -188,7 +233,20 @@ fn finish(
         barrier();
         field(core, s::STATE).store(state.word(), Relaxed);
         barrier();
+        #[cfg(any(test, feature = "experimental-link-wake"))]
+        terminal_event(core);
     });
+}
+
+#[cfg(any(test, feature = "experimental-link-wake"))]
+#[inline(always)]
+fn terminal_event(core: u32) {
+    // Complete publication in SRAM before waking the surviving owner. Fault handlers
+    // do not touch PCIe, and a fault in the owner itself may prevent delivery.
+    #[cfg(test)]
+    tests::observe_terminal_event(core);
+    let _ = core;
+    crate::send_event();
 }
 
 #[cfg(test)]
@@ -199,6 +257,35 @@ mod tests {
 
     /// The host page is one static: tests that use it run one at a time.
     pub(super) static PAGE_LOCK: Mutex<()> = Mutex::new(());
+
+    std::thread_local! {
+        static TERMINAL_EVENT: core::cell::Cell<Option<Terminal>> = const { core::cell::Cell::new(None) };
+    }
+
+    pub(super) fn observe_terminal_event(core: u32) {
+        TERMINAL_EVENT.with(|event| event.set(terminal(core as u8)));
+    }
+
+    #[test]
+    fn event_observes_committed_details_and_only_first_terminal() {
+        let _page = PAGE_LOCK.lock().unwrap();
+        start(0);
+        start(1);
+        let epoch = word(s::EPOCH).load(Relaxed);
+        assert_eq!(terminal(1), None);
+        finish(1, CoreState::Stopped, 42, 0, 0, clear_file);
+        let record = Terminal {
+            epoch,
+            state: CoreState::Stopped,
+            reason: 42,
+        };
+        TERMINAL_EVENT.with(|e| assert_eq!(e.take(), Some(record)));
+        finish(1, CoreState::Fault, 6, 0x2000_0401, 1, clear_file);
+        TERMINAL_EVENT.with(|e| assert_eq!(e.take(), None));
+        assert_eq!(terminal(1), Some(record));
+        start(0);
+        assert_eq!(terminal(1), None);
+    }
 
     pub(super) fn read(core: u32, offset: usize) -> u32 {
         field(core, offset).load(Relaxed)

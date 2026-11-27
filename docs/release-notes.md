@@ -61,3 +61,40 @@ retains the owner, or explicitly handle recovery.
 
 `Pin::erase()` moves ownership to an `ErasedPin` of the same mode. A failed
 number match in `try_into_pin` returns that owner.
+
+## Experimental link-wake wire profile
+
+**STATIC · 2026-11-27.** Existing schema 2 manifests keep the NOTE v2 and SHM
+header v1 path. The lab can opt into NOTE v3 and exercise the v2 SHM header
+codec, boot-scoped mailbox tickets, generation-scoped ring tickets and the
+single ALARM3/MSI-X vector owner.
+
+Before, using the schema 2 link:
+
+```toml
+[package.metadata.rp1]
+schema = 2
+[package.metadata.rp1.proc1]
+host_irq = true
+```
+
+After, selecting the experimental wire for a delivery fixture:
+
+```toml
+[package.metadata.rp1]
+schema = 2
+link_wake = "experimental"
+[package.metadata.rp1.proc1]
+host_irq = true
+```
+
+NOTE v3 uses ELF type `0x52503103`, DT `rp1,abi = <3>` and the critical
+`LINK_WAKE` TLV. It reserves link SRAM `0xc0..0xff` for the mailbox.
+Region allocation starts at `0x100`. Ring controls and slots keep their
+sizes and use reserved words for notification. The fixture gets a single
+`VectorOwner` and the raw generated layout. Application endpoints continue
+to use schema 2 without the opt-in. The v3 loader and firmware must travel
+together, and a v3 client requires the upcoming link-wake wait backend.
+
+**HYP · 2026-11-27.** Physical delivery through MSI-X/UIO and the posted
+window ordering still require hardware verification.

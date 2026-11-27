@@ -176,11 +176,8 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
 
     // 3. The firmware's note and overlay.
     let elf = Elf::parse(fw)?;
-    let desc = note::descriptor(elf.section(".note.rp1")?)
-        .map_err(|_| "bad .note.rp1 envelope".to_string())?;
-    let parsed = note::Note::parse(desc).map_err(|e| {
-        format!("invalid .note.rp1 ({e}): CRC, version or an unknown critical record")
-    })?;
+    let parsed = elf.rp1_note()?;
+    let desc = parsed.as_bytes();
     let entry = parsed.get(note::ENTRY).ok_or("note has no ENTRY")?.value;
     let (entry_pc, entry_sp) = (
         note::u32_at(entry, 0).map_err(|_| "ENTRY truncated")?,
@@ -198,8 +195,9 @@ fn run(dtb_addr: usize) -> Result<Never, String> {
         .transpose()
         .map_err(|_| "bad SHM_AREA")?;
     log!(
-        "rp1.elf {} B: note v2 ok, entry={entry_pc:#x} sp={entry_sp:#x} shm={}",
+        "rp1.elf {} B: note v{} ok, entry={entry_pc:#x} sp={entry_sp:#x} shm={}",
         fw.len(),
+        parsed.version(),
         area.map_or(String::from("none"), |a| format!(
             "{:#x}+{:#x}",
             a.phys, a.size

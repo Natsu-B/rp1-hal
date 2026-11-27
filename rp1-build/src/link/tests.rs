@@ -147,14 +147,14 @@ fn aliases_must_be_distinct_and_free() {
     let mut d = fixture();
     d.shm[1].name = "ty_pe".into();
     d.shm[0].name = "ty__pe".into();
-    let error = generate(&d.shm_layout().unwrap(), &[]).unwrap_err();
+    let error = generate(&d.shm_layout().unwrap(), &[], false).unwrap_err();
     assert_eq!(
         error.to_string(),
         "SHM names \"ty__pe\" and \"ty_pe\" both give the type alias TyPe; rename one"
     );
     let mut d = fixture();
     d.shm[1].name = "proc1_link".into();
-    let error = generate(&d.shm_layout().unwrap(), &[]).unwrap_err();
+    let error = generate(&d.shm_layout().unwrap(), &[], false).unwrap_err();
     assert!(
         error.to_string().contains("type alias Proc1Link"),
         "{error}"
@@ -165,7 +165,7 @@ fn aliases_must_be_distinct_and_free() {
 fn unrepresentable_field_names_point_to_the_declaration() {
     let mut d = fixture();
     d.shm[0].name = "self".into();
-    let error = generate(&d.shm_layout().unwrap(), &[]).unwrap_err();
+    let error = generate(&d.shm_layout().unwrap(), &[], false).unwrap_err();
     assert_eq!(
         error.to_string(),
         "SHM name \"self\" cannot be a Rust field; rename this region"
@@ -186,7 +186,7 @@ fn fragment(d: &Declaration) -> (String, Vec<u8>) {
     let shm = d.shm_layout().unwrap();
     let note =
         wire::descriptor_with_layout("fixture", "0.1.0", d, [0x45; 32], [0x67; 20], &shm).unwrap();
-    (generate(&shm, &note).unwrap(), note)
+    (generate(&shm, &note, false).unwrap(), note)
 }
 
 fn write_case(dir: &Path, name: &str, source: String) -> std::path::PathBuf {
@@ -370,7 +370,7 @@ fn named_endpoint_limits() {
         PING.replace("ping", "pi__ng")
     ));
     assert!(
-        generate(&d.shm_layout().unwrap(), &[])
+        generate(&d.shm_layout().unwrap(), &[], false)
             .unwrap_err()
             .to_string()
             .contains("PiNg")

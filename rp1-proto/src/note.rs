@@ -1,8 +1,11 @@
-//! ELF note descriptor v2, checked without allocation.
+//! ELF note descriptors v2 and v3, checked without allocation.
 use crate::Error;
 
 pub const MAGIC: &[u8; 8] = b"RP1NOTE\0";
 pub const ELF_TYPE: u32 = 0x5250_3102;
+pub const ELF_TYPE_V3: u32 = 0x5250_3103;
+pub const LEGACY_VERSION: u16 = 2;
+pub const WAKE_VERSION: u16 = 3;
 pub const HEADER_LEN: usize = 32;
 pub const FIRMWARE: u16 = 1;
 pub const ENTRY: u16 = 2;
@@ -32,6 +35,7 @@ pub const SHM_REGION: u16 = 0x21;
 pub const LINK: u16 = 0x22;
 /// Non-critical record containing one logical RPC name.
 pub const RPC: u16 = 0x23;
+pub const LINK_WAKE: u16 = 0x24;
 
 /// Decode the length-prefixed name in an RPC record.
 pub fn rpc_name(mut value: &[u8]) -> Result<&str, Error> {
@@ -84,13 +88,15 @@ pub struct Record<'a> {
 #[derive(Clone, Copy)]
 pub struct Note<'a> {
     bytes: &'a [u8],
+    version: u16,
 }
 
 impl<'a> Note<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
+        let version = u16_at(bytes, 8)?;
         if bytes.len() < HEADER_LEN
             || &bytes[..8] != MAGIC
-            || u16_at(bytes, 8)? != 2
+            || !matches!(version, LEGACY_VERSION | WAKE_VERSION)
             || u16_at(bytes, 10)? != 32
             || u32_at(bytes, 12)? as usize != bytes.len()
             || u32_at(bytes, 16)? != 0
@@ -100,11 +106,14 @@ impl<'a> Note<'a> {
         {
             return Err(Error::Invalid);
         }
-        let note = Self { bytes };
+        let note = Self { bytes, version };
         let mut seen = 0u32;
         for record in note.records() {
             let r = record?;
             validate_record(&r)?;
+            if version == WAKE_VERSION && r.kind == LINK_WAKE && r.flags != 1 {
+                return Err(Error::Invalid);
+            }
             let index = match r.kind {
                 FIRMWARE => Some(0),
                 ENTRY => Some(1),
@@ -114,6 +123,8 @@ impl<'a> Note<'a> {
                 BOOT => Some(5),
                 SHM_AREA => Some(6),
                 SHM_REGION => None,
+                LINK if version == WAKE_VERSION => Some(7),
+                LINK_WAKE if version == WAKE_VERSION => Some(8),
                 _ if r.flags & 1 != 0 => return Err(Error::Mismatch),
                 _ => None,
             };
@@ -128,8 +139,24 @@ impl<'a> Note<'a> {
         if seen & 0x2f != 0x2f {
             return Err(Error::Invalid);
         }
+        let wake_link = if version == WAKE_VERSION {
+            let wake = LinkWake::parse(note.get(LINK_WAKE).ok_or(Error::Invalid)?.value)?;
+            let link = Link::parse(note.get(LINK).ok_or(Error::Invalid)?.value)?;
+            wake.check_routes(link)?;
+            Some(link)
+        } else {
+            None
+        };
         if let Some(area) = note.get(SHM_AREA) {
             let area = ShmArea::parse(area.value)?;
+            let min = if version == WAKE_VERSION {
+                crate::wake::mailbox::END
+            } else {
+                crate::status::END
+            };
+            if usize::from(area.sram_end) < min {
+                return Err(Error::Invalid);
+            }
             let mut count = 0;
             for record in note
                 .records()
@@ -141,9 +168,24 @@ impl<'a> Note<'a> {
                     return Err(Error::Invalid);
                 }
                 let r = ShmRegion::parse(record.value)?;
-                if r.ddr_offset
-                    .checked_add(r.ddr_len)
-                    .is_none_or(|end| end > area.size)
+                if let Some(link) = wake_link
+                    && r.notify_irq
+                {
+                    let route = link.cores[usize::from(r.core) - 1];
+                    match r.kind {
+                        ShmKind::RingToLinux if route.host_irq_vector.is_none() => {
+                            return Err(Error::Mismatch);
+                        }
+                        ShmKind::RingToRp1 if route.doorbell.is_none() => {
+                            return Err(Error::Mismatch);
+                        }
+                        _ => {}
+                    }
+                }
+                if (r.sram_len != 0 && usize::from(r.sram_offset) < min)
+                    || r.ddr_offset
+                        .checked_add(r.ddr_len)
+                        .is_none_or(|end| end > area.size)
                     || u32::from(r.sram_offset) + u32::from(r.sram_len) > u32::from(area.sram_end)
                 {
                     return Err(Error::Invalid);
@@ -172,10 +214,13 @@ impl<'a> Note<'a> {
                     }
                 }
             }
-        } else if note.get(SHM_REGION).is_some() {
+        } else if version == WAKE_VERSION || note.get(SHM_REGION).is_some() {
             return Err(Error::Invalid);
         }
         Ok(note)
+    }
+    pub fn version(&self) -> u16 {
+        self.version
     }
     pub fn records(&self) -> Records<'a> {
         Records {
@@ -453,6 +498,77 @@ impl Link {
     }
 }
 
+/// Critical v3 record. The owner is a zero-based core number. The optional
+/// startup route uses a proc0 doorbell and is advertised with STARTUP_WAKE.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LinkWake {
+    pub required_caps: u32,
+    pub offered_caps: u32,
+    pub owner: u8,
+    pub startup_doorbell: Option<u8>,
+}
+
+impl LinkWake {
+    pub const LEN: usize = 16;
+
+    pub fn parse(v: &[u8]) -> Result<Self, Error> {
+        use crate::wake::{self, mailbox};
+        if v.len() != Self::LEN
+            || u16_at(v, 0)? != wake::ABI
+            || usize::from(u16_at(v, 2)?) != mailbox::START
+            || usize::from(u16_at(v, 4)?) != mailbox::LEN
+            || v[6] > 1
+        {
+            return Err(Error::Invalid);
+        }
+        let config = Self {
+            required_caps: u32_at(v, 8)?,
+            offered_caps: u32_at(v, 12)?,
+            owner: v[6],
+            startup_doorbell: match v[7] {
+                0xff => None,
+                pin @ 0..=27 => Some(pin),
+                _ => return Err(Error::Invalid),
+            },
+        };
+        if config.required_caps & !config.offered_caps != 0
+            || config.required_caps & !wake::KNOWN_CAPS != 0
+            || config.offered_caps & wake::LATCHED_WAKE == 0
+            || (config.offered_caps & wake::STARTUP_WAKE != 0) != config.startup_doorbell.is_some()
+        {
+            return Err(Error::Mismatch);
+        }
+        Ok(config)
+    }
+
+    pub fn encode(self) -> [u8; Self::LEN] {
+        use crate::wake::{self, mailbox};
+        let mut v = [0; Self::LEN];
+        v[..2].copy_from_slice(&wake::ABI.to_le_bytes());
+        v[2..4].copy_from_slice(&(mailbox::START as u16).to_le_bytes());
+        v[4..6].copy_from_slice(&(mailbox::LEN as u16).to_le_bytes());
+        v[6] = self.owner;
+        v[7] = self.startup_doorbell.unwrap_or(0xff);
+        v[8..12].copy_from_slice(&self.required_caps.to_le_bytes());
+        v[12..16].copy_from_slice(&self.offered_caps.to_le_bytes());
+        v
+    }
+
+    fn check_routes(self, link: Link) -> Result<(), Error> {
+        for (core, route) in link.cores.iter().enumerate() {
+            if route.host_irq_vector
+                != (core == usize::from(self.owner)).then_some(crate::irq::VECTOR as u8)
+                || self
+                    .startup_doorbell
+                    .is_some_and(|pin| route.doorbell == Some(pin))
+            {
+                return Err(Error::Mismatch);
+            }
+        }
+        Ok(())
+    }
+}
+
 pub struct Records<'a> {
     bytes: &'a [u8],
 }
@@ -491,24 +607,27 @@ impl<'a> Iterator for Records<'a> {
     }
 }
 
-/// The descriptor (note v2 bytes) inside the ELF `.note.rp1` section: namesz 4, type
-/// [`ELF_TYPE`], name `RP1\0`, zero padding to 4 bytes. Not parsed; see [`Note::parse`].
+/// The descriptor inside the ELF `.note.rp1` section. The type must match its version.
+/// For descriptor validation, see [`Note::parse`].
 pub fn descriptor(section: &[u8]) -> Result<&[u8], Error> {
-    if u32_at(section, 0)? != 4
-        || u32_at(section, 8)? != ELF_TYPE
-        || section.get(12..16) != Some(b"RP1\0")
-    {
+    if u32_at(section, 0)? != 4 || section.get(12..16) != Some(b"RP1\0") {
         return Err(Error::Invalid);
     }
     let end = 16usize
         .checked_add(u32_at(section, 4)? as usize)
         .ok_or(Error::Invalid)?;
-    if section.len() != ((end + 3) & !3)
-        || section[end.min(section.len())..].iter().any(|b| *b != 0)
-    {
+    let padded = end.checked_add(3).ok_or(Error::Invalid)? & !3;
+    if section.len() != padded || section[end.min(section.len())..].iter().any(|b| *b != 0) {
         return Err(Error::Invalid);
     }
-    section.get(16..end).ok_or(Error::Invalid)
+    let desc = section.get(16..end).ok_or(Error::Invalid)?;
+    if !matches!(
+        (u32_at(section, 8)?, u16_at(desc, 8)?),
+        (ELF_TYPE, LEGACY_VERSION) | (ELF_TYPE_V3, WAKE_VERSION)
+    ) {
+        return Err(Error::Invalid);
+    }
+    Ok(desc)
 }
 
 #[cfg(test)]

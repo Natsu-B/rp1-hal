@@ -683,3 +683,33 @@ fn dma_subset_claims_the_linux_provider_and_requires_consumer_opt_in() {
         Plan::Refuse(why) if why.iter().any(|s| s.contains("protected"))
     ));
 }
+
+#[test]
+fn v3_overlay_requires_matching_abi_and_irq_route() {
+    let d: Declaration =
+        toml::from_str("schema=2\nlink_wake='experimental'\n[proc1]\nhost_irq=true\ndoorbell=27")
+            .unwrap();
+    let (fdt, note) = apply_declaration(&d, BASE);
+    assert!(rp1_dt_check(&fdt, &note).is_empty());
+    let fw = fdt.find("/rp1-firmware").unwrap();
+    let irq = fdt
+        .child(fdt.label("rp1").unwrap(), "rp1-irq@c040108000")
+        .unwrap();
+    assert_eq!(fdt.cells(fw, "rp1,abi").unwrap(), [3]);
+    assert_eq!(fdt.prop(fw, "rp1,note"), Some(note.as_slice()));
+
+    let mut wrong_abi = fdt.clone();
+    wrong_abi.set_prop(fw, "rp1,abi", 2u32.to_be_bytes().to_vec());
+    assert!(
+        rp1_dt_check(&wrong_abi, &note)
+            .iter()
+            .any(|e| e.contains("rp1,abi"))
+    );
+    let mut wrong_irq = fdt.clone();
+    wrong_irq.set_prop(irq, "interrupts", [0, 0, 0, 58, 0, 0, 0, 1].to_vec());
+    assert!(
+        rp1_dt_check(&wrong_irq, &note)
+            .iter()
+            .any(|e| e.contains("MSI-X vector 29"))
+    );
+}

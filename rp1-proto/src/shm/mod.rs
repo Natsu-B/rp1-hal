@@ -24,6 +24,7 @@ mod staged;
 #[cfg(test)]
 mod tests;
 mod wait;
+pub mod wake;
 
 pub use access::{copy_from_mapping, copy_to_mapping};
 pub use block::{Block, BlockReader, BlockWriter};

@@ -1,0 +1,28 @@
+# Link-wake delivery fixture
+
+**STATIC · 2026-11-27.** This image uses experimental NOTE v3 and the single
+vector owner on proc1. The build and ELF checks run in CI.
+
+```sh
+cargo rp1 build --locked -p link-wake-fixture --features firmware --target thumbv7m-none-eabi --release
+cargo rp1 check target/thumbv7m-none-eabi/release/link-wake-fixture
+```
+
+**HYP · 2026-11-27.** For a future cold-boot delivery test, the fixture's
+link SRAM scratch fields are as follows. The host reads the same link window
+after each command store, then rings that core's GPIO force (26 on proc0 and
+27 on proc1). Allow one outstanding command per core. The host observes a
+terminal command through the existing status block.
+
+| Offset | Purpose |
+| --- | --- |
+| `0x24` | proc0 command |
+| `0x28` | proc1 command |
+| `0x2c` | Vector state (0 starting, 1 low and ready, 2 a source check or pulse failed) |
+
+Commands 1, 2 and 3 select stop, panic and UsageFault. Command 4 asks proc1
+for a test pulse without a terminal transition. Proc1 scans terminal SRAM
+on entry and after events. A proc0 terminal can wake proc1 even before any
+ring is attached. Proc1's deliberate stop can publish and pulse before
+parking. A fault or panic in proc1 can leave the vector without an owner.
+Start from a cold boot with old writers and posted accesses drained.

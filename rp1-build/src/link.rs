@@ -8,12 +8,26 @@ use rp1_proto::note::{ShmKind, ShmRegion, Writer};
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
-pub(crate) fn generate(shm: &ShmLayout<'_>, note: &[u8]) -> Result<String> {
+pub(crate) fn generate(
+    shm: &ShmLayout<'_>,
+    note: &[u8],
+    experimental_wake: bool,
+) -> Result<String> {
     let mut output = String::from(
         "use ::rp1_hal::platform::Pcie;\n\
          use ::rp1_link::{self as transport, EnableError, Message, OpenError};\n\
          use ::rp1_link::generated::{self, ShmArea, ShmKind, ShmRegion};\n",
     );
+    if experimental_wake {
+        output = String::from("use ::rp1_link::generated::{ShmArea, ShmRegion};\n");
+        if !shm.regions.is_empty() {
+            output.push_str("use ::rp1_link::generated::ShmKind;\n");
+            if shm.regions.iter().any(|r| r.spec.kind == "block") {
+                output.push_str("use ::rp1_link::generated;\n");
+            }
+        }
+    }
+    let visibility = if experimental_wake { "pub " } else { "" };
     let area = shm.area;
     let regions = shm
         .regions
@@ -24,15 +38,19 @@ pub(crate) fn generate(shm: &ShmLayout<'_>, note: &[u8]) -> Result<String> {
     let digest: [u8; 32] = Sha256::digest(note).into();
     writeln!(
         output,
-        "const AREA: ShmArea = ShmArea {{ size: {}, handoff: {:#x}, sram_end: {:#x}, phys: {:#x} }};\n\
-         const DIGEST: [u8; 32] = {digest:?};\n\
-         const REGIONS: [ShmRegion<'static>; {count}] = [",
+        "{visibility}const AREA: ShmArea = ShmArea {{ size: {}, handoff: {:#x}, sram_end: {:#x}, phys: {:#x} }};\n\
+         {visibility}const DIGEST: [u8; 32] = {digest:?};\n\
+         {visibility}const REGIONS: [ShmRegion<'static>; {count}] = [",
         area.size, area.handoff, area.sram_end, area.phys
     )?;
     for region in &regions {
         write_region(&mut output, region)?;
     }
     output.push_str("];\n");
+    if experimental_wake {
+        // Raw layout for the B1 delivery fixture. Typed endpoint/wait integration follows B1.
+        return Ok(output);
+    }
     // Only these pairs and the digest need to occupy firmware memory.
     writeln!(
         output,

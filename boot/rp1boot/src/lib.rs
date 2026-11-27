@@ -132,6 +132,15 @@ impl<'a> Elf<'a> {
         }
         Err(format!("rp1.elf has no {name} section"))
     }
+    /// Parse the RP1 ELF note envelope and its v2 or v3 descriptor.
+    pub fn rp1_note(&self) -> Result<rp1_proto::note::Note<'a>> {
+        use rp1_proto::note;
+        let desc = note::descriptor(self.section(".note.rp1")?)
+            .map_err(|_| String::from("bad .note.rp1 envelope"))?;
+        note::Note::parse(desc).map_err(|e| {
+            format!("invalid .note.rp1 ({e}): CRC, version or an unknown critical record")
+        })
+    }
     /// The PT_LOAD segments laid out by physical address in `[base, base + max)`, zero-filled
     /// to `p_memsz`; overlapping segments are rejected. Returns the image from `base`.
     pub fn image(&self, base: u32, max: usize) -> Result<Vec<u8>> {
@@ -556,8 +565,8 @@ mod tests {
         };
         let bytes = std::fs::read(path).unwrap();
         let elf = Elf::parse(&bytes).unwrap();
-        let note = rp1_proto::note::descriptor(elf.section(".note.rp1").unwrap()).unwrap();
-        rp1_proto::note::Note::parse(note).unwrap();
+        let note = elf.rp1_note().unwrap();
+        std::eprintln!("NOTE v{}", note.version());
         rp1_dt::fdt::Fdt::parse(elf.section(".rp1.dtbo").unwrap()).unwrap();
         let img = elf.image(0x2000_0000, 0xc000).unwrap();
         assert_eq!(

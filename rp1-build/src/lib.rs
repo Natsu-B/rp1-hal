@@ -313,9 +313,10 @@ fn resources(
         elf_note.len(),
         elf_note
     );
-    if !shm.regions.is_empty() {
+    let experimental_wake = d.link_wake.is_some();
+    if experimental_wake || !shm.regions.is_empty() {
         s.push_str("pub mod link {\n");
-        s.push_str(&link::generate(shm, note)?);
+        s.push_str(&link::generate(shm, note, experimental_wake)?);
         s.push_str("}\n");
     }
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
@@ -328,19 +329,25 @@ fn resources(
     }
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
         let ty = format!("Proc{index}Resources");
-        let has_link = shm
-            .regions
-            .iter()
-            .any(|r| usize::from(r.core()) == index + 1);
+        let has_link = !experimental_wake
+            && shm
+                .regions
+                .iter()
+                .any(|r| usize::from(r.core()) == index + 1);
         let doorbell = !c.custom_doorbell_handler
             && shm.regions.iter().any(|r| r.receives_doorbell(index as u8));
         if doorbell {
+            let ack = if experimental_wake {
+                "__ack_and_signal_wake"
+            } else {
+                "ack_and_signal"
+            };
             writeln!(
                 s,
                 "#[unsafe(export_name = \"__rp1_p{index}_IO_BANK0\")]\n\
                 #[unsafe(link_section = \".isram.text.__rp1_p{index}_IO_BANK0\")]\n\
                 unsafe extern \"C\" fn doorbell_proc{index}() {{\n\
-                    unsafe {{ Doorbell{index}::new() }}.ack_and_signal();\n\
+                    unsafe {{ Doorbell{index}::new() }}.{ack}();\n\
                 }}"
             )?;
         }
@@ -465,7 +472,11 @@ fn resources(
             s.push_str(&format!("pub {name}: {field_ty},\n"));
         }
         if c.host_irq {
-            s.push_str("pub host_irq: ::rp1_link::notify::HostIrq,\n");
+            if experimental_wake {
+                s.push_str("pub host_irq: ::rp1_link::notify::VectorOwner,\n");
+            } else {
+                s.push_str("pub host_irq: ::rp1_link::notify::HostIrq,\n");
+            }
         }
         if c.doorbell.is_some() {
             s.push_str(&format!("pub doorbell: Doorbell{index},\n"));
@@ -517,7 +528,11 @@ fn resources(
             s.push_str(&format!("{name}: {init},\n"));
         }
         if c.host_irq {
-            s.push_str("host_irq: unsafe { ::rp1_link::notify::HostIrq::new() },\n");
+            if experimental_wake {
+                s.push_str("host_irq: unsafe { ::rp1_link::notify::VectorOwner::__new() },\n");
+            } else {
+                s.push_str("host_irq: unsafe { ::rp1_link::notify::HostIrq::new() },\n");
+            }
         }
         if c.doorbell.is_some() {
             s.push_str(&format!("doorbell: unsafe {{ Doorbell{index}::new() }},\n"));

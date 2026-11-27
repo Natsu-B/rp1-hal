@@ -46,7 +46,7 @@ impl Path {
         unsafe { std::slice::from_raw_parts(base as *const u8, self.len) }
     }
     /// Post what the side stored since the last snapshot.
-    fn post(&self) {
+    pub(super) fn post(&self) {
         let mut posted = self.posted.lock().unwrap();
         let latest = posted.last().map_or(self.bytes(self.real), |s| &s[..]);
         if latest != self.bytes(self.shadow) {
@@ -58,7 +58,7 @@ impl Path {
         self.posted.lock().unwrap().len()
     }
     /// Land the `n` oldest snapshots.
-    fn land(&self, n: usize) {
+    pub(super) fn land(&self, n: usize) {
         for snapshot in self.posted.lock().unwrap().drain(..n) {
             unsafe {
                 core::ptr::copy_nonoverlapping(snapshot.as_ptr(), self.real as *mut u8, self.len)

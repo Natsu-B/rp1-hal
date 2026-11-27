@@ -91,6 +91,7 @@ pub fn dts(d: &Declaration, note: &[u8]) -> Result<String> {
 }
 
 pub(crate) fn dts_with_layout(d: &Declaration, note: &[u8], shm: &ShmLayout<'_>) -> Result<String> {
+    let abi = rp1_proto::note::Note::parse(note)?.version();
     let ddr_end = shm.area.size;
     let phys = shm.area.phys;
     let bytes = note
@@ -152,7 +153,7 @@ pub(crate) fn dts_with_layout(d: &Declaration, note: &[u8], shm: &ShmLayout<'_>)
         "target-path = \"/\"",
         &format!(
             r#"
-        rp1-firmware {{ rp1,note = [{bytes}]; rp1,abi = <2>; rp1,static-only;
+        rp1-firmware {{ rp1,note = [{bytes}]; rp1,abi = <{abi}>; rp1,static-only;
             rp1,on-conflict = "{on_conflict}"; rp1,gpiomem = "{gpiomem}";{dma_policy} }};
         rp1_link: rp1-link@1f0040c000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:{link}";
             reg = <0x1f 0x0040c000 0x4000>; status = "okay"; }};

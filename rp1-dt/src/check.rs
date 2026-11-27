@@ -72,13 +72,39 @@ pub fn final_conflicts(fdt: &Fdt, note: &[u8]) -> Result<Vec<String>> {
     let mut bad = Vec::new();
 
     // The Linux-visible note must be this ELF's note (another overlay may have replaced it).
-    match fdt
-        .find("/rp1-firmware")
-        .and_then(|n| fdt.prop(n, "rp1,note"))
-    {
+    let firmware = fdt.find("/rp1-firmware");
+    match firmware.and_then(|n| fdt.prop(n, "rp1,note")) {
         Some(v) if v == note => {}
         Some(_) => bad.push("/rp1-firmware rp1,note differs from the ELF note".into()),
         None => bad.push("/rp1-firmware rp1,note is missing".into()),
+    }
+
+    let abi = firmware.and_then(|n| fdt.prop(n, "rp1,abi"));
+    if (abi.is_some() || parsed.version() == note::WAKE_VERSION)
+        && abi != Some(&u32::from(parsed.version()).to_be_bytes())
+    {
+        bad.push("/rp1-firmware rp1,abi differs from the ELF note".into());
+    }
+
+    if parsed.version() == note::WAKE_VERSION {
+        let mut nodes = (0..fdt.nodes.len())
+            .filter(|&n| fdt.enabled(n) && fdt.strings(n, "linux,uio-name") == ["rp1:irq"]);
+        let valid = nodes.next().is_some_and(|n| {
+            fdt.strings(n, "compatible") == ["generic-uio"]
+                && fdt
+                    .cells(n, "interrupts")
+                    .is_some_and(|c| c == [rp1_proto::irq::VECTOR, 1])
+                && fdt.prop(n, "interrupts-extended").is_none()
+                && fdt.prop(n, "interrupt-parent").is_none()
+                && fdt.nodes[n].parent.is_some_and(|p| {
+                    fdt.label("rp1") == Some(p)
+                        && fdt.prop(p, "interrupt-controller").is_some()
+                        && fdt.cells(p, "#interrupt-cells").is_some_and(|c| c == [2])
+                })
+        });
+        if !valid || nodes.next().is_some() {
+            bad.push("link wake needs one enabled rp1:irq on RP1 MSI-X vector 29 (edge)".into());
+        }
     }
 
     let own = parsed

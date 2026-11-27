@@ -128,6 +128,9 @@ impl Doorbell {
 }
 
 #[cfg(test)]
+mod wake_model;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::tests::anon;

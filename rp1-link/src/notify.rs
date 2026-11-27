@@ -62,6 +62,7 @@ const TIMER_INTE: usize = TIMER_BASE + 0x38;
 /// devmem) writing 0x8 forced bit 3 and writing 0 released it, i.e. plain RW. The atomic clear
 /// alias clears bit 3 without touching the other alarms' bits under plain-RW semantics.
 const TIMER_INTF: usize = TIMER_BASE + 0x3c;
+const TIMER_INTS: usize = TIMER_BASE + 0x40;
 const ALARM_BIT: u32 = 1 << (VECTOR - TIMER0_VECTOR);
 
 /// The notifier traits' methods: only endpoints call them, and only generated code makes the
@@ -213,6 +214,86 @@ impl sealed::Notify for HostIrq {
     }
 }
 
+/// Single core-local owner of the experimental link-wake vector.
+#[doc(hidden)]
+pub struct VectorOwner {
+    terminal_epochs: [u32; 2],
+    _local: core::marker::PhantomData<*mut ()>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VectorError {
+    SourceHigh,
+    TestStuck,
+}
+
+impl VectorOwner {
+    /// # Safety
+    /// Generated v3 resources only. Exactly one core owns ALARM3 and this TEST bit,
+    /// and no legacy HostIrq may be used with them.
+    pub unsafe fn __new() -> Self {
+        unsafe { HostIrq::new() };
+        write(MSIX_CFG_CLR, MSIX_CFG_TEST);
+        Self {
+            terminal_epochs: [0; 2],
+            _local: core::marker::PhantomData,
+        }
+    }
+
+    /// Check the low baseline after takeover. Both reads complete at the respective banks.
+    pub fn ready(&self) -> Result<(), VectorError> {
+        if read(TIMER_INTS) & ALARM_BIT != 0 {
+            return Err(VectorError::SourceHigh);
+        }
+        if read(MSIX_CFG) & MSIX_CFG_TEST != 0 {
+            return Err(VectorError::TestStuck);
+        }
+        Ok(())
+    }
+
+    /// Pulse after the notification commit's same-window readback. A successful pulse
+    /// confirms the local source went high and low. The listener may still miss the edge.
+    pub fn pulse(&mut self) -> Result<(), VectorError> {
+        mmio::section(|| {
+            self.ready()?;
+            write(MSIX_CFG_SET, MSIX_CFG_TEST);
+            let high = read(MSIX_CFG) & MSIX_CFG_TEST != 0;
+            write(MSIX_CFG_CLR, MSIX_CFG_TEST);
+            let low = read(MSIX_CFG) & MSIX_CFG_TEST == 0;
+            if high && low {
+                Ok(())
+            } else {
+                Err(VectorError::TestStuck)
+            }
+        })
+    }
+
+    /// Delivery fixture entry, usable before attach. Scan on startup and after each event;
+    /// a local pulse failure leaves the record eligible on the next explicit call.
+    /// The caller must have a live PCIe link. Only SRAM and the owned vector are accessed.
+    pub fn pulse_terminals(&mut self) -> Result<bool, VectorError> {
+        self.pulse_observed_terminals(rp1_rt::status::terminal)
+    }
+
+    fn pulse_observed_terminals(
+        &mut self,
+        read_terminal: impl Fn(u8) -> Option<rp1_rt::status::Terminal>,
+    ) -> Result<bool, VectorError> {
+        let mut epochs = self.terminal_epochs;
+        for (core, epoch) in epochs.iter_mut().enumerate() {
+            if let Some(terminal) = read_terminal(core as u8) {
+                *epoch = terminal.epoch;
+            }
+        }
+        if epochs == self.terminal_epochs {
+            return Ok(false);
+        }
+        self.pulse()?;
+        self.terminal_epochs = epochs;
+        Ok(true)
+    }
+}
+
 /// Linux's doorbell for core CORE: the `PROCn_INTF` force bit of bank-0 pin PIN, declared as
 /// `[procN] doorbell = PIN`. The generated resources give it to the core as `doorbell` and copy
 /// it into the core's `notify = "irq"` linux-to-rp1 endpoints. The pin's pad stays unused.
@@ -257,6 +338,15 @@ impl<const PIN: u8, const CORE: u8> Doorbell<PIN, CORE> {
     #[inline]
     pub fn ack_and_signal(self) {
         self.ack();
+        rp1_rt::send_event();
+    }
+
+    /// Experimental v3 ISR entry: complete the CLR in this bank before signaling.
+    #[doc(hidden)]
+    pub fn __ack_and_signal_wake(self) {
+        self.ack();
+        let _ = read(Self::INTF);
+        rp1_proto::barrier();
         rp1_rt::send_event();
     }
 
@@ -341,6 +431,82 @@ mod tests {
             ]
         );
         assert_eq!(MSIX_CFG, 0x4010_8008 + 4 * 29);
+    }
+
+    #[test]
+    fn v3_owner_confirms_the_pulse_and_preserves_terminal_for_retry() {
+        use crate::mmio::fake::{self, Access::*};
+        use rp1_proto::status::CoreState;
+        use rp1_rt::status::Terminal;
+        fake::trace_reads();
+        fake::alias(MSIX_CFG_CLR, MSIX_CFG, false);
+        fake::set(MSIX_CFG, MSIX_CFG_TEST);
+        let mut owner = unsafe { VectorOwner::__new() };
+        assert_eq!(
+            fake::take(),
+            [
+                Write(TIMER_INTE + ATOMIC_CLR, ALARM_BIT),
+                Write(TIMER_INTF + ATOMIC_CLR, ALARM_BIT),
+                Write(TIMER_INTR, ALARM_BIT),
+                Write(MSIX_CFG_CLR, MSIX_CFG_TEST),
+            ]
+        );
+
+        // A terminal from proc0 can predate the proc1 owner's first scan. No DDR
+        // accesses, even for a terminal with no ring or Ready yet.
+        let terminal = |core| {
+            (core == 0).then_some(Terminal {
+                epoch: 2,
+                state: CoreState::Fault,
+                reason: 3,
+            })
+        };
+        fake::set(TIMER_INTS, ALARM_BIT);
+        assert_eq!(
+            owner.pulse_observed_terminals(terminal),
+            Err(VectorError::SourceHigh)
+        );
+        assert_eq!(fake::take(), [Enter, Read(TIMER_INTS), Leave]);
+        fake::set(TIMER_INTS, 0);
+        // TEST SET without the alias models a source that failed to rise.
+        assert_eq!(
+            owner.pulse_observed_terminals(terminal),
+            Err(VectorError::TestStuck)
+        );
+        fake::take();
+        fake::alias(MSIX_CFG_SET, MSIX_CFG, true);
+        assert_eq!(owner.pulse_observed_terminals(terminal), Ok(true));
+        assert_eq!(
+            fake::take(),
+            [
+                Enter,
+                Read(TIMER_INTS),
+                Read(MSIX_CFG),
+                Write(MSIX_CFG_SET, MSIX_CFG_TEST),
+                Read(MSIX_CFG),
+                Write(MSIX_CFG_CLR, MSIX_CFG_TEST),
+                Read(MSIX_CFG),
+                Leave,
+            ]
+        );
+        assert_eq!(owner.pulse_observed_terminals(terminal), Ok(false));
+        assert!(fake::take().is_empty());
+    }
+
+    #[test]
+    fn v3_doorbell_reads_its_bank_after_clear() {
+        use crate::mmio::fake::{self, Access::*};
+        type Bell = Doorbell<27, 1>;
+        fake::trace_reads();
+        fake::alias(Bell::INTF_CLR, Bell::INTF, false);
+        fake::set(Bell::INTF, Bell::BIT);
+        let bell = unsafe { Bell::new() };
+        bell.__ack_and_signal_wake();
+        assert_eq!(
+            fake::take(),
+            [Write(Bell::INTF_CLR, Bell::BIT), Read(Bell::INTF)]
+        );
+        assert!(!bell.is_pending());
     }
 
     #[test]

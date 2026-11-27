@@ -33,6 +33,7 @@ pub(crate) mod fake {
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub(crate) enum Access {
+        Read(usize),
         Write(usize, u32),
         Enter,
         Leave,
@@ -40,14 +41,31 @@ pub(crate) mod fake {
 
     std::thread_local! {
         static WORDS: RefCell<BTreeMap<usize, u32>> = const { RefCell::new(BTreeMap::new()) };
+        // Only the v3 tests assert readback order. An alias mirrors writes into its bank.
+        static ALIASES: RefCell<BTreeMap<usize, (usize, bool)>> = const { RefCell::new(BTreeMap::new()) };
+        static TRACE_READS: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
         static LOG: RefCell<Vec<Access>> = const { RefCell::new(Vec::new()) };
     }
 
     pub(crate) fn read(address: usize) -> u32 {
+        TRACE_READS.with(|trace| {
+            if trace.get() {
+                LOG.with(|log| log.borrow_mut().push(Access::Read(address)));
+            }
+        });
         WORDS.with(|w| w.borrow().get(&address).copied().unwrap_or(0))
     }
     pub(crate) fn write(address: usize, value: u32) {
         LOG.with(|l| l.borrow_mut().push(Access::Write(address, value)));
+        ALIASES.with(|aliases| {
+            if let Some(&(target, set)) = aliases.borrow().get(&address) {
+                WORDS.with(|words| {
+                    let mut words = words.borrow_mut();
+                    let word = words.entry(target).or_default();
+                    *word = if set { *word | value } else { *word & !value };
+                });
+            }
+        });
     }
     pub(crate) fn section<R>(f: impl FnOnce() -> R) -> R {
         LOG.with(|l| l.borrow_mut().push(Access::Enter));
@@ -59,6 +77,14 @@ pub(crate) mod fake {
     pub(crate) fn set(address: usize, value: u32) {
         WORDS.with(|w| w.borrow_mut().insert(address, value));
     }
+    pub(crate) fn trace_reads() {
+        TRACE_READS.with(|trace| trace.set(true));
+    }
+
+    pub(crate) fn alias(address: usize, target: usize, set: bool) {
+        ALIASES.with(|aliases| aliases.borrow_mut().insert(address, (target, set)));
+    }
+
     /// The accesses since the last call.
     pub(crate) fn take() -> Vec<Access> {
         LOG.with(|l| l.take())
