@@ -3,22 +3,22 @@
 //! (link+0x28 = [`super::ADC_REQUEST`], reply at link+0x2c = the request on success, all-ones on failure).
 use crate::rp1;
 use rp1_hal::{
-    adc::{Blocking, Channel, Error, Input, TEMPERATURE},
+    adc::{Blocking, Error, Input, TEMPERATURE},
     log,
     timer::{Timer, WaitTimer},
 };
 const SAMPLES: u32 = 1000;
 
-/// min, max, sum of `SAMPLES` conversions of the channel and the elapsed µs.
-fn burst<C: Channel + Copy>(
-    adc: &mut Blocking<'_, 1>,
-    channel: C,
-) -> Result<(u16, u16, u32, u32), Error> {
+type ReadChannel = fn(&mut Blocking<'_, 1>) -> Result<u16, Error>;
+
+// Share the sample loop across channels to fit the combined proof image.
+#[inline(never)]
+fn burst(adc: &mut Blocking<'_, 1>, read: ReadChannel) -> Result<(u16, u16, u32, u32), Error> {
     let timer = Timer::new();
     let (mut min, mut max, mut sum) = (u16::MAX, 0, 0u32);
     let start = timer.now_32();
     for _ in 0..SAMPLES {
-        let v = adc.read(channel)?;
+        let v = read(adc)?;
         min = min.min(v);
         max = max.max(v);
         sum += u32::from(v);
@@ -31,15 +31,17 @@ pub fn prove(adc: &mut rp1::Adc, wait: &mut WaitTimer, tag: &str) -> Result<(), 
     // Capture the first conversion after setup. AIN0–3 are passive characterization inputs
     // on this lab board; their voltages and accuracy are not part of the temperature proof.
     let first = adc.read(TEMPERATURE)?;
-    let readings = unsafe {
-        [
-            burst(&mut adc, &Input::<0>::__new())?,
-            burst(&mut adc, &Input::<1>::__new())?,
-            burst(&mut adc, &Input::<2>::__new())?,
-            burst(&mut adc, &Input::<3>::__new())?,
-            burst(&mut adc, &TEMPERATURE)?,
-        ]
-    };
+    let channels: [ReadChannel; 5] = [
+        |adc| adc.read(unsafe { Input::<0>::__new() }),
+        |adc| adc.read(unsafe { Input::<1>::__new() }),
+        |adc| adc.read(unsafe { Input::<2>::__new() }),
+        |adc| adc.read(unsafe { Input::<3>::__new() }),
+        |adc| adc.read(TEMPERATURE),
+    ];
+    let mut readings = [(0, 0, 0, 0); 5];
+    for (reading, read) in readings.iter_mut().zip(channels) {
+        *reading = burst(&mut adc, read)?;
+    }
     for (ain, (min, max, sum, us)) in readings.into_iter().enumerate() {
         log!(
             "ADC_{} ain={} min={} max={} sum={} us={}\n",
