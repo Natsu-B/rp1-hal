@@ -44,7 +44,9 @@ impl Rig {
                 .unwrap();
         let session = Rc::new(Session {
             header: SessionHeader::V3(header),
-            strict: Some(StrictSession::new(Rc::new(listener), &link_page, scope).unwrap()),
+            strict: Some(
+                StrictSession::new(Rc::new(listener), &link_page, scope, LATCHED_WAKE).unwrap(),
+            ),
             _map: header_map,
             link: link_page,
         });

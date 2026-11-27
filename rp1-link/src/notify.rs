@@ -85,6 +85,9 @@ pub(crate) mod sealed {
     pub trait Notify {
         /// Wake the reader of `ring` if it sleeps. Returns whether it notified.
         fn wake<T: Message>(&mut self, _: Token, ring: &mut shm::RingTx<T>) -> bool;
+        fn wake_requested(&mut self, _: Token) -> bool {
+            false
+        }
     }
 
     pub trait Wake {
@@ -95,7 +98,7 @@ pub(crate) mod sealed {
             _: Token,
             ring: &mut shm::RingRx<T>,
             max: u32,
-            f: impl FnMut(T) -> Result<(), Error>,
+            f: impl FnMut(T, Option<bool>) -> Result<(), Error>,
         ) -> Result<Progress, Error>;
     }
 }
@@ -131,13 +134,13 @@ impl sealed::Wake for Poll {
         _: sealed::Token,
         ring: &mut shm::RingRx<T>,
         max: u32,
-        mut f: impl FnMut(T) -> Result<(), Error>,
+        mut f: impl FnMut(T, Option<bool>) -> Result<(), Error>,
     ) -> Result<Progress, Error> {
         for _ in 0..max.max(1) {
             let Some(value) = ring.pop()? else {
                 return Ok(Progress::Idle);
             };
-            f(value)?;
+            f(value, None)?;
         }
         Ok(Progress::More)
     }
@@ -269,6 +272,7 @@ impl VectorOwner {
 
     // Generated v3 ring publishers execute on this same core. The section
     // serializes all TEST pulses, including calls from a local interrupt.
+    #[rp1_rt::isram]
     fn pulse_owned() -> Result<(), VectorError> {
         mmio::section(|| {
             Self::check_source()?;
@@ -382,23 +386,39 @@ impl sealed::Notify for TicketIrq {
         }
         self.retry()
     }
+
+    #[inline(always)]
+    fn wake_requested(&mut self, _: sealed::Token) -> bool {
+        // Complete the DDR reply before sending the separate MSI-X transaction.
+        rp1_proto::barrier();
+        let _ = unsafe { self.data.cast::<u32>().read_volatile() };
+        rp1_proto::barrier();
+        self.pulse_pending = true;
+        self.retry()
+    }
 }
 
 /// The v3 downlink reader pairs the existing force-level ISR with v3 RX tickets.
 #[doc(hidden)]
 pub struct TicketDoorbell<const PIN: u8, const CORE: u8> {
-    ticket: Waiter<Session, LiveSession>,
+    ticket: Option<Waiter<Session, LiveSession>>,
     armed: bool,
 }
 
 impl<const PIN: u8, const CORE: u8> TicketDoorbell<PIN, CORE> {
-    pub(crate) unsafe fn attach(data: *mut u8, ctrl: *mut u8) -> Result<Self, Error> {
+    pub(crate) unsafe fn attach(data: *mut u8, ctrl: *mut u8, direct: bool) -> Result<Self, Error> {
+        if direct {
+            return Ok(Self {
+                ticket: None,
+                armed: false,
+            });
+        }
         let live: LiveSession = crate::generated::wake_session;
         let scope = live().map_err(|_| Error::Reset)?;
         let ticket =
             unsafe { Words::rx(data, ctrl).waiter(scope, live) }.map_err(|_| Error::Reset)?;
         Ok(Self {
-            ticket,
+            ticket: Some(ticket),
             armed: false,
         })
     }
@@ -407,8 +427,10 @@ impl<const PIN: u8, const CORE: u8> TicketDoorbell<PIN, CORE> {
 impl<const PIN: u8, const CORE: u8> Wake for TicketDoorbell<PIN, CORE> {}
 impl<const PIN: u8, const CORE: u8> sealed::Wake for TicketDoorbell<PIN, CORE> {
     fn opened<T: Message>(&mut self, _: sealed::Token, ring: &mut shm::RingRx<T>) {
-        self.armed = self.ticket.arm().is_ok();
-        if self.armed && ring.available() != 0 {
+        if let Some(ticket) = &mut self.ticket {
+            self.armed = ticket.arm().is_ok();
+        }
+        if (self.armed || self.ticket.is_none()) && ring.available() != 0 {
             unsafe { Doorbell::<PIN, CORE>::new() }.raise();
         }
     }
@@ -418,36 +440,39 @@ impl<const PIN: u8, const CORE: u8> sealed::Wake for TicketDoorbell<PIN, CORE> {
         _: sealed::Token,
         ring: &mut shm::RingRx<T>,
         max: u32,
-        mut handle: impl FnMut(T) -> Result<(), Error>,
+        mut handle: impl FnMut(T, Option<bool>) -> Result<(), Error>,
     ) -> Result<Progress, Error> {
+        let Some(ticket) = &mut self.ticket else {
+            return drain_requests(ring, max, handle);
+        };
         let reset = |_| Error::Reset;
         let mut budget = max.max(1);
         loop {
             if ring.available() != 0 {
                 while budget != 0 {
                     let Some(value) = ring.pop()? else { break };
-                    handle(value)?;
+                    handle(value, None)?;
                     budget -= 1;
                 }
                 if self.armed {
                     // The request was observed under this ticket. Complete the reply
                     // first so its pulse can overlap the downlink ACK and re-arm.
-                    self.ticket.acknowledge().map_err(reset)?;
-                    self.ticket.cancel().map_err(reset)?;
+                    ticket.acknowledge().map_err(reset)?;
+                    ticket.cancel().map_err(reset)?;
                     self.armed = false;
                 }
                 if budget == 0 {
                     return Ok(Progress::More);
                 }
             }
-            if self.armed && self.ticket.pending().map_err(reset)? {
+            if self.armed && ticket.pending().map_err(reset)? {
                 // A pulse with no observed work can still consume this ticket.
                 // Re-arm and rescan so a subsequent publication can notify us.
-                self.ticket.cancel().map_err(reset)?;
+                ticket.cancel().map_err(reset)?;
                 self.armed = false;
             }
             if !self.armed {
-                self.ticket.arm().map_err(reset)?;
+                ticket.arm().map_err(reset)?;
                 self.armed = true;
                 if ring.available() != 0 {
                     continue;
@@ -456,6 +481,23 @@ impl<const PIN: u8, const CORE: u8> sealed::Wake for TicketDoorbell<PIN, CORE> {
             return Ok(Progress::Idle);
         }
     }
+}
+
+#[rp1_rt::isram]
+fn drain_requests<T: Message>(
+    ring: &mut shm::RingRx<T>,
+    max: u32,
+    mut handle: impl FnMut(T, Option<bool>) -> Result<(), Error>,
+) -> Result<Progress, Error> {
+    // The host forces after each head commit. The ISR clears the level
+    // and sets an event, including when it races this drain.
+    for _ in 0..max.max(1) {
+        let Some((value, notify)) = ring.pop_request()? else {
+            return Ok(Progress::Idle);
+        };
+        handle(value, Some(notify))?;
+    }
+    Ok(Progress::More)
 }
 
 /// Linux's doorbell for core CORE: the `PROCn_INTF` force bit of bank-0 pin PIN, declared as
@@ -541,9 +583,9 @@ impl<const PIN: u8, const CORE: u8> sealed::Wake for Doorbell<PIN, CORE> {
         _: sealed::Token,
         ring: &mut shm::RingRx<T>,
         max: u32,
-        f: impl FnMut(T) -> Result<(), Error>,
+        mut f: impl FnMut(T, Option<bool>) -> Result<(), Error>,
     ) -> Result<Progress, Error> {
-        ring.try_drain(max, f)
+        ring.try_drain(max, |value| f(value, None))
     }
 }
 
@@ -725,7 +767,11 @@ mod tests {
         }
         .unwrap();
         let mut bell = unsafe {
-            TicketDoorbell::<27, 1>::attach(data.as_mut_ptr().cast(), ctrl.as_mut_ptr().cast())
+            TicketDoorbell::<27, 1>::attach(
+                data.as_mut_ptr().cast(),
+                ctrl.as_mut_ptr().cast(),
+                false,
+            )
         }
         .unwrap();
         sealed::Wake::opened(&mut bell, sealed::Token(()), &mut ring);
@@ -736,7 +782,7 @@ mod tests {
                 .write_volatile(1);
         }
         assert_eq!(
-            sealed::Wake::try_drain(&mut bell, sealed::Token(()), &mut ring, 4, |_| panic!(
+            sealed::Wake::try_drain(&mut bell, sealed::Token(()), &mut ring, 4, |_, _| panic!(
                 "empty receiver"
             ),),
             Ok(Progress::Idle)

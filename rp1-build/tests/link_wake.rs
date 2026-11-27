@@ -6,7 +6,7 @@ use rp1_build::{
 use rp1_proto::{
     Error,
     note::{self, Note, ShmArea, ShmRegion},
-    wake::{LATCHED_WAKE, mailbox},
+    wake::{LATCHED_WAKE, RPC_REPLY_WAKE, mailbox},
 };
 
 const DECLARATION: &str = r#"
@@ -53,11 +53,11 @@ fn schemas_keep_v2_and_v3_note_layouts_distinct() {
             assert_eq!(wake.flags, 1);
             assert_eq!(
                 wake.value,
-                [1, 0, 0xc0, 0, 64, 0, 1, 0xff, 1, 0, 0, 0, 1, 0, 0, 0]
+                [1, 0, 0xc0, 0, 64, 0, 1, 0xff, 1, 0, 0, 0, 9, 0, 0, 0]
             );
             let config = note::LinkWake::parse(wake.value).unwrap();
             assert_eq!(config.required_caps, LATCHED_WAKE);
-            assert_eq!(config.offered_caps, LATCHED_WAKE);
+            assert_eq!(config.offered_caps, LATCHED_WAKE | RPC_REPLY_WAKE);
         } else {
             assert!(wake.is_none());
         }

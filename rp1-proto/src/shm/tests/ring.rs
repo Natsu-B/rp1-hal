@@ -107,6 +107,28 @@ fn reject_ring_index_wraps_u32() {
 }
 
 #[test]
+fn rpc_notify_uses_the_request_sequence_store_across_wrap() {
+    let mut data = mem::<160>();
+    let mut ctrl = mem::<128>();
+    let (d, c) = (data.0.as_mut_ptr(), ctrl.0.as_mut_ptr());
+    unsafe {
+        st(d, HEAD, u32::MAX);
+        st(c, TAIL, u32::MAX);
+    }
+    let mut tx = unsafe { RingTx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+    let mut rx = unsafe { RingRx::<u32>::attach(d, 160, c, 128, 2, Overflow::Reject) }.unwrap();
+    tx.push_request(&17, true).unwrap();
+    assert_eq!(unsafe { ld(d, CONTROL_SIZE + 16) }, 0x7fff_ffff);
+    assert_eq!(rx.pop(), Err(Error::Corrupt));
+    assert_eq!(rx.pop_request(), Ok(Some((17, true))));
+    tx.push_request(&23, false).unwrap();
+    assert_eq!(rx.pop_request(), Ok(Some((23, false))));
+    tx.push_request(&39, true).unwrap();
+    assert_eq!(unsafe { ld(d, CONTROL_SIZE + 16) }, 0x8000_0001);
+    assert_eq!(rx.pop_request(), Ok(Some((39, true))));
+}
+
+#[test]
 fn invalid_mapping_and_odd_message_size() {
     let mut data = mem::<160>();
     let mut ctrl = mem::<128>();

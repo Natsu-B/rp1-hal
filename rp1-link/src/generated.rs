@@ -322,7 +322,7 @@ pub unsafe fn try_enable_v3(
     regions: &[ShmRegion<'_>],
     digest: &[u8; 32],
 ) -> Result<u32, EnableError> {
-    let offered = rp1_proto::wake::LATCHED_WAKE;
+    let offered = rp1_proto::wake::B2_OFFERED_CAPS;
     let epoch = read_link(rp1_proto::status::EPOCH);
     let boot = BootEpoch::new(epoch).map_err(|_| EnableError::NotReady)?;
     if read_link(mailbox::BOOT_EPOCH) != epoch {
@@ -413,6 +413,24 @@ pub unsafe fn ring_tx_v3<T: Message>(
 pub unsafe fn ring_rx_v3<T: Message, const PIN: u8, const CORE: u8>(
     r: ShmRegion<'_>,
 ) -> Result<RingRx<T, crate::notify::TicketDoorbell<PIN, CORE>>, Error> {
+    unsafe { attach_rx_v3(r, false) }
+}
+
+/// # Safety
+/// As for [`ring_rx_v3`], and the ring is the request side of a named IRQ RPC.
+#[inline(always)]
+pub unsafe fn ring_rx_v3_rpc<T: Message, const PIN: u8, const CORE: u8>(
+    r: ShmRegion<'_>,
+) -> Result<RingRx<T, crate::notify::TicketDoorbell<PIN, CORE>>, Error> {
+    let direct = read_link(mailbox::ACCEPTED_CAPS) & rp1_proto::wake::RPC_REPLY_WAKE != 0;
+    unsafe { attach_rx_v3(r, direct) }
+}
+
+#[inline(always)]
+unsafe fn attach_rx_v3<T: Message, const PIN: u8, const CORE: u8>(
+    r: ShmRegion<'_>,
+    direct: bool,
+) -> Result<RingRx<T, crate::notify::TicketDoorbell<PIN, CORE>>, Error> {
     let ring = unsafe {
         shm::RingRx::attach(
             sram(r),
@@ -423,7 +441,7 @@ pub unsafe fn ring_rx_v3<T: Message, const PIN: u8, const CORE: u8>(
             overflow(r),
         )
     }?;
-    let wake = unsafe { crate::notify::TicketDoorbell::attach(sram(r), ddr(r)) }?;
+    let wake = unsafe { crate::notify::TicketDoorbell::attach(sram(r), ddr(r), direct) }?;
     Ok(RingRx::open(ring, wake))
 }
 

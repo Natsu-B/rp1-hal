@@ -4,7 +4,10 @@ pub const ABI: u16 = 1;
 pub const LATCHED_WAKE: u32 = 1 << 0;
 pub const STARTUP_WAKE: u32 = 1 << 1;
 pub const CREDIT_WAKE: u32 = 1 << 2;
-pub const KNOWN_CAPS: u32 = LATCHED_WAKE | STARTUP_WAKE | CREDIT_WAKE;
+pub const RPC_REPLY_WAKE: u32 = 1 << 3;
+pub const KNOWN_CAPS: u32 = LATCHED_WAKE | STARTUP_WAKE | CREDIT_WAKE | RPC_REPLY_WAKE;
+/// Capabilities offered by the experimental B2 profile.
+pub const B2_OFFERED_CAPS: u32 = LATCHED_WAKE | RPC_REPLY_WAKE;
 
 /// Link-page offsets. Every field is an aligned LE u32 with one writer.
 pub mod mailbox {

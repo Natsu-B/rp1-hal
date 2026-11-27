@@ -37,8 +37,8 @@ impl<Req: Message, Rep: Message, N: Notify, W: Wake> Server<Req, Rep, N, W> {
         if self.failed {
             return Err(Error::Reset);
         }
-        self.rx.try_drain(max, |request| {
-            let result = self.tx.send(&handle(request));
+        self.rx.try_drain_requests(max, |request, notify| {
+            let result = self.tx.send_reply(&handle(request), notify);
             self.failed = result.is_err();
             result
         })

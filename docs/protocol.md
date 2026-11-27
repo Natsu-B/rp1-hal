@@ -473,12 +473,11 @@ arm/seq/ACK をゼロ化して各語を readback し、header を書き、最後
 
 ### 10.4 Linux のデータ待ち
 
-**STATIC · 2026-11-27.** v3 の Linux session は `rp1:irq` を排他 `flock` と
+**STATIC · 2026-11-28.** v3 の Linux session は `rp1:irq` を排他 `flock` と
 `O_NONBLOCK` で開き、初回に 4 byte の `write(1)` を行う。WaitSet は
 対象の RX ticket と link ticket を arm/readback し、世代・終端・全 RX の
-head を再確認してから元の絶対期限まで `ppoll` する。RPC の返信が RX arm 後の
-確認で ready なら同じ手順で終端を確認し、その場で RX ticket を解除する。
-実際に block する RPC は link ticket も arm して全条件を再確認する。
+head を再確認してから元の絶対期限まで `ppoll` する。`RPC_REPLY_WAKE` 未合意時の
+IRQ RPC もこの ticket 経路を使う。
 4 byte の count を受けたら
 `write(1)` を完了してから再走査する。空振りでは同じ ticket と期限を使う。
 取消し時はその WaitSet の ticket を解除する。
@@ -493,3 +492,17 @@ head を再確認してから元の絶対期限まで `ppoll` する。RPC の�
 既知の再起動は host の旧 session と writer を明示的に破棄する。
 boot epoch が数値として再出現する場合、この識別には運用側での失効と排出が必要になる。
 owner の panic/fault から期限より早く起床するには独立した supervisor が必要。
+
+### 10.5 RPC request 内の返信通知
+
+**STATIC · 2026-11-28.** `RPC_REPLY_WAKE`（bit 3）を合意した IRQ RPC では、
+返信通知を要求する slot の seq を `index ^ 0x80000000` として書く。RP1 は
+期待する 32-bit index とこの符号化の両方を照合する。通知なしの要求は通常の seq を使う。
+
+Linux は要求を公開する前に listener を初回 enable する。要求 head の同窓
+readback が済んでから force を書く。
+RP1 は要求を読んでから返信を公開し、DDR head の readback 後に要求された pulse を送る。
+Linux は既存 count を受け取った場合は再 enable してからローカル DDR の
+返信 head を確認し、空なら同じ期限まで `ppoll` する。
+別の IRQ と合流した場合は count の受領と再 enable の後に返信を確認する。
+通知できる owner は終端状態も同じ vector で伝える。Linux は起床時と期限時に検証する。

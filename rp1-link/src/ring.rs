@@ -37,9 +37,22 @@ impl<T: Message, N: Notify> RingTx<T, N> {
     /// Publish one message and wake the reader if it sleeps.
     #[inline(always)]
     pub fn send(&mut self, value: &T) -> Result<(), Error> {
+        self.send_reply(value, None)
+    }
+
+    #[inline(always)]
+    pub(crate) fn send_reply(
+        &mut self,
+        value: &T,
+        requested_wake: Option<bool>,
+    ) -> Result<(), Error> {
         window_ready()?;
         let sent = self.ring.push(value);
-        self.notify.wake(Token(()), &mut self.ring);
+        match requested_wake {
+            None => self.notify.wake(Token(()), &mut self.ring),
+            Some(true) if sent.is_ok() => self.notify.wake_requested(Token(())),
+            Some(_) => false,
+        };
         sent
     }
     /// Publish a batch with one `head` store and at most one wake. Returns how many were
@@ -165,7 +178,16 @@ impl<T: Message, W: Wake> RingRx<T, W> {
     pub(crate) fn try_drain(
         &mut self,
         max: u32,
-        f: impl FnMut(T) -> Result<(), Error>,
+        mut f: impl FnMut(T) -> Result<(), Error>,
+    ) -> Result<Progress, Error> {
+        self.try_drain_requests(max, |value, _| f(value))
+    }
+
+    #[inline(always)]
+    pub(crate) fn try_drain_requests(
+        &mut self,
+        max: u32,
+        f: impl FnMut(T, Option<bool>) -> Result<(), Error>,
     ) -> Result<Progress, Error> {
         window_ready()?;
         self.wake.try_drain(Token(()), &mut self.ring, max, f)

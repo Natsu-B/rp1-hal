@@ -196,7 +196,7 @@ impl Session {
             let header = unsafe { shm::Header::open_v2(map.ptr(), &digest, scope, caps) }?;
             (
                 SessionHeader::V3(header),
-                Some(strict::StrictSession::new(listener, link, scope)?),
+                Some(strict::StrictSession::new(listener, link, scope, caps)?),
                 scope.generation(),
                 header.regions(),
             )
@@ -453,7 +453,7 @@ impl Firmware {
     pub fn ring_tx<T: Message>(&self, name: &str) -> Result<RingTx<T>> {
         let session = self.session()?;
         let r = self.ring::<T>(name, ShmKind::RingToRp1)?;
-        self.attach_tx(r, Self::map(&r)?, session)
+        self.attach_tx(r, Self::map(&r)?, session, false)
     }
 
     fn attach_tx<T: Message>(
@@ -461,6 +461,7 @@ impl Firmware {
         r: ShmRegion<'_>,
         map: Rc<Mapping>,
         session: Rc<Session>,
+        direct_rpc: bool,
     ) -> Result<RingTx<T>> {
         let inner = unsafe {
             shm::RingTx::attach(
@@ -485,7 +486,12 @@ impl Firmware {
             _map: map,
             session,
         };
-        if let Some(publisher) = &tx.publisher {
+        if direct_rpc {
+            // Resume a request that the former caller committed before forcing.
+            if tx.inner.free() != r.depth {
+                tx.force_request();
+            }
+        } else if let Some(publisher) = &tx.publisher {
             // Publishing a seq for an empty ring would consume the receiver's
             // current ticket without any work to service.
             if tx.inner.free() != r.depth {
@@ -957,6 +963,17 @@ pub struct RingTx<T> {
     session: Rc<Session>,
 }
 impl<T: Message> RingTx<T> {
+    fn force_request(&self) {
+        self.publisher
+            .as_ref()
+            .expect("direct RPC has a strict publisher")
+            .complete_head(&self.session.link);
+        self.doorbell
+            .as_ref()
+            .expect("direct RPC has a doorbell")
+            .ring_flushed();
+    }
+
     /// Complete the head through its own window before ringing a sleeping reader.
     fn wake(&mut self) -> Result<()> {
         if let Some(doorbell) = &self.doorbell {

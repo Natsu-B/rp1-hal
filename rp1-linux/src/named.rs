@@ -1,9 +1,10 @@
 use crate::{
     Error, Firmware, Mapping, Message, Note, Result, RingRx, RingTx, ShmKind, ShmRegion,
-    check_type, find_region, proto,
+    check_type, find_region, notify::listener::poll_until, proto, strict::StrictSession,
 };
 use rp1_proto::note::{RPC, rpc_name};
 use std::{
+    os::fd::{AsFd, AsRawFd},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -33,7 +34,14 @@ impl Firmware {
         let down_map = map(&down)?;
         let mut rx = Self::attach_rx(up, up_map, session.clone())?;
         // Attaching the writer notifies for any request that the previous owner left pending.
-        let tx = self.attach_tx(down, down_map, session)?;
+        let direct_rpc = rpc
+            && down.notify_irq
+            && up.notify_irq
+            && session
+                .strict
+                .as_ref()
+                .is_some_and(|strict| strict.rpc_reply_wake);
+        let tx = self.attach_tx(down, down_map, session, direct_rpc)?;
         if !rpc && up.notify_irq && !up.overwrite {
             rx.space_doorbell.clone_from(&tx.doorbell);
             // A previous reader may have exited between publishing tail and the IRQ.
@@ -134,11 +142,24 @@ pub struct Client<Req, Rep> {
     tx: RingTx<Req>,
     rx: RingRx<Rep>,
     depth: u32,
+    request_wake: bool,
 }
 
 impl<Req: Message, Rep: Message> Client<Req, Rep> {
     pub(crate) fn new(tx: RingTx<Req>, rx: RingRx<Rep>, depth: u32) -> Self {
-        Self { tx, rx, depth }
+        let request_wake = tx.doorbell.is_some()
+            && rx.ticket.is_some()
+            && rx
+                .session
+                .strict
+                .as_ref()
+                .is_some_and(|strict| strict.rpc_reply_wake);
+        Self {
+            tx,
+            rx,
+            depth,
+            request_wake,
+        }
     }
 
     /// Notification statistics for replies received by this client.
@@ -155,16 +176,26 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
         let end = Instant::now()
             .checked_add(timeout)
             .ok_or(Error::InvalidDeadline)?;
-        let index = self.publish(request, (!timeout.is_zero()).then_some(end))?;
         if timeout.is_zero() {
+            self.publish(request, None)?;
             return Err(Error::Timeout);
         }
-        self.wait_reply(index, end)
+        self.call_until(request, end)
     }
 
     /// Publish and await a reply under a single absolute deadline. If the reply
     /// is present at the deadline, return it even if the IRQ count is delayed.
     pub fn call_until(&mut self, request: &Req, end: Instant) -> Result<Rep> {
+        if self.request_wake {
+            let session = self.rx.session.clone();
+            let strict = session
+                .strict
+                .as_ref()
+                .expect("direct RPC uses strict wake");
+            let _listener = strict.claim_listener()?;
+            let index = self.publish(request, Some(end))?;
+            return self.wait_requested_reply(strict, index, end);
+        }
         let index = self.publish(request, Some(end))?;
         self.wait_reply(index, end)
     }
@@ -193,9 +224,81 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
             return Err(Error::Busy);
         }
         check_deadline()?;
-        self.tx.inner.push(request)?;
-        self.tx.wake()?;
+        if self.request_wake {
+            self.tx.inner.push_request(request, end.is_some())?;
+            self.tx.force_request();
+        } else {
+            self.tx.inner.push(request)?;
+            self.tx.wake()?;
+        }
         Ok(index)
+    }
+
+    fn wait_requested_reply(
+        &mut self,
+        strict: &StrictSession,
+        index: u32,
+        end: Instant,
+    ) -> Result<Rep> {
+        let mut pfd = [libc::pollfd {
+            fd: strict.listener.as_fd().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        let mut dispatch = false;
+        loop {
+            if dispatch && Instant::now() < end {
+                self.rx.stats.sleeps += 1;
+                poll_until(&mut pfd, Some(end))?;
+            }
+            // The listener was enabled before publishing. A prior IRQ may
+            // have masked it. Take that count and unmask before scanning.
+            let woke = strict.listener.intake();
+            let expired = Instant::now() >= end;
+            self.check_requested_peer()?;
+            let woke = woke?;
+            let revents = pfd[0].revents;
+            if revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                return Err(Error::setup(format!("rp1:irq poll flags {revents:#x}")));
+            }
+            self.rx.stats.woken += u64::from(dispatch && woke);
+            self.rx.stats.deadline_checks += u64::from(expired);
+            // Re-enable precedes the head check. A reply whose edge merged
+            // with this count is already visible, or still has an edge to send.
+            if let Some(reply) = self.take_requested_reply(index)? {
+                self.rx.stats.late += u64::from(expired && !woke);
+                return Ok(reply);
+            }
+            if expired {
+                return Err(Error::Timeout);
+            }
+            dispatch = true;
+        }
+    }
+
+    fn check_requested_peer(&self) -> Result<()> {
+        let rx = &self.rx;
+        rx.session.check()?;
+        rx.session.check_peer(0)?;
+        if rx.peer.core != 0 {
+            rx.session.check_peer(rx.peer.core)?;
+        }
+        Ok(())
+    }
+
+    fn take_requested_reply(&mut self, index: u32) -> Result<Option<Rep>> {
+        loop {
+            let ready = self.rx.available() != 0;
+            if !ready {
+                return Ok(None);
+            }
+            let tail = self.rx.tail();
+            let reply = self.rx.inner.pop()?;
+            self.rx.session.check_header()?;
+            if tail == index || reply.is_none() {
+                return Ok(reply);
+            }
+        }
     }
 
     fn wait_reply(&mut self, index: u32, end: Instant) -> Result<Rep> {

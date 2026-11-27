@@ -103,7 +103,7 @@ impl Rig {
                 })
             })
             .unwrap();
-        Client { tx, rx, depth }
+        Client::new(tx, rx, depth)
     }
 
     fn server(&self) -> (shm::RingRx<u32>, shm::RingTx<u32>) {

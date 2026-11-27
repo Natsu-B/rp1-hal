@@ -21,7 +21,7 @@ pub(crate) struct Profile {
 
 impl Profile {
     pub(crate) fn open(config: LinkWake) -> Result<Self> {
-        if config.required_caps & !wake::LATCHED_WAKE != 0 {
+        if config.required_caps & !wake::B2_OFFERED_CAPS != 0 {
             return Err(Error::Unsupported);
         }
         Ok(Self {
@@ -59,7 +59,7 @@ impl Profile {
         let request = Request {
             epoch: epoch.word(),
             seq: 1,
-            required_caps: wake::LATCHED_WAKE,
+            required_caps: self.config.required_caps | wake::LATCHED_WAKE,
         };
         // One request identity per boot. A same-boot reopen reads the committed
         // result, including when the initial requester exited before Ready.
@@ -68,7 +68,10 @@ impl Profile {
         {
             fw.link.write(mailbox::REQUEST_EPOCH, request.epoch);
             fw.link.write(mailbox::REQUEST_SEQ, request.seq);
-            fw.link.write(mailbox::REQUIRED_CAPS, request.required_caps);
+            fw.link.write(
+                mailbox::REQUIRED_CAPS,
+                request.required_caps | (offered & wake::RPC_REPLY_WAKE),
+            );
             fw.link.write(link::SHM_REQUEST, mailbox::REQUEST_OPCODE);
             let _ = fw.link.read(link::SHM_REQUEST);
             fw.signal_enable_request();
@@ -112,6 +115,7 @@ impl StrictSession {
         listener: Rc<Listener>,
         link: &Rc<Mapping>,
         scope: wake::Session,
+        caps: u32,
     ) -> Result<StrictSession> {
         let epoch = BootEpoch::new(scope.epoch())?;
         let live_link = link.clone();
@@ -123,6 +127,7 @@ impl StrictSession {
             busy: Cell::new(false),
             mailbox: RefCell::new(mailbox),
             epoch,
+            rpc_reply_wake: caps & wake::RPC_REPLY_WAKE != 0,
         })
     }
 }
@@ -132,9 +137,17 @@ pub(crate) struct StrictSession {
     pub(crate) busy: Cell<bool>,
     pub(crate) mailbox: RefCell<Ticket<BootEpoch>>,
     epoch: BootEpoch,
+    pub(crate) rpc_reply_wake: bool,
 }
 
 impl StrictSession {
+    pub(crate) fn claim_listener(&self) -> Result<impl Drop + '_> {
+        if self.busy.replace(true) {
+            return Err(Error::Busy);
+        }
+        Ok(ListenerGuard(&self.busy))
+    }
+
     pub(crate) fn check_terminal_epoch(&self, link: &Mapping) -> Result<()> {
         check_status_epoch(link, self.epoch)
     }
@@ -148,6 +161,14 @@ impl StrictSession {
             }
             _ => Err(Error::PeerDown(crate::PeerDown::Restarted)),
         }
+    }
+}
+
+struct ListenerGuard<'a>(&'a Cell<bool>);
+
+impl Drop for ListenerGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
     }
 }
 
@@ -200,9 +221,18 @@ impl RingPublisher {
     }
 
     pub(crate) fn publish(&mut self, link: &Mapping) -> Result<bool> {
-        Ok(self.publisher.publish(|| {
-            let _ = link.read(self.head);
-        })?)
+        let head = self.head;
+        Ok(self.publisher.publish(|| Self::read_head(link, head))?)
+    }
+
+    pub(crate) fn complete_head(&self, link: &Mapping) {
+        barrier();
+        Self::read_head(link, self.head);
+        barrier();
+    }
+
+    fn read_head(link: &Mapping, head: usize) {
+        let _ = link.read(head);
     }
 
     pub(crate) fn recover(&self) -> Result<bool> {

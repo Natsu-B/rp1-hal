@@ -8,6 +8,10 @@ use core::{
     ptr,
 };
 
+// An RPC reader knows the full expected sequence from its tail, including at wrap.
+// Match either exact encoding so the ticket costs no additional posted store.
+const REPLY_WAKE: u32 = 1 << 31;
+
 /// Behaviour of a full ring (declaration `overflow`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Overflow {
@@ -161,17 +165,31 @@ impl<T: Message> RingTx<T> {
     /// Fill the slot for index `head + k` (payload, seq; the length was written by
     /// `attach`); not yet published.
     #[inline(always)]
-    fn write_slot(&self, k: u32, value: &T) {
+    fn write_slot(&self, k: u32, value: &T, seq_xor: u32) {
         let index = self.head.wrapping_add(k);
         let slot = self.slot(index);
         unsafe {
             copy_to_mapping(slot.add(8), ptr::from_ref(value).cast(), size_of::<T>());
-            st(slot, 0, index);
+            st(slot, 0, index ^ seq_xor);
         }
     }
     /// Publish one message. Order: payload, seq, length → barrier → head (protocol.md §2.3).
     #[cfg_attr(feature = "isram", rp1_macros::isram)]
     pub fn push(&mut self, value: &T) -> Result<(), Error> {
+        self.push_inner(value, 0)
+    }
+
+    /// Publish a reject-ring RPC request after negotiating `RPC_REPLY_WAKE`.
+    #[inline(always)]
+    pub fn push_request(&mut self, value: &T, notify_reply: bool) -> Result<(), Error> {
+        if self.overflow != Overflow::Reject {
+            return Err(Error::Invalid);
+        }
+        self.push_inner(value, if notify_reply { REPLY_WAKE } else { 0 })
+    }
+
+    #[inline(always)]
+    fn push_inner(&mut self, value: &T, seq_xor: u32) -> Result<(), Error> {
         if self.fenced() {
             return Err(Error::NotReady);
         }
@@ -188,7 +206,7 @@ impl<T: Message> RingTx<T> {
                 }
                 self.store_dropped();
                 barrier();
-                self.write_slot(0, value);
+                self.write_slot(0, value, seq_xor);
             }
             Overflow::Overwrite => unsafe {
                 st(slot, 4, BUSY | len);
@@ -235,7 +253,7 @@ impl<T: Message> RingTx<T> {
         self.store_dropped();
         barrier();
         for (k, v) in values[..n as usize].iter().enumerate() {
-            self.write_slot(k as u32, v);
+            self.write_slot(k as u32, v, 0);
         }
         barrier();
         self.head = self.head.wrapping_add(n);
@@ -281,7 +299,7 @@ impl<T: Message> RingTx<T> {
                 barrier();
                 for k in 0..n {
                     fill(k, &mut value);
-                    self.write_slot(k as u32, &value);
+                    self.write_slot(k as u32, &value, 0);
                 }
                 self.store_dropped();
                 barrier();
@@ -415,16 +433,41 @@ impl<T: Message> RingRx<T> {
     /// Read the slot at `tail + k` (reject mode): checks seq and length.
     #[inline(always)]
     fn read_slot(&self, k: u32) -> Result<T, Error> {
+        self.read_slot_inner(k, false).map(|(value, _)| value)
+    }
+
+    #[inline(always)]
+    fn read_slot_inner(&self, k: u32, rpc: bool) -> Result<(T, bool), Error> {
         let index = self.tail.wrapping_add(k);
         let slot = self.slot(index);
         let (seq, word) = unsafe { (ld(slot, 0), ld(slot, 4)) };
-        if seq != index {
+        let notify_reply = rpc && seq == index ^ REPLY_WAKE;
+        if seq != index && !notify_reply {
             return Err(Error::Corrupt);
         }
         if word != size_of::<T>() as u32 {
             return Err(Error::Invalid);
         }
-        Ok(unsafe { read_value::<T>(slot.add(8)) })
+        Ok((unsafe { read_value::<T>(slot.add(8)) }, notify_reply))
+    }
+
+    /// Consume a reject-ring request and its negotiated `RPC_REPLY_WAKE` flag.
+    #[inline(always)]
+    pub fn pop_request(&mut self) -> Result<Option<(T, bool)>, Error> {
+        if self.overflow != Overflow::Reject {
+            return Err(Error::Invalid);
+        }
+        self.pop_reject(true)
+    }
+
+    #[inline(always)]
+    fn pop_reject(&mut self, rpc: bool) -> Result<Option<(T, bool)>, Error> {
+        if self.reject_available(1)? == 0 {
+            return Ok(None);
+        }
+        let request = self.read_slot_inner(0, rpc)?;
+        self.consume();
+        Ok(Some(request))
     }
     /// `Ok(None)` when empty. `Err(Lost(n))` (overwrite only) reports skipped messages; the
     /// reader has already moved to the oldest surviving slot, so just call `pop` again.
@@ -432,14 +475,7 @@ impl<T: Message> RingRx<T> {
     pub fn pop(&mut self) -> Result<Option<T>, Error> {
         let len = size_of::<T>() as u32;
         match self.overflow {
-            Overflow::Reject => {
-                if self.reject_available(1)? == 0 {
-                    return Ok(None);
-                }
-                let value = self.read_slot(0)?;
-                self.consume();
-                Ok(Some(value))
-            }
+            Overflow::Reject => Ok(self.pop_reject(false)?.map(|(value, _)| value)),
             Overflow::Overwrite => {
                 for _ in 0..1024 {
                     let available = self.available64();

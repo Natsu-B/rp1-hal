@@ -339,7 +339,15 @@ fn write_core(
                 };
                 let up = index + 1;
                 let tx = attach_fn(&regions[up], v3);
-                let rx = attach_fn(&regions[index], v3);
+                let rx = if v3
+                    && matches!(pair, Pair::Rpc)
+                    && regions[index].notify_irq
+                    && regions[up].notify_irq
+                {
+                    "ring_rx_v3_rpc"
+                } else {
+                    attach_fn(&regions[index], v3)
+                };
                 writeln!(
                     output,
                     "{field}: generated::{constructor}(unsafe {{ generated::{tx}(REGIONS[{up}]) }}?, unsafe {{ generated::{rx}(REGIONS[{index}]) }}?),"
