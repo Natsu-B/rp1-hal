@@ -630,7 +630,7 @@ it waits for `eth0`.
 | Step | Script | Runs as |
 |---|---|---|
 | SCMI modules | `build-scmi-modules.sh` (`KSRC`, `KHEADERS`, `OUT`) | user (cross gcc-14) |
-| Root file system | `prepare-rootfs.sh` (`ROOTFS`, `SCMI_MODULES`, `CLIENT_BIN`) | root |
+| Root file system | `prepare-rootfs.sh` (`ROOTFS`, `SCMI_MODULES`, `BACKUP_DIR`, optional `CLIENT_BIN` and `TFTP_DIR`) | root |
 | initramfs | `build-initramfs.sh` (`ROOTFS`, `OUT`): the root file system's initramfs-tools in a chroot, `MODULES=list`, `BOOT=nfs`, xz. Requires `unmkinitramfs` on the host | root |
 | Boot set | `build-bootset.sh` (`ROOTFS`, `RP1_ELF`, `RP1BOOT_IMG`, `INITRAMFS`, `NFS_ROOT`, `OUT`). Requires `lsinitramfs` and a new output directory with an existing parent | user |
 | Target check | `check-realos.sh`, installed as `rp1-realos-check` | root on the target |
@@ -640,9 +640,12 @@ it waits for `eth0`.
   uio_pdrv_genirq.of_id=generic-uio`. No `ip=`: the kernel's own IP autoconfiguration would run
   before the SCMI modules exist; the initramfs does DHCP on `eth0`.
 - The NFS export needs `rw,no_root_squash`; NFSv3 (klibc `nfsmount`).
-- `prepare-rootfs.sh` saves selected configuration files and module indexes as
-  `<file>.orig-realos`. Discard the prepared copy to undo all changes, including module
-  and client installs.
+- Keep the root offline for preparation and rollback. Set `BACKUP_DIR` to a new path
+  outside both trees. Preparation saves the managed root paths and, with `TFTP_DIR`,
+  the full TFTP tree. A retry verifies the original backup and requires the same scope.
+  Run `prepare-rootfs.sh --restore` with the same `ROOTFS`, `BACKUP_DIR` and optional
+  `TFTP_DIR` to restore and verify them. Use a disposable copy to discard unrelated
+  writes made by the running target.
 - Before replacing `OUT`, `build-initramfs.sh` runs the unpacked `/bin/sh` in a chroot
   and checks for executable entry points and the required NFS and module files.
   `build-bootset.sh` checks the archive's module release against the selected kernel.

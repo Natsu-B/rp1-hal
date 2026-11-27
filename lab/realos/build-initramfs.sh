@@ -3,7 +3,7 @@
 # (an aarch64 host, or qemu-user binfmt with the F flag on another host). Run as root.
 # Uses etc/initramfs-tools-rp1nfs written by prepare-rootfs.sh (MODULES=list, BOOT=nfs).
 #
-# Required: ROOTFS, OUT (output initramfs file), and unmkinitramfs on the host.
+# Required: ROOTFS, OUT (output initramfs file outside ROOTFS), and unmkinitramfs on the host.
 # Optional: KERNEL_RELEASE (default: the only release prepared in ROOTFS).
 set -euo pipefail
 root=$(realpath -e -- "${ROOTFS:?set ROOTFS to the root file system copy}")
@@ -12,6 +12,15 @@ if [[ $root -ef / ]]; then
     exit 1
 fi
 out=${OUT:?set OUT to the output initramfs path}
+parent=$(realpath -e -- "$(dirname -- "$out")")
+out=$parent/$(basename -- "$out")
+if [[ $out == "$root" || $out == "$root/"* ]]; then
+    echo "OUT must be outside ROOTFS" >&2
+    exit 1
+fi
+# Keep temporary chroot mounts clear of concurrent preparation or rollback.
+exec {root_lock}<"$root"
+flock -n "$root_lock"
 release=${KERNEL_RELEASE:-}
 if [[ -z $release ]]; then
     shopt -s nullglob
@@ -25,6 +34,10 @@ if [[ -z $release ]]; then
 fi
 [[ -d $root/etc/initramfs-tools-rp1nfs ]] || { echo "run prepare-rootfs.sh first" >&2; exit 1; }
 command -v unmkinitramfs >/dev/null || { echo "unmkinitramfs is required" >&2; exit 1; }
+for d in tmp proc sys dev; do
+    path=$(realpath -e -- "$root/$d")
+    [[ $path == "$root/"* && -d $path ]] || { echo "invalid ROOTFS/$d directory" >&2; exit 1; }
+done
 
 # Stage beside OUT so the final rename can replace it atomically.
 work=$(mktemp -d -- "${out}.XXXXXX")
@@ -55,8 +68,9 @@ for d in proc sys dev; do
     mount --bind "/$d" "$root/$d"
     mounted[$d]=1
 done
-chroot "$root" /usr/sbin/mkinitramfs -d /etc/initramfs-tools-rp1nfs \
-    -o "${root_tmp#"$root"}/initramfs" "$release"
+tmp=${root_tmp#"$root"}
+TMPDIR="$tmp" chroot "$root" /usr/sbin/mkinitramfs -d /etc/initramfs-tools-rp1nfs \
+    -o "$tmp/initramfs" "$release"
 unmount
 mv -- "$root_tmp/initramfs" "$work/initramfs"
 

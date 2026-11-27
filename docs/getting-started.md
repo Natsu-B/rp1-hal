@@ -44,14 +44,16 @@ sudo apt-get install git build-essential bc bison flex libssl-dev kmod xz-utils 
 Install `libelf-dev` if your kernel build asks for ELF development headers.
 For TFTP/NFS, also install `nfs-kernel-server` on the host that exports `ROOTFS`.
 Run host commands in Bash and keep the shell variables throughout. Stop a step on an error.
-Start at the root of a clean `rp1-hal` checkout and use the template's HAL pin for the host helpers.
+Start in a clean `rp1-hal` checkout at the same revision as this guide. Keep its lab helpers
+available for backup and rollback. Use a separate worktree at the template's HAL pin for the builds.
 If you need a checkout, run `git clone https://github.com/Natsu-B/rp1-hal` and enter it.
 
 ```bash
 HAL=$(pwd -P)
 HAL_REV=2e4fedc0a68c7aeed2cdeeb67b60ae5e0f125e25
-git -C "$HAL" checkout --detach "$HAL_REV"
 WORK=$(mktemp -d "$(dirname "$HAL")/rp1-start.XXXXXX")
+HAL_PINNED="$WORK/hal"
+git -C "$HAL" worktree add --detach "$HAL_PINNED" "$HAL_REV"
 export CARGO_BUILD_JOBS=2
 ```
 
@@ -168,7 +170,7 @@ image. Use GCC 14 for arm64 (`aarch64-linux-gnu-gcc-14` by default, or set `KCC=
 
 ```bash
 SCMI_MODULES="$WORK/scmi"
-KSRC="$KSRC" KHEADERS="$KHEADERS" OUT="$SCMI_MODULES" bash "$HAL/lab/realos/build-scmi-modules.sh"
+KSRC="$KSRC" KHEADERS="$KHEADERS" OUT="$SCMI_MODULES" bash "$HAL_PINNED/lab/realos/build-scmi-modules.sh"
 for module in "$SCMI_MODULES"/{scmi-core,scmi-module,scmi_transport_mailbox,clk-scmi}.ko; do
   modinfo -F vermagic "$module"
   sha256sum "$module"
@@ -267,89 +269,31 @@ cat /proc/sys/kernel/random/boot_id
 findmnt -n -o SOURCE,FSTYPE,OPTIONS /
 ```
 
-Keep the root offline for both staging and rollback. No client may have `ROOTFS` mounted
-anywhere, and no host process may write to it. The CM5 may stay up on another root as long
-as it does not mount this export or start a TFTP boot during staging.
+Keep the root offline during staging and rollback so the helpers can change files and
+build the initramfs without racing a running system. Unmount the export on all clients
+and stop host writes. Keep the CM5 from starting a TFTP boot until staging is done.
 
-If the CM5 uses this root, move it to a known-good SD or maintenance initramfs that leaves
-the export unmounted. For SD fallback, check that SD is in the boot order. Run
-`sudo systemctl halt` on the CM5 with Ethernet connected and wait for the halt on UART10.
-Keep the board powered, disconnect Ethernet and reset into SD. On a powered bench with the
-`cm5ctl.py` helper, use `./cm5ctl.py force-boot` from its directory. Use the bench's normal
-start control if the board is off. Check `findmnt /` and `findmnt -t nfs,nfs4` in the
-maintenance boot. Expect an SD or RAM root and no mount of this export.
+If the CM5 uses this root, run `sudo systemctl halt` and wait for the halt on UART10.
+Start a maintenance initramfs or fall back to SD. For SD fallback, check the boot order,
+keep power on, disconnect Ethernet and reset.
+On a powered bench with the `cm5ctl.py` helper, use `./cm5ctl.py force-boot` from its
+directory. Use the normal start control if the board is off. In the SD or maintenance
+boot, check `findmnt /` and `findmnt -t nfs,nfs4` for a local or RAM root with the export
+unmounted.
 
-Back up the TFTP tree and the root paths below before running either helper. The root backup
-includes fstab, service links and drop-ins, network and UIO settings, initramfs config, the
-SCMI modules and depmod indexes, both checkers and `linux-app`. Keep `WORK` outside both
-trees and use a new one for each experiment. Repeating this block verifies the saved baseline.
+Keep a backup so you can boot the previous set. The [rootfs helper](../lab/realos/prepare-rootfs.sh)
+saves the TFTP tree and the root paths it manages before changing the root. It verifies
+and reuses that backup on retries. Keep `WORK` outside both trees and use a new one for
+each experiment. Root preparation configures NFS, UIO and root autologin on UART10.
 
-```bash
-# Resolve the module path so the filter also works on a merged /usr root.
-MODULE_DIR=$(realpath -e "$ROOTFS/lib/modules/$KERNEL_RELEASE")
-[[ $MODULE_DIR == "$ROOTFS/"* ]]
-MODULE_DIR=${MODULE_DIR#"$ROOTFS"/}
-ROOT_SCOPE=(
-  --include=/etc/ --include=/etc/fstab{,.orig-realos}
-  --include=/etc/cloud/ --include=/etc/cloud/cloud-init.disabled{,.orig-realos}
-  --include=/etc/NetworkManager/ --include=/etc/NetworkManager/conf.d/
-  --include=/etc/NetworkManager/conf.d/90-rp1-nfsroot.conf{,.orig-realos}
-  --include=/etc/systemd/ --include=/etc/systemd/system/
-  --include=/etc/systemd/system/default.target{,.orig-realos}
-  --include=/etc/systemd/system/rpi-eeprom-update.service{,.orig-realos}
-  --include=/etc/systemd/system/serial-getty@ttyAMA10.service.d/
-  --include=/etc/systemd/system/serial-getty@ttyAMA10.service.d/autologin.conf{,.orig-realos}
-  --include=/etc/modules-load.d/ --include=/etc/modules-load.d/rp1-hal.conf{,.orig-realos}
-  --include=/etc/modprobe.d/ --include=/etc/modprobe.d/rp1-hal.conf{,.orig-realos}
-  --include='/etc/initramfs-tools-rp1nfs/***'
-  --include=/usr/ --include=/usr/lib/ --include=/lib/
-  --include="/${MODULE_DIR%/*}/" --include="/$MODULE_DIR/"
-  --include="/$MODULE_DIR/modules.*" --include="/$MODULE_DIR/updates/"
-  --include="/$MODULE_DIR/updates/rp1-hal/***"
-  --include=/usr/local/ --include=/usr/local/sbin/ --include=/usr/local/bin/
-  --include=/usr/local/sbin/rp1-realos-check --include=/usr/local/sbin/rp1-device-check
-  --include=/usr/local/bin/linux-app --exclude='*'
-)
-hash_tree() (
-  set -o pipefail
-  sudo env LC_ALL=C tar --sort=name --format=gnu --mtime=@0 --numeric-owner \
-    -cf - -C "$1" . | sha256sum
-)
-check_backup() (
-  set -o pipefail
-  printf '%s\n' "$TFTP_DIR" "$ROOTFS" "$KERNEL_RELEASE" | cmp "$WORK/before/paths" - &&
-  hash_tree "$WORK/before/tftp" | cmp "$WORK/before/tftp.sha256" - &&
-  hash_tree "$WORK/before/root" | cmp "$WORK/before/root.sha256" -
-)
-(
-  set -e -o pipefail
-  if [[ ! -d $WORK/before ]]; then
-    save=$(mktemp -d "$WORK/before.XXXXXX")
-    mkdir "$save"/{tftp,root}
-    sudo rsync -aHAX --numeric-ids "$TFTP_DIR/" "$save/tftp/"
-    sudo rsync -aHAX --numeric-ids "${ROOT_SCOPE[@]}" "$ROOTFS/" "$save/root/"
-    hash_tree "$TFTP_DIR" > "$save/tftp.sha256"
-    hash_tree "$save/tftp" | cmp "$save/tftp.sha256" -
-    hash_tree "$save/root" > "$save/root.sha256"
-    printf '%s\n' "$TFTP_DIR" "$ROOTFS" "$KERNEL_RELEASE" > "$save/paths"
-    mv -T "$save" "$WORK/before"
-  fi
-  check_backup
-)
-```
-
-The tree hash covers names, file contents, link targets, modes, owners and empty directories.
-It ignores timestamps so the check is independent of filesystem timestamp precision.
-
-Use the [rootfs helper](../lab/realos/prepare-rootfs.sh) on the offline root. It adjusts fstab and
-network setup for NFS, sets up UIO and enables serial root autologin on UART10 for this isolated
-lab root. The [initramfs helper](../lab/realos/build-initramfs.sh) runs the root's own
+The [initramfs helper](../lab/realos/build-initramfs.sh) runs the offline root's own
 `mkinitramfs` in a chroot. On x86, verify the `qemu-aarch64` binfmt entry is enabled and its
 flags include `F` in `/proc/sys/fs/binfmt_misc/qemu-aarch64`.
 
 ```bash
-sudo env ROOTFS="$ROOTFS" SCMI_MODULES="$SCMI_MODULES" CLIENT_BIN="$WORK/clients" \
-  CONSOLE_TTY=ttyAMA10 NET_IF=eth0 bash "$HAL/lab/realos/prepare-rootfs.sh"
+BACKUP_DIR="$WORK/before"
+sudo env ROOTFS="$ROOTFS" TFTP_DIR="$TFTP_DIR" BACKUP_DIR="$BACKUP_DIR" \
+  SCMI_MODULES="$SCMI_MODULES" CLIENT_BIN="$WORK/clients" bash "$HAL/lab/realos/prepare-rootfs.sh"
 INITRAMFS="$WORK/initramfs-$KERNEL_RELEASE"
 sudo env ROOTFS="$ROOTFS" KERNEL_RELEASE="$KERNEL_RELEASE" OUT="$INITRAMFS" \
   bash "$HAL/lab/realos/build-initramfs.sh"
@@ -361,17 +305,17 @@ It loads SCMI before DHCP on `eth0`. Leave `ip=` out of the kernel cmdline so th
 does not start IP autoconfiguration before those drivers load. The template's `scripts/bundle.sh`
 defaults are for a small standalone initramfs.
 
-The NFS boot set helper builds `cargo-rp1` offline in `$HAL/target`. Fetch its host dependencies
+The NFS boot set helper builds `cargo-rp1` offline in `$HAL_PINNED/target`. Fetch its host dependencies
 first. The HAL, template and loader build outputs used about 0.6 GiB in the replay, besides
-the kernel source and build, initramfs and boot set. Check free space for both `HAL` and `WORK`.
+the kernel source and build, initramfs and boot set. Check free space for `WORK`.
 
 ```bash
-cargo fetch --locked --manifest-path "$HAL/Cargo.toml" \
+cargo fetch --locked --manifest-path "$HAL_PINNED/Cargo.toml" \
   --target "$(rustc -vV | sed -n 's/^host: //p')"
 ROOTFS="$ROOTFS" KERNEL_RELEASE="$KERNEL_RELEASE" RP1_ELF="$RP1_ELF" \
   RP1BOOT_IMG="$RP1BOOT_IMG" INITRAMFS="$INITRAMFS" NFS_ROOT="$SERVER:$ROOTFS" \
   OUT="$WORK/bootset" RP1_BOARD_CHECK_DTB="$WORK/nfs-board.dtb" \
-  bash "$HAL/lab/realos/build-bootset.sh"
+  bash "$HAL_PINNED/lab/realos/build-bootset.sh"
 (cd "$WORK/bootset" && sha256sum -c SHA256SUMS)
 ```
 
@@ -512,24 +456,13 @@ reply equals the value it sent. The total across CPU columns for `rp1:irq` shoul
 | Ping times out or `rp1:irq` stays flat | Check `proc1: hello` and panic output on UART0. Verify that `rp1:doorbell` and `rp1:irq` are bound to `uio_pdrv_genirq`, GPIO27 is reserved and the ELF and Linux client come from the same pins. |
 | Linux console present, RP1 messages missing | Check the UART0 adapter on GPIO14 and ground at 115200. Linux and loader messages come from UART10. |
 
-For NFS rollback, move the CM5 off the test root as in step 4. Restore to the same directories.
-The scoped root restore puts back the original checkers and client, and removes files that were
-absent from the backup, such as a newly installed `linux-app`.
+To recover the previous NFS boot, take the test root offline as in step 4. Restore to
+the same directories. The helper checks the backup first, then verifies the restored
+TFTP tree and the saved root paths. It removes files it added, such as a new `linux-app`.
 
 ```bash
-(
-  set -e -o pipefail
-  check_backup
-  sudo rsync -acHAX --numeric-ids --delete "$WORK/before/tftp/" "$TFTP_DIR/"
-  sudo rsync -acHAX --numeric-ids --delete "${ROOT_SCOPE[@]}" "$WORK/before/root/" "$ROOTFS/"
-  hash_tree "$TFTP_DIR" | cmp "$WORK/before/tftp.sha256" -
-  changes=$(sudo rsync -acHAXni --numeric-ids --delete "${ROOT_SCOPE[@]}" \
-    "$WORK/before/root/" "$ROOTFS/")
-  if [[ -n $changes ]]; then
-    printf '%s\n' "$changes" >&2
-    exit 1
-  fi
-)
+sudo env ROOTFS="$ROOTFS" TFTP_DIR="$TFTP_DIR" BACKUP_DIR="$BACKUP_DIR" \
+  bash "$HAL/lab/realos/prepare-rootfs.sh" --restore
 ```
 
 Boot the previous set using the reset procedure in step 4. Run the three identity commands
