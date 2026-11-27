@@ -103,6 +103,9 @@ impl Profile {
                 error => Error::from(error),
             })?;
         let scope = wake::Session::new(epoch.word(), fw.link.read(link::SHM_GENERATION))?;
+        // Enabling on open can deliver a pending edge from the previous
+        // listener. Take it before returning the newly attached session.
+        listener.intake()?;
         let session = Session::open(&fw.note, &fw.area, &fw.link, Some((scope, caps, listener)))?;
         session.check()?;
         check_epoch(&fw.link, epoch)?;

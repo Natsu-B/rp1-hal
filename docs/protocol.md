@@ -502,7 +502,7 @@ owner の panic/fault から期限より早く起床するには独立した sup
 Linux は要求を公開する前に listener を初回 enable する。同じ BAR2 SRAM 窓の
 世代を readback して要求 head の書き込みを完了し、世代を照合してから force を書く。
 RP1 は要求を読んでから返信を公開し、DDR head の readback 後に未消費なら pulse を送る。
-Linux は既存 count を受け取った場合は再 enable してからローカル DDR の
-返信 head を確認し、空なら同じ期限まで `ppoll` する。
-別の IRQ と合流した場合は count の受領と再 enable の後に返信を確認する。
+Linux はローカル DDR に返信があれば取得する。空なら既存 count を受領して
+再 enable し、返信 head を再確認してから同じ期限まで `ppoll` する。
+再確認では、既存 count と合流した通知の返信も取得できる。
 通知できる owner は終端状態も同じ vector で伝える。Linux は起床時と期限時に検証する。

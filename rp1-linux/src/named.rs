@@ -240,6 +240,14 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
         index: u32,
         end: Instant,
     ) -> Result<Rep> {
+        self.check_requested_peer(strict)?;
+        // A locally ready reply needs no IRQ count. Leave a queued count
+        // readable for the next operation that enters the wait path.
+        if Instant::now() < end
+            && let Some(reply) = self.take_requested_reply(index)?
+        {
+            return Ok(reply);
+        }
         let mut pfd = [libc::pollfd {
             fd: strict.listener.as_fd().as_raw_fd(),
             events: libc::POLLIN,
@@ -251,11 +259,13 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
                 self.rx.stats.sleeps += 1;
                 poll_until(&mut pfd, Some(end))?;
             }
-            // The listener was enabled before publishing. A prior IRQ may
-            // have masked it. Take that count and unmask before scanning.
+            // The listener was enabled on open. A prior IRQ may have masked
+            // it. Take that count and unmask before scanning again.
             let woke = strict.listener.intake();
             let expired = Instant::now() >= end;
-            self.check_requested_peer(strict)?;
+            if dispatch || expired || !matches!(woke, Ok(false)) {
+                self.check_requested_peer(strict)?;
+            }
             let woke = woke?;
             let revents = pfd[0].revents;
             if revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
