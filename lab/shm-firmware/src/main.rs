@@ -207,6 +207,8 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         feature = "ring-dma"
     ))]
     log!("p1 clocks {:?}\n", clocks).unwrap();
+    #[cfg(any(feature = "adc", feature = "spi", feature = "dma"))]
+    let mut wait_timer = p.wait_timer;
     #[cfg(feature = "adc")]
     let mut adc = {
         let adc = match clocks {
@@ -216,7 +218,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         log!("p1 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
         let mut adc = adc.ok();
         if let Some(adc) = adc.as_mut() {
-            let r = adc_proof::prove(adc, "P1BOOT");
+            let r = adc_proof::prove(adc, &mut wait_timer, "P1BOOT");
             log!("ADC_RESULT boot {:?}\n", r).unwrap();
         }
         adc
@@ -240,8 +242,6 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         .unwrap();
         spi.ok().map(|bus| (bus, p.pins.gpio8))
     };
-    #[cfg(any(feature = "spi", feature = "dma"))]
-    let mut wait_timer = p.wait_timer;
     #[cfg(feature = "spi")]
     if let Some(result) = spi_proof::prove(&mut spi, &mut wait_timer, "P1BOOT") {
         spi_proof::log_result("boot", &result);
@@ -275,7 +275,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             adc.as_mut(),
             #[cfg(feature = "spi")]
             &mut spi,
-            #[cfg(feature = "spi")]
+            #[cfg(any(feature = "adc", feature = "spi"))]
             &mut wait_timer,
         );
     };
@@ -302,7 +302,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             adc.as_mut(),
             #[cfg(feature = "spi")]
             &mut spi,
-            #[cfg(feature = "spi")]
+            #[cfg(any(feature = "adc", feature = "spi"))]
             &mut wait_timer,
         );
         if sequence == seen {
@@ -560,13 +560,13 @@ fn proc1_request(request: u32) -> bool {
     matches!(request, ADC_REQUEST | SPI_REQUEST)
 }
 fn serve_proc1(
-    #[cfg(feature = "adc")] adc: Option<&mut rp1_hal::adc::Adc>,
+    #[cfg(feature = "adc")] adc: Option<&mut rp1::Adc>,
     #[cfg(feature = "spi")] spi: &mut Option<spi_proof::Parts>,
-    #[cfg(feature = "spi")] wait: &mut rp1_hal::timer::WaitTimer,
+    #[cfg(any(feature = "adc", feature = "spi"))] wait: &mut rp1_hal::timer::WaitTimer,
 ) {
     match proof_pending() {
         #[cfg(feature = "adc")]
-        ADC_REQUEST => adc_proof::run(adc, ADC_REQUEST),
+        ADC_REQUEST => adc_proof::run(adc, wait, ADC_REQUEST),
         #[cfg(feature = "spi")]
         SPI_REQUEST => spi_proof::run(spi, wait, SPI_REQUEST),
         request if proc1_request(request) => proof_reply(request, false),

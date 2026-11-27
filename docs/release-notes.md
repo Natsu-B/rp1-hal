@@ -30,8 +30,6 @@ STATIC
   and `Rx::enable_interrupt` enable the RX threshold, timeout and error interrupts.
   Acknowledge receive error interrupts with `clear_interrupt`. Use `Uart::join` before
   releasing or cancelling the UART. The pin route traits are `TxPin` and `RxPin`.
-- Enable `rp1-hal/eh02-adc` for the embedded-hal 0.2 `OneShot` ADC adapter or migrate to
-  `Adc::read`.
 - Declare `dma = { channels = [0, 2], pool = { slots = 2, bytes = 1024 } }` to get
   `p.dma_pool` and the selected channels. Use
   `ch.copy_polling(&mut src, &mut dst, duration)` with borrowed pool leases.
@@ -179,7 +177,6 @@ supported controllers. The native transfer handle borrows both buffers.
 With `eh-nb`, the native driver also implements
 `embedded_hal_nb::spi::FullDuplex`.
 
-
 ## I2C1 synchronous waits
 
 **STATIC · 2026-11-28.** Declare `i2c1` and `wait_timer` on the same core
@@ -200,3 +197,23 @@ for the generated `rp1::I2c1Parts`. Initialize with
 | I2C1 with the generated handler | IRQ/WFE, explicit polling |
 | I2C0, unmanaged I2C1, I2C2–3 | Explicit polling |
 | I2C4–6 | No bank-0 route |
+
+## ADC0 one-shot waits
+
+**STATIC · 2026-11-28.** A same-core `wait_timer` and `adc = {}` generate
+the IRQ52 handler, `rp1::AdcParts` and `rp1::Adc`. Declare
+`custom_adc_handler = true` to retain `p.irq.ADC_FIFO` and link a raw handler.
+When `wait_timer` is conditional, its feature controls the parts type and
+raw IRQ field. The temperature sensor is powered during setup.
+
+| Before | After |
+|---|---|
+| `adc.read(TEMPERATURE)?` | `adc.blocking(&mut p.wait_timer).read(TEMPERATURE)?` |
+| `adc.read_temperature()?` | `adc.blocking(&mut p.wait_timer).read_temperature()?`, or `adc.read_temperature_polling()?` for an explicit busy wait |
+| `adc.read(ain)?` | `adc.blocking(&mut p.wait_timer).read(&ain)?` using a typed board input, or `adc.read_polling(&ain)?` |
+| `let mut input = Input::<4>` and a completing `OneShot::read` | `let mut input = TEMPERATURE` and handle `WouldBlock` with `eh02` or `eh02-adc` |
+| `adc.free()` | `adc.try_free()`, with ownership retained on error. If needed, use `adc.try_cancel()` until recovery succeeds. |
+| `token.init(clocks)?` converting to `adc::Error` | Preserve `adc::InitFailure` or its recovery owner in the caller's error. |
+
+The synchronous IRQ and explicit polling methods reject handler or
+masked calls. Use `try_start` and `try_sample` for immediate I/O.

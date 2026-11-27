@@ -43,7 +43,8 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | `wait_timer = "ALARMn"` | `ProcNResources.wait_timer: WaitTimer` と自動 TIMER_n ハンドラ |
 | `uart1` と同じコアの `wait_timer` | `rp1::Uart1Parts` が線を所有し、ISRAM の UART1 ハンドラを生成 |
 | raw `uart1`、`uart2`〜`uart4` | `UARTn: Line<{41+n}>` |
-| `adc` | `ADC_FIFO: Line<52>` |
+| `adc` と同じコアの `wait_timer` | `rp1::AdcParts` が線を所有し、ISRAM の ADC_FIFO ハンドラを生成 |
+| raw `adc` | `ADC_FIFO: Line<52>` |
 
 - 表は `rp1_build::board::IRQ_VERIFIED`。生成と ELF 検査の両方がこれを使う。
 - `cargo rp1 check` / `build` は、既定ハンドラ以外のベクタを note の OWNERSHIP と照合する。所有しない線や
@@ -101,7 +102,8 @@ thread mode 専用。ISR では `try_read_word`、`try_write_word`、`try_start_
 | TIMER | `Alarm::enable_interrupt`、`clear_interrupt` | |
 | raw UART | `enable_rx_interrupt` / `enable_tx_interrupt`、`interrupt_status` | UART1 の生成ハンドラは待機に属さない asserted 源をマスクする |
 | I2C / raw SPI | `enable_interrupt(mask)`、`interrupt_status`、`clear_interrupt` | 下の `+0x108` を開ける |
-| PWM / ADC | ドライバに API は無い（初期化で INTE = 0） | 線は所有できる。源を開けるのは PAC の生書き込み（ドライバ化は後回し） |
+| ADC | `adc.blocking(&mut p.wait_timer)` が FIFO の源を管理 | `custom_adc_handler = true` で raw の線とアプリのハンドラを使う |
+| PWM | ドライバに API は無い（初期化で INTE = 0） | 源を開けるのは PAC の生書き込み |
 
 I2C と SPI の割り込みは、コントローラのマスクの先にある RP1 の出力イネーブル（ブロックの `+0x108`、
 `IRQ_EN` = bit 0）を通る。閉じていると、マスクを外した源が立っていても NVIC に届かない（HW）。

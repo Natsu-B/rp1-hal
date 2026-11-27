@@ -1,15 +1,12 @@
-//! Proc0 declaration: `adc = {}`.
+//! Proc0 declaration: `adc = {}` and `wait_timer`.
 //! No wiring. Sample the internal temperature input with the native 12-bit one-shot API.
 
 use crate::rp1; // log! resolves rp1::log in this scope.
-use rp1_hal::{
-    adc::{TEMPERATURE, Token},
-    clocks::Clocks,
-    log,
-};
+use rp1_hal::{adc::TEMPERATURE, clocks::Clocks, log, timer::WaitTimer};
 
-pub fn run(adc: Token, clocks: &Clocks) -> Result<(), &'static str> {
+pub fn run(adc: rp1::AdcParts, clocks: &Clocks, wait: &mut WaitTimer) -> Result<(), &'static str> {
     let mut adc = adc.init(clocks).map_err(|_| "ADC init failed")?;
+    let mut adc = adc.blocking(wait);
     let mut raw = [0; 3];
     for sample in &mut raw {
         *sample = adc.read(TEMPERATURE).map_err(|_| "ADC conversion failed")?;

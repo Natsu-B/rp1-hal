@@ -1,26 +1,36 @@
-//! RP1 ADC: 12-bit one-shot conversions of the four external inputs and the temperature sensor,
-//! by polling (no FIFO, DMA or interrupt).
+//! RP1 ADC, with 12-bit one-shot conversions of four external inputs and the temperature sensor.
 //!
-//! Register contract (CS, RESULT; rp1-pac `adc`) and sequence are those of the Linux RP1 ADC
-//! hwmon driver (STATIC): enable with the sticky error cleared, select AINSEL through the CLR/SET
-//! aliases, START_ONCE, wait READY, reject ERR, read RESULT. The functional clock is clk_adc =
-//! XOSC / 1 = 50 MHz, the rate Linux asks for and the one the SCMI table lists for `adc`
-//! ([`crate::scmi::RP1_CLOCKS`]); with `ADC` declared, the SCMI server holds that clock (reports
-//! it, never changes or stops it) and the overlay disables Linux's `rp1_adc`.
+//! | Instance | Synchronous waits | Immediate |
+//! |---|---|---|
+//! | ADC with a generated IRQ capability | [`Adc::blocking`] (IRQ52 + alarm + WFE), or explicit polling | [`Adc::try_start`] / [`Adc::try_sample`] |
+//! | ADC without a same-core wait timer, or with `custom_adc_handler` | Explicit [`Adc::read_polling`] | [`Adc::try_start`] / [`Adc::try_sample`] |
 //!
-//! Which RP1 ADC inputs are wired to what is board-specific; the CM5 IO board's wiring is not
-//! documented here, so only the temperature sensor has a known meaning.
+//! The CS sequence follows the Linux RP1 ADC hwmon driver (STATIC). Each conversion
+//! uses the FIFO at threshold one with DMA and round-robin disabled. The functional
+//! clock is clk_adc = XOSC / 1 = 50 MHz, the rate Linux asks for and the one the
+//! SCMI table lists for ADC ([`crate::scmi::RP1_CLOCKS`]). With `adc` declared, SCMI
+//! holds that clock and the overlay disables Linux's `rp1_adc`.
+//!
+//! External AIN routes depend on the board. The CM5 declaration provides the
+//! internal temperature sensor. A board with verified routes can issue external
+//! [`Input`] tokens.
 use crate::{
     linux_blocks::Mmio,
-    scmi::{Kind, RP1_CLOCKS, Round, id},
+    scmi::{Kind, RP1_CLOCKS, Registers, Round, id},
+    timer::{self, Deadline, Duration, Timer},
 };
-use crate::{read, write};
+use rp1_rt::interrupt::ThreadGuard;
+
+mod irq_wait;
+pub use irq_wait::{__on_interrupt, Blocking, Irq};
 
 const BASE: usize = 0x400c_8000;
 const CS: usize = BASE;
-const RESULT: usize = BASE + 0x4;
+const FCS: usize = BASE + 0x08;
+const FIFO: usize = BASE + 0x0c;
 const INTE: usize = BASE + 0x18;
-const SET: usize = 0x2000;
+const INTF: usize = BASE + 0x1c;
+const INTS: usize = BASE + 0x20;
 const CLR: usize = 0x3000;
 
 const CS_EN: u32 = 1 << 0;
@@ -30,8 +40,16 @@ const CS_START_MANY: u32 = 1 << 3;
 const CS_READY: u32 = 1 << 8;
 const CS_ERR: u32 = 1 << 9;
 const CS_ERR_STICKY: u32 = 1 << 10;
-const CS_AINSEL: u32 = 0x7 << 12;
-const CS_RROBIN: u32 = 0x1f << 16;
+const CS_POWERED: u32 = CS_EN | CS_TS_EN;
+const CS_IDLE_MASK: u32 = CS_READY | CS_START_ONCE | CS_START_MANY;
+const FCS_EMPTY: u32 = 1 << 8;
+const FCS_UNDER: u32 = 1 << 10;
+const FCS_OVER: u32 = 1 << 11;
+const FCS_FLAGS: u32 = FCS_UNDER | FCS_OVER;
+const FCS_LEVEL: u32 = 0xf << 16;
+const FCS_ONE_SAMPLE: u32 = (1 << 24) | (1 << 2) | 1; // THRESH=1, ERR, EN
+const FIFO_ERR: u32 = 1 << 15;
+const FIFO_DEPTH: usize = 16;
 const RESULT_MASK: u32 = 0xfff;
 
 /// RESETS CTRL0 bit 0 (HW: releasing it from Linux made the ADC convert). Its DONE bit stays 0
@@ -39,82 +57,165 @@ const RESULT_MASK: u32 = 0xfff;
 const RESETS_CLR0: usize = 0x4001_4000 + CLR;
 const RESET_BIT: u32 = 1;
 
-/// A conversion takes 96 clk_adc cycles (≈ 1.9 µs at 50 MHz, DOC RP2040-class ADC); this bound
-/// only catches a stopped clock or block.
-const TIMEOUT_US: u32 = 1_000;
+/// A conversion takes 96 clk_adc cycles (≈ 1.9 µs at 50 MHz, DOC RP2040-class ADC).
+/// The default includes peripheral access and IRQ service.
+const TIMEOUT: Duration = Duration::from_ticks(1_000);
 
 /// Full-scale reference of the rpi-cm5 board (`vref-supply = <&rp1_vdd_3v3>`, DOC stock DT).
 pub const VREF_MV: u32 = 3300;
-/// AINSEL of the temperature sensor.
-pub const TEMPERATURE: u8 = 4;
+/// Internal temperature input. The sensor is powered during ADC setup.
+pub const TEMPERATURE: TemperatureSensor = Input { _private: () };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// The clock tree is not the one [`crate::clocks::Clocks`] was created from, or clk_adc
-    /// could not be started.
-    Precondition,
-    /// READY did not come up within 1 ms.
-    Timeout,
-    /// The ADC flagged the conversion (CS.ERR).
-    Conversion,
-    /// No such input (AINSEL 0..=4).
-    Invalid,
+/// Board-issued ADC route for external AIN 0–3, or the internal temperature input (4).
+pub struct Input<const N: u8> {
+    _private: (),
 }
+/// Legacy and native channel type for the internal temperature sensor.
+pub type TemperatureSensor = Input<4>;
 
-/// Ownership of the ADC block, issued by the generated resources for `adc = {}`.
-pub struct Token {
-    _private: core::marker::PhantomData<core::cell::Cell<()>>,
-}
-/// `?` on a failed [`Token::init`].
-impl<R> From<crate::InitError<R, Error>> for Error {
-    fn from(e: crate::InitError<R, Error>) -> Self {
-        e.error
+impl<const N: u8> Input<N> {
+    /// # Safety
+    /// Board or lab setup only. N must name an external AIN route owned by the caller.
+    /// The board must keep the pin within the ADC electrical limits.
+    pub const unsafe fn __new() -> Self {
+        const { assert!(N < 4) };
+        Self { _private: () }
     }
 }
+
+mod sealed {
+    pub trait Channel {
+        const SELECT: u8;
+    }
+}
+
+/// A typed ADC channel. Pass [`TEMPERATURE`] or a borrow of a board-issued [`Input`].
+pub trait Channel: sealed::Channel {}
+
+impl<const N: u8> sealed::Channel for Input<N> {
+    const SELECT: u8 = N;
+}
+impl<const N: u8> Channel for Input<N> {}
+impl<C: Channel> sealed::Channel for &C {
+    const SELECT: u8 = C::SELECT;
+}
+impl<C: Channel> Channel for &C {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Error {
+    /// The clock tree changed or clk_adc could not be started.
+    Precondition,
+    /// The operation did not complete by the deadline.
+    Timeout,
+    /// The deadline is outside the alarm's supported horizon.
+    InvalidDeadline,
+    /// A synchronous call was made outside thread mode.
+    WrongContext,
+    /// Interrupts are masked.
+    Masked,
+    /// The dedicated ADC interrupt is unavailable.
+    IrqUnavailable,
+    /// The wait alarm could not be disarmed or acknowledged.
+    AlarmUnavailable,
+    /// Another conversion owns the ADC.
+    Busy,
+    /// No conversion is pending for `try_sample`.
+    NoConversion,
+    /// The ADC flagged the conversion (FIFO.ERR or CS.ERR).
+    Conversion,
+    /// The ADC FIFO overflowed.
+    Overrun,
+    /// The one-shot FIFO contained an unexpected number of samples or underflowed.
+    FifoState,
+    /// Call `try_cancel` again to confirm READY and recover the FIFO.
+    Recovering,
+}
+
+impl From<timer::Error> for Error {
+    fn from(error: timer::Error) -> Self {
+        match error {
+            timer::Error::Timeout => Self::Timeout,
+            timer::Error::InvalidDeadline => Self::InvalidDeadline,
+            timer::Error::WrongContext => Self::WrongContext,
+            timer::Error::Masked => Self::Masked,
+            timer::Error::IrqUnavailable => Self::IrqUnavailable,
+            timer::Error::AlarmUnavailable => Self::AlarmUnavailable,
+        }
+    }
+}
+
+/// Ownership of the ADC block and, when generated, its IRQ capability.
+pub struct Parts<I = ()> {
+    _irq: I,
+    _not_sync: core::marker::PhantomData<core::cell::Cell<()>>,
+}
+
+/// ADC ownership without a managed IRQ.
+pub type Token = Parts;
 
 impl Token {
     /// # Safety
-    /// Generated resources only: sole owner of the ADC, its reset and its clock generator, with
+    /// Generated resources only: sole owner of ADC, its reset and its clock generator, with
     /// Linux's `rp1_adc` disabled and the SCMI server holding clk_adc.
     pub const unsafe fn new() -> Self {
         Self {
-            _private: core::marker::PhantomData,
-        }
-    }
-
-    /// Starts clk_adc (XOSC / 1), releases the ADC reset, powers the ADC up with the interrupt
-    /// off and the sticky error cleared, and waits for READY. `clocks` proves the cold bring-up
-    /// and the clock authority ran first (the Linux-block bring-up then leaves clk_adc alone).
-    /// On error the token comes back in [`InitError`](crate::InitError); the clock generator and
-    /// the reset may already have been started:
-    ///
-    /// ```no_run
-    /// # use rp1_hal::{adc::{Adc, Error, Token}, clocks::Clocks};
-    /// fn bring_up(token: Token, clocks: &Clocks) -> Result<Adc, Error> {
-    ///     // Once more, then the error through `?`.
-    ///     match token.init(clocks) {
-    ///         Ok(adc) => Ok(adc),
-    ///         Err(e) => Ok(e.into_parts().init(clocks)?),
-    ///     }
-    /// }
-    /// ```
-    pub fn init(
-        self,
-        clocks: &crate::clocks::Clocks,
-    ) -> Result<Adc, crate::InitError<Token, Error>> {
-        match start(clocks) {
-            Ok(clk_hz) => Ok(Adc {
-                _token: self,
-                clk_hz,
-                temperature_sensor: false,
-            }),
-            Err(error) => Err(crate::InitError::new(error, self)),
+            _irq: (),
+            _not_sync: core::marker::PhantomData,
         }
     }
 }
 
-/// The register part of [`Token::init`]; returns clk_adc.
-fn start(clocks: &crate::clocks::Clocks) -> Result<u32, Error> {
+/// A setup error retaining ADC ownership until recovery is confirmed.
+pub type InitFailure<I> = crate::InitError<Parts<I>, Error, crate::Recovery<Parts<I>>>;
+
+impl<I> Parts<I> {
+    /// Starts clk_adc (XOSC / 1), releases reset, powers the temperature sensor,
+    /// and confirms READY and a clean FIFO. The clock and reset stay configured
+    /// if setup fails. [`InitFailure::try_recover`] checks whether a retry is safe.
+    pub fn init(self, clocks: &crate::clocks::Clocks) -> Result<Adc<I>, InitFailure<I>> {
+        let thread = ThreadGuard::new().map_err(timer::Error::from);
+        if let Err(error) = thread {
+            return Err(crate::InitError::new(error.into(), self));
+        }
+        let clk_hz = match start_clock(clocks) {
+            Ok(hz) => hz,
+            Err(error) => return Err(crate::InitError::new(error, self)),
+        };
+
+        let mut io = Mmio;
+        let timer = Timer::new();
+        let start = timer.now_32();
+        io.write(RESETS_CLR0, RESET_BIT);
+        io.write(INTE, 0);
+        io.write(INTF, 0);
+        io.write(CS, CS_POWERED | CS_ERR_STICKY);
+        while !ready(io.read(CS)) {
+            if (timer.now_32() - start).ticks() > TIMEOUT.ticks() {
+                return Err(crate::InitError::recovering(Error::Timeout, self));
+            }
+        }
+        if !clean(&mut io) {
+            return Err(crate::InitError::recovering(Error::Recovering, self));
+        }
+        Ok(Adc {
+            parts: self,
+            clk_hz,
+            state: State::Idle,
+        })
+    }
+}
+
+impl<I> InitFailure<I> {
+    /// Try to return the parts from failed setup, retaining them if READY or FIFO
+    /// cleanup cannot yet be confirmed.
+    pub fn try_recover(self) -> Result<Parts<I>, Self> {
+        self.recover(|| clean(&mut Mmio))
+    }
+}
+
+/// The clock step of [`Parts::init`]; returns clk_adc.
+fn start_clock(clocks: &crate::clocks::Clocks) -> Result<u32, Error> {
     if !clocks.still_current() {
         return Err(Error::Precondition);
     }
@@ -138,85 +239,207 @@ fn start(clocks: &crate::clocks::Clocks) -> Result<u32, Error> {
     {
         return Err(Error::Precondition);
     }
-    write(RESETS_CLR0, RESET_BIT);
-    write(INTE, 0);
-    write(CS, CS_EN | CS_ERR_STICKY);
-    crate::poll(CS, CS_READY, CS_READY).map_err(|_| Error::Timeout)?;
     Ok(hz)
 }
 
-/// A powered ADC doing one conversion at a time.
-pub struct Adc {
-    _token: Token,
-    clk_hz: u32,
-    temperature_sensor: bool,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum State {
+    Idle,
+    Converting(u8),
+    Recovering,
 }
 
-impl Adc {
-    /// clk_adc as started by [`Token::init`].
+/// A powered ADC doing one conversion at a time.
+pub struct Adc<I = ()> {
+    parts: Parts<I>,
+    clk_hz: u32,
+    state: State,
+}
+
+impl<I> Adc<I> {
+    /// clk_adc as started by [`Parts::init`].
     pub const fn clock(&self) -> fugit::HertzU32 {
         fugit::HertzU32::from_raw(self.clk_hz)
     }
 
-    /// Powers the temperature sensor (CS.TS_EN) on or off. [`Adc::read`] of
-    /// [`TEMPERATURE`] turns it on by itself, as Linux does, and leaves it on.
-    pub fn set_temperature_sensor(&mut self, on: bool) {
-        write(if on { CS + SET } else { CS + CLR }, CS_TS_EN);
-        self.temperature_sensor = on;
+    /// Start one conversion without waiting. A pending conversion keeps its channel.
+    pub fn try_start<C: Channel>(&mut self, _channel: C) -> Result<(), Error> {
+        self.state.start(&mut Mmio, C::SELECT)
     }
 
-    /// One conversion of input `ain` (0..=3 external, [`TEMPERATURE`]): the 12-bit result.
-    pub fn read(&mut self, ain: u8) -> Result<u16, Error> {
-        if ain > TEMPERATURE {
-            return Err(Error::Invalid);
-        }
-        if ain == TEMPERATURE && !self.temperature_sensor {
-            self.set_temperature_sensor(true);
-        }
-        write(CS + CLR, CS_AINSEL | CS_START_MANY | CS_RROBIN);
-        write(CS + SET, u32::from(ain) << 12);
-        wait_ready()?;
-        write(CS + SET, CS_START_ONCE);
-        let cs = wait_ready()?;
-        if cs & CS_ERR != 0 {
-            return Err(Error::Conversion);
-        }
-        Ok((read(RESULT) & RESULT_MASK) as u16)
+    /// Try to take the pending result. `Ok(None)` means it is still converting.
+    pub fn try_sample(&mut self) -> Result<Option<u16>, Error> {
+        self.state.sample(&mut Mmio)
     }
 
-    /// One conversion of the temperature sensor, in millidegrees Celsius
-    /// ([`millivolts_to_millicelsius`] of the result scaled by [`VREF_MV`]).
-    pub fn read_temperature(&mut self) -> Result<i32, Error> {
-        let raw = self.read(TEMPERATURE)?;
-        Ok(millivolts_to_millicelsius(raw_to_millivolts(raw, VREF_MV)))
+    /// Discard the current conversion. One-shot hardware may still finish
+    /// after cancel. Retry this method if the ADC is recovering.
+    pub fn try_cancel(&mut self) -> Result<(), Error> {
+        self.state.cancel(&mut Mmio)
     }
 
-    /// Writes CS = 0 (powers the ADC down) without waiting and gives the block back; the clock
-    /// and reset stay as they are. After a [`Adc::read`] that returned [`Error::Timeout`] a
-    /// conversion may still be running: nothing cancels it, and whether the write ends it
-    /// is not measured (HW: not verified). It cannot fail.
-    pub fn free(self) -> Token {
-        write(CS, 0);
-        self._token
+    /// Confirm idle, power down and return the parts. A failed release keeps
+    /// the driver, including its IRQ capability.
+    pub fn try_free(mut self) -> Result<Parts<I>, crate::FreeError<Self, Error>> {
+        if let Err(error) = self.state.idle().and_then(|()| self.try_cancel()) {
+            return Err(crate::FreeError::new(self, error));
+        }
+        crate::write(CS, 0);
+        Ok(self.parts)
+    }
+
+    /// Explicit thread-only polling with the default 1 ms timeout.
+    pub fn read_polling(&mut self, channel: impl Channel) -> Result<u16, Error> {
+        self.read_polling_until(channel, Deadline::after(TIMEOUT)?)
+    }
+
+    /// Explicit polling under an absolute deadline. Handler and masked calls fail.
+    pub fn read_polling_until<C: Channel>(
+        &mut self,
+        _channel: C,
+        end: Deadline,
+    ) -> Result<u16, Error> {
+        ThreadGuard::new().map_err(timer::Error::from)?;
+        let timer = Timer::new();
+        end.check(timer.now())?;
+        let mut io = Mmio;
+        self.state.prepare(&mut io)?;
+        end.check(timer.now())?;
+        self.state.launch(&mut io, C::SELECT);
+        loop {
+            if let Some(sample) = self.state.sample(&mut io)? {
+                return Ok(sample);
+            }
+            if timer.now() >= end.instant() {
+                if let Some(sample) = self.state.sample(&mut io)? {
+                    return Ok(sample);
+                }
+                let _ = self.state.cancel(&mut io);
+                return Err(Error::Timeout);
+            }
+        }
+    }
+
+    /// Explicitly poll one temperature conversion, in millidegrees Celsius.
+    pub fn read_temperature_polling(&mut self) -> Result<i32, Error> {
+        self.read_polling(TEMPERATURE).map(temperature)
     }
 }
 
-fn wait_ready() -> Result<u32, Error> {
-    let start = read(crate::TIMER_RAWL);
-    loop {
-        let cs = read(CS);
-        if cs & CS_READY != 0 {
-            return Ok(cs);
-        }
-        if read(crate::TIMER_RAWL).wrapping_sub(start) > TIMEOUT_US {
-            let cs = read(CS);
-            return if cs & CS_READY != 0 {
-                Ok(cs)
-            } else {
-                Err(Error::Timeout)
-            };
+impl State {
+    fn idle(self) -> Result<(), Error> {
+        match self {
+            Self::Idle => Ok(()),
+            Self::Converting(_) => Err(Error::Busy),
+            Self::Recovering => Err(Error::Recovering),
         }
     }
+
+    fn prepare(&mut self, io: &mut impl Registers) -> Result<(), Error> {
+        self.idle()?;
+        let cs = io.read(CS);
+        if !ready(cs) {
+            *self = Self::Recovering;
+            return Err(Error::Recovering);
+        }
+        let fcs = io.read(FCS);
+        if fcs & FCS_OVER != 0 {
+            return self.fail(io, Error::Overrun);
+        }
+        if fcs & (FCS_LEVEL | FCS_UNDER) != 0 || fcs & FCS_EMPTY == 0 {
+            // Retire an old FIFO entry before writing START_ONCE for this channel.
+            self.cancel(io)?;
+        }
+        Ok(())
+    }
+
+    fn launch(&mut self, io: &mut impl Registers, channel: u8) {
+        *self = Self::Converting(channel);
+        // The full known configuration clears START_MANY and RROBIN. ERR_STICKY is W1C.
+        io.write(
+            CS,
+            CS_POWERED | CS_ERR_STICKY | CS_START_ONCE | (u32::from(channel) << 12),
+        );
+    }
+
+    fn start(&mut self, io: &mut impl Registers, channel: u8) -> Result<(), Error> {
+        self.prepare(io)?;
+        self.launch(io, channel);
+        Ok(())
+    }
+
+    fn sample(&mut self, io: &mut impl Registers) -> Result<Option<u16>, Error> {
+        match self {
+            Self::Idle => return Err(Error::NoConversion),
+            Self::Recovering => return Err(Error::Recovering),
+            Self::Converting(_) => {}
+        }
+        let fcs = io.read(FCS);
+        if fcs & FCS_OVER != 0 {
+            return self.fail(io, Error::Overrun);
+        }
+        if fcs & FCS_UNDER != 0 {
+            return self.fail(io, Error::FifoState);
+        }
+        let cs = io.read(CS);
+        if !ready(cs) || fcs & FCS_EMPTY != 0 {
+            return Ok(None);
+        }
+        if fcs & FCS_LEVEL != 1 << 16 {
+            return self.fail(io, Error::FifoState);
+        }
+        let value = io.read(FIFO);
+        // READY and one FIFO word identify this generation. A faulty conversion still
+        // consumes that word and clears the sticky flag before another start.
+        if cs & (CS_ERR | CS_ERR_STICKY) != 0 || value & FIFO_ERR != 0 {
+            return self.fail(io, Error::Conversion);
+        }
+        *self = Self::Idle;
+        Ok(Some((value & RESULT_MASK) as u16))
+    }
+
+    fn fail<T>(&mut self, io: &mut impl Registers, error: Error) -> Result<T, Error> {
+        let _ = self.cancel(io);
+        Err(error)
+    }
+
+    fn cancel(&mut self, io: &mut impl Registers) -> Result<(), Error> {
+        *self = Self::Recovering;
+        if !clean(io) {
+            return Err(Error::Recovering);
+        }
+        *self = Self::Idle;
+        Ok(())
+    }
+}
+
+fn ready(cs: u32) -> bool {
+    cs & (CS_EN | CS_IDLE_MASK) == CS_EN | CS_READY
+}
+
+fn clean(io: &mut impl Registers) -> bool {
+    io.write_relaxed(INTE, 0);
+    io.write_relaxed(INTF, 0);
+    // START_ONCE can't be retracted. Leave the FIFO receiving until the in-flight
+    // conversion has finished, so a late sample cannot become the next result.
+    if !ready(io.read(CS)) {
+        return false;
+    }
+    for _ in 0..FIFO_DEPTH {
+        if io.read(FCS) & FCS_EMPTY != 0 {
+            break;
+        }
+        io.read(FIFO);
+    }
+    io.write_relaxed(FCS, FCS_ONE_SAMPLE | FCS_FLAGS);
+    io.write_relaxed(CS, CS_POWERED | CS_ERR_STICKY);
+    let fcs = io.read(FCS);
+    fcs & (FCS_LEVEL | FCS_FLAGS | FCS_EMPTY) == FCS_EMPTY
+        && io.read(CS) & (CS_EN | CS_IDLE_MASK | CS_ERR_STICKY) == CS_EN | CS_READY
+}
+
+fn temperature(raw: u16) -> i32 {
+    millivolts_to_millicelsius(raw_to_millivolts(raw, VREF_MV))
 }
 
 /// `raw` (0..=0xfff full scale) as millivolts of `vref_mv`, rounded down as Linux does.
@@ -232,73 +455,33 @@ pub const fn millivolts_to_millicelsius(mv: u32) -> i32 {
     27_000 - ((num + half) / 1721) as i32
 }
 
-/// AINSEL as a type, for the embedded-hal 0.2 `OneShot` API (embedded-hal 1.0 has no ADC trait).
 #[cfg(feature = "eh02-adc")]
-pub struct Input<const N: u8>;
-/// The temperature sensor input.
-#[cfg(feature = "eh02-adc")]
-pub type TemperatureSensor = Input<TEMPERATURE>;
-#[cfg(feature = "eh02-adc")]
-impl<const N: u8> embedded_hal_0_2::adc::Channel<Adc> for Input<N> {
+impl<I, const N: u8> embedded_hal_0_2::adc::Channel<Adc<I>> for Input<N> {
     type ID = u8;
+
     fn channel() -> u8 {
-        const { assert!(N <= TEMPERATURE) };
         N
     }
 }
+
 #[cfg(feature = "eh02-adc")]
-impl<P: embedded_hal_0_2::adc::Channel<Adc, ID = u8>> embedded_hal_0_2::adc::OneShot<Adc, u16, P>
-    for Adc
-{
+impl<I, const N: u8> embedded_hal_0_2::adc::OneShot<Adc<I>, u16, Input<N>> for Adc<I> {
     type Error = Error;
-    /// Blocking: the conversion is complete when this returns.
-    fn read(&mut self, _input: &mut P) -> nb::Result<u16, Error> {
-        Adc::read(self, P::channel()).map_err(nb::Error::Other)
+
+    /// Starts on the first call and returns `WouldBlock` until the result is ready.
+    /// A different channel while a conversion is pending returns [`Error::Busy`].
+    fn read(&mut self, input: &mut Input<N>) -> nb::Result<u16, Error> {
+        match self.state {
+            State::Converting(channel) if channel == N => {
+                self.try_sample()?.ok_or(nb::Error::WouldBlock)
+            }
+            _ => {
+                self.try_start(&*input)?;
+                Err(nb::Error::WouldBlock)
+            }
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn offsets_match_the_pac() {
-        assert_eq!(
-            pac_offsets!(adc: cs, result, inte).map(|offset| BASE + offset),
-            [CS, RESULT, INTE]
-        );
-        assert_eq!(crate::pac::ADC::PTR as usize, BASE);
-    }
-
-    #[test]
-    fn clk_adc_is_xosc_div_1() {
-        let Kind::Linux(clk) = RP1_CLOCKS[id::ADC as usize].kind else {
-            panic!()
-        };
-        assert_eq!(
-            clk.choose(crate::clocks::XOSC_HZ, Round::Down),
-            Some((0, 1, 50_000_000))
-        );
-    }
-
-    #[test]
-    fn conversions_follow_linux() {
-        assert_eq!(raw_to_millivolts(0, VREF_MV), 0);
-        assert_eq!(raw_to_millivolts(0xfff, VREF_MV), 3300);
-        assert_eq!(raw_to_millivolts(876, VREF_MV), 705);
-        // 0.706 V is 27 °C; 1.721 mV per degree, falling with temperature.
-        assert_eq!(millivolts_to_millicelsius(706), 27_000);
-        assert_eq!(millivolts_to_millicelsius(706 - 1721 / 100), 36_878);
-        assert_eq!(millivolts_to_millicelsius(689), 36_878);
-        assert_eq!(millivolts_to_millicelsius(723), 17_122);
-        assert_eq!(millivolts_to_millicelsius(0), 437_227);
-    }
-
-    #[cfg(feature = "eh02-adc")]
-    #[test]
-    fn input_ids() {
-        use embedded_hal_0_2::adc::Channel;
-        assert_eq!(<Input<0> as Channel<Adc>>::channel(), 0);
-        assert_eq!(<TemperatureSensor as Channel<Adc>>::channel(), 4);
-    }
-}
+mod tests;

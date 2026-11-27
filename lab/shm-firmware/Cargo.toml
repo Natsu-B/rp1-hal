@@ -12,7 +12,7 @@ bench = false
 [features]
 default = ["i2c", "adc", "spi"]
 i2c = ["dep:embedded-hal"]
-adc = []
+adc = ["proc1-wait"]
 spi = ["dep:embedded-hal", "proc1-wait"]
 proc1-wait = []
 sram-profile = []
@@ -49,6 +49,7 @@ i2c1 = { sda = 2, scl = 3 }
 [package.metadata.rp1.proc1]
 gpio = [8] # SPI0 chip select
 doorbell = 27
+# ADC, SPI and DMA proof profiles share this proc1 alarm. It enables generated ADC/SPI IRQs.
 wait_timer = { alarm = "ALARM1", feature = "proc1-wait" }
 adc = {}
 spi0 = { sck = 11, mosi = 10, miso = 9 }

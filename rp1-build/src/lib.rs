@@ -636,6 +636,7 @@ fn resources(
 
 /// Field type, initializer and bundled pins of an instance's resource.
 /// UART, SPI and I²C also emit aliases for the required pin tuple and driver in `rp1`.
+/// Managed ADC emits an alias for its pinless parts and initialized driver.
 /// UART CTS/RTS stay in `pins` (rp1-hal has no flow control).
 fn instance_resource(
     source: &mut String,
@@ -666,8 +667,23 @@ fn instance_resource(
         }
         Instance::Dma(_) => unreachable!("DMA has a declaration-specific channel set"),
         Instance::Adc {} => {
-            let ty = "::rp1_hal::adc::Token";
-            return Ok((ty.into(), format!("unsafe {{ {ty}::new() }}"), Vec::new()));
+            let Some((line, core)) = managed else {
+                let ty = "::rp1_hal::adc::Token";
+                return Ok((ty.into(), format!("unsafe {{ {ty}::new() }}"), Vec::new()));
+            };
+            let module = "::rp1_hal::adc";
+            let capability = format!("{module}::Irq<{n}, {core}>");
+            writeln!(
+                source,
+                "/// Declared ADC parts including its FIFO interrupt capability.\npub type AdcParts = {module}::Parts<{capability}>;\n\
+                 /// Initialized driver for the declared ADC.\npub type Adc = {module}::Adc<{capability}>;"
+            )?;
+            let irq = line.irq;
+            let source_type = line.owner.source_type();
+            let init = format!(
+                "unsafe {{ AdcParts::__new(::rp1_rt::interrupt::Binding::<::rp1_rt::interrupt::{source_type}, {irq}, {core}>::new()) }}"
+            );
+            return Ok(("AdcParts".into(), init, Vec::new()));
         }
     };
     let pins = signals
@@ -1060,6 +1076,54 @@ mod tests {
                     custom_irq_assertions(&decl)
                         .contains(&format!("{symbol} != __rp1_default_irq")),
                     custom
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn adc_fifo_wait_handler_uses_the_verified_line_and_same_core_timer() {
+        for core in 0..2 {
+            let adc = format!("schema=2\n[proc{core}]\nadc={{}}");
+            let managed = format!("{adc}\nwait_timer='ALARM1'");
+            let other_core = format!("{adc}\n[proc{}]\nwait_timer='ALARM1'", 1 - core);
+            let custom = format!("{managed}\ncustom_adc_handler=true");
+            let render = |manifest: &str| {
+                let d: metadata::Declaration = toml::from_str(manifest).unwrap();
+                d.validate().unwrap();
+                (
+                    resources(&d, &[], &d.shm_layout().unwrap()).unwrap(),
+                    custom_irq_assertions(&d),
+                )
+            };
+
+            let (source, _) = render(&managed);
+            let symbol = format!("__rp1_p{core}_ADC_FIFO");
+            let block = rp1_proto::BlockId::Adc as u16;
+            assert!(source.contains(&format!(".isram.text.{symbol}")));
+            assert!(source.contains(&format!("adc::__on_interrupt::<0, {core}>()")));
+            assert!(source.contains(&format!(
+                "AdcParts = ::rp1_hal::adc::Parts<::rp1_hal::adc::Irq<0, {core}>>"
+            )));
+            assert!(source.contains(&format!(
+                "Binding::<::rp1_rt::interrupt::BlockIrq<{block}>, 52, {core}>::new()"
+            )));
+            assert!(!source.contains("impl sealed::Admitted for ADC_FIFO"));
+            assert!(!irq_fields(&source, core).contains("pub ADC_FIFO"));
+
+            for (input, expects_assertion) in [(&adc, false), (&other_core, false), (&custom, true)]
+            {
+                let (raw, checks) = render(input);
+                assert!(!raw.contains(&symbol));
+                assert!(!raw.contains("AdcParts"));
+                assert!(raw.contains("impl sealed::Admitted for ADC_FIFO"));
+                assert!(
+                    irq_fields(&raw, core)
+                        .contains(&format!("pub ADC_FIFO: proc{core}_irq::ADC_FIFO,"))
+                );
+                assert_eq!(
+                    checks.contains(&format!("{symbol} != __rp1_default_irq")),
+                    expects_assertion
                 );
             }
         }

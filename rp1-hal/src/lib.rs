@@ -118,10 +118,10 @@ pub enum Try<T> {
 /// Failed initialization. Parts are available once the peripheral can be initialized again.
 /// If recovery is pending, this error retains ownership of the peripheral and its pins.
 ///
-/// UART, SPI and I²C return their `Parts` once ready and retain them while recovery is
+/// UART, SPI, I²C and ADC return their `Parts` once ready and retain them while recovery is
 /// pending. There is deliberately no conversion to the bare driver error. To use `?`,
 /// return the initialization error itself or wrap it in an error that keeps ownership.
-/// PWM, ADC and DMA return their token. Those initialization errors convert to the
+/// PWM and DMA return their token. Those initialization errors convert to the
 /// driver's error with `?` because the attempted initialization left no work running.
 pub struct InitError<R, E, H = core::convert::Infallible> {
     error: E,

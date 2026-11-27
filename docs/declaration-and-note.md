@@ -182,7 +182,8 @@ STATIC（2026-11-27）: `ProcNResources.irq` は、宣言でそのコアに割�
 | `spi0` と同じコアの `wait_timer` | `rp1::Spi0Parts` が線を所有し、SPI0 ハンドラを生成 |
 | raw `spi0` / `spi1` / `spi3` | `SPIn: Binding<BlockIrq<ID>, {19+n}, CORE>` |
 | `pwm0` / `pwm1` | `PWM0: Binding<BlockIrq<48>, 5, CORE>` / `PWM1: Binding<BlockIrq<49>, 41, CORE>` |
-| `adc` | `ADC_FIFO: Binding<BlockIrq<ID>, 52, CORE>` |
+| `adc` と同じコアの `wait_timer` | `rp1::AdcParts` が線を所有し、ADC_FIFO ハンドラを生成 |
+| raw `adc` | `ADC_FIFO: Binding<BlockIrq<ID>, 52, CORE>` |
 
 HW: 上の線の番号は実機で NVIC まで届くと確認された対応に限る（GPIO は両コア。PWM0・TIMER_3 は試作ファームでの確認）。根拠と、I2C / SPI の
 出力イネーブル `+0x108` などの条件は `docs/interrupts.md`。

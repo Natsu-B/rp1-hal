@@ -1,36 +1,49 @@
 # ADC
 
-STATIC: `rp1_hal::adc` does one-shot 12-bit conversions by polling (no FIFO, DMA,
-free-running mode or interrupt). Inputs 0..=3 are the external inputs and 4 is the
-temperature sensor.
+**STATIC · 2026-11-28.** ADC0 does 12-bit one-shot conversions. The FIFO
+holds one result per conversion, with DMA and free-running mode disabled.
+
+| ADC0 declaration | Wait mode | Immediate API |
+|---|---|---|
+| ADC and `wait_timer` on the same core | `blocking` (ADC_FIFO IRQ52, alarm, WFE), or explicit polling | `try_start`, `try_sample`, `try_cancel` |
+| ADC without a same-core `wait_timer`, or `custom_adc_handler = true` | Explicit polling | `try_start`, `try_sample`, `try_cancel` |
 
 ```toml
 [package.metadata.rp1.proc0]
 adc = {}
+wait_timer = "ALARM1"
 ```
 
 ```rust,ignore
-let mut adc = p.adc.init(&sys.clocks)?;      // sys = rp1::platform::init(..)
-let raw: u16 = adc.read(0)?;                 // input 0, 0..=0xfff
-let mc: i32 = adc.read_temperature()?;       // millidegrees Celsius
-
-// Declared under [proc1] instead: proc1 takes the Clocks proc0's platform::init published.
-use rp1_hal::fugit::ExtU32;
-let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10.millis())?;   // core: Proc1
-let mut adc = p.adc.init(&clocks)?;
-
-let t = adc.read(rp1_hal::adc::TEMPERATURE)?;
+use rp1_hal::adc::TEMPERATURE;
+let mut adc = p.adc.init(&sys.clocks)?;
+let mut adc = adc.blocking(&mut p.wait_timer);
+let raw = adc.read(TEMPERATURE)?;
+let mc = adc.read_temperature()?;
 ```
 
-The embedded-hal 0.2 `OneShot` adapter (`Input<N>` and `TemperatureSensor`) is available
-with the `rp1-hal/eh02-adc` Cargo feature. For embedded-hal 1.0 projects, call `Adc::read`
-directly.
+Pass an absolute `Deadline` to `read_until`, or use `WaitConfig` to override
+the default 1 ms timeout. Both the IRQ and explicit polling entry points
+require unmasked thread mode. A caller without a wait alarm can use
+`adc.read_polling(TEMPERATURE)` or `adc.read_temperature_polling()`.
+
+Enable `rp1-hal/eh02` (the `eh02-adc` feature still works) for embedded-hal
+0.2 `OneShot`. Use `let mut input = TEMPERATURE`. The first trait call starts
+a conversion and returns `WouldBlock`. Subsequent calls for the same channel
+return `WouldBlock` until the result is ready. A different channel gets
+`Busy` while the conversion is owned. External AIN0–3 require board-issued
+`Input<N>` tokens. The CM5 declaration provides the internal sensor.
 
 ## Ownership
 
-STATIC: declaring `ADC` does three things.
+STATIC: declaring `adc` assigns the block, clock and reset.
 
-- The generated `Token` has one declared core owner, and the note records OWNERSHIP block 64.
+- The generated resource has one declared core owner, and the NOTE records
+  OWNERSHIP block 64. A same-core wait timer selects `rp1::AdcParts` and the
+  generated ISRAM `ADC_FIFO` handler. It owns and masks the interrupt source.
+  A declaration without that timer, or with `custom_adc_handler = true`,
+  exposes the raw `p.irq.ADC_FIFO` binding. A custom handler must be linked and
+  service its own source.
 - The overlay disables Linux's `rp1_adc` (the stock DT enables it with the `rp1-adc` hwmon
   driver). The final-DTB check rejects a later overlay that turns it back on.
 - The ADC reset (RESETS CTRL0 bit 0) leaves the set that rp1-hal releases for Linux.
@@ -66,29 +79,30 @@ Launching proc1 after init (the usual order) makes the wait return at once.
 
 ## Sequence
 
-STATIC: the register contract and sequence come from the Linux RP1 ADC hwmon driver. The
-registers are CS, RESULT, FCS, FIFO, DIV and INTR/INTE/INTF/INTS (rp1-pac `adc`). The PAC
-write APIs are raw/unsafe only until the write semantics are verified.
+**STATIC · 2026-11-28.** CS and clock setup follow the Linux ADC driver.
+The PAC also describes FCS, FIFO and INTR/INTE/INTF/INTS.
 
-1. `init` starts clk_adc at XOSC / 1 = 50 MHz. This is the rate Linux requests, and the SCMI
-   table's `adc` entry has the same parent and maximum. Then it releases the reset (DONE is
-   not waited for: it stays 0 even under the stock firmware, HW), writes INTE = 0 and
-   CS = EN | ERR_STICKY, and waits for READY. A failed `init` returns `rp1_hal::InitError`
-   with the token as `resources`, so the caller can retry (`?` converts it to `Error`).
-   `free()` writes CS = 0 (power down) without waiting and returns the token, so it cannot
-   fail. It does not establish an
-   idle ADC: after a `read()` that returned `Timeout` a conversion may still be running, and
-   nothing cancels it (STATIC; the effect of the CS write on it is not measured).
-2. `read(ain)` selects AINSEL through the CLR/SET aliases (also clearing START_MANY and
-   RROBIN), waits for READY, sets START_ONCE, and waits for READY again. It returns
-   `Error::Conversion` if CS.ERR is set, and otherwise RESULT[11:0]. Reading input 4 powers
-   the temperature sensor (TS_EN) first and leaves it on, as Linux does.
-3. `read_temperature` converts as Linux does: mV = 3300 × raw / 4095 (the board's
-   `vref-supply` is the 3.3 V rail, DOC), and T = 27 − (mV − 706) / 1.721 °C.
+1. `init` starts clk_adc at XOSC / 1 = 50 MHz, releases reset (DONE stays
+   zero, HW), powers the ADC and temperature sensor, and confirms READY
+   and a clean FIFO. `InitFailure` retains the parts. Use `try_recover` if
+   READY or FIFO cleanup was not confirmed.
+2. Each start validates idle and removes stale FIFO data. It programs
+   AINSEL and issues START_ONCE. The managed path enables the FIFO
+   threshold interrupt before START_ONCE. The ISR masks the asserted source
+   before signaling WFE. Thread mode checks READY and takes one FIFO word.
+   FIFO overflow is `Overrun`; a sample error is `Conversion`.
+3. Timeout and `try_cancel` retire the interrupt and discard the result.
+   A pending one-shot can still complete. `Recovering` keeps ownership
+   until `try_cancel` confirms READY, drains the FIFO within its fixed
+   depth and clears sticky flags. `try_free` requires idle and carries the
+   driver in its error when release is unsafe. The clock and reset stay
+   configured across release.
+4. Temperature uses the Linux scale. mV = 3300 × raw / 4095 (stock DT
+   references the 3.3 V supply), and T = 27 − (mV − 706) / 1.721 °C.
 
 ## Hardware
 
-HW (2026-10-29, cold boot ×3, lab `shm-firmware` declaring `ADC` on proc0):
+Historical polling measurements, HW (2026-10-29, cold boot ×3, lab `shm-firmware` declaring `ADC` on proc0):
 
 - `init` succeeds. The first burst runs before Linux starts.
 - After Linux has booted, the burst is repeated on request through the lab link word. By

@@ -12,7 +12,7 @@ pub(crate) struct DriverIrq {
     pub module: &'static str,
 }
 
-// Each driver provides Irq<N, CORE>, Parts::__new(token, pins, binding) and
+// Each driver provides Irq<N, CORE>, a Parts constructor taking the binding, and
 // __on_interrupt::<N, CORE>(). The declaration and handler use the verified
 // vector binding for the same block.
 pub(crate) const DRIVERS: &[DriverIrq] = &[
@@ -33,6 +33,12 @@ pub(crate) const DRIVERS: &[DriverIrq] = &[
         vector: "I2C1",
         custom: "custom_i2c1_handler",
         module: "i2c",
+    },
+    DriverIrq {
+        instance: "adc",
+        vector: "ADC_FIFO",
+        custom: "custom_adc_handler",
+        module: "adc",
     },
 ];
 

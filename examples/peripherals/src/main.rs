@@ -1,4 +1,4 @@
-//! UART, SPI, I²C and the alarm demo use IRQ waits.
+//! ADC, UART, SPI, I²C and the alarm demo use IRQ waits.
 #![no_std]
 #![no_main]
 
@@ -27,7 +27,7 @@ fn main(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
         interrupt::run(p.TIMER_ALARM0, p.irq.TIMER_0, wait),
     );
     report("spi", spi::run(p.spi0, gpio.gpio8, clocks, wait));
-    report("adc", adc::run(p.adc, clocks));
+    report("adc", adc::run(p.adc, clocks, wait));
     report(
         "pwm",
         pwm::run(p.pwm0, gpio.gpio12, gpio.gpio22, clocks, wait),

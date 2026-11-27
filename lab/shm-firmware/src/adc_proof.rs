@@ -3,33 +3,44 @@
 //! (link+0x28 = [`super::ADC_REQUEST`], reply at link+0x2c = the request on success, all-ones on failure).
 use crate::rp1;
 use rp1_hal::{
-    adc::{Adc, Error, TEMPERATURE},
+    adc::{Blocking, Channel, Error, Input, TEMPERATURE},
     log,
+    timer::{Timer, WaitTimer},
 };
 const SAMPLES: u32 = 1000;
 
-fn now() -> u32 {
-    unsafe { (0x400a_c028 as *const u32).read_volatile() }
-}
-
-/// min, max, sum of `SAMPLES` conversions of `ain` and the elapsed µs.
-fn burst(adc: &mut Adc, ain: u8) -> Result<(u16, u16, u32, u32), Error> {
+/// min, max, sum of `SAMPLES` conversions of the channel and the elapsed µs.
+fn burst<C: Channel + Copy>(
+    adc: &mut Blocking<'_, 1>,
+    channel: C,
+) -> Result<(u16, u16, u32, u32), Error> {
+    let timer = Timer::new();
     let (mut min, mut max, mut sum) = (u16::MAX, 0, 0u32);
-    let start = now();
+    let start = timer.now_32();
     for _ in 0..SAMPLES {
-        let v = adc.read(ain)?;
+        let v = adc.read(channel)?;
         min = min.min(v);
         max = max.max(v);
         sum += u32::from(v);
     }
-    Ok((min, max, sum, now().wrapping_sub(start)))
+    Ok((min, max, sum, (timer.now_32() - start).ticks()))
 }
 
-pub fn prove(adc: &mut Adc, tag: &str) -> Result<(), Error> {
-    // Capture the first conversion as the sensor powers up.
+pub fn prove(adc: &mut rp1::Adc, wait: &mut WaitTimer, tag: &str) -> Result<(), Error> {
+    let mut adc = adc.blocking(wait);
+    // Capture the first conversion after setup. AIN0–3 are passive characterization inputs
+    // on this lab board; their voltages and accuracy are not part of the temperature proof.
     let first = adc.read(TEMPERATURE)?;
-    for ain in 0..=TEMPERATURE {
-        let (min, max, sum, us) = burst(adc, ain)?;
+    let readings = unsafe {
+        [
+            burst(&mut adc, &Input::<0>::__new())?,
+            burst(&mut adc, &Input::<1>::__new())?,
+            burst(&mut adc, &Input::<2>::__new())?,
+            burst(&mut adc, &Input::<3>::__new())?,
+            burst(&mut adc, &TEMPERATURE)?,
+        ]
+    };
+    for (ain, (min, max, sum, us)) in readings.into_iter().enumerate() {
         log!(
             "ADC_{} ain={} min={} max={} sum={} us={}\n",
             tag,
@@ -46,9 +57,9 @@ pub fn prove(adc: &mut Adc, tag: &str) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn run(adc: Option<&mut Adc>, request: u32) {
+pub fn run(adc: Option<&mut rp1::Adc>, wait: &mut WaitTimer, request: u32) {
     let result = match adc {
-        Some(adc) => prove(adc, "P1REQ"),
+        Some(adc) => prove(adc, wait, "P1REQ"),
         None => Err(Error::Precondition),
     };
     log!("ADC_RESULT request=0x{:x} {:?}\n", request, result).unwrap();
