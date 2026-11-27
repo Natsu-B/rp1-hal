@@ -1,42 +1,20 @@
-//! Generator-owned I2C1 delivery and the synchronous controller adapter.
+//! I2C interrupts and synchronous controller adapter.
 
 use super::*;
 use crate::{
-    driver_irq::{self, CoreState, Instance, Limit, Managed, PerCore, Source},
+    driver_irq::{self, Limit, Source},
     timer::WaitTimer,
 };
-use rp1_rt::interrupt::{Binding, BlockIrq, Slot};
 
-const I2C: u8 = 1;
-const I2C_IRQ: u8 = crate::pac::Interrupt::I2C1 as u8;
-type Line<const CORE: u8> = Binding<BlockIrq<{ rp1_proto::BlockId::I2c1 as u16 }>, I2C_IRQ, CORE>;
-
-/// Capability carried by I2C1 parts when the declaration reserves its IRQ for the HAL.
+/// Capability carried by I2C parts when the declaration reserves the IRQ for the HAL.
 pub struct Irq<const N: u8, const CORE: u8>(PhantomData<core::cell::Cell<()>>);
 
-impl<const CORE: u8, P: CompletePins<I2C>> Parts<I2C, P, Irq<I2C, CORE>> {
-    /// # Safety
-    /// Only the generated constructor may consume this line. It must also
-    /// install the matching I2C1 handler on the same core.
-    #[doc(hidden)]
-    pub unsafe fn __new(token: Token<I2C>, pins: Pins<I2C, P>, line: Line<CORE>) -> Self {
-        StateSlots::bind::<CORE>(line.into_line());
-        Self {
-            token,
-            pins,
-            irq: Irq(PhantomData),
-        }
-    }
-}
-
-static PROC0: CoreState<I2cSource, I2C_IRQ, 0> = Slot::new(Managed::new(I2cSource { mask: 0 }));
-static PROC1: CoreState<I2cSource, I2C_IRQ, 1> = Slot::new(Managed::new(I2cSource { mask: 0 }));
-type StateSlots = PerCore<I2cSource, I2C_IRQ>;
-
-impl Instance<I2C_IRQ> for I2cSource {
-    const PROC0: &'static CoreState<Self, I2C_IRQ, 0> = &PROC0;
-    const PROC1: &'static CoreState<Self, I2C_IRQ, 1> = &PROC1;
-}
+driver_irq::device_irq!(I2cSource, Io,
+    0 => I2c0, I2C0;
+    1 => I2c1, I2C1;
+    2 => I2c2, I2C2;
+    3 => I2c3, I2C3;
+);
 
 /// # Safety
 /// Called only by the generated I2C handler on CORE for instance N.
@@ -44,12 +22,11 @@ impl Instance<I2C_IRQ> for I2cSource {
 #[doc(hidden)]
 #[inline(always)]
 pub unsafe fn __on_interrupt<const N: u8, const CORE: u8>() -> u32 {
-    const { assert!(N == I2C) };
     // A pending NVIC entry can outlive controller init recovery.
     if read(RESETS_DONE0) & reset_bit(N) == 0 {
         return 0;
     }
-    StateSlots::on_interrupt::<CORE, _>(&mut Mmio::new(N))
+    service_irq::<N, CORE, _>(&mut Mmio::new(N))
 }
 
 impl From<driver_irq::Error> for Error {
@@ -61,11 +38,17 @@ impl From<driver_irq::Error> for Error {
     }
 }
 
-struct I2cSource {
+struct I2cSource<const N: u8> {
     mask: u32,
 }
 
-impl<I: Io> Source<I> for I2cSource {
+impl<const N: u8> I2cSource<N> {
+    const fn new() -> Self {
+        Self { mask: 0 }
+    }
+}
+
+impl<const N: u8, I: Io> Source<I> for I2cSource<N> {
     type Error = Error;
 
     fn is_armed(&self) -> bool {
@@ -117,16 +100,16 @@ fn probe(io: &mut impl Io, mask: u32) -> Option<Result<(), Error>> {
     }
 }
 
-/// Seven-bit embedded-hal transactions using the I2C1 IRQ, wait alarm and WFE.
-pub struct Blocking<'a, P: CompletePins<I2C>, const CORE: u8> {
-    bus: &'a mut I2c<I2C, P, Controller, Irq<I2C, CORE>>,
+/// Seven-bit embedded-hal transactions using the I2C IRQ, wait alarm and WFE.
+pub struct Blocking<'a, P: CompletePins<N>, const CORE: u8, const N: u8 = 1> {
+    bus: &'a mut I2c<N, P, Controller, Irq<N, CORE>>,
     timer: &'a mut WaitTimer,
     config: WaitConfig,
 }
 
-impl<P: CompletePins<I2C>, const CORE: u8> I2c<I2C, P, Controller, Irq<I2C, CORE>> {
+impl<P: CompletePins<N>, const CORE: u8, const N: u8> I2c<N, P, Controller, Irq<N, CORE>> {
     /// Borrow the bus for synchronous transactions in unmasked thread mode.
-    pub fn blocking<'a>(&'a mut self, timer: &'a mut WaitTimer) -> Blocking<'a, P, CORE> {
+    pub fn blocking<'a>(&'a mut self, timer: &'a mut WaitTimer) -> Blocking<'a, P, CORE, N> {
         Blocking {
             bus: self,
             timer,
@@ -135,11 +118,11 @@ impl<P: CompletePins<I2C>, const CORE: u8> I2c<I2C, P, Controller, Irq<I2C, CORE
     }
 }
 
-impl<const SDA: u8, const SCL: u8, const CORE: u8>
-    I2c<I2C, PinTuple<SDA, SCL>, Controller, Irq<I2C, CORE>>
+impl<const SDA: u8, const SCL: u8, const CORE: u8, const N: u8>
+    I2c<N, PinTuple<SDA, SCL>, Controller, Irq<N, CORE>>
 where
-    Pin<SDA>: Sda<I2C>,
-    Pin<SCL>: Scl<I2C>,
+    Pin<SDA>: Sda<N>,
+    Pin<SCL>: Scl<N>,
 {
     /// Wait for disable and idle, then return parts with the IRQ capability.
     /// On failure the error keeps the controller and its pins.
@@ -147,7 +130,7 @@ where
         mut self,
         timer: &mut WaitTimer,
         end: Deadline,
-    ) -> Result<Parts<I2C, PinTuple<SDA, SCL>, Irq<I2C, CORE>>, crate::FreeError<Self, Error>> {
+    ) -> Result<Parts<N, PinTuple<SDA, SCL>, Irq<N, CORE>>, crate::FreeError<Self, Error>> {
         match self.blocking(timer).cancel_until(end) {
             Ok(()) => self.try_free(),
             Err(error) => Err(crate::FreeError {
@@ -158,7 +141,7 @@ where
     }
 }
 
-impl<P: CompletePins<I2C>, const CORE: u8> Blocking<'_, P, CORE> {
+impl<P: CompletePins<N>, const CORE: u8, const N: u8> Blocking<'_, P, CORE, N> {
     pub fn with_wait_config(mut self, config: WaitConfig) -> Self {
         self.config = config;
         self
@@ -214,7 +197,7 @@ impl<P: CompletePins<I2C>, const CORE: u8> Blocking<'_, P, CORE> {
 
     fn check_context(&mut self) -> Result<(), Error> {
         self.timer.thread_context()?;
-        Ok(StateSlots::check::<CORE>()?)
+        Ok(check_irq::<N, CORE>()?)
     }
 
     fn run(&mut self, address: u8, ops: &mut [Operation<'_>], end: Deadline) -> Result<(), Error> {
@@ -239,13 +222,9 @@ impl<P: CompletePins<I2C>, const CORE: u8> Blocking<'_, P, CORE> {
                 if mask == RX_FULL {
                     io.write(RX_TL, threshold);
                 }
-                StateSlots::wait_for::<CORE, _, _>(
-                    io,
-                    self.timer,
-                    Limit::Absolute(end),
-                    mask,
-                    |io| probe(io, mask),
-                )
+                wait_for_irq::<N, CORE, _, _>(io, self.timer, Limit::Absolute(end), mask, |io| {
+                    probe(io, mask)
+                })
             },
         );
         io.write(RX_TL, 0);
@@ -257,11 +236,15 @@ impl<P: CompletePins<I2C>, const CORE: u8> Blocking<'_, P, CORE> {
     }
 }
 
-impl<P: CompletePins<I2C>, const CORE: u8> embedded_hal::i2c::ErrorType for Blocking<'_, P, CORE> {
+impl<P: CompletePins<N>, const CORE: u8, const N: u8> embedded_hal::i2c::ErrorType
+    for Blocking<'_, P, CORE, N>
+{
     type Error = Error;
 }
 
-impl<P: CompletePins<I2C>, const CORE: u8> embedded_hal::i2c::I2c for Blocking<'_, P, CORE> {
+impl<P: CompletePins<N>, const CORE: u8, const N: u8> embedded_hal::i2c::I2c
+    for Blocking<'_, P, CORE, N>
+{
     fn transaction(&mut self, address: u8, ops: &mut [Operation<'_>]) -> Result<(), Error> {
         self.run(address, ops, default_deadline(self.config)?)
     }
@@ -335,6 +318,25 @@ mod tests {
     }
 
     #[test]
+    fn instance_routes_match_register_base_and_clock() {
+        use crate::pac;
+
+        assert_eq!(
+            IRQ_ROUTES,
+            &[(0, 32, 7), (1, 33, 8), (2, 34, 9), (3, 35, 10)]
+        );
+        for (n, address, clock) in [
+            (0, pac::I2C0::PTR, pac::I2C0::CLOCK_DEPENDENCY),
+            (1, pac::I2C1::PTR, pac::I2C1::CLOCK_DEPENDENCY),
+            (2, pac::I2C2::PTR, pac::I2C2::CLOCK_DEPENDENCY),
+            (3, pac::I2C3::PTR, pac::I2C3::CLOCK_DEPENDENCY),
+        ] {
+            assert_eq!(Mmio::new(n).base, address as usize, "instance {n}");
+            assert_eq!(clock, "ClockId::Sys", "instance {n}");
+        }
+    }
+
+    #[test]
     fn device_readiness_before_during_after_arm_and_missing_delivery() {
         for mask in [RX_FULL, TX_EMPTY, STOP_DET] {
             for phase in 0..4 {
@@ -343,7 +345,7 @@ mod tests {
                     during_arm: if phase == 1 { mask } else { 0 },
                     ..Model::default()
                 };
-                let mut source = I2cSource { mask: 0 };
+                let mut source = I2cSource::<1>::new();
                 let ready = driver_irq::probe_and_arm(
                     &mut io,
                     |io| probe(io, mask),
@@ -374,7 +376,7 @@ mod tests {
             wrap: 8,
             ..Model::default()
         };
-        let mut source = I2cSource { mask: 0 };
+        let mut source = I2cSource::<1>::new();
         assert_eq!(source.arm(&mut io, STOP_DET), Ok(true));
         source.retire(&mut io);
         io.raw = STOP_DET;

@@ -1,9 +1,8 @@
 # I2C master
 
-STATIC (2026-11-28). Declare I2C1 and a wait timer on the same core to
+STATIC. Declare I2C0–3 and a wait timer on the same core to
 use `i2c.blocking(&mut p.wait_timer)` for embedded-hal 1.0 seven-bit
-`I2c`. The declaration generates the I2C1 interrupt and the capability
-carried by `rp1::I2c1Parts`.
+`I2c`. The declaration generates the instance handler and hands its capability to the parts.
 `write`, `read`, and `write_read` use the shared `transaction` implementation.
 Empty buffers are skipped, adjacent operations of the same direction continue,
 direction changes issue repeated START, and the final byte issues STOP. Reads can
@@ -35,8 +34,7 @@ pinctrl group, `*-gpios`, a hog or an rp1_gpio interrupt), or a later overlay th
 the controller, makes `cargo rp1 check --dtb` fail. At boot, rp1boot disables such a node by
 default and logs `RP1BOOT_LINUX_DISABLED path=... why=...` (`linux.on_conflict = "refuse"`
 stops instead); see [build.md](build.md) and [declaration-and-note.md](declaration-and-note.md).
-GPIO2/3 can only be I2C1 (or GPIO); GPIO0/1 remain with Linux UART1 on the CM5 profile
-unless `linux.keep` leaves out `uart1`.
+GPIO2/3 are an I2C1 route. To use the I2C0 route on GPIO0/1, exclude UART1 from `linux.keep`.
 
 DOC: the [RP1 GPIO table](https://datasheets.raspberrypi.com/rp1/rp1-peripherals.pdf)
 exposes the following bank-0 routes. SDA and SCL can independently select a listed
@@ -44,15 +42,15 @@ route for the same controller. IO_BANK1/2 are internal and deliberately unavaila
 through this board's safe HAL and ownership declaration. The PAC provides the
 DesignWare register slice for all seven instances, I2C0..6.
 
-| Controller | SDA | SCL | Synchronous wait |
-|---|---|---|---|
-| I2C0 | 0, 8 | 1, 9 | Explicit polling |
-| I2C1 | 2, 10 | 3, 11 | IRQ/WFE with a same-core wait timer, explicit polling |
-| I2C2 | 4, 12 | 5, 13 | Explicit polling |
-| I2C3 | 6, 14, 22 | 7, 15, 23 | Explicit polling |
-| I2C4–6 | — | — | No bank-0 route |
+| Controller | SDA | SCL |
+|---|---|---|
+| I2C0 | 0, 8 | 1, 9 |
+| I2C1 | 2, 10 | 3, 11 |
+| I2C2 | 4, 12 | 5, 13 |
+| I2C3 | 6, 14, 22 | 7, 15, 23 |
+| I2C4–6 | — | — |
 
-I2C1 without a same-core wait timer uses explicit polling. Declare
+Use explicit polling without a same-core wait timer. For an application IRQ on I2C1, declare
 `custom_i2c1_handler = true` and define `#[rp1_rt::interrupt(procN)] fn I2C1()`
 to own the raw IRQ in the application. This exposes `p.irq.I2C1` and the
 raw mask, status and acknowledge methods.

@@ -169,12 +169,41 @@ fn spi_slave_only() {
     }
 }
 #[test]
-fn spi2_is_not_supported_yet() {
-    error(
-        "[linux]\nkeep={}\n[proc0]\nspi2={sck=2,mosi=0,miso=1}",
-        &["E4", "SPI2 is not supported yet"],
-    );
+fn spi2_conflicts_with_the_default_linux_uart1_pins() {
+    let spi2 = "[proc0]\nspi2={sck=3,mosi=2,miso=1}";
+    error(spi2, &["E4", "kept for Linux", "uart1.rx"]);
+    parse(&format!("[linux]\nkeep={{}}\n{spi2}"))
+        .validate()
+        .unwrap();
 }
+#[test]
+fn serial_irq_declarations_require_exclusive_ownership() {
+    for (instance, pins) in [
+        ("uart0", "tx=14,rx=15"),
+        ("uart2", "tx=4,rx=5"),
+        ("uart3", "tx=8,rx=9"),
+        ("uart4", "tx=12,rx=13"),
+        ("spi1", "sck=21,mosi=20,miso=19"),
+        ("spi2", "sck=3,mosi=2,miso=1"),
+        ("spi3", "sck=7,mosi=6,miso=5"),
+        ("spi5", "sck=15,mosi=14,miso=13"),
+        ("i2c0", "sda=8,scl=9"),
+        ("i2c2", "sda=4,scl=5"),
+        ("i2c3", "sda=22,scl=23"),
+    ] {
+        error(
+            &format!(
+                "[linux]\nkeep={{}}\n[proc0]\nwait_timer='ALARM0'\n{instance}={{{pins}}}\n[proc1]\nwait_timer='ALARM1'\n{instance}={{{pins}}}"
+            ),
+            &["E3", &instance.to_ascii_uppercase(), "proc0", "proc1"],
+        );
+        error(
+            &format!("[proc0]\ncustom_{instance}_handler=true"),
+            &["E5", &format!("custom_{instance}_handler needs {instance}")],
+        );
+    }
+}
+
 #[test]
 fn missing_signal() {
     error(

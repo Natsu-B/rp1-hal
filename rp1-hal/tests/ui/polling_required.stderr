@@ -17,7 +17,7 @@ help: the following other types implement trait `SpiBus<Word>`
   |         impl<W: Word, $($generic)*> SpiBus<W> for $adapter {
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |         |
-  |         `rp1_hal::spi::Blocking<'_, P, CORE>` implements `SpiBus<W>`
+  |         `rp1_hal::spi::Blocking<'_, P, CORE, N>` implements `SpiBus<W>`
   |         `rp1_hal::spi::Polling<'_, N, P, I>` implements `SpiBus<W>`
 ...
   | spi_bus!([const N: u8, P: CompletePins<N>, I], Polling<'_, N, P, I>);
@@ -25,8 +25,8 @@ help: the following other types implement trait `SpiBus<Word>`
   |
  ::: src/spi/irq_wait.rs
   |
-  | spi_bus!([P: CompletePins<0>, const CORE: u8], Blocking<'_, P, CORE>);
-  | --------------------------------------------------------------------- in this macro invocation
+  | spi_bus!([P: CompletePins<N>, const CORE: u8, const N: u8], Blocking<'_, P, CORE, N>);
+  | ------------------------------------------------------------------------------------- in this macro invocation
 note: required by a bound in `needs_sync_bus`
  --> tests/ui/polling_required.rs:4:26
   |
@@ -45,18 +45,19 @@ error[E0277]: the trait bound `rp1_hal::i2c::I2c<1, (rp1_hal::gpio::Pin<2>, rp1_
 help: the following other types implement trait `embedded_hal::i2c::I2c<A>`
  --> src/i2c.rs
   |
-  | impl<const N: u8, P: CompletePins<N>, I> embedded_hal::i2c::I2c for Polling<'_, N, P, I> {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Polling<'_, N, P, I>` implements `embedded_hal::i2c::I2c`
+  |   impl<const N: u8, P: CompletePins<N>, I> embedded_hal::i2c::I2c for Polling<'_, N, P, I> {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Polling<'_, N, P, I>` implements `embedded_hal::i2c::I2c`
   |
  ::: src/i2c/irq_wait.rs
   |
-  | impl<P: CompletePins<I2C>, const CORE: u8> embedded_hal::i2c::I2c for Blocking<'_, P, CORE> {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Blocking<'_, P, CORE>` implements `embedded_hal::i2c::I2c`
+  | / impl<P: CompletePins<N>, const CORE: u8, const N: u8> embedded_hal::i2c::I2c
+  | |     for Blocking<'_, P, CORE, N>
+  | |________________________________^ `rp1_hal::i2c::Blocking<'_, P, CORE, N>` implements `embedded_hal::i2c::I2c`
   |
  ::: $CARGO/embedded-hal-$VERSION/src/i2c.rs
   |
-  | impl<A: AddressMode, T: I2c<A> + ?Sized> I2c<A> for &mut T {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut T` implements `embedded_hal::i2c::I2c<A>`
+  |   impl<A: AddressMode, T: I2c<A> + ?Sized> I2c<A> for &mut T {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut T` implements `embedded_hal::i2c::I2c<A>`
 
 error[E0277]: the trait bound `rp1_hal::i2c::I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>)>: embedded_hal::i2c::ErrorType` is not satisfied
  --> tests/ui/polling_required.rs:9:13
@@ -67,15 +68,16 @@ error[E0277]: the trait bound `rp1_hal::i2c::I2c<1, (rp1_hal::gpio::Pin<2>, rp1_
 help: the following other types implement trait `embedded_hal::i2c::ErrorType`
  --> src/i2c.rs
   |
-  | impl<const N: u8, P: CompletePins<N>, I> embedded_hal::i2c::ErrorType for Polling<'_, N, P, I> {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Polling<'_, N, P, I>`
+  |   impl<const N: u8, P: CompletePins<N>, I> embedded_hal::i2c::ErrorType for Polling<'_, N, P, I> {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Polling<'_, N, P, I>`
   |
  ::: src/i2c/irq_wait.rs
   |
-  | impl<P: CompletePins<I2C>, const CORE: u8> embedded_hal::i2c::ErrorType for Blocking<'_, P, CORE> {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Blocking<'_, P, CORE>`
+  | / impl<P: CompletePins<N>, const CORE: u8, const N: u8> embedded_hal::i2c::ErrorType
+  | |     for Blocking<'_, P, CORE, N>
+  | |________________________________^ `rp1_hal::i2c::Blocking<'_, P, CORE, N>`
   |
  ::: $CARGO/embedded-hal-$VERSION/src/i2c.rs
   |
-  | impl<T: ErrorType + ?Sized> ErrorType for &mut T {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut T`
+  |   impl<T: ErrorType + ?Sized> ErrorType for &mut T {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&mut T`

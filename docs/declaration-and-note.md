@@ -176,20 +176,17 @@ STATIC（2026-11-27）: `ProcNResources.irq` は、宣言でそのコアに割�
 |---|---|
 | `timer = ["ALARMn"]` | `TIMER_n: Binding<AlarmIrq<n>, {26+n}, CORE>` |
 | `gpio_irq = [..]`（空でない） | `IO_BANK0: Binding<Bank0Irq, 0, CORE>` と、各ピンの `gpioN: rp1_hal::gpio::PinIrq<N, CORE>` |
-| `uart1` と同じコアの `wait_timer` | `rp1::Uart1Parts` が線を所有し、UART1 ハンドラを生成 |
-| raw `uart1`、`uart2`..`uart4` | `UARTn: Binding<BlockIrq<ID>, {41+n}, CORE>` |
-| `i2c0`..`i2c3` | `I2Cn: Binding<BlockIrq<ID>, {7+n}, CORE>` |
-| `spi0` と同じコアの `wait_timer` | `rp1::Spi0Parts` が線を所有し、SPI0 ハンドラを生成 |
-| raw `spi0` / `spi1` / `spi3` | `SPIn: Binding<BlockIrq<ID>, {19+n}, CORE>` |
+| UART / SPI / I2C と同じコアの `wait_timer` | インスタンスの Parts が線を所有し、ハンドラを生成 |
+| raw `uart0`..`uart4` | IRQ25（UART0）、IRQ42〜45（UART1〜4） |
+| raw `i2c0`..`i2c3` | `I2Cn: Binding<BlockIrq<ID>, {7+n}, CORE>` |
+| raw `spi0` / `spi1` / `spi2` / `spi3` / `spi5` | `SPIn: Binding<BlockIrq<ID>, {19+n}, CORE>` |
 | `pwm0` / `pwm1` | `PWM0: Binding<BlockIrq<48>, 5, CORE>` / `PWM1: Binding<BlockIrq<49>, 41, CORE>` |
 | `adc` と同じコアの `wait_timer` | `rp1::AdcParts` が線を所有し、ADC_FIFO ハンドラを生成 |
 | raw `adc` | `ADC_FIFO: Binding<BlockIrq<ID>, 52, CORE>` |
 
-HW: 上の線の番号は実機で NVIC まで届くと確認された対応に限る（GPIO は両コア。PWM0・TIMER_3 は試作ファームでの確認）。根拠と、I2C / SPI の
-出力イネーブル `+0x108` などの条件は `docs/interrupts.md`。
-STATIC: `rp1-build::board::IRQ_VERIFIED` が生成と ELF 検査の対応表である。
-SPI5 と DMA は IRQ 番号が実機未確認なので `Line` を生成しない。
-インスタンスの所有やポーリング用トークンには影響しない。
+STATIC: 生成と ELF 検査は `rp1-build::board::irq_routes()` を共用する。
+SPI2 と SPI5 の番号は PAC に基づく（STATIC）。他の線の実機根拠と I2C / SPI の出力イネーブルは
+[割り込み](interrupts.md)を参照。
 
 `gpio_irq` のピンは通常の `pins.gpioN` と別に割り込み権限を持つ。両コアがそれぞれ `gpio_irq` を宣言すると、
 両方にコア番号付きの `IO_BANK0` が入る。IO_BANK0 の割り込み状態・イネーブルはコアごとに分かれている（DOC）。
@@ -203,21 +200,17 @@ IRQ53（PCIE_OUT）と IRQ57（PROC_MISC）は proc0 のシステムサービス
 IRQ59（CLOCKS_DEFAULT）など、それ以外のシステム線も渡さない。
 
 STATIC: `cargo rp1 check` と `cargo rp1 build` は、両コアの外部ベクタの Thumb ビット・アドレス範囲を検査し、
-既定ハンドラ以外の線を note の OWNERSHIP と照合する。宣言で所有しない線や未確認線にハンドラを置くとビルドエラーになる。
+既定ハンドラ以外の線を note の OWNERSHIP と照合する。宣言で所有しない線や対応表に無い線にハンドラを置くとビルドエラーになる。
 IRQ53/57 はプラットフォーム専用。ハンドラを定義せず線を所有することは許される。
 `#[interrupt(procN)]` は同じコア・線に 1 個。IRQ で受信する link のドアベルは、既定で生成ハンドラが ack して起床を通知する。
 GPIO との共有や独自処理が必要な場合は `custom_doorbell_handler = true` を宣言し、
 そのコアの `IO_BANK0` で `doorbell.ack_and_signal()` と各 GPIO source を処理する。
 
-STATIC（2026-11-27）: 同じコアで `uart1` と `wait_timer` を宣言すると、
-生成された UART1 ハンドラと `uart.blocking(&mut p.wait_timer)` が同期 I/O を受け持つ。
-`custom_uart1_handler = true` を指定すると `p.irq.UART1` を受け取り、
-そのコアの `#[interrupt(procN)] fn UART1()` の定義がリンク時に必須になる。
-SPI0 も同様に `spi.blocking(&mut p.wait_timer)` を使う。
-`custom_spi0_handler = true` で `p.irq.SPI0` と独自 `SPI0()` を使える。
-STATIC（2026-11-28）: `i2c1` と `wait_timer` が同じコアにあれば
-`rp1::I2c1Parts` から初期化し、`bus.blocking(&mut p.wait_timer)` を使う。
-`custom_i2c1_handler = true` で `p.irq.I2C1` と独自 `I2C1()` を使える。
+STATIC: UART0–4、SPI0/1/2/3/5、I2C0–3 は同じコアの `wait_timer` で
+インスタンスの IRQ ハンドラを生成し、初期化後に `blocking(&mut p.wait_timer)` を使う。
+`custom_uart1_handler = true` などで raw IRQ を選べる。そのコアに対応する
+`#[interrupt(procN)] fn UART1()` などが必要になる。
+UART0 ドライバを使う宣言では `log` を省く。SPI2 を使う宣言では `linux.keep` から UART1 を外す。
 
 ### 1.4 ビルド時のエラー（build.rs が止める）
 

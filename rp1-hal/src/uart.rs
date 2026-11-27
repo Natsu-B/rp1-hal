@@ -2,14 +2,10 @@
 //! from clk_uart as reported by [`Clocks`]. UART5 has no bank-0 pins. The `log!` sink (UART0 on
 //! GPIO14/15) keeps its dedicated bounded boot path through [`crate::logging::Logger`].
 //!
-//! | Instance | Synchronous waits in v0.2 | Immediate I/O |
-//! |---|---|---|
-//! | UART1 | [`Uart::blocking`] (IRQ, alarm and WFE) with a generated handler, or explicit [`Uart::polling`] | `try_*` |
-//! | UART0, UART2–4 | Explicit [`Uart::polling`]. IRQ waits need instance-specific hardware proof. | `try_*` |
-//!
-//! Declare UART1 and `wait_timer` on the same core for managed waits. The UART1
-//! handler owns both directions' interrupt masks. The single wait timer
-//! serializes synchronous operations on the joined driver and its split halves.
+//! STATIC: declare a UART and `wait_timer` on the same core for IRQ/WFE
+//! waits through [`Uart::blocking`]. Use [`Uart::polling`] for explicit polling
+//! and `try_*` for immediate I/O. The wait timer serializes the split halves.
+//! UART0 is available to the driver when the declaration leaves out the log sink.
 use crate::{
     clocks::Clocks,
     gpio::{Alternate, Pin},
@@ -129,7 +125,7 @@ pub enum Error {
     WrongContext,
     /// Interrupts were masked at the synchronous call boundary.
     Masked,
-    /// The UART line is unavailable, or raw UART1 masks are enabled when a managed wait arms.
+    /// The UART line is unavailable, or raw UART masks are enabled when a managed wait arms.
     IrqUnavailable,
     /// The dedicated alarm could not be retired.
     AlarmUnavailable,

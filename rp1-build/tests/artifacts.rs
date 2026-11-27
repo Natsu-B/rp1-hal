@@ -230,7 +230,7 @@ fn adc_ownership_disables_linux_adc_and_keeps_its_reset() {
 #[test]
 fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
     use rp1_build::metadata::{BOARD_LINUX_RESETS, peripheral_id, peripheral_type};
-    for n in [0u16, 1, 3, 5] {
+    for n in [0u16, 1, 2, 3, 5] {
         assert_eq!(
             peripheral_id(&format!("SPI{n}")).unwrap(),
             (ownership_kind::BLOCK, 16 + n)
@@ -240,9 +240,9 @@ fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
             format!("::rp1_hal::spi::Token<{n}>")
         );
     }
-    // Slave-only (4, 7), not on bank 0 (6, 8), not supported yet (2), aliases.
+    // Slave-only (4, 7), not on bank 0 (6, 8), aliases.
     for p in [
-        "SPI2", "SPI4", "SPI6", "SPI7", "SPI8", "SPI9", "SPI00", "SPI+0", "SPI",
+        "SPI4", "SPI6", "SPI7", "SPI8", "SPI9", "SPI00", "SPI+0", "SPI",
     ] {
         assert!(peripheral_type(p).is_err(), "{p}");
     }
@@ -292,7 +292,6 @@ fn spi_ownership_disables_linux_spi_and_keeps_its_reset() {
 fn unusable_bus_numbers_are_rejected_by_name() {
     use rp1_build::metadata::peripheral_id;
     for (p, why) in [
-        ("SPI2", "E4: SPI2 is not supported yet"),
         ("SPI4", "E4: SPI4 is slave-only"),
         ("SPI6", "E2: SPI6 has no bank-0 pins"),
         ("SPI16", "E0: unknown key 'spi16' in proc1"),

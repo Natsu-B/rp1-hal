@@ -598,3 +598,54 @@ fn main() {}
         t.compile_fail(path);
     }
 }
+
+#[test]
+fn managed_serial_vectors_reject_application_handlers() {
+    let dir = tempfile::tempdir().unwrap();
+    let d: Declaration = toml::from_str(
+        r#"
+schema = 2
+[linux]
+keep = {}
+[proc0]
+wait_timer = "ALARM1"
+uart2 = { tx = 4, rx = 5 }
+spi2 = { sck = 3, mosi = 2, miso = 1 }
+i2c3 = { sda = 22, scl = 23 }
+"#,
+    )
+    .unwrap();
+    d.validate().unwrap();
+    let generated = resources(&d, &[], &d.shm_layout().unwrap())
+        .unwrap()
+        .replace(
+            r#"include_bytes!(concat!(env!("OUT_DIR"),"/rp1-app.dtbo"))"#,
+            r#"b"""#,
+        );
+    let resources = dir.path().join("resources.inc");
+    fs::write(&resources, generated).unwrap();
+    let path = dir.path().join("managed_serial_irq.rs");
+    fs::write(
+        &path,
+        r#"include!("resources.inc");
+#[rp1_rt::interrupt(proc0)]
+fn UART2() {}
+#[rp1_rt::interrupt(proc0)]
+fn SPI2() {}
+#[rp1_rt::interrupt(proc0)]
+fn I2C3() {}
+fn main() {}
+"#,
+    )
+    .unwrap();
+    if let Ok(expected) = fs::read_to_string("tests/ui-link/managed_serial_irq.stderr") {
+        fs::write(
+            path.with_extension("stderr"),
+            expected
+                .replace("$CASE", path.to_str().unwrap())
+                .replace("$GENERATED", resources.to_str().unwrap()),
+        )
+        .unwrap();
+    }
+    trybuild::TestCases::new().compile_fail(path);
+}

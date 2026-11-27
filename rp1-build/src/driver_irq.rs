@@ -12,43 +12,33 @@ pub(crate) struct DriverIrq {
     pub module: &'static str,
 }
 
-// Each driver provides Irq<N, CORE>, a Parts constructor taking the binding, and
-// __on_interrupt::<N, CORE>(). The declaration and handler use the verified
-// vector binding for the same block.
-pub(crate) const DRIVERS: &[DriverIrq] = &[
-    DriverIrq {
-        instance: "uart1",
-        vector: "UART1",
-        custom: "custom_uart1_handler",
-        module: "uart",
-    },
-    DriverIrq {
-        instance: "spi0",
-        vector: "SPI0",
-        custom: "custom_spi0_handler",
-        module: "spi",
-    },
-    DriverIrq {
-        instance: "i2c1",
-        vector: "I2C1",
-        custom: "custom_i2c1_handler",
-        module: "i2c",
-    },
-    DriverIrq {
-        instance: "adc",
-        vector: "ADC_FIFO",
-        custom: "custom_adc_handler",
-        module: "adc",
-    },
-];
+// The same route supplies the binding and the generated handler.
+macro_rules! drivers {
+    ($($module:literal: $($instance:literal => $vector:literal),+;) +) => {
+        &[$($(DriverIrq {
+            instance: $instance,
+            vector: $vector,
+            custom: concat!("custom_", $instance, "_handler"),
+            module: $module,
+        },)+)+]
+    };
+}
+
+pub(crate) const DRIVERS: &[DriverIrq] = drivers! {
+    "uart": "uart0" => "UART0", "uart1" => "UART1", "uart2" => "UART2",
+        "uart3" => "UART3", "uart4" => "UART4";
+    "spi": "spi0" => "SPI0", "spi1" => "SPI1", "spi2" => "SPI2",
+        "spi3" => "SPI3", "spi5" => "SPI5";
+    "i2c": "i2c0" => "I2C0", "i2c1" => "I2C1", "i2c2" => "I2C2", "i2c3" => "I2C3";
+    "adc": "adc" => "ADC_FIFO";
+};
 
 impl DriverIrq {
-    pub fn verified_line(&self) -> Result<&'static board::VerifiedIrq> {
+    pub fn line(&self) -> Result<&'static board::VerifiedIrq> {
         let ownership = metadata::peripheral_id(&self.instance.to_ascii_uppercase())?;
-        board::IRQ_VERIFIED
-            .iter()
+        board::irq_routes()
             .find(|line| line.name == self.vector && line.owner.ownership() == ownership)
-            .ok_or_else(|| format!("{} has no verified {} IRQ", self.instance, self.vector).into())
+            .ok_or_else(|| format!("{} has no declared {} IRQ", self.instance, self.vector).into())
     }
 
     pub fn number(&self) -> Result<u8> {
@@ -75,7 +65,7 @@ mod tests {
     #[test]
     fn driver_bindings_match_the_board_and_pac() {
         for driver in DRIVERS {
-            let line = driver.verified_line().unwrap();
+            let line = driver.line().unwrap();
             assert_eq!(rp1_pac::INTERRUPT_NAMES[usize::from(line.irq)], line.name);
             assert!(driver.number().is_ok());
         }

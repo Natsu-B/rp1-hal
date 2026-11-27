@@ -194,6 +194,89 @@ pub(crate) fn probe_and_arm<I, T, E>(
     }
 }
 
+// The match is on a const parameter, so an image only links the slots and
+// wait code for the instances and cores it declares.
+macro_rules! device_irq {
+    ($source:ident, $io:ident, $($n:literal => $block:ident, $vector:ident;) +) => {
+        $(
+            impl $crate::driver_irq::Instance<{ $crate::pac::Interrupt::$vector as u8 }> for $source<$n> {
+                const PROC0: &'static $crate::driver_irq::CoreState<Self, { $crate::pac::Interrupt::$vector as u8 }, 0> = {
+                    static STATE: $crate::driver_irq::CoreState<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }, 0> =
+                        rp1_rt::interrupt::Slot::new($crate::driver_irq::Managed::new($source::new()));
+                    &STATE
+                };
+                const PROC1: &'static $crate::driver_irq::CoreState<Self, { $crate::pac::Interrupt::$vector as u8 }, 1> = {
+                    static STATE: $crate::driver_irq::CoreState<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }, 1> =
+                        rp1_rt::interrupt::Slot::new($crate::driver_irq::Managed::new($source::new()));
+                    &STATE
+                };
+            }
+
+            impl<P: CompletePins<$n>, const CORE: u8> Parts<$n, P, Irq<$n, CORE>> {
+                /// # Safety
+                /// The generator must install the matching handler on CORE
+                /// and construct this binding exactly once.
+                #[doc(hidden)]
+                pub unsafe fn __new(
+                    token: Token<$n>,
+                    pins: Pins<$n, P>,
+                    line: rp1_rt::interrupt::Binding<
+                        rp1_rt::interrupt::BlockIrq<{ rp1_proto::BlockId::$block as u16 }>,
+                        { $crate::pac::Interrupt::$vector as u8 },
+                        CORE,
+                    >,
+                ) -> Self {
+                    $crate::driver_irq::PerCore::<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }>
+                        ::bind::<CORE>(line.into_line());
+                    Self { token, pins, irq: Irq(PhantomData) }
+                }
+            }
+        )+
+
+        // UART checks on admission to the shared waiter.
+        #[allow(dead_code)]
+        #[inline(always)]
+        fn check_irq<const N: u8, const CORE: u8>() -> Result<(), $crate::driver_irq::Error> {
+            const { assert!($(N == $n)||+) };
+            match N {
+                $($n => $crate::driver_irq::PerCore::<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }>::check::<CORE>(),)+
+                _ => unreachable!(),
+            }
+        }
+
+        #[inline(always)]
+        fn service_irq<const N: u8, const CORE: u8, I: $io>(io: &mut I) -> u32 {
+            const { assert!($(N == $n)||+) };
+            match N {
+                $($n => $crate::driver_irq::PerCore::<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }>::on_interrupt::<CORE, _>(io),)+
+                _ => unreachable!(),
+            }
+        }
+
+        #[inline(always)]
+        fn wait_for_irq<const N: u8, const CORE: u8, I: $io, T>(
+            io: &mut I,
+            wait: &mut $crate::timer::WaitTimer,
+            limit: $crate::driver_irq::Limit,
+            mask: u32,
+            probe: impl FnMut(&mut I) -> Option<Result<T, Error>>,
+        ) -> Result<T, Error> {
+            const { assert!($(N == $n)||+) };
+            match N {
+                $($n => $crate::driver_irq::PerCore::<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }>::wait_for::<CORE, _, _>(io, wait, limit, mask, probe),)+
+                _ => unreachable!(),
+            }
+        }
+
+        #[cfg(test)]
+        const IRQ_ROUTES: &[(u8, u16, u8)] = &[
+            $(($n, rp1_proto::BlockId::$block as u16, $crate::pac::Interrupt::$vector as u8),)+
+        ];
+    }
+}
+
+pub(crate) use device_irq;
+
 #[cfg(test)]
 mod tests {
     use super::*;

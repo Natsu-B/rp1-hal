@@ -1,6 +1,6 @@
 # SPI master
 
-STATIC (2026-11-27). SPI0 uses `spi.blocking(&mut p.wait_timer)` for synchronous
+STATIC. SPI0/1/2/3/5 use `spi.blocking(&mut p.wait_timer)` for synchronous
 embedded-hal 1.0 `SpiBus<u8 | u16 | u32>` and `SpiDevice`. The IRQ binding
 and wait alarm belong to the declaring core. When the same core declares
 `spi0` and `wait_timer`, the generator emits the ISRAM dispatcher and
@@ -28,7 +28,7 @@ dev.transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])?;
 ```
 
 `examples/peripherals` uses SPI0 on proc0. The SHM SPI proof uses proc1.
-The SPI0 ISR masks the armed FIFO or error source, publishes readiness and
+The SPI ISR masks the armed FIFO or error source, publishes readiness and
 sends an event. Thread mode does FIFO service. The Slot ceiling and IRQ
 priority are both 4. The one-shot wait alarm bounds missing device delivery.
 Use the explicit polling adapter when comparing serviced wire latency.
@@ -38,8 +38,8 @@ Use the explicit polling adapter when comparing serviced wire latency.
 DOC (RP1 peripherals §3.6.1, rp1.dtsi): nine DW_apb_ssi v4.02a instances. SPI4 and SPI7 are
 slave-only (`spi-slave` in Linux's DT); SPI0/1/2/3/5/6/8 are masters. Only SPI0..5 are on GPIO
 bank 0; SPI6 and SPI8 sit on the internal banks, which this HAL does not expose (as I2C4..6).
-The HAL token accepts SPI0, 1, 2, 3 and 5. On the rpi-cm5 board `rp1-build` accepts
-`SPI0`, `SPI1`, `SPI3`, `SPI5`: SPI2's only MISO route is GPIO1, which stays with Linux UART1.
+On rpi-cm5, SPI2 requires excluding UART1 from `linux.keep` so GPIO1 can route
+MISO. SPI5 uses GPIO14/15, which are reserved when the UART0 log sink is declared.
 
 | Controller | Function | SCLK | MOSI (SIO0) | MISO (SIO1) | Native CS0 / CS1 (not used) |
 |---|---|---|---|---|---|
@@ -134,8 +134,7 @@ probe, leaving the controller disabled and the pins untouched for a retry.
 Build `Config` with `Config::new(frequency, mode)` and the `with_*` setters. The frequency
 is a `HertzU32`. Dropping the controller leaves it enabled and the pins muxed.
 `try_free()` checks TX FIFO empty and BUSY clear before disabling. `free_polling()`
-waits up to 100 ms for the same wire-idle condition. SPI0 also has IRQ-backed
-`free_until()`. All return the controller in `FreeError` when stop cannot be
+waits up to 100 ms for the same wire-idle condition. IRQ-capable controllers also have `free_until()`. All return the controller in `FreeError` when stop cannot be
 confirmed. `try_cancel()` requests disable immediately and may truncate a
 frame and discard both FIFOs. Both synchronous adapters report `Busy` during
 recovery, and raw interrupt controls cannot reopen the wrapper. Restore the
@@ -158,7 +157,8 @@ use the fast check. The model also keeps BUSY asserted after the final receive s
 physical flush must wait for the shifter. For `DelayNs` each engine rounds up to
 the next microsecond and allows one timer tick for phase.
 
-For an application-managed SPI0 IRQ, declare `custom_spi0_handler = true`
+For an application-managed IRQ, use the instance-specific key and handler.
+For SPI0, declare `custom_spi0_handler = true`
 and provide `#[rp1_rt::interrupt(procN)] fn SPI0()`. This gives the application
 `p.irq.SPI0` and the raw mask and status methods. Raw `enable_interrupt` opens
 the RP1 `+0x108` output gate and unmasks the selected sources.

@@ -1,14 +1,7 @@
 //! SPI master on the RP1 DesignWare APB SSI blocks (DOC: RP1 peripherals §3.6, Linux
-//! spi-dw-core). SPI0 provides IRQ-backed [`Spi::blocking`] waits. All supported
-//! controllers offer explicit [`Spi::polling`]. Both adapters implement [`SpiBus`]
+//! spi-dw-core). STATIC: a same-core wait timer enables IRQ/WFE waits through
+//! [`Spi::blocking`]. [`Spi::polling`] selects polling. Both implement [`SpiBus`]
 //! and support [`Device`] with GPIO chip select.
-//!
-//! | Instance | Synchronous waits | Immediate I/O |
-//! |---|---|---|
-//! | SPI0 | [`Spi::blocking`] (IRQ, alarm and WFE) when a wait timer is declared on the same core, or explicit [`Spi::polling`] | Native `try_*` |
-//! | SPI1/2/3/5 | Explicit [`Spi::polling`]. Managed waits need instance-specific hardware proof. | Native `try_*` on valid pin routes |
-//! | SPI4/7 | Target-only | Controller API unavailable |
-//! | SPI6/8 | Internal GPIO bank | Bank-0 controller API unavailable |
 //!
 //! Instances (DOC §3.6.1): SPI0/1/2/3/5/6/8 are masters, SPI4/7 slave-only. Only the bank-0
 //! masters SPI0, 1, 2, 3, 5 are exposed; SPI6/8 are not on bank 0. The serial clock is clk_sys
@@ -110,7 +103,10 @@ mod sealed {
     pub trait Bus {}
     impl<const N: u8, P: super::CompletePins<N>, I> Bus for super::Polling<'_, N, P, I> {}
     impl<B: Bus + ?Sized> Bus for &mut B {}
-    impl<P: super::CompletePins<0>, const CORE: u8> Bus for super::Blocking<'_, P, CORE> {}
+    impl<P: super::CompletePins<N>, const CORE: u8, const N: u8> Bus
+        for super::Blocking<'_, P, CORE, N>
+    {
+    }
     /// Lets a [`super::Bus::admit`] call through; only `spi` can make one, so code outside
     /// this crate cannot call any [`super::Bus`] method.
     pub struct Key(pub(in crate::spi) ());
@@ -427,18 +423,13 @@ where
         Spi<N, PinTuple<SCK, MOSI, MISO>, Controller, I>,
         InitError<N, PinTuple<SCK, MOSI, MISO>, I>,
     > {
-        self.init_on(
-            &mut Mmio { base: base(N) },
-            clocks,
-            config,
-            |(sck, mosi, miso)| {
-                (
-                    sck.into_alternate(<Pin<SCK> as Sck<N>>::FUNC, IN_PAD, OUT_PAD),
-                    mosi.into_alternate(<Pin<MOSI> as Mosi<N>>::FUNC, IN_PAD, OUT_PAD),
-                    miso.into_alternate(<Pin<MISO> as Miso<N>>::FUNC, IN_PAD, IN_PAD),
-                )
-            },
-        )
+        self.init_on(&mut Mmio::new(N), clocks, config, |(sck, mosi, miso)| {
+            (
+                sck.into_alternate(<Pin<SCK> as Sck<N>>::FUNC, IN_PAD, OUT_PAD),
+                mosi.into_alternate(<Pin<MOSI> as Mosi<N>>::FUNC, IN_PAD, OUT_PAD),
+                miso.into_alternate(<Pin<MISO> as Miso<N>>::FUNC, IN_PAD, IN_PAD),
+            )
+        })
     }
 
     fn init_on(
@@ -596,6 +587,11 @@ trait Io {
 }
 struct Mmio {
     base: usize,
+}
+impl Mmio {
+    const fn new(n: u8) -> Self {
+        Self { base: base(n) }
+    }
 }
 impl Io for Mmio {
     #[inline(always)]
@@ -784,7 +780,7 @@ fn reconfigure(
 
 impl<const N: u8, P: CompletePins<N>, I> Spi<N, P, Controller, I> {
     fn io(&self) -> Mmio {
-        Mmio { base: base(N) }
+        Mmio::new(N)
     }
     /// Selects the synchronous polling engine.
     pub fn polling(&mut self) -> Polling<'_, N, P, I> {

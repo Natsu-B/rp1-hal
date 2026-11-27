@@ -38,15 +38,15 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | `doorbell = N` | `IO_BANK0: Line<0>`（`gpio_irq` と共用で 1 本）。ドアベル自体は `ProcNResources.doorbell: rp1::DoorbellK` |
 | `pwm0` / `pwm1` | `PWM0: Line<5>` / `PWM1: Line<41>` |
 | `i2c0`〜`i2c3` | `I2C0: Line<7>`、`I2C1: Line<8>`、`I2C2: Line<9>`、`I2C3: Line<10>` |
-| `spi0` / `spi1` / `spi3` | `SPI0: Line<19>`、`SPI1: Line<20>`、`SPI3: Line<22>` |
+| raw `spi0` / `spi1` / `spi2` / `spi3` / `spi5` | `SPIn: Line<{19+n}>` |
 | `timer = ["ALARMn"]` | `TIMER_n: Line<{26+n}>` |
 | `wait_timer = "ALARMn"` | `ProcNResources.wait_timer: WaitTimer` と自動 TIMER_n ハンドラ |
-| `uart1` と同じコアの `wait_timer` | `rp1::Uart1Parts` が線を所有し、ISRAM の UART1 ハンドラを生成 |
-| raw `uart1`、`uart2`〜`uart4` | `UARTn: Line<{41+n}>` |
+| UART / SPI / I2C と同じコアの `wait_timer` | インスタンスの Parts が線を所有し、ISRAM のハンドラを生成 |
+| raw `uart0`〜`uart4` | `UART0: Line<25>`、`UART1`〜`UART4`: 42〜45 |
 | `adc` と同じコアの `wait_timer` | `rp1::AdcParts` が線を所有し、ISRAM の ADC_FIFO ハンドラを生成 |
 | raw `adc` | `ADC_FIFO: Line<52>` |
 
-- 表は `rp1_build::board::IRQ_VERIFIED`。生成と ELF 検査の両方がこれを使う。
+- 生成と ELF 検査は `rp1_build::board::irq_routes()` を共用する。SPI2 / SPI5 は PAC に基づく（STATIC）。
 - `cargo rp1 check` / `build` は、既定ハンドラ以外のベクタを note の OWNERSHIP と照合する。所有しない線や
   表に無い線にハンドラを置くとビルドエラー。
 - 渡さない線: `log` の UART0、`host_irq = true` のときの `TIMER_3`、システム用の PCIE_OUT（53）・
@@ -76,23 +76,10 @@ STATIC（2026-11-27）: 同期待機にはコアごとに `wait_timer` で専有
 どちらも完了を再確認してから WFE に入り、無応答は一発の deadline IRQ で終了する。
 `wait_timer = { alarm = "ALARMn", feature = "name" }` は指定の Cargo feature が有効なときだけ
 wait ISR を生成する。他の構成でもアラームは同じコアの raw timer として予約する。
-同じコアに UART1 がある場合、feature 有効時は `p.uart1` が `Uart1Parts` となり、
-無効時は polling 用の `Parts<1, Uart1Pins>` と `p.irq.UART1` が提供される。
-SPI0 も feature 有効時は `Spi0Parts`、無効時は `Parts<0, Spi0Pins>` と
-`p.irq.SPI0` が提供される。独自ハンドラを選んだインスタンスは raw IRQ を保持する。
-
-STATIC（2026-11-27）: UART1 は `uart.blocking(&mut p.wait_timer)` で同期待機する。
-同じコアの `uart1` と `wait_timer` から生成されたハンドラが RX/TX の両マスクを所有する。
-独自ハンドラを使う場合は `custom_uart1_handler = true` を指定し、
-`#[rp1_rt::interrupt(procN)] fn UART1()` で担当する源を処理する。
-この構成では `p.irq.UART1` と即時 I/O・明示的な polling が使える。
-IRQ 待機と明示的な polling はマスクされていない thread mode 専用とし、
-ISR では固定時間の `try_read_byte`、`try_write_byte`、`try_flush` を使う。
-
-STATIC（2026-11-27）: SPI0 は `spi.blocking(&mut p.wait_timer)` で同期待機する。
-`custom_spi0_handler = true` でアプリ側の `#[rp1_rt::interrupt(procN)] fn SPI0()` と
-`p.irq.SPI0` を使える。IRQ と明示的な polling はどちらもマスクされていない
-thread mode 専用。ISR では `try_read_word`、`try_write_word`、`try_start_transfer` を使う。
+同じコアの UART / SPI / I2C は feature 有効時に `blocking(&mut p.wait_timer)`、
+無効時に明示的な polling と raw IRQ を使う。アプリの IRQ ハンドラを使う場合は、
+`custom_uart1_handler = true` などで対応する raw IRQ を選ぶ。
+同期 I/O はマスクされていない thread mode 専用。ISR では `try_*` を使う。
 
 ## 3. 周辺側で開けるもの
 
@@ -108,9 +95,7 @@ thread mode 専用。ISR では `try_read_word`、`try_write_word`、`try_start_
 I2C と SPI の割り込みは、コントローラのマスクの先にある RP1 の出力イネーブル（ブロックの `+0x108`、
 `IRQ_EN` = bit 0）を通る。閉じていると、マスクを外した源が立っていても NVIC に届かない（HW）。
 `enable_interrupt` はマスクを外した後にこれを開け、`free()` / `abort()` と初期化は全源をマスクしてこれを閉じる
-（STATIC、ホスト模型）。ブロッキングの転送は実行中だけ全源をマスクし、終わると元のマスクに戻す。
-転送そのものは今もブロッキングで、割り込み駆動の転送 API は無い。同じコントローラで割り込み駆動と
-ブロッキングを混ぜる使い方は対応しない。
+（STATIC、ホスト模型）。同期 IRQ 待機は必要な源だけを有効にし、ハンドラがマスクした後にスレッド側で FIFO を処理する。
 
 Linux に残したブロックには、標準 RP1 ファーム（ブートローダー内蔵）が初期化の最後に全ブロックへ書く
 イネーブルの表と同じ値を `linux_blocks::bring_up` が立てる（RMW。表の番地と値は STATIC）。対象は Linux 用に
@@ -143,7 +128,7 @@ NVIC だけを見ている。proc1 で受けたのは TIMER_1・IO_BANK0・SPI0 
 | PWM0（5）、UART1〜4（42〜45） | 番号を実機で確認（ハンドラへの配送は上の試験に含まない） | HW（rp1-hal より前の試作ファーム。rp1-hal では再確認していない） |
 | TIMER_3（29） | rp1-hal では `TIMER.INTF` bit 3 で Linux の MSI-X vector 29 が起きるのを確認（`host_irq`、design.md §6.2）。NVIC 29 に届いたのは試作ファームでだけ | MSI-X は HW（2026-11）、NVIC は HW（試作ファーム）。rp1-hal では NVIC を再確認していない |
 | Linux に残したブロック（上の表を立てた rp1-hal ファーム） | Linux 側で割り込みが届くのを見たのは I2C2 / I2C6 / SPI1 / ETH / USB。I2C0/3/4/5、SPI2..8、I2S は値が標準ファームと同じことまで | HW（2026-11、cold boot と再起動で各 1 回） |
-| SPI5（24）、DMA（40）、PIO（50 / 51）、CLOCKS（59）、VBUS（60） | 安全な刺激が無く未確認 | 公開しない |
+| DMA（40）、PIO（50 / 51）、CLOCKS（59）、VBUS（60） | 安全な刺激が無く未確認 | 公開しない |
 
 PWM0 と TIMER_3 は試作ファームでの観測を根拠に `IRQ_VERIFIED` に入れて公開している。線の配線は RP1 の
 ものなのでファームが変わっても同じはず（HYP）だが、rp1-hal で再確認するまで regdb ではこの 2 本を `static` にしてある。

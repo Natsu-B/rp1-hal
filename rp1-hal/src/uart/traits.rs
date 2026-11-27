@@ -91,12 +91,12 @@ mod io07 {
     }
 
     macro_rules! forward_io {
-        ($adapter:ident<$arg:ident>; $($generic:tt)+) => {
-            impl<$($generic)+> ErrorType for $adapter<'_, $arg> {
+        ($adapter:ident<$($arg:ident),+>; $($generic:tt)+) => {
+            impl<$($generic)+> ErrorType for $adapter<'_, $($arg),+> {
                 type Error = Error;
             }
 
-            impl<$($generic)+> Read for $adapter<'_, $arg>
+            impl<$($generic)+> Read for $adapter<'_, $($arg),+>
             where
                 Self: embedded_io::Read<Error = Error>,
             {
@@ -105,7 +105,7 @@ mod io07 {
                 }
             }
 
-            impl<$($generic)+> Write for $adapter<'_, $arg>
+            impl<$($generic)+> Write for $adapter<'_, $($arg),+>
             where
                 Self: embedded_io::Write<Error = Error>,
             {
@@ -118,7 +118,7 @@ mod io07 {
                 }
             }
 
-            impl<$($generic)+> ReadReady for $adapter<'_, $arg>
+            impl<$($generic)+> ReadReady for $adapter<'_, $($arg),+>
             where
                 Self: embedded_io::ReadReady<Error = Error>,
             {
@@ -127,7 +127,7 @@ mod io07 {
                 }
             }
 
-            impl<$($generic)+> WriteReady for $adapter<'_, $arg>
+            impl<$($generic)+> WriteReady for $adapter<'_, $($arg),+>
             where
                 Self: embedded_io::WriteReady<Error = Error>,
             {
@@ -139,9 +139,9 @@ mod io07 {
     }
 
     forward_io!(Polling<T>; T);
-    forward_io!(Blocking<CORE>; const CORE: u8);
-    forward_io!(BlockingRx<CORE>; const CORE: u8);
-    forward_io!(BlockingTx<CORE>; const CORE: u8);
+    forward_io!(Blocking<CORE, N>; const CORE: u8, const N: u8);
+    forward_io!(BlockingRx<CORE, N>; const CORE: u8, const N: u8);
+    forward_io!(BlockingTx<CORE, N>; const CORE: u8, const N: u8);
 }
 
 #[cfg(any(feature = "eh-nb", feature = "eh02"))]

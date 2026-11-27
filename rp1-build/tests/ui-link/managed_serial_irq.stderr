@@ -1,0 +1,89 @@
+error[E0277]: __irq_proc0::UART2 is not declared for proc0. Add a supported source to [package.metadata.rp1.proc0]
+  --> $CASE:2:1
+   |
+ 2 | #[rp1_rt::interrupt(proc0)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `__irq_proc0::sealed::Admitted` is not implemented for `__irq_proc0::UART2`
+  --> $GENERATED:99:1
+   |
+99 | pub enum UART2 {}
+   | ^^^^^^^^^^^^^^
+help: this trait has no implementations, consider adding one
+  --> $GENERATED:49:14
+   |
+49 | mod sealed { pub trait Admitted {} }
+   |              ^^^^^^^^^^^^^^^^^^
+note: required for `__irq_proc0::UART2` to implement `__irq_proc0::Declared`
+  --> $GENERATED:52:27
+   |
+52 | impl<T: sealed::Admitted> Declared for T {}
+   |         ----------------  ^^^^^^^^     ^
+   |         |
+   |         unsatisfied trait bound introduced here
+note: required by a bound in `_::check`
+  --> $CASE:2:1
+   |
+ 2 | #[rp1_rt::interrupt(proc0)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `check`
+   = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: __irq_proc0::SPI2 is not declared for proc0. Add a supported source to [package.metadata.rp1.proc0]
+  --> $CASE:4:1
+   |
+ 4 | #[rp1_rt::interrupt(proc0)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `__irq_proc0::sealed::Admitted` is not implemented for `__irq_proc0::SPI2`
+  --> $GENERATED:77:1
+   |
+77 | pub enum SPI2 {}
+   | ^^^^^^^^^^^^^
+help: this trait has no implementations, consider adding one
+  --> $GENERATED:49:14
+   |
+49 | mod sealed { pub trait Admitted {} }
+   |              ^^^^^^^^^^^^^^^^^^
+note: required for `__irq_proc0::SPI2` to implement `__irq_proc0::Declared`
+  --> $GENERATED:52:27
+   |
+52 | impl<T: sealed::Admitted> Declared for T {}
+   |         ----------------  ^^^^^^^^     ^
+   |         |
+   |         unsatisfied trait bound introduced here
+note: required by a bound in `_::check`
+  --> $CASE:4:1
+   |
+ 4 | #[rp1_rt::interrupt(proc0)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `check`
+   = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: __irq_proc0::I2C3 is not declared for proc0. Add a supported source to [package.metadata.rp1.proc0]
+  --> $CASE:6:1
+   |
+ 6 | #[rp1_rt::interrupt(proc0)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `__irq_proc0::sealed::Admitted` is not implemented for `__irq_proc0::I2C3`
+  --> $GENERATED:66:1
+   |
+66 | pub enum I2C3 {}
+   | ^^^^^^^^^^^^^
+help: this trait has no implementations, consider adding one
+  --> $GENERATED:49:14
+   |
+49 | mod sealed { pub trait Admitted {} }
+   |              ^^^^^^^^^^^^^^^^^^
+note: required for `__irq_proc0::I2C3` to implement `__irq_proc0::Declared`
+  --> $GENERATED:52:27
+   |
+52 | impl<T: sealed::Admitted> Declared for T {}
+   |         ----------------  ^^^^^^^^     ^
+   |         |
+   |         unsatisfied trait bound introduced here
+note: required by a bound in `_::check`
+  --> $CASE:6:1
+   |
+ 6 | #[rp1_rt::interrupt(proc0)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `check`
+   = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)

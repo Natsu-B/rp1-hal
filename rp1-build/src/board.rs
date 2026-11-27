@@ -65,6 +65,7 @@ pub(crate) const INSTANCES: &[BoardInstance] = &[
     instance("i2c3", Kind::I2c, 3, "rp1_i2c3", 0, 10),
     instance("spi0", Kind::Spi, 0, "rp1_spi0", 1, 10),
     instance("spi1", Kind::Spi, 1, "rp1_spi1", 1, 11),
+    instance("spi2", Kind::Spi, 2, "rp1_spi2", 1, 12),
     instance("spi3", Kind::Spi, 3, "rp1_spi3", 1, 13),
     instance("spi5", Kind::Spi, 5, "rp1_spi5", 1, 15),
     instance("adc", Kind::Adc, 0, "rp1_adc", 0, 0),
@@ -103,17 +104,16 @@ impl IrqOwner {
     }
 }
 
-/// A hardware-verified IRQ and the resource required to own it.
+/// An IRQ route and the resource required to own it.
 pub struct VerifiedIrq {
     pub name: &'static str,
     pub irq: u8,
     pub owner: IrqOwner,
 }
 
-/// HW: IRQ lines seen pending in the NVIC from their block; only these get a `Line` resource
-/// and may carry a handler. PWM0 and TIMER_3 were seen only on the earlier proof-of-concept
-/// firmware and are kept from that. UART0 is reserved for logging. SPI5 (24) and DMA (40) have
-/// no proof yet. IO_BANK1/2 (1/2) are routed but their pins are Linux's, so nothing owns them.
+/// HW: IRQ lines seen pending in the NVIC from their block. PWM0 and TIMER_3
+/// were seen on the earlier proof-of-concept firmware. IO_BANK1/2 are routed
+/// but their pins are Linux's.
 pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
     VerifiedIrq {
         name: "IO_BANK0",
@@ -159,6 +159,11 @@ pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
         name: "SPI3",
         irq: 22,
         owner: IrqOwner::Instance(BlockId::Spi3),
+    },
+    VerifiedIrq {
+        name: "UART0",
+        irq: 25,
+        owner: IrqOwner::Instance(BlockId::Uart0),
     },
     VerifiedIrq {
         name: "TIMER_0",
@@ -212,6 +217,25 @@ pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
     },
 ];
 
+// STATIC: PAC routes from the regdb. These lack a firmware NVIC observation.
+const IRQ_STATIC: &[VerifiedIrq] = &[
+    VerifiedIrq {
+        name: "SPI2",
+        irq: rp1_pac::Interrupt::SPI2 as u8,
+        owner: IrqOwner::Instance(BlockId::Spi2),
+    },
+    VerifiedIrq {
+        name: "SPI5",
+        irq: rp1_pac::Interrupt::SPI5 as u8,
+        owner: IrqOwner::Instance(BlockId::Spi5),
+    },
+];
+
+/// IRQ routes supported by the declaration generator.
+pub fn irq_routes() -> impl Iterator<Item = &'static VerifiedIrq> {
+    IRQ_VERIFIED.iter().chain(IRQ_STATIC)
+}
+
 pub(crate) fn find_instance(name: &str) -> Option<&'static BoardInstance> {
     INSTANCES.iter().find(|i| i.name == name)
 }
@@ -224,7 +248,6 @@ pub(crate) fn undeclarable(name: &str) -> Option<String> {
             format!("E4: {block} is required by Linux on rpi-cm5")
         }
         "spi4" | "spi7" => format!("E4: {block} is slave-only"),
-        "spi2" => format!("E4: {block} is not supported yet"),
         "uart5" | "i2c4" | "i2c5" | "i2c6" | "spi6" | "spi8" => {
             format!("E2: {block} has no bank-0 pins")
         }

@@ -384,7 +384,7 @@ fn resources(
         let managed: Vec<_> = driver_irq::DRIVERS
             .iter()
             .filter(|irq| irq.is_managed(c))
-            .map(|irq| Ok((irq, irq.verified_line()?)))
+            .map(|irq| Ok((irq, irq.line()?)))
             .collect::<Result<Vec<_>>>()?;
         for (irq, line) in &managed {
             let vector = line.name;
@@ -443,8 +443,7 @@ fn resources(
         for pin in &pins {
             s.push_str(&format!("pub gpio{pin}: ::rp1_hal::gpio::Pin<{pin}>,\n"));
         }
-        let lines: Vec<_> = board::IRQ_VERIFIED
-            .iter()
+        let lines: Vec<_> = board::irq_routes()
             .filter(|line| {
                 !managed
                     .iter()
@@ -858,9 +857,9 @@ mod tests {
     }
 
     #[test]
-    fn irq_resources_follow_verified_instance_and_alarm_ownership() {
+    fn irq_resources_follow_instance_and_alarm_ownership() {
         let cases = [
-            ("uart0={tx=14,rx=15}", None),
+            ("uart0={tx=14,rx=15}", Some(("UART0", 25))),
             ("uart1={tx=0,rx=1}", Some(("UART1", 42))),
             ("uart2={tx=4,rx=5}", Some(("UART2", 43))),
             ("uart3={tx=8,rx=9}", Some(("UART3", 44))),
@@ -871,8 +870,9 @@ mod tests {
             ("i2c3={sda=6,scl=7}", Some(("I2C3", 10))),
             ("spi0={sck=11,mosi=10,miso=9}", Some(("SPI0", 19))),
             ("spi1={sck=21,mosi=20,miso=19}", Some(("SPI1", 20))),
+            ("spi2={sck=3,mosi=2,miso=1}", Some(("SPI2", 21))),
             ("spi3={sck=7,mosi=6,miso=5}", Some(("SPI3", 22))),
-            ("spi5={sck=15,mosi=14,miso=13}", None),
+            ("spi5={sck=15,mosi=14,miso=13}", Some(("SPI5", 24))),
             ("pwm0={}", Some(("PWM0", 5))),
             ("pwm1={}", Some(("PWM1", 41))),
             ("adc={}", Some(("ADC_FIFO", 52))),
@@ -960,144 +960,81 @@ mod tests {
     }
 
     #[test]
-    fn uart1_wait_handler_follows_the_owning_core_and_preserves_wire_ownership() {
-        for core in 0..2 {
-            let config = format!("schema=2\n[linux]\nkeep={{}}\n[proc{core}]\nuart1={{tx=0,rx=1}}");
-            let with_timer = format!("{config}\nwait_timer='ALARM1'");
-            let managed: metadata::Declaration = toml::from_str(&with_timer).unwrap();
-            let raw: metadata::Declaration =
-                toml::from_str(&format!("{with_timer}\ncustom_uart1_handler=true")).unwrap();
-            let other_timer: metadata::Declaration = toml::from_str(&format!(
-                "{config}\n[proc{}]\nwait_timer='ALARM1'",
-                1 - core
-            ))
-            .unwrap();
-            let generate = |d: &metadata::Declaration| {
-                d.validate().unwrap();
-                resources(d, &[], &d.shm_layout().unwrap()).unwrap()
-            };
-            let source = generate(&managed);
-            let symbol = format!("__rp1_p{core}_UART1");
-            assert!(source.contains(&format!("export_name = \"{symbol}\"")));
-            assert!(source.contains(&format!(".isram.text.{symbol}")));
-            assert!(source.contains(&format!("uart::__on_interrupt::<1, {core}>()")));
-            assert!(source.contains(&format!(
-                "Uart1Parts = ::rp1_hal::uart::Parts<1, Uart1Pins, ::rp1_hal::uart::Irq<1, {core}>>"
-            )));
-            assert!(source.contains("Uart1Parts::__new("));
-            assert!(irq_fields(&source, core).is_empty());
-            assert!(!source.contains("impl sealed::Admitted for UART1"));
-            assert!(custom_irq_assertions(&managed).is_empty());
-
-            for d in [&raw, &other_timer] {
-                let source = generate(d);
-                assert!(!source.contains(&symbol));
-                assert!(!source.contains("Uart1Parts"));
-                assert!(source.contains("impl sealed::Admitted for UART1"));
-                assert_eq!(
-                    irq_fields(&source, core),
-                    format!("pub UART1: proc{core}_irq::UART1,\n")
-                );
-            }
-            let checks = custom_irq_assertions(&raw);
-            assert!(checks.contains(&format!("{symbol} != __rp1_default_irq")));
-            let managed_artifacts =
-                super::generate("uart", "0.1", &managed, [0; 32], [0; 20]).unwrap();
-            let raw_artifacts = super::generate("uart", "0.1", &raw, [0; 32], [0; 20]).unwrap();
-            assert_eq!(managed_artifacts.note, raw_artifacts.note);
-            assert_eq!(managed_artifacts.dts, raw_artifacts.dts);
-        }
-
-        let missing: metadata::Declaration =
-            toml::from_str("schema=2\n[proc0]\ncustom_uart1_handler=true").unwrap();
-        assert!(
-            missing
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("needs uart1")
-        );
-    }
-
-    #[test]
-    fn spi0_wait_handler_and_raw_irq_follow_the_owning_core() {
-        for core in 0..2 {
-            let config = format!(
-                "schema=2\n[linux]\nkeep={{}}\n[proc{core}]\nuart1={{tx=0,rx=1}}\nspi0={{sck=11,mosi=10,miso=9}}"
-            );
-            let with_timer = format!("{config}\nwait_timer='ALARM1'");
-            let generate = |config: &str| {
-                let decl: metadata::Declaration = toml::from_str(config).unwrap();
-                decl.validate().unwrap();
-                let source = resources(&decl, &[], &decl.shm_layout().unwrap()).unwrap();
-                (source, custom_irq_assertions(&decl))
-            };
-            let (managed, _) = generate(&with_timer);
-            let spi_symbol = format!("__rp1_p{core}_SPI0");
-            assert!(managed.contains(&format!(".isram.text.{spi_symbol}")));
-            assert!(managed.contains(&format!("spi::__on_interrupt::<0, {core}>()")));
-            assert!(managed.contains(&format!("uart::__on_interrupt::<1, {core}>()")));
-            assert!(managed.contains(&format!(
-                "Spi0Parts = ::rp1_hal::spi::Parts<0, Spi0Pins, ::rp1_hal::spi::Irq<0, {core}>>"
-            )));
-            let spi_block = rp1_proto::BlockId::Spi0 as u16;
-            assert!(managed.contains(&format!(
-                "Binding::<::rp1_rt::interrupt::BlockIrq<{spi_block}>, 19, {core}>::new()"
-            )));
-            assert!(irq_fields(&managed, core).is_empty());
-            assert!(!managed.contains("impl sealed::Admitted for SPI0"));
-
-            for input in [&config, &format!("{with_timer}\ncustom_spi0_handler=true")] {
-                let (raw, checks) = generate(input);
-                assert!(!raw.contains(&spi_symbol));
-                assert!(!raw.contains("Spi0Parts"));
-                assert!(raw.contains("impl sealed::Admitted for SPI0"));
-                assert!(
-                    irq_fields(&raw, core).contains(&format!("pub SPI0: proc{core}_irq::SPI0,"))
-                );
-                assert_eq!(
-                    checks.contains(&format!("{spi_symbol} != __rp1_default_irq")),
-                    input.contains("custom_spi0_handler")
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn i2c1_generated_irq_and_custom_handler_follow_the_owning_core() {
-        for core in 0..2 {
-            let config = format!("schema=2\n[proc{core}]\ni2c1={{sda=2,scl=3}}");
-            let timer = format!("{config}\nwait_timer='ALARM1'");
-            let other_timer = format!("{config}\n[proc{}]\nwait_timer='ALARM1'", 1 - core);
-            let custom = format!("{timer}\ncustom_i2c1_handler=true");
-            let symbol = format!("__rp1_p{core}_I2C1");
-            for (input, managed, custom) in [
-                (&timer, true, false),
-                (&config, false, false),
-                (&other_timer, false, false),
-                (&custom, false, true),
-            ] {
-                let decl: metadata::Declaration = toml::from_str(input).unwrap();
-                decl.validate().unwrap();
-                let source = resources(&decl, &[], &decl.shm_layout().unwrap()).unwrap();
-                let block = rp1_proto::BlockId::I2c1 as u16;
-                for pattern in [
-                    format!(".isram.text.{symbol}"),
-                    format!("i2c::__on_interrupt::<1, {core}>()"),
-                    format!(
-                        "I2c1Parts = ::rp1_hal::i2c::Parts<1, I2c1Pins, ::rp1_hal::i2c::Irq<1, {core}>>"
-                    ),
-                    format!("Binding::<::rp1_rt::interrupt::BlockIrq<{block}>, 8, {core}>::new()"),
+    fn serial_wait_handlers_follow_instance_and_core() {
+        for (module, alias, n, block, irq, pins) in [
+            ("uart", "Uart", 0, 0, 25, "tx=14,rx=15"),
+            ("uart", "Uart", 1, 1, 42, "tx=0,rx=1"),
+            ("uart", "Uart", 2, 2, 43, "tx=4,rx=5"),
+            ("uart", "Uart", 3, 3, 44, "tx=8,rx=9"),
+            ("uart", "Uart", 4, 4, 45, "tx=12,rx=13"),
+            ("spi", "Spi", 0, 16, 19, "sck=11,mosi=10,miso=9"),
+            ("spi", "Spi", 1, 17, 20, "sck=21,mosi=20,miso=19"),
+            ("spi", "Spi", 2, 18, 21, "sck=3,mosi=2,miso=1"),
+            ("spi", "Spi", 3, 19, 22, "sck=7,mosi=6,miso=5"),
+            ("spi", "Spi", 5, 21, 24, "sck=15,mosi=14,miso=13"),
+            ("i2c", "I2c", 0, 32, 7, "sda=8,scl=9"),
+            ("i2c", "I2c", 1, 33, 8, "sda=2,scl=3"),
+            ("i2c", "I2c", 2, 34, 9, "sda=4,scl=5"),
+            ("i2c", "I2c", 3, 35, 10, "sda=22,scl=23"),
+        ] {
+            let instance = format!("{module}{n}");
+            let alias = format!("{alias}{n}");
+            let vector = instance.to_ascii_uppercase();
+            for core in 0..2 {
+                let config =
+                    format!("schema=2\n[linux]\nkeep={{}}\n[proc{core}]\n{instance}={{{pins}}}");
+                let timer = format!("{config}\nwait_timer='ALARM1'");
+                let other_timer = format!("{config}\n[proc{}]\nwait_timer='ALARM1'", 1 - core);
+                let custom = format!("{timer}\ncustom_{instance}_handler=true");
+                let symbol = format!("__rp1_p{core}_{vector}");
+                let mut artifacts = None;
+                for (input, managed, custom) in [
+                    (&timer, true, false),
+                    (&config, false, false),
+                    (&other_timer, false, false),
+                    (&custom, false, true),
                 ] {
-                    assert_eq!(source.contains(&pattern), managed, "{pattern}");
+                    let decl: metadata::Declaration = toml::from_str(input).unwrap();
+                    decl.validate().unwrap();
+                    let source = resources(&decl, &[], &decl.shm_layout().unwrap()).unwrap();
+                    for pattern in [
+                        format!("export_name = \"{symbol}\""),
+                        format!(".isram.text.{symbol}"),
+                        format!("{module}::__on_interrupt::<{n}, {core}>()"),
+                        format!(
+                            "{alias}Parts = ::rp1_hal::{module}::Parts<{n}, {alias}Pins, ::rp1_hal::{module}::Irq<{n}, {core}>>"
+                        ),
+                        format!(
+                            "Binding::<::rp1_rt::interrupt::BlockIrq<{block}>, {irq}, {core}>::new()"
+                        ),
+                    ] {
+                        assert_eq!(source.contains(&pattern), managed, "{pattern}");
+                    }
+                    assert_eq!(
+                        irq_fields(&source, core)
+                            .contains(&format!("pub {vector}: proc{core}_irq::{vector},")),
+                        !managed
+                    );
+                    assert_eq!(
+                        source.contains(&format!("impl sealed::Admitted for {vector}")),
+                        !managed
+                    );
+                    assert_eq!(
+                        custom_irq_assertions(&decl)
+                            .contains(&format!("{symbol} != __rp1_default_irq")),
+                        custom
+                    );
+                    if managed || custom {
+                        let generated =
+                            super::generate("serial", "0.1", &decl, [0; 32], [0; 20]).unwrap();
+                        if let Some((note, dts)) = artifacts.take() {
+                            assert_eq!(generated.note, note);
+                            assert_eq!(generated.dts, dts);
+                        } else {
+                            artifacts = Some((generated.note, generated.dts));
+                        }
+                    }
                 }
-                assert_eq!(irq_fields(&source, core).contains("pub I2C1:"), !managed);
-                assert_eq!(source.contains("impl sealed::Admitted for I2C1"), !managed);
-                assert_eq!(
-                    custom_irq_assertions(&decl)
-                        .contains(&format!("{symbol} != __rp1_default_irq")),
-                    custom
-                );
             }
         }
     }

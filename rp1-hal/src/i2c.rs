@@ -1,10 +1,7 @@
 //! Seven-bit DesignWare controller (DOC: RP1 §9 and Linux i2c-designware).
 //!
-//! | Instance | Synchronous adapters |
-//! |---|---|
-//! | I2C1 with a generated IRQ | [`I2c::blocking`] (IRQ + WFE), explicit [`I2c::polling`] |
-//! | I2C0, unmanaged I2C1, I2C2–3 | Explicit [`I2c::polling`] |
-//! | I2C4–6 | No bank-0 routes |
+//! STATIC: declare I2C0–3 with a same-core wait timer for IRQ/WFE waits
+//! through [`I2c::blocking`]. [`I2c::polling`] selects polling.
 //!
 //! SCL counts are computed from `ic_clk` = clk_sys as reported by [`crate::clocks::Clocks`]
 //! (HW: 50 MHz on XOSC, 200 MHz on PLL_SYS); no shared clock or SCMI vote is changed.

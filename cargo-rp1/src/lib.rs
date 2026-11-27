@@ -305,10 +305,8 @@ fn check_irq_tables(file: &object::File<'_>, note: &Note<'_>) -> Result<()> {
             if address == default || (matches!(irq, 53 | 57) && core == 0) {
                 continue;
             }
-            let verified = rp1_build::board::IRQ_VERIFIED
-                .iter()
-                .find(|line| usize::from(line.irq) == irq);
-            if let Some(line) = verified
+            let route = rp1_build::board::irq_routes().find(|line| usize::from(line.irq) == irq);
+            if let Some(line) = route
                 && claims.iter().any(|c| {
                     let (kind, id) = line.owner.ownership();
                     c[0] == kind
@@ -318,7 +316,7 @@ fn check_irq_tables(file: &object::File<'_>, note: &Note<'_>) -> Result<()> {
             {
                 continue;
             }
-            let name = verified.map_or_else(|| format!("IRQ{irq}"), |line| line.name.to_string());
+            let name = route.map_or_else(|| format!("IRQ{irq}"), |line| line.name.to_string());
             return Err(format!(
                 "proc{core} defines a handler for {name}, but does not own that IRQ in OWNERSHIP"
             )
@@ -1002,7 +1000,7 @@ mod tests {
 
     #[test]
     fn irq_handlers_require_core_ownership_or_proc0_platform_irqs() {
-        let mut d: rp1_build::metadata::Declaration = toml::from_str("schema=2\n[proc0]\ngpio=[22]\ngpio_irq=[22]\ntimer=['ALARM0']\nspi0={sck=11,mosi=10,miso=9}\ndma={}\n[proc1]\ngpio=[27]\ngpio_irq=[27]\ntimer=['ALARM1']\nuart2={tx=4,rx=5}\nadc={}\npwm1={}\nhost_irq=true").unwrap();
+        let mut d: rp1_build::metadata::Declaration = toml::from_str("schema=2\n[linux]\nkeep={}\n[proc0]\ngpio=[22]\ngpio_irq=[22]\ntimer=['ALARM0']\nspi0={sck=11,mosi=10,miso=9}\nspi2={sck=3,mosi=2,miso=1}\ndma={}\n[proc1]\ngpio=[27]\ngpio_irq=[27]\ntimer=['ALARM1']\nuart2={tx=4,rx=5}\nspi5={sck=15,mosi=14,miso=13}\nadc={}\npwm1={}\nhost_irq=true").unwrap();
         d.validate().unwrap();
         for gpio_irq in [true, false] {
             if !gpio_irq {
@@ -1020,8 +1018,8 @@ mod tests {
                         check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap(), &note);
                     let owned = (irq == 0 && gpio_irq)
                         || match core {
-                            0 => [19, 26, 53, 57].contains(&irq),
-                            _ => [27, 41, 43, 52].contains(&irq),
+                            0 => [19, 21, 26, 53, 57].contains(&irq),
+                            _ => [24, 27, 41, 43, 52].contains(&irq),
                         };
                     assert_eq!(result.is_ok(), owned, "proc{core} IRQ{irq}: {result:?}");
                     if let Err(error) = result {
