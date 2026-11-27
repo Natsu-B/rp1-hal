@@ -87,7 +87,7 @@ fn fill(p: *mut u32, seed: u32) {
 }
 
 pub fn init(token: crate::rp1::Proc1Dma, clocks: &rp1_hal::clocks::Clocks) -> Option<Dma> {
-    let dma = token.init(clocks).map_err(|e| e.error);
+    let dma = token.init(clocks).map_err(|e| *e.error());
     log!(
         "p1 dma init rc=0x{:x}\n",
         code(dma.as_ref().map(|_| ()).map_err(|e| *e))

@@ -189,17 +189,11 @@ impl Token {
     #[doc(hidden)]
     pub fn init(self, clocks: &Clocks) -> Result<Dma, crate::InitError<Token, Error>> {
         if !clocks.still_current() {
-            return Err(crate::InitError {
-                error: Error::Precondition,
-                resources: self,
-            });
+            return Err(crate::InitError::new(Error::Precondition, self));
         }
         match start(&mut Mmio) {
             Ok(()) => Ok(Dma { _token: self }),
-            Err(error) => Err(crate::InitError {
-                error,
-                resources: self,
-            }),
+            Err(error) => Err(crate::InitError::new(error, self)),
         }
     }
 }

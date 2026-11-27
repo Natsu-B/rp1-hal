@@ -267,7 +267,7 @@ pub struct Spi<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> {
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {
     fn from(e: crate::InitError<R, Error>) -> Self {
-        e.error
+        *e.error()
     }
 }
 
@@ -305,7 +305,7 @@ impl<const N: u8> Token<N> {
     ///     // Retry once with 8-bit frames, then give up with `?`.
     ///     match token.init(sck, mosi, miso, clocks, config.with_frame_bits(32)) {
     ///         Ok(spi) => Ok(spi),
-    ///         Err(e) => Ok(e.resources.init(clocks, config)?),
+    ///         Err(e) => Ok(e.into_parts().init(clocks, config)?),
     ///     }
     /// }
     /// ```
@@ -368,15 +368,15 @@ impl<const N: u8> Token<N> {
             }
             Err(error) => {
                 let (sck, mosi, miso) = pins;
-                Err(crate::InitError {
+                Err(crate::InitError::new(
                     error,
-                    resources: Parts {
+                    Parts {
                         token: self,
                         sck,
                         mosi,
                         miso,
                     },
-                })
+                ))
             }
         }
     }
@@ -1489,18 +1489,16 @@ mod tests {
             let mut m = Model::new(64);
             m.sys = sys;
             let mut routed = false;
-            let crate::InitError {
-                error,
-                resources:
-                    Parts {
-                        token: t,
-                        sck,
-                        mosi,
-                        miso,
-                    },
-            } = init_model(token, &mut m, pins, config, &mut routed)
+            let e = init_model(token, &mut m, pins, config, &mut routed)
                 .err()
                 .expect("init must fail");
+            let error = *e.error();
+            let Parts {
+                token: t,
+                sck,
+                mosi,
+                miso,
+            } = e.into_parts();
             assert_eq!(error, want, "{sys:?} {config:?}");
             assert!(m.resets.is_empty() && m.writes.is_empty() && !routed);
             (token, pins) = (t, (sck, mosi, miso));
@@ -1513,7 +1511,7 @@ mod tests {
         let e = init_model(token, &mut m, pins, config.with_frame_bits(32), &mut routed)
             .err()
             .expect("32 bits on a 16-bit instance");
-        assert_eq!(e.error, Error::Invalid);
+        assert_eq!(*e.error(), Error::Invalid);
         assert_eq!((m.resets.as_slice(), routed), (&[reset_bit(0)][..], false));
         let config = config.with_frame_bits(16).with_rx_sample_dly(3);
         let Parts {
@@ -1521,7 +1519,7 @@ mod tests {
             sck,
             mosi,
             miso,
-        } = e.resources;
+        } = e.into_parts();
         let spi = init_model(token, &mut m, (sck, mosi, miso), config, &mut routed).expect("retry");
         assert!(routed);
         assert_eq!(
@@ -1554,7 +1552,7 @@ mod tests {
         let e = init_model(unsafe { Token::new() }, &mut m, pins(), config, &mut routed)
             .err()
             .expect("strict check must fail");
-        assert_eq!(e.error, Error::Precondition);
+        assert_eq!(*e.error(), Error::Precondition);
         assert!(m.resets.is_empty() && m.writes.is_empty() && !routed);
         assert_eq!((m.strict, m.fast), (1, 0));
 

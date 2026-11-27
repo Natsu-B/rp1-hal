@@ -52,6 +52,29 @@ macro_rules! pin_builder {
     };
 }
 
+// Keep the set of required routes sealed even when a driver is named by its pin tuple.
+macro_rules! complete_pins {
+    ($($num:ident: $route:ident),+; $active:ty) => {
+        /// The required pin routes for this peripheral.
+        pub trait CompletePins<const N: u8>: sealed::CompletePins<N> {
+            #[doc(hidden)]
+            type Active;
+        }
+
+        impl<const N: u8, $(const $num: u8),+> sealed::CompletePins<N> for ($(Pin<$num>,)+)
+        where
+            $(Pin<$num>: $route<N>,)+
+        {}
+
+        impl<const N: u8, $(const $num: u8),+> CompletePins<N> for ($(Pin<$num>,)+)
+        where
+            $(Pin<$num>: $route<N>,)+
+        {
+            type Active = $active;
+        }
+    };
+}
+
 pub mod adc;
 pub mod clocks;
 pub mod cold;
@@ -68,42 +91,95 @@ pub mod spi;
 pub mod timer;
 pub mod uart;
 
-/// A driver's `init` that failed: the driver's error, and what `init` consumed, unchanged,
-/// for a retry. uart, i2c and spi return the [`Parts`](uart::Parts) bundle their `free` returns
-/// (token and pins), pwm, adc and dma their token. `Debug` prints only the error; `?` converts
-/// it to the driver's error, dropping the resources (nothing is running yet).
-///
-/// ```
-/// struct Token;
-/// let e = rp1_hal::InitError { error: rp1_hal::uart::Error::Invalid, resources: Token };
-/// assert_eq!(format!("{e:?}"), "Invalid");
-/// let error: rp1_hal::uart::Error = e.into();
-/// assert_eq!(error, rp1_hal::uart::Error::Invalid);
-/// ```
-pub struct InitError<R, E> {
-    pub error: E,
-    pub resources: R,
+/// Failed initialization. Parts are available once the peripheral can be initialized again.
+/// If recovery is pending, this error retains ownership of the peripheral and its pins.
+pub struct InitError<R, E, H = core::convert::Infallible> {
+    error: E,
+    state: Result<R, H>,
 }
-impl<R, E: core::fmt::Debug> core::fmt::Debug for InitError<R, E> {
+
+impl<R, E, H> InitError<R, E, H> {
+    pub(crate) fn new(error: E, parts: R) -> Self {
+        Self {
+            error,
+            state: Ok(parts),
+        }
+    }
+
+    pub(crate) fn recovering(error: E, owner: H) -> Self {
+        Self {
+            error,
+            state: Err(owner),
+        }
+    }
+
+    /// The error that stopped initialization.
+    pub fn error(&self) -> &E {
+        &self.error
+    }
+
+    /// Return the parts if ready for reuse. Otherwise return the recovery owner.
+    pub fn try_into_parts(self) -> Result<R, Self> {
+        match self.state {
+            Ok(parts) => Ok(parts),
+            Err(_) => Err(self),
+        }
+    }
+}
+
+impl<R, E> InitError<R, E, R> {
+    pub(crate) fn recover(self, stopped: impl FnOnce() -> bool) -> Result<R, Self> {
+        match self.state {
+            Ok(parts) => Ok(parts),
+            Err(parts) if stopped() => Ok(parts),
+            Err(_) => Err(self),
+        }
+    }
+}
+
+impl<R, E> InitError<R, E> {
+    /// Return resources from an initializer whose failures always permit a retry.
+    pub fn into_parts(self) -> R {
+        match self.state {
+            Ok(parts) => parts,
+            Err(never) => match never {},
+        }
+    }
+
+    /// Wrap the returned resources, for example in a generated ownership type.
+    #[doc(hidden)]
+    pub fn map_parts<S>(self, f: impl FnOnce(R) -> S) -> InitError<S, E> {
+        InitError {
+            error: self.error,
+            state: self.state.map(f),
+        }
+    }
+}
+
+impl<R, E: core::fmt::Debug, H> core::fmt::Debug for InitError<R, E, H> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.error.fmt(f)
     }
 }
 
-/// A `free` that did not release: the driver, unchanged and still configured, and the
-/// driver's error. `Debug` prints only the error, so `.unwrap()` and `.expect()` work although
-/// drivers are not `Debug`. There is deliberately no `From` for the error: `?` would drop a
-/// driver that still owns running hardware.
-///
-/// ```
-/// struct Driver;
-/// let e = rp1_hal::FreeError { driver: Driver, error: rp1_hal::uart::Error::Timeout };
-/// assert_eq!(format!("{e:?}"), "Timeout");
-/// ```
+/// Failed release. The driver still owns the peripheral. `Debug` prints only the error.
 pub struct FreeError<D, E> {
-    pub driver: D,
-    pub error: E,
+    driver: D,
+    error: E,
 }
+
+impl<D, E> FreeError<D, E> {
+    /// The error that prevented release.
+    pub fn error(&self) -> &E {
+        &self.error
+    }
+
+    /// Recover the driver and the error to continue using or releasing the peripheral.
+    pub fn into_parts(self) -> (D, E) {
+        (self.driver, self.error)
+    }
+}
+
 impl<D, E: core::fmt::Debug> core::fmt::Debug for FreeError<D, E> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.error.fmt(f)

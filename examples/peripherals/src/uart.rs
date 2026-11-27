@@ -6,21 +6,22 @@ use crate::rp1; // log! resolves rp1::log in this scope.
 use rp1_hal::{
     clocks::Clocks,
     fugit::{ExtU32, RateExtU32},
+    gpio::Pin,
     log,
     pac::pl011::int,
     timer::Timer,
-    uart::Parts,
+    uart::{Config, Parts},
 };
 
-pub fn run(uart: Parts<1, 0, 1>, clocks: &Clocks) -> Result<(), &'static str> {
+pub fn run(uart: Parts<1, (Pin<0>, Pin<1>)>, clocks: &Clocks) -> Result<(), &'static str> {
     let (mut tx, mut rx) = uart
-        .init(clocks, 115_200.Hz())
+        .init(clocks, Config::new(115_200.Hz()))
         .map_err(|_| "UART1 init failed")?
         .split();
 
     // Discard startup bytes so the nonce starts at the READY boundary.
     for _ in 0..32 {
-        if matches!(rx.read_byte(), Ok(None)) {
+        if matches!(rx.try_read_byte(), Ok(None)) {
             break;
         }
     }
@@ -33,7 +34,7 @@ pub fn run(uart: Parts<1, 0, 1>, clocks: &Clocks) -> Result<(), &'static str> {
         if timer.now_32() >= deadline {
             return Err("UART1 peer timeout");
         }
-        if let Some(byte) = rx.read_byte().map_err(|_| "UART1 receive error")? {
+        if let Some(byte) = rx.try_read_byte().map_err(|_| "UART1 receive error")? {
             return Ok(byte);
         }
     };
@@ -43,7 +44,9 @@ pub fn run(uart: Parts<1, 0, 1>, clocks: &Clocks) -> Result<(), &'static str> {
     for byte in &mut nonce {
         *byte = receive()?;
     }
-    embedded_io::Write::write_all(&mut tx, &nonce).map_err(|_| "UART1 transmit error")?;
+    use embedded_io::Write;
+    let mut tx = tx.polling();
+    tx.write_all(&nonce).map_err(|_| "UART1 transmit error")?;
     tx.flush().map_err(|_| "UART1 flush error")?;
     if receive()? != 0x06 {
         return Err("UART1 echo not acknowledged");

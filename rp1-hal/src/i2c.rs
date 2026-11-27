@@ -96,7 +96,7 @@ pub struct Token<const N: u8> {
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {
     fn from(e: crate::InitError<R, Error>) -> Self {
-        e.error
+        *e.error()
     }
 }
 pub struct I2c<const N: u8, const SDA: u8, const SCL: u8> {
@@ -129,7 +129,7 @@ impl<const N: u8> Token<N> {
     ///     // Fast mode, else standard mode, else the error through `?`.
     ///     match token.init(sda, scl, clocks, Speed::Fast) {
     ///         Ok(i2c) => Ok(i2c),
-    ///         Err(e) => Ok(e.resources.init(clocks, Speed::Standard)?),
+    ///         Err(e) => Ok(e.into_parts().init(clocks, Speed::Standard)?),
     ///     }
     /// }
     /// ```
@@ -183,14 +183,14 @@ impl<const N: u8> Token<N> {
                     clocks: *clocks,
                 })
             }
-            Err(error) => Err(crate::InitError {
+            Err(error) => Err(crate::InitError::new(
                 error,
-                resources: Parts {
+                Parts {
                     token: self,
                     sda,
                     scl,
                 },
-            }),
+            )),
         }
     }
 }
@@ -872,12 +872,11 @@ mod tests {
             let mut m = Model::new(16);
             m.sys = sys;
             let mut routed = false;
-            let crate::InitError {
-                error,
-                resources: Parts { token: t, sda, scl },
-            } = init_model(token, &mut m, pins, &clocks, speed, &mut routed)
+            let e = init_model(token, &mut m, pins, &clocks, speed, &mut routed)
                 .err()
                 .expect("init must fail");
+            let error = *e.error();
+            let Parts { token: t, sda, scl } = e.into_parts();
             assert_eq!(error, want);
             assert!(m.resets.is_empty() && m.writes == 0 && !routed);
             (token, pins) = (t, (sda, scl));
@@ -914,7 +913,7 @@ mod tests {
         )
         .err()
         .expect("strict check must fail");
-        assert_eq!(e.error, Error::Precondition);
+        assert_eq!(*e.error(), Error::Precondition);
         assert!(m.resets.is_empty() && m.writes == 0 && !routed);
         assert_eq!((m.strict, m.fast), (1, 0));
 

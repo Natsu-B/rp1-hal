@@ -117,7 +117,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         let i2c = p
             .i2c1
             .init(&clocks, rp1_hal::i2c::Speed::Standard)
-            .map_err(|e| e.error);
+            .map_err(|e| *e.error());
         log!("p0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
         i2c.ok()
     };
@@ -210,7 +210,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     #[cfg(feature = "adc")]
     let mut adc = {
         let adc = match clocks {
-            Ok(c) => p.adc.init(&c).map_err(|e| e.error),
+            Ok(c) => p.adc.init(&c).map_err(|e| *e.error()),
             Err(_) => Err(rp1_hal::adc::Error::Precondition),
         };
         log!("p1 adc init {:?}\n", adc.as_ref().map(|_| ())).unwrap();
@@ -230,7 +230,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     &c,
                     rp1_hal::spi::Config::new(1.MHz(), embedded_hal::spi::MODE_0),
                 )
-                .map_err(|e| e.error),
+                .map_err(|e| *e.error()),
             Err(_) => Err(rp1_hal::spi::Error::Precondition),
         };
         match &spi {

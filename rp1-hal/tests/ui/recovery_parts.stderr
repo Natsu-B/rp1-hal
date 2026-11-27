@@ -1,0 +1,23 @@
+error[E0599]: no method named `into_parts` found for struct `rp1_hal::InitError<rp1_hal::uart::Parts<2, (rp1_hal::gpio::Pin<4>, rp1_hal::gpio::Pin<5>)>, rp1_hal::uart::Error, rp1_hal::uart::Parts<2, (rp1_hal::gpio::Pin<4>, rp1_hal::gpio::Pin<5>)>>` in the current scope
+ --> tests/ui/recovery_parts.rs:4:19
+  |
+4 |     let _ = error.into_parts();
+  |                   ^^^^^^^^^^
+  |
+help: there is a method `try_into_parts` with a similar name
+  |
+4 |     let _ = error.try_into_parts();
+  |                   ++++
+
+error[E0277]: `?` couldn't convert the error to `rp1_hal::uart::Error`
+ --> tests/ui/recovery_parts.rs:8:15
+  |
+7 | fn discard_owner(error: InitError<2, (Pin<4>, Pin<5>)>) -> Result<(), rp1_hal::uart::Error> {
+  |                                                            -------------------------------- expected `rp1_hal::uart::Error` because of this
+8 |     Err(error)?;
+  |     ----------^ unsatisfied trait bound
+  |     |
+  |     this can't be annotated with `?` because it has type `Result<_, rp1_hal::InitError<rp1_hal::uart::Parts<2, (rp1_hal::gpio::Pin<4>, rp1_hal::gpio::Pin<5>)>, rp1_hal::uart::Error, rp1_hal::uart::Parts<2, (rp1_hal::gpio::Pin<4>, rp1_hal::gpio::Pin<5>)>>>`
+  |
+  = help: the trait `From<rp1_hal::InitError<rp1_hal::uart::Parts<2, (rp1_hal::gpio::Pin<4>, rp1_hal::gpio::Pin<5>)>, rp1_hal::uart::Error, rp1_hal::uart::Parts<2, (rp1_hal::gpio::Pin<4>, rp1_hal::gpio::Pin<5>)>>>` is not implemented for `rp1_hal::uart::Error`
+  = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait

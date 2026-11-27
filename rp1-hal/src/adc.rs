@@ -94,7 +94,7 @@ impl Token {
     ///     // Once more, then the error through `?`.
     ///     match token.init(clocks) {
     ///         Ok(adc) => Ok(adc),
-    ///         Err(e) => Ok(e.resources.init(clocks)?),
+    ///         Err(e) => Ok(e.into_parts().init(clocks)?),
     ///     }
     /// }
     /// ```
@@ -108,10 +108,7 @@ impl Token {
                 clk_hz,
                 temperature_sensor: false,
             }),
-            Err(error) => Err(crate::InitError {
-                error,
-                resources: self,
-            }),
+            Err(error) => Err(crate::InitError::new(error, self)),
         }
     }
 }

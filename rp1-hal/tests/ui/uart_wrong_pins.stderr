@@ -1,17 +1,31 @@
 error[E0308]: mismatched types
- --> tests/ui/uart_wrong_pins.rs:6:33
+ --> tests/ui/uart_wrong_pins.rs:5:37
   |
-6 |     let _ = token.init(unsafe { Pin::<6>::new() }, unsafe { Pin::<14>::new() }, clocks, 115_200.Hz());
-  |                                 ^^^^^^^^^^^^^^^ expected `4`, found `6`
+5 |     let _ = Pins::<2>::builder().tx(tx);
+  |                                  -- ^^ expected `4`, found `6`
+  |                                  |
+  |                                  arguments to this method are incorrect
   |
   = note: expected struct `Pin<4>`
              found struct `Pin<6>`
+note: method defined here
+ --> src/uart.rs
+  |
+  | pin_builder!(Pin, [], tx: TX => TxPin);
+  |                       ^^
 
 error[E0308]: mismatched types
- --> tests/ui/uart_wrong_pins.rs:6:61
+ --> tests/ui/uart_wrong_pins.rs:6:50
   |
-6 |     let _ = token.init(unsafe { Pin::<6>::new() }, unsafe { Pin::<14>::new() }, clocks, 115_200.Hz());
-  |                                                             ^^^^^^^^^^^^^^^^ expected `5`, found `14`
+6 |     let _ = Pins::<2>::builder().tx(valid_tx).rx(rx);
+  |                                               -- ^^ expected `5`, found `14`
+  |                                               |
+  |                                               arguments to this method are incorrect
   |
   = note: expected struct `Pin<5>`
              found struct `Pin<14>`
+note: method defined here
+ --> src/uart.rs
+  |
+  | pin_builder!(Pin, [tx: TX], rx: RX => RxPin);
+  |                             ^^

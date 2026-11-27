@@ -552,7 +552,7 @@ fn resources(
     Ok(s)
 }
 
-/// Field type, initializer and bundled pins of an instance's resource: `uart::Parts<2, 4, 5>`
+/// Field type, initializer and bundled pins of an instance's resource: `uart::Parts<2, (Pin<4>, Pin<5>)>`
 /// with the token and the TX/RX pins, and so on; the ADC is a bare token. UART CTS/RTS are not
 /// bundled (rp1-hal has no flow control) and stay in `pins`.
 fn instance_resource(
@@ -590,7 +590,15 @@ fn instance_resource(
         .map(|(role, pin)| pin.ok_or_else(|| format!("{name}.{role} is missing").into()))
         .collect::<Result<Vec<u8>>>()?;
     let numbers: Vec<String> = pins.iter().map(u8::to_string).collect();
-    let ty = format!("::rp1_hal::{module}::Parts<{n}, {}>", numbers.join(", "));
+    let ty = if module == "uart" {
+        let pins = numbers
+            .iter()
+            .map(|pin| format!("::rp1_hal::gpio::Pin<{pin}>"))
+            .collect::<Vec<_>>();
+        format!("::rp1_hal::{module}::Parts<{n}, ({})>", pins.join(", "))
+    } else {
+        format!("::rp1_hal::{module}::Parts<{n}, {}>", numbers.join(", "))
+    };
     let mut init = format!(
         "::rp1_hal::{module}::Parts::new(unsafe {{ ::rp1_hal::{module}::Token::new() }}, ::rp1_hal::{module}::Pins::<{n}>::builder()"
     );
@@ -624,9 +632,7 @@ fn dma_resource(
             pub fn init(self, clocks: &::rp1_hal::clocks::Clocks) -> ::core::result::Result<\
                 {initialized}, ::rp1_hal::InitError<Self, ::rp1_hal::dma::Error>> {{\n\
                 #[allow(unused_mut)]\n\
-                let mut controller = self.0.init(clocks).map_err(|e| ::rp1_hal::InitError {{\n\
-                    error: e.error, resources: Self(e.resources),\n\
-                }})?;\n\
+                let mut controller = self.0.init(clocks).map_err(|e| e.map_parts(Self))?;\n\
                 Ok({initialized} {{"
     )?;
     for n in channels {
@@ -826,7 +832,7 @@ spi0 = { sck = 11, mosi = 10, miso = 9 }
         for field in [
             "pub TIMER_ALARM0: ::rp1_hal::timer::Alarm<0>,",
             "pub i2c1: ::rp1_hal::i2c::Parts<1, 2, 3>,",
-            "pub uart2: ::rp1_hal::uart::Parts<2, 4, 5>,",
+            "pub uart2: ::rp1_hal::uart::Parts<2, (::rp1_hal::gpio::Pin<4>, ::rp1_hal::gpio::Pin<5>)>,",
             "pub adc: ::rp1_hal::adc::Token,",
             "pub spi0: ::rp1_hal::spi::Parts<0, 11, 10, 9>,",
             "uart2: ::rp1_hal::uart::Parts::new(unsafe { ::rp1_hal::uart::Token::new() }, \

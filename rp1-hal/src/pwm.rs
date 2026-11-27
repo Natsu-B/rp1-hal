@@ -97,10 +97,7 @@ impl<const N: u8> Token<N> {
     /// initialized.
     pub fn init(self, clocks: &Clocks) -> Result<Channels<N>, crate::InitError<Token<N>, Error>> {
         if !clocks.still_current() {
-            return Err(crate::InitError {
-                error: Error::Precondition,
-                resources: self,
-            });
+            return Err(crate::InitError::new(Error::Precondition, self));
         }
         match start(&mut Mmio, N) {
             Ok(()) => Ok(Channels {
@@ -109,10 +106,7 @@ impl<const N: u8> Token<N> {
                 channel2: Channel::new(),
                 channel3: Channel::new(),
             }),
-            Err(error) => Err(crate::InitError {
-                error,
-                resources: self,
-            }),
+            Err(error) => Err(crate::InitError::new(error, self)),
         }
     }
 }
@@ -140,7 +134,7 @@ impl<const N: u8> Channels<N> {
     /// ```no_run
     /// # use rp1_hal::pwm::{Channels, Token};
     /// fn release(channels: Channels<0>) -> Token<0> {
-    ///     channels.free().unwrap_or_else(|e| e.driver.abort())
+    ///     channels.free().unwrap_or_else(|e| e.into_parts().0.abort())
     /// }
     /// ```
     pub fn free(self) -> Result<Token<N>, crate::FreeError<Self, Error>> {
