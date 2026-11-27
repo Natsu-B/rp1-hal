@@ -489,7 +489,7 @@ impl Firmware {
         if direct_rpc {
             // Resume a request that the former caller committed before forcing.
             if tx.inner.free() != r.depth {
-                tx.force_request();
+                tx.force_request()?;
             }
         } else if let Some(publisher) = &tx.publisher {
             // Publishing a seq for an empty ring would consume the receiver's
@@ -963,15 +963,22 @@ pub struct RingTx<T> {
     session: Rc<Session>,
 }
 impl<T: Message> RingTx<T> {
-    fn force_request(&self) {
-        self.publisher
-            .as_ref()
-            .expect("direct RPC has a strict publisher")
-            .complete_head(&self.session.link);
+    fn force_request(&self) -> Result<()> {
+        let generation = self.session.generation()?;
+        // Complete the posted head through its BAR2 SRAM window and verify
+        // the generation with the same read before forcing the doorbell.
+        barrier();
+        match self.session.link.read(proto::link::SHM_GENERATION) {
+            u32::MAX => return Err(Error::PeerDown(PeerDown::LinkDown)),
+            live if live != generation => return Err(Error::PeerDown(PeerDown::Restarted)),
+            _ => {}
+        }
+        barrier();
         self.doorbell
             .as_ref()
             .expect("direct RPC has a doorbell")
             .ring_flushed();
+        Ok(())
     }
 
     /// Complete the head through its own window before ringing a sleeping reader.

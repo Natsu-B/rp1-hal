@@ -154,6 +154,17 @@ impl StrictSession {
 
     pub(crate) fn check_link(&self, link: &Mapping) -> Result<()> {
         check_epoch(link, self.epoch)?;
+        Self::check_ready(link)
+    }
+
+    pub(crate) fn check_rpc_link(&self, link: &Mapping) -> Result<()> {
+        // Ready was negotiated against this status epoch. The status epoch
+        // changes before the records are reset and is the source of BOOT_EPOCH.
+        Self::check_ready(link)?;
+        check_epoch_word(link.read(proto::status::EPOCH), self.epoch)
+    }
+
+    fn check_ready(link: &Mapping) -> Result<()> {
         match link.read(proto::link::SHM_STATUS) {
             proto::link::SHM_READY => Ok(()),
             proto::link::SHM_WINDOW_LOST | u32::MAX => {
@@ -173,7 +184,11 @@ impl Drop for ListenerGuard<'_> {
 }
 
 fn check_epoch(link: &Mapping, epoch: BootEpoch) -> Result<()> {
-    match link.read(mailbox::BOOT_EPOCH) {
+    check_epoch_word(link.read(mailbox::BOOT_EPOCH), epoch)
+}
+
+fn check_epoch_word(word: u32, epoch: BootEpoch) -> Result<()> {
+    match word {
         u32::MAX => Err(Error::PeerDown(crate::PeerDown::LinkDown)),
         word if word != epoch.word() => Err(Error::PeerDown(crate::PeerDown::Restarted)),
         _ => Ok(()),
@@ -223,12 +238,6 @@ impl RingPublisher {
     pub(crate) fn publish(&mut self, link: &Mapping) -> Result<bool> {
         let head = self.head;
         Ok(self.publisher.publish(|| Self::read_head(link, head))?)
-    }
-
-    pub(crate) fn complete_head(&self, link: &Mapping) {
-        barrier();
-        Self::read_head(link, self.head);
-        barrier();
     }
 
     fn read_head(link: &Mapping, head: usize) {

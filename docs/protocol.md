@@ -499,8 +499,8 @@ owner の panic/fault から期限より早く起床するには独立した sup
 返信通知を要求する slot の seq を `index ^ 0x80000000` として書く。RP1 は
 期待する 32-bit index とこの符号化の両方を照合する。通知なしの要求は通常の seq を使う。
 
-Linux は要求を公開する前に listener を初回 enable する。要求 head の同窓
-readback が済んでから force を書く。
+Linux は要求を公開する前に listener を初回 enable する。同じ BAR2 SRAM 窓の
+世代を readback して要求 head の書き込みを完了し、世代を照合してから force を書く。
 RP1 は要求を読んでから返信を公開し、DDR head の readback 後に未消費なら pulse を送る。
 Linux は既存 count を受け取った場合は再 enable してからローカル DDR の
 返信 head を確認し、空なら同じ期限まで `ppoll` する。
