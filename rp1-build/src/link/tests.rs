@@ -439,6 +439,7 @@ fn generated_ownership_is_checked_by_rust() {
         "dma".into(),
         crate::metadata::Instance::Dma(crate::metadata::DmaChannels {
             channels: Some(vec![0, 2]),
+            pool: None,
         }),
     );
     d.validate().unwrap();
@@ -506,8 +507,8 @@ fn main() {}
     let _channel = dma.ch2;
     let _ = dma.try_free();
 }
-fn active(mut dma: rp1::Proc1DmaChannels, src: rp1_hal::dma::Lease<'_>, dst: rp1_hal::dma::Lease<'_>) {
-    let transfer = dma.ch0.try_start(src, dst).unwrap();
+fn active(mut dma: rp1::Proc1DmaChannels, mut src: rp1_hal::dma::Lease<'_>, mut dst: rp1_hal::dma::Lease<'_>) {
+    let transfer = dma.ch0.try_start(&mut src, &mut dst).unwrap();
     let _ = dma.try_free();
     drop(transfer);
 }

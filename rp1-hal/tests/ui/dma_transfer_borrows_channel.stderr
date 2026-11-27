@@ -1,7 +1,7 @@
 error[E0499]: cannot borrow `*channel` as mutable more than once at a time
  --> tests/ui/dma_transfer_borrows_channel.rs:5:13
   |
-4 |     let transfer = channel.try_start(source, destination).unwrap();
+4 |     let transfer = channel.try_start(&mut source, &mut destination).unwrap();
   |                    ------- first mutable borrow occurs here
 5 |     let _ = channel.try_recover();
   |             ^^^^^^^ second mutable borrow occurs here

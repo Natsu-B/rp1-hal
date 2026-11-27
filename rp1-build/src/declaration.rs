@@ -49,6 +49,17 @@ pub struct DmaChannels {
     /// Omitted in legacy declarations, which grant all eight channels.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channels: Option<Vec<u8>>,
+    /// Optional linker-reserved shared SRAM backing for the generated leases.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool: Option<DmaPool>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DmaPool {
+    pub slots: u32,
+    /// Capacity of each slot in bytes.
+    pub bytes: u32,
 }
 
 impl DmaChannels {
@@ -168,7 +179,7 @@ impl Instance {
             }
             Kind::Dma => {
                 let dma: DmaChannels = parse_pin_table(value, &path)?;
-                if owner == "linux.keep" && dma.channels.is_some() {
+                if owner == "linux.keep" && (dma.channels.is_some() || dma.pool.is_some()) {
                     return Err(format!("E4: {path}: Linux owns the whole DMA controller").into());
                 }
                 let mut seen = 0u8;
@@ -180,6 +191,17 @@ impl Instance {
                         .into());
                     }
                     seen |= 1 << channel;
+                }
+                if let Some(DmaPool { slots, bytes }) = dma.pool
+                    && (slots == 0
+                        || bytes == 0
+                        || bytes % 16 != 0
+                        || u64::from(slots) * u64::from(bytes) > 48 * 1024)
+                {
+                    return Err(format!(
+                        "E0: {path}.pool: use nonzero slots of a multiple of 16 bytes within 48 KiB"
+                    )
+                    .into());
                 }
                 Self::Dma(dma)
             }

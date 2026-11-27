@@ -32,14 +32,14 @@
 //! Cancellation stops the engine's buffer accesses, but does not drain accepted remote writes.
 //!
 //! # Cancellation
-//! A transfer owns both pool leases while it holds exclusive access to the channel.
+//! A transfer borrows both pool leases while it holds exclusive access to the channel.
 //! Cancellation requests graceful disable, then checks for a terminal state with a bounded
 //! number of MMIO accesses. A running or ambiguous channel retains its leases. Drop requests
 //! the same stop and quarantines the slots if it cannot prove quiescence. A forgotten transfer
 //! leaves its pool claims and the channel's in-flight state intact.
 //!
 //! IRQ40 delivery is pending a separate hardware probe. Waiting for completion is available
-//! by selecting `PollingTimeout`. Thread-mode cancellation can use the timer IRQ.
+//! through `copy_polling` and `wait_polling`. Thread-mode cancellation can use the timer IRQ.
 use crate::{
     clocks::Clocks,
     linux_blocks::Mmio,
@@ -52,6 +52,7 @@ use crate::{
 mod pool;
 #[cfg(feature = "unstable-ring-dma")]
 mod ring;
+use pool::EngineClaim;
 pub use pool::{Lease, Pool};
 #[cfg(feature = "unstable-ring-dma")]
 pub use ring::ExperimentalRingDma;
@@ -334,15 +335,16 @@ pub fn __stop_until(
     end: Deadline,
     mut stop: impl FnMut() -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let mut context = wait.thread_context()?;
-    let now = Timer::new().now();
-    end.check(now)?;
-    let limit = Deadline::after_ticks(now, CLEANUP_US)?;
-    let end = Deadline::at(end.instant().min(limit.instant()));
+    let entered = Timer::new().now();
+    // Cleanup must request the stop even if the context or deadline rules out a wait.
     match stop() {
         Err(Error::Recovering) => {}
         result => return result,
     }
+    let mut context = wait.thread_context()?;
+    end.check(Timer::new().now())?;
+    let limit = Deadline::after_ticks(entered, CLEANUP_US)?;
+    let end = Deadline::at(end.instant().min(limit.instant()));
     // IRQ40 is unverified. The timer wakes at the capped deadline even if no DMA event occurs.
     match context.wait_until(end, || match stop() {
         Err(Error::Recovering) => None,
@@ -389,54 +391,38 @@ pub const fn max_block_bytes(width_log2: u32) -> u32 {
     }
 }
 
-/// A rejected DMA admission, with both CPU-owned leases.
-pub type StartError<'p> = crate::InitError<(Lease<'p>, Lease<'p>), Error>;
-
 impl<const N: u8> Channel<N> {
-    /// Starts one local SRAM-to-SRAM block. Both leases are returned on admission failure.
-    pub fn try_start<'ch, 'pool>(
-        &'ch mut self,
-        src: Lease<'pool>,
-        dst: Lease<'pool>,
-    ) -> Result<Transfer<'ch, 'pool>, StartError<'pool>> {
-        self.start_leased(&mut Mmio, src, dst)
+    /// Starts one local SRAM-to-SRAM block. Admission errors leave both leases as they were.
+    pub fn try_start<'t>(
+        &'t mut self,
+        src: &'t mut Lease<'_>,
+        dst: &'t mut Lease<'_>,
+    ) -> Result<Transfer<'t>, Error> {
+        start_leased(&mut Mmio, N, &mut self.state, src, dst)
     }
 
-    fn start_leased<'ch, 'pool>(
-        &'ch mut self,
-        io: &mut impl Registers,
-        src: Lease<'pool>,
-        dst: Lease<'pool>,
-    ) -> Result<Transfer<'ch, 'pool>, StartError<'pool>> {
-        let raw = match start_leased(io, N, &mut self.state, &src, &dst) {
-            Ok(raw) => raw,
-            Err(error) => return Err(crate::InitError::new(error, (src, dst))),
-        };
-        Ok(Transfer {
-            raw,
-            buffers: Some((src, dst)),
-        })
-    }
-
-    /// Copies equal-length pool leases with explicit polling in thread mode. On an error,
-    /// proven-idle slots return to their pools. Slots with an unconfirmed stop remain claimed.
-    pub fn copy<'p>(
+    /// Copies equal-length pool leases using bounded polling in thread mode.
+    /// On an unconfirmed stop, both leases remain quarantined and yield empty slices.
+    pub fn copy_polling(
         &mut self,
-        src: Lease<'p>,
-        dst: Lease<'p>,
-        timeout: PollingTimeout,
-    ) -> Result<(Lease<'p>, Lease<'p>), Error> {
-        copy_leases(N, &mut self.state, src, dst, timeout.0)
+        src: &mut Lease<'_>,
+        dst: &mut Lease<'_>,
+        timeout: Duration,
+    ) -> Result<(), Error> {
+        copy_leases(N, &mut self.state, src, dst, timeout)
     }
 
     /// Start a single block with caller-managed bus addresses.
     ///
     /// # Safety
     /// Keep the complete, non-overlapping ranges valid and reserved even if the transfer is
-    /// dropped or forgotten. The caller must independently establish remote drain and window
-    /// stability before reusing or publishing remote memory. On an unconfirmed stop, preserve
-    /// both ranges until external quiescence is established. Addresses must not change this
-    /// controller, its clocks, firmware state, or any concurrently accessed memory.
+    /// dropped or forgotten. Until quiescence is proven, no Rust reference may cover the
+    /// destination, nothing else may write either range, and neither range may be memory
+    /// the program relies on through Rust references. If the handle is lost, maintain these
+    /// requirements for the firmware epoch. The caller must independently establish remote
+    /// drain and window stability before reusing or publishing remote memory. Addresses must
+    /// not change this controller, its clocks, firmware state, or any concurrently accessed
+    /// memory.
     pub unsafe fn start_raw(
         &mut self,
         src: BusAddr,
@@ -468,6 +454,7 @@ impl<const N: u8> Channel<N> {
     }
 
     /// Recheck a stop, including one left behind by a forgotten transfer.
+    /// If a forgotten transfer is still active, this requests graceful disable first.
     /// Returns success only after the channel's terminal status has been acknowledged.
     pub fn try_recover(&mut self) -> Result<(), Error> {
         self.recover(&mut Mmio)
@@ -481,7 +468,7 @@ impl<const N: u8> Channel<N> {
                 Ok(())
             };
         }
-        let _ = request_stop(io, N, &mut self.state, Error::Cancelled);
+        let _ = request_stop(io, N, &mut self.state, Error::Cancelled, &mut 0);
         match self.state {
             State::Idle => Ok(()),
             State::Aborted => Err(Error::Aborted),
@@ -491,80 +478,75 @@ impl<const N: u8> Channel<N> {
 }
 
 #[inline(never)]
-fn start_leased<'ch>(
+fn start_leased<'t>(
     io: &mut impl Registers,
     n: u8,
-    state: &'ch mut State,
-    src: &Lease<'_>,
-    dst: &Lease<'_>,
-) -> Result<RawTransfer<'ch>, Error> {
-    if src.len() != dst.len() {
+    state: &'t mut State,
+    src: &'t mut Lease<'_>,
+    dst: &'t mut Lease<'_>,
+) -> Result<Transfer<'t>, Error> {
+    let len = src.len();
+    if len != dst.len() {
         return Err(Error::Invalid);
     }
-    start_block(io, n, state, src.address()?, dst.address()?, src.len())?;
-    Ok(RawTransfer::new(n, state))
-}
-
-/// Explicitly select a bounded busy-poll for [`Channel::copy`]. IRQ40 delivery is unverified.
-#[derive(Clone, Copy, Debug)]
-pub struct PollingTimeout(Duration);
-
-impl PollingTimeout {
-    pub const fn new(timeout: Duration) -> Self {
-        Self(timeout)
+    let (source, destination) = (src.address()?, dst.address()?);
+    // Mark both slots before enable. Even an unwinding admission keeps the claim if
+    // the enable may have made it to the engine. Every returned admission error precedes it.
+    let mut src = src.hand_to_engine();
+    let mut dst = dst.hand_to_engine();
+    if let Err(error) = start_block(io, n, state, source, destination, len) {
+        src.return_to_cpu();
+        dst.return_to_cpu();
+        return Err(error);
     }
+    Ok(Transfer {
+        raw: RawTransfer::new(n, state),
+        src,
+        dst,
+    })
 }
 
 #[inline(never)]
-fn copy_leases<'p>(
+fn copy_leases(
     n: u8,
     state: &mut State,
-    src: Lease<'p>,
-    dst: Lease<'p>,
+    src: &mut Lease<'_>,
+    dst: &mut Lease<'_>,
     timeout: Duration,
-) -> Result<(Lease<'p>, Lease<'p>), Error> {
+) -> Result<(), Error> {
     rp1_rt::interrupt::ThreadGuard::new().map_err(timer::Error::from)?;
     let end = Deadline::after(timeout)?;
     clock_current(&mut Mmio)?;
     end.check(Timer::new().now())?;
-    let raw = start_leased(&mut Mmio, n, state, &src, &dst)?;
-    let mut transfer = Transfer {
-        raw,
-        buffers: Some((src, dst)),
-    };
-    transfer.raw.wait_accepted(&mut Mmio, end)?;
-    Ok(transfer.buffers.take().unwrap())
+    let mut transfer = start_leased(&mut Mmio, n, state, src, dst)?;
+    transfer.raw.wait_accepted(&mut Mmio, end)
 }
 
-/// Pool leases recovered after a terminal observation. A cancelled destination can contain
-/// a prefix of the transfer. Inspect the result before consuming the destination.
-#[non_exhaustive]
-pub struct Completed<'p> {
-    pub result: Result<(), Error>,
-    pub src: Lease<'p>,
-    pub dst: Lease<'p>,
-}
-
-/// A running or quarantined local transfer. Its leases are inaccessible until reclaimed.
+/// A running or quarantined local transfer. A cancelled destination may contain a
+/// prefix or the whole block. Inspect the transfer outcome before using the destination.
 #[must_use]
-pub struct Transfer<'ch, 'p> {
-    raw: RawTransfer<'ch>,
-    buffers: Option<(Lease<'p>, Lease<'p>)>,
+pub struct Transfer<'t> {
+    raw: RawTransfer<'t>,
+    src: EngineClaim<'t>,
+    dst: EngineClaim<'t>,
 }
 
-impl<'p> Transfer<'_, 'p> {
+impl Transfer<'_> {
     /// Observe completion once, issuing a graceful stop on a bus error.
     pub fn try_complete(&mut self) -> Option<Result<(), Error>> {
         self.raw.try_complete()
     }
 
     /// Request graceful disable and make one bounded stop check.
-    /// On `Recovering`, this handle still owns both slots.
+    /// On `Recovering`, this handle still holds both slots for the engine.
     pub fn try_cancel(&mut self) -> Result<(), Error> {
         self.raw.try_cancel()
     }
 
-    /// Request cancellation, then use the timer alarm for a bounded recheck in thread mode.
+    /// Request cancellation, then recheck in thread mode using the dedicated timer.
+    ///
+    /// The recheck deadline is the earlier of `end` and 999 µs after entry. With IRQ40
+    /// masked, a stop missed by the initial checks may be reported only at the alarm.
     pub fn cancel_until(&mut self, wait: &mut WaitTimer, end: Deadline) -> Result<(), Error> {
         self.raw.cancel_until(wait, end)
     }
@@ -574,37 +556,35 @@ impl<'p> Transfer<'_, 'p> {
         self.raw.wait_polling(end)
     }
 
-    /// Return the leases only after a terminal observation and ACK.
-    pub fn try_reclaim(self) -> Result<Completed<'p>, Self> {
+    /// CH_INTSTATUS captured before the terminal ACK, or the unacknowledged abort status.
+    /// Returns zero until either is available.
+    pub fn terminal_status(&self) -> u32 {
+        self.raw.terminal_status
+    }
+
+    /// End the borrow after a terminal observation and ACK, returning the transfer outcome.
+    /// If quiescence is unconfirmed, the returned handle continues to guard the slots.
+    pub fn try_reclaim(self) -> Result<Result<(), Error>, Self> {
         self.reclaim(&mut Mmio)
     }
 
-    fn reclaim(mut self, io: &mut impl Registers) -> Result<Completed<'p>, Self> {
-        if self.raw.poll(io).is_some() && *self.raw.state == State::Idle {
-            let (src, dst) = self.buffers.take().unwrap();
-            Ok(Completed {
-                result: self.raw.result.unwrap(),
-                src,
-                dst,
-            })
-        } else {
-            Err(self)
+    fn reclaim(mut self, io: &mut impl Registers) -> Result<Result<(), Error>, Self> {
+        match self.raw.poll(io) {
+            Some(result) if *self.raw.state == State::Idle => Ok(result),
+            _ => Err(self),
         }
     }
 
     fn release_on_drop(&mut self, io: &mut impl Registers) {
-        if let Some(buffers) = self.buffers.take() {
-            // On an unconfirmed stop the pool claims survive, including if a check unwinds.
-            let mut buffers = core::mem::ManuallyDrop::new(buffers);
-            if self.raw.stop(io, Error::Cancelled).is_ok() {
-                // SAFETY: the terminal observation and ACK establish quiescence.
-                unsafe { core::mem::ManuallyDrop::drop(&mut buffers) };
-            }
+        if *self.raw.state == State::Idle || self.raw.stop(io, Error::Cancelled).is_ok() {
+            self.src.return_to_cpu();
+            self.dst.return_to_cpu();
         }
+        // When the stop is unconfirmed or unwinds, both slots stay with the engine.
     }
 }
 
-impl Drop for Transfer<'_, '_> {
+impl Drop for Transfer<'_> {
     fn drop(&mut self) {
         self.release_on_drop(&mut Mmio);
     }
@@ -616,6 +596,7 @@ pub struct RawTransfer<'a> {
     n: u8,
     state: &'a mut State,
     result: Option<Result<(), Error>>,
+    terminal_status: u32,
     _local: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 
@@ -625,10 +606,12 @@ impl<'a> RawTransfer<'a> {
             n,
             state,
             result: None,
+            terminal_status: 0,
             _local: core::marker::PhantomData,
         }
     }
 
+    /// Observe completion once, issuing a graceful stop on a bus error.
     pub fn try_complete(&mut self) -> Option<Result<(), Error>> {
         self.poll(&mut Mmio)
     }
@@ -636,15 +619,15 @@ impl<'a> RawTransfer<'a> {
     fn poll(&mut self, io: &mut impl Registers) -> Option<Result<(), Error>> {
         let state = &mut *self.state;
         if *state != State::Idle {
-            let result = observe(io, self.n, state);
+            let result = observe(io, self.n, state, &mut self.terminal_status);
             if let Some(Err(Error::Bus(status))) = result {
-                let _ = request_stop(io, self.n, state, Error::Bus(status));
+                self.stop_on_bus_error(io, status);
             }
             if self.result.is_none() {
                 self.result = result;
             }
         }
-        if *state == State::Idle || *state == State::Aborted {
+        if matches!(*self.state, State::Idle | State::Aborted) {
             self.result
         } else {
             None
@@ -652,10 +635,15 @@ impl<'a> RawTransfer<'a> {
     }
 
     #[rp1_rt::cold]
+    fn stop_on_bus_error(&mut self, io: &mut impl Registers, status: u32) {
+        let _ = self.stop(io, Error::Bus(status));
+    }
+
+    #[rp1_rt::cold]
     fn stop(&mut self, io: &mut impl Registers, reason: Error) -> Result<(), Error> {
         let state = &mut *self.state;
         if *state != State::Idle {
-            let result = request_stop(io, self.n, state, reason);
+            let result = request_stop(io, self.n, state, reason, &mut self.terminal_status);
             self.result.get_or_insert(result);
         }
         match state {
@@ -665,31 +653,46 @@ impl<'a> RawTransfer<'a> {
         }
     }
 
+    /// Request graceful disable and make one bounded stop check.
     pub fn try_cancel(&mut self) -> Result<(), Error> {
         self.stop(&mut Mmio, Error::Cancelled)
     }
 
+    /// Request cancellation, then wait in thread mode for a timer-backed recheck.
+    /// The recheck deadline is the earlier of `end` and 999 µs after entry. With IRQ40
+    /// masked, a stop missed by the initial checks may be reported only at the alarm.
     #[inline(never)]
     pub fn cancel_until(&mut self, wait: &mut WaitTimer, end: Deadline) -> Result<(), Error> {
         __stop_until(wait, end, || self.try_cancel())
     }
 
+    /// Explicitly poll against one absolute deadline in thread mode.
     pub fn wait_polling(&mut self, end: Deadline) -> Result<(), Error> {
         rp1_rt::interrupt::ThreadGuard::new().map_err(timer::Error::from)?;
         self.wait_accepted(&mut Mmio, end)
     }
 
     fn wait_accepted(&mut self, io: &mut impl Registers, end: Deadline) -> Result<(), Error> {
-        match wait_block(io, end, |io| {
-            self.poll(io).or_else(|| self.result.filter(Result::is_err))
-        }) {
-            Ok(()) => Ok(()),
+        // A retained outcome already has a completion proof or needs cleanup, so it
+        // never enters the completion loop. Bus errors go straight to bounded cleanup.
+        let result = self.result.unwrap_or_else(|| {
+            wait_block(io, end, |io| {
+                observe(io, self.n, self.state, &mut self.terminal_status)
+            })
+        });
+        match result {
+            Ok(()) => {
+                self.result = Some(Ok(()));
+                Ok(())
+            }
             Err(error) => self.finish_error(io, error),
         }
     }
 
     #[rp1_rt::cold]
     fn finish_error(&mut self, io: &mut impl Registers, error: Error) -> Result<(), Error> {
+        // Retain the operation's error even if completion races the cleanup.
+        self.result.get_or_insert(Err(error));
         self.stop(io, error)?;
         Err(error)
     }
@@ -783,7 +786,12 @@ fn start_block(
 }
 
 #[rp1_rt::isram]
-fn observe(io: &mut impl Registers, n: u8, state: &mut State) -> Option<Result<(), Error>> {
+fn observe(
+    io: &mut impl Registers,
+    n: u8,
+    state: &mut State,
+    terminal_status: &mut u32,
+) -> Option<Result<(), Error>> {
     let c = channel_base(n);
     // Read EN before status. A completion is accepted only with both pieces of evidence
     // and never from an IRQ notification. IRQ40 stays masked.
@@ -791,6 +799,7 @@ fn observe(io: &mut impl Registers, n: u8, state: &mut State) -> Option<Result<(
     let status = io.read(c + ch::INTSTATUS);
     if status & int::CH_ABORTED != 0 {
         // The databook's CH_ABORT field warns that AXI transactions may remain outstanding.
+        *terminal_status = status;
         *state = State::Aborted;
     }
     if *state == State::Aborted {
@@ -803,8 +812,10 @@ fn observe(io: &mut impl Registers, n: u8, state: &mut State) -> Option<Result<(
         // All earlier writes by this channel to local SRAM precede later CPU accesses.
         rp1_proto::barrier();
         if io.read(c + ch::INTSTATUS) == 0 {
+            *terminal_status = status;
+            let completed = *state == State::Active && status & int::DMA_TFR_DONE != 0;
             *state = State::Idle;
-            return Some(fault.unwrap_or(if status & int::DMA_TFR_DONE != 0 {
+            return Some(fault.unwrap_or(if completed {
                 Ok(())
             } else {
                 Err(Error::Cancelled)
@@ -821,23 +832,26 @@ fn request_stop(
     n: u8,
     state: &mut State,
     reason: Error,
+    terminal_status: &mut u32,
 ) -> Result<(), Error> {
-    let result = observe(io, n, state);
+    let result = observe(io, n, state, terminal_status);
     if *state != State::Active {
         return result.unwrap_or(Err(reason));
     }
-    // CH_EN write enable affects this channel only. Graceful disable drains its AXI work.
+    // CH_EN write enable affects this channel only. HW (2026-11-27): disable-only
+    // produces a terminal status and stops local SRAM accesses (see docs/dma.md).
     // Never substitute CH_ABORT: the latter can leave work in the AXI fabric.
     let c = channel_base(n);
     io.write_relaxed(c + ch::INTSIGNAL_ENA, 0);
     io.write(BASE + common::CHEN, 1 << (n as u32 + common::CHEN_WE_SHIFT));
     *state = State::Stopping;
-    let stopped = observe(io, n, state);
+    let stopped = observe(io, n, state, terminal_status);
     result
         .or(stopped.filter(|result| *result != Err(Error::Cancelled)))
         .unwrap_or(Err(reason))
 }
 
+#[rp1_rt::isram]
 fn wait_block<H: Registers, T>(
     io: &mut H,
     end: Deadline,

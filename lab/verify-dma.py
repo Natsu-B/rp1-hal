@@ -6,9 +6,17 @@ import re
 from pathlib import Path
 
 BOOT = re.compile(r"PARITY_DMA_BOOT nonce=([0-9a-f]{8}) PLAT_INIT ok=1 .+")
-CANCEL = re.compile(
-    r"PARITY_DMA_CANCEL nonce=([0-9a-f]{8}) ch=(\d+) count=(\d+) "
-    r"stopped=(\d+) quarantined=(\d+) max_us=(\d+) partial=(\d+) "
+MAX_DECISION_US = 1000
+MAX_COPY_US = 100_000
+TERMINAL_STATUS = 0x40000002  # CH_DISABLED | DMA_TFR_DONE
+ABORT_STATUS = 0x80000000
+ERROR_STATUS = 0x003F7FE0
+SRC_DEC_ERR = 1 << 5
+
+CANCEL = (
+    r"count=(\d+) stopped=(\d+) quarantined=0 rechecked=(\d+) first_us=(\d+) decision_us=(\d+) "
+    r"ch_status_before=0x[0-9a-f]{8} terminal_status=0x([0-9a-f]{8}) "
+    r"ch_status_after=0x[0-9a-f]{8} int_status_after=0x00000000 partial=(\d+) "
     r"early=0 range_diff=0 late_diff=0 payload_diff=0"
 )
 
@@ -19,33 +27,73 @@ def parity(uart0):
     if not boot or int(boot[1], 16) in (0, 0xffffffff):
         raise ValueError("missing parity boot identity")
     nonce = boot[1]
-    stopped = quarantined = partial = maximum = 0
+
+    def row(marker, suffix):
+        match = re.fullmatch(f"PARITY_DMA_{marker} nonce={nonce} {suffix}", next(rows, ""))
+        if not match:
+            raise ValueError(f"missing or invalid {marker} row matching {suffix}")
+        return match.groups()
+
+    stopped = rechecked = partial = first_max = decision_max = 0
     for channel in range(8):
         for size in (4, 64, 4096):
-            if next(rows, "") != (
-                f"PARITY_DMA_COPY nonce={nonce} ch={channel} bytes={size} "
-                "count=1000 crc_diff=0 range_diff=0"
-            ):
-                raise ValueError(f"invalid parity copy results for channel {channel}, {size} B")
-        cancel = CANCEL.fullmatch(next(rows, ""))
-        if not cancel or cancel[1] != nonce or int(cancel[2]) != channel:
-            raise ValueError(f"invalid cancellation results for channel {channel}")
-        count, idle, held, max_us, prefix = map(int, cancel.groups()[2:])
-        if count != 12 + int(channel < 4) or idle + held != count or max_us > 1000 or prefix > count:
-            raise ValueError(f"cancellation counts or time outside bounds for channel {channel}")
+            total, maximum = map(int, row(
+                "COPY",
+                fr"ch={channel} bytes={size} count=1000 total_us=(\d+) max_us=(\d+) "
+                r"crc_diff=0 range_diff=0",
+            ))
+            if not 0 < maximum <= min(total, MAX_COPY_US) or total > 1000 * maximum:
+                raise ValueError(f"copy time outside bounds for channel {channel}, {size} B")
+        count, idle, retries, first, decision, status, prefix = row("CANCEL", fr"ch={channel} {CANCEL}")
+        count, idle, retries, first, decision, prefix = map(int, (count, idle, retries, first, decision, prefix))
+        status = int(status, 16)
+        if (count != 12 + int(channel < 4) or idle != count or retries > count or prefix > count
+                or not 0 < first <= decision <= MAX_DECISION_US
+                or status & ABORT_STATUS or not status & TERMINAL_STATUS):
+            raise ValueError(f"cancellation counts, status or time outside bounds for channel {channel}")
         stopped += idle
-        quarantined += held
+        rechecked += retries
         partial += prefix
-        maximum = max(maximum, max_us)
+        first_max = max(first_max, first)
+        decision_max = max(decision_max, decision)
     if partial == 0:
         raise ValueError("no cancelled transfer wrote a proper prefix")
-    if next(rows, "") != f"PARITY_DMA_RECOVERY nonce={nonce} forgotten=1 leases_claimed=2 reinit=1":
-        raise ValueError("missing forgotten-transfer recovery result")
-    if next(rows, "") != (
-        f"PARITY_DMA_SINGLE_END nonce={nonce} channels=8 copies=24000 cancels=100 ok=1"
-    ) or next(rows, None) is not None:
-        raise ValueError("missing, failed, duplicated or mixed parity end")
-    return nonce, stopped, quarantined, maximum
+
+    def drop_sample(channel, injected):
+        elapsed, status = row(
+            "DROP",
+            fr"ch={channel} injected={injected} active=1 drop_us=(\d+) quarantined={injected} "
+            r"chen_after=0 int_status_after=0x([0-9a-f]{8}) late_diff=0 ok=1",
+        )
+        if int(status, 16) & (TERMINAL_STATUS | ABORT_STATUS | ERROR_STATUS):
+            raise ValueError(f"unexpected interrupt status after active Drop on channel {channel}")
+        if not 0 < int(elapsed) <= MAX_DECISION_US:
+            raise ValueError(f"active Drop time outside bounds for channel {channel}")
+        return int(elapsed)
+
+    drop_us = drop_sample(0, 0)
+    row("RECOVERY", r"forgotten=1 leases_claimed=2 reinit=1")
+    fault, stopped_at_fault, recovered = row(
+        "BUS_ERROR", r"ch=6 status=0x([0-9a-f]{8}) stopped=([01]) recovered=([01]) chen_after=0 ok=1",
+    )
+    if not int(fault, 16) & SRC_DEC_ERR or (stopped_at_fault == "1" and recovered != "1"):
+        raise ValueError("decode fault or recovery proof missing")
+    first, quarantined_us = map(int, row(
+        "QUARANTINE",
+        r"ch=7 active=1 first_us=(\d+) decision_us=(\d+) rechecked=1 "
+        r"ch_status_before=0x[0-9a-f]{8} ch_status_after=0x[0-9a-f]{8} "
+        r"int_status_after=0x00000000 chen_after=0 quarantined=1 leases_claimed=2 ok=1",
+    ))
+    if not 0 < first <= quarantined_us <= MAX_DECISION_US:
+        raise ValueError("injected quarantine time outside bounds")
+    drop_quarantined_us = drop_sample(1, 1)
+    row("SINGLE_END", r"channels=8 copies=24000 cancels=100 ok=1")
+    if next(rows, None) is not None:
+        raise ValueError("duplicated or mixed parity end")
+    return (
+        f"nonce={nonce} stopped={stopped} rechecked={rechecked} first_us={first_max} decision_us={decision_max} "
+        f"drop_us={drop_us} quarantine_us={quarantined_us} drop_quarantine_us={drop_quarantined_us}"
+    )
 
 
 def ordered(log, patterns):
@@ -124,8 +172,7 @@ def main():
         if args.mode == "parity":
             if args.uart10:
                 raise ValueError("parity expects one normalized UART0 stream")
-            nonce, stopped, quarantined, maximum = parity(uart0)
-            print(f"VERIFY_DMA_PARITY_PASS nonce={nonce} stopped={stopped} quarantined={quarantined} max_us={maximum}")
+            print(f"VERIFY_DMA_PARITY_PASS {parity(uart0)}")
         else:
             if not args.uart10:
                 raise ValueError("shm expects normalized UART0 and UART10 streams")

@@ -1,6 +1,6 @@
 //! Lab-only DMA proof, run by proc1 (which declares DMA channels 0–2).
 //!
-//! - Boot: SRAM -> SRAM copies through [`rp1_hal::dma::Channel::copy`] (correctness of every
+//! - Boot: SRAM -> SRAM copies through [`rp1_hal::dma::Channel::copy_polling`] (correctness of every
 //!   byte, several sizes) and their throughput (`DMA_SRAM ...` on UART0).
 //! - Command 16 (after shm enable, RP1 holds the `bulk` writer role): RP1 SRAM -> Linux DDR
 //!   through the outbound ATU window and through the PCIe direct-mapped space, against CPU
@@ -20,10 +20,7 @@ use crate::rp1;
 use crate::rp1::Proc1DmaChannels as Dma;
 use core::cell::UnsafeCell;
 #[cfg(feature = "dma")]
-use rp1_hal::{
-    dma::PollingTimeout,
-    timer::{Deadline, Duration, Timer, WaitTimer},
-};
+use rp1_hal::timer::{Deadline, Duration, Timer, WaitTimer};
 use rp1_hal::{
     dma::{BusAddr, Channel, Error, Pool},
     log,
@@ -140,8 +137,7 @@ fn code(r: Result<(), Error>) -> u32 {
 pub fn sram(dma: &mut Dma) -> Result<(), Error> {
     // SAFETY: the boot proof is the sole owner of this reservation, and runs exactly once.
     let pool = Pool::<2>::new(unsafe { &mut *LOCAL.0.get() })?;
-    let mut source = pool.lease(0, WORDS * 4)?;
-    let mut destination = pool.lease(1, WORDS * 4)?;
+    let [mut source, mut destination] = pool.leases(WORDS * 4)?;
     let mut ok = true;
     for (k, bytes) in [4usize, 12, 16, 64, 1000, 1024].into_iter().enumerate() {
         source.set_len(WORDS * 4)?;
@@ -159,22 +155,15 @@ pub fn sram(dma: &mut Dma) -> Result<(), Error> {
         }
         source.set_len(bytes)?;
         destination.set_len(bytes)?;
-        let result = dma
-            .ch0
-            .copy(source, destination, PollingTimeout::new(TIMEOUT));
-        let rc = code(result.as_ref().map(|_| ()).map_err(|e| *e));
-        (source, destination) = match result {
-            Ok(buffers) => buffers,
-            Err(error) => {
-                log!(
-                    "DMA_SRAM bytes={} rc=0x{:x} bad_bytes=0\nDMA_SRAM_FAIL\n",
-                    bytes,
-                    rc
-                )
-                .unwrap();
-                return Err(error);
-            }
-        };
+        if let Err(error) = dma.ch0.copy_polling(&mut source, &mut destination, TIMEOUT) {
+            log!(
+                "DMA_SRAM bytes={} rc=0x{:x} bad_bytes=0\nDMA_SRAM_FAIL\n",
+                bytes,
+                code(Err(error))
+            )
+            .unwrap();
+            return Err(error);
+        }
         destination.set_len(WORDS * 4)?;
         let mut bad = 0;
         for (i, &got) in destination.as_slice().iter().enumerate() {
@@ -186,7 +175,7 @@ pub fn sram(dma: &mut Dma) -> Result<(), Error> {
             bad += u32::from(got != want);
         }
         ok &= bad == 0;
-        log!("DMA_SRAM bytes={} rc=0x{:x} bad_bytes={}\n", bytes, rc, bad).unwrap();
+        log!("DMA_SRAM bytes={bytes} rc=0x0 bad_bytes={bad}\n").unwrap();
     }
     // Throughput: 1 KiB SRAM -> SRAM, 1000 copies on channel 0 (8-beat FIFO) and 2
     // (4-beat FIFO), against a CPU word copy from code in shared SRAM.
@@ -195,16 +184,12 @@ pub fn sram(dma: &mut Dma) -> Result<(), Error> {
         let t = now();
         for _ in 0..1000 {
             match slot {
-                0 => {
-                    (source, destination) =
-                        dma.ch0
-                            .copy(source, destination, PollingTimeout::new(TIMEOUT))?
-                }
-                1 => {
-                    (source, destination) =
-                        dma.ch2
-                            .copy(source, destination, PollingTimeout::new(TIMEOUT))?
-                }
+                0 => dma
+                    .ch0
+                    .copy_polling(&mut source, &mut destination, TIMEOUT)?,
+                1 => dma
+                    .ch2
+                    .copy_polling(&mut source, &mut destination, TIMEOUT)?,
                 _ => {
                     let s = source.as_slice().as_ptr().cast::<u32>();
                     let d = destination.as_mut_slice().as_mut_ptr().cast::<u32>();

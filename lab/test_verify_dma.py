@@ -10,13 +10,32 @@ def parity_capture():
     yield f"PARITY_DMA_BOOT nonce={NONCE} PLAT_INIT ok=1 sys_hz=200000000"
     for n in range(8):
         for size in (4, 64, 4096):
-            yield f"PARITY_DMA_COPY nonce={NONCE} ch={n} bytes={size} count=1000 crc_diff=0 range_diff=0"
+            yield (
+                f"PARITY_DMA_COPY nonce={NONCE} ch={n} bytes={size} count=1000 "
+                "total_us=9000 max_us=12 crc_diff=0 range_diff=0"
+            )
         count = 12 + int(n < 4)
         yield (
-            f"PARITY_DMA_CANCEL nonce={NONCE} ch={n} count={count} stopped={count - 1} "
-            "quarantined=1 max_us=1000 partial=1 early=0 range_diff=0 late_diff=0 payload_diff=0"
+            f"PARITY_DMA_CANCEL nonce={NONCE} ch={n} count={count} stopped={count} "
+            "quarantined=0 rechecked=1 first_us=6 decision_us=905 ch_status_before=0x00000014 "
+            "terminal_status=0x40000000 ch_status_after=0x00000021 int_status_after=0x00000000 "
+            "partial=1 early=0 range_diff=0 late_diff=0 payload_diff=0"
         )
+    yield (
+        f"PARITY_DMA_DROP nonce={NONCE} ch=0 injected=0 active=1 drop_us=7 "
+        "quarantined=0 chen_after=0 int_status_after=0x00000000 late_diff=0 ok=1"
+    )
     yield f"PARITY_DMA_RECOVERY nonce={NONCE} forgotten=1 leases_claimed=2 reinit=1"
+    yield f"PARITY_DMA_BUS_ERROR nonce={NONCE} ch=6 status=0x00000020 stopped=0 recovered=0 chen_after=0 ok=1"
+    yield (
+        f"PARITY_DMA_QUARANTINE nonce={NONCE} ch=7 active=1 first_us=6 decision_us=1000 rechecked=1 "
+        "ch_status_before=0x00000000 ch_status_after=0x00000010 int_status_after=0x00000000 "
+        "chen_after=0 quarantined=1 leases_claimed=2 ok=1"
+    )
+    yield (
+        f"PARITY_DMA_DROP nonce={NONCE} ch=1 injected=1 active=1 drop_us=8 "
+        "quarantined=1 chen_after=0 int_status_after=0x00000000 late_diff=0 ok=1"
+    )
     yield f"PARITY_DMA_SINGLE_END nonce={NONCE} channels=8 copies=24000 cancels=100 ok=1"
 
 
@@ -68,12 +87,25 @@ V7_DMA_END
 class DmaCaptureTest(unittest.TestCase):
     def test_parity_enforces_counts_and_bounds(self):
         log = "\n".join(parity_capture())
-        self.assertEqual(verify["parity"](log), (NONCE, 92, 8, 1000))
+        self.assertEqual(
+            verify["parity"](log),
+            f"nonce={NONCE} stopped=100 rechecked=8 first_us=6 decision_us=905 "
+            "drop_us=7 quarantine_us=1000 drop_quarantine_us=8",
+        )
+        verify["parity"](log.replace("stopped=0 recovered=0", "stopped=1 recovered=1"))
         for bad in (
             log.replace("count=1000", "count=999", 1),
             log.replace("crc_diff=0", "crc_diff=1", 1),
             log.replace("range_diff=0", "range_diff=1", 1),
-            log.replace("max_us=1000", "max_us=1001", 1),
+            log.replace("total_us=9000", "total_us=12001", 1),
+            log.replace("decision_us=905", "decision_us=1001", 1),
+            log.replace("decision_us=1000", "decision_us=1001", 1),
+            log.replace("terminal_status=0x40000000", "terminal_status=0x00000000", 1),
+            log.replace("drop_us=7", "drop_us=1001", 1),
+            log.replace("drop_us=8", "drop_us=1001", 1),
+            log.replace("injected=1 active=1", "injected=1 active=0", 1),
+            log.replace("status=0x00000020", "status=0x00000000", 1),
+            log.replace("stopped=0 recovered=0", "stopped=1 recovered=0", 1),
             log.replace("early=0", "early=1", 1),
             log.replace("late_diff=0", "late_diff=1", 1),
             log.replace("partial=1", "partial=0"),

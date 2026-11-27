@@ -11,9 +11,9 @@ error[E0382]: use of partially moved value: `dma`
 error[E0505]: cannot move out of `dma` because it is borrowed
   --> $CASE:11:13
    |
- 9 | fn active(mut dma: rp1::Proc1DmaChannels, src: rp1_hal::dma::Lease<'_>, dst: rp1_hal::dma::Lease<'_>) {
+ 9 | fn active(mut dma: rp1::Proc1DmaChannels, mut src: rp1_hal::dma::Lease<'_>, mut dst: rp1_hal::dma::Lease<'_>) {
    |           ------- binding `dma` declared here
-10 |     let transfer = dma.ch0.try_start(src, dst).unwrap();
+10 |     let transfer = dma.ch0.try_start(&mut src, &mut dst).unwrap();
    |                    ------- borrow of `dma.ch0` occurs here
 11 |     let _ = dma.try_free();
    |             ^^^ move out of `dma` occurs here

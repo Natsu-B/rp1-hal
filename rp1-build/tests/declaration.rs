@@ -512,6 +512,22 @@ fn dma_is_one_pinless_controller_owned_by_one_core() {
 }
 
 #[test]
+fn dma_pool_requires_aligned_nonempty_slots_and_fits_shared_sram() {
+    for (slots, bytes) in [(0, 16), (2, 0), (2, 17), (4, 16384), (u32::MAX, u32::MAX)] {
+        error(
+            &format!("[proc1]\ndma={{pool={{slots={slots},bytes={bytes}}}}}"),
+            &["E0", "proc1.dma.pool"],
+        );
+    }
+    error(
+        "[linux]\nkeep={dma={pool={slots=2,bytes=16}}}",
+        &["E4", "whole DMA"],
+    );
+    let d = parse("[proc1]\ndma={channels=[0,2],pool={slots=2,bytes=4096}}");
+    d.validate().unwrap();
+}
+
+#[test]
 fn heartbeat_period() {
     let d = parse("[proc0]\nheartbeat={period_ms=100}");
     d.validate().unwrap();

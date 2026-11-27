@@ -2,6 +2,13 @@ extern crate std;
 use super::*;
 use std::{collections::BTreeMap, vec::Vec};
 
+#[derive(Clone, Copy, Default)]
+enum DisableStatus {
+    #[default]
+    Immediate,
+    Late,
+    Missing,
+}
 /// A fake that retains status separately from CHEN and can refuse disable indefinitely.
 #[derive(Default)]
 struct Fake {
@@ -11,9 +18,17 @@ struct Fake {
     reads: usize,
     stuck: bool,
     refuse_stop: bool,
+    disable_status: DisableStatus,
+    late_disabled: u8,
     refuse_ack: bool,
 }
 impl Fake {
+    fn deliver_disable(&mut self, n: u8) {
+        assert_ne!(self.late_disabled & (1 << n), 0);
+        self.late_disabled &= !(1 << n);
+        self.stop(n, int::CH_DISABLED);
+    }
+
     fn stop(&mut self, n: u8, status: u32) {
         *self.regs.entry(BASE + common::CHEN).or_default() &= !(1 << n);
         *self
@@ -47,8 +62,19 @@ impl Registers for Fake {
                         continue;
                     }
                     if v & en == 0 {
-                        if !self.refuse_stop {
-                            self.stop(n, int::CH_DISABLED);
+                        // A disable write to an already idle channel cannot synthesize proof.
+                        if !self.refuse_stop
+                            && self.regs.get(&a).is_some_and(|value| value & en != 0)
+                        {
+                            let status = match self.disable_status {
+                                DisableStatus::Immediate => int::CH_DISABLED,
+                                DisableStatus::Late => {
+                                    self.late_disabled |= 1 << n;
+                                    0
+                                }
+                                DisableStatus::Missing => 0,
+                            };
+                            self.stop(n, status);
                         }
                     } else {
                         *self.regs.entry(a).or_default() |= en;
@@ -161,7 +187,7 @@ fn single_block_programs_linux_compatible_fields() {
     assert_eq!(reg(&f, c + ch::CFG_L), 0);
     assert_eq!(reg(&f, c + ch::CFG_H), (2 << 20) | (1 << 3) | (1 << 4));
     assert_eq!(reg(&f, BASE + common::CHEN), (1 << 2) | (1 << 10));
-    assert_eq!(observe(&mut f, 2, &mut state), Some(Ok(())));
+    assert_eq!(observe(&mut f, 2, &mut state, &mut 0), Some(Ok(())));
 }
 
 #[test]
@@ -185,20 +211,23 @@ fn failed_admission_preserves_both_leases_and_does_not_enable() {
     let mut io = running();
     let mut channel = channel::<2>();
     let pool = pool::fake_pool::<2>();
-    let failure = channel
-        .start_leased(
+    let mut source = pool.lease(0, 64).unwrap();
+    let mut destination = pool.lease(1, 4).unwrap();
+    assert!(matches!(
+        start_leased(
             &mut io,
-            pool.lease(0, 64).unwrap(),
-            pool.lease(1, 4).unwrap(),
-        )
-        .err()
-        .unwrap();
-    assert_eq!(*failure.error(), Error::Invalid);
+            2,
+            &mut channel.state,
+            &mut source,
+            &mut destination
+        ),
+        Err(Error::Invalid)
+    ));
     assert!(io.writes.is_empty());
-    assert!(matches!(pool.lease(0, 64), Err(Error::Busy)));
-    drop(failure.into_parts());
-    assert!(pool.lease(0, 64).is_ok());
-    assert!(pool.lease(1, 4).is_ok());
+    assert!(!source.is_quarantined());
+    assert!(!destination.is_quarantined());
+    drop((source, destination));
+    assert!(pool.leases(64).is_ok());
     let start = BusAddr(BusAddr::SRAM);
     for (src, dst, len) in [
         (start, start, 16),
@@ -250,6 +279,12 @@ fn leases_are_unique_and_released_exactly_once() {
     core::mem::forget(second);
     assert!(matches!(pool.lease(0, 1), Err(Error::Busy)));
     assert!(pool.lease(1, 1).is_ok());
+    let pool = pool::fake_pool::<2>();
+    let second = pool.lease(1, 1).unwrap();
+    assert!(matches!(pool.leases(1), Err(Error::Busy)));
+    assert!(pool.lease(0, 1).is_ok());
+    drop(second);
+    assert!(pool.leases(1).is_ok());
 }
 
 #[test]
@@ -259,42 +294,38 @@ fn forgotten_transfer_keeps_slots_and_blocks_channel_until_current_generation_dr
     io.refuse_stop = true;
     let pool = pool::fake_pool::<4>();
     let mut channel = channel::<2>();
-    let transfer = channel
-        .start_leased(
-            &mut io,
-            pool.lease(0, 64).unwrap(),
-            pool.lease(1, 64).unwrap(),
-        )
-        .unwrap();
+    let [mut src, mut dst, mut next_src, mut next_dst] = pool.leases(64).unwrap();
+    let transfer = start_leased(&mut io, 2, &mut channel.state, &mut src, &mut dst).unwrap();
     core::mem::forget(transfer);
-    assert!(matches!(pool.lease(0, 64), Err(Error::Busy)));
-    assert!(matches!(pool.lease(1, 64), Err(Error::Busy)));
+    assert!(src.as_slice().is_empty());
+    assert!(dst.as_mut_slice().is_empty());
+    assert_eq!(dst.set_len(4), Err(Error::Busy));
     assert_eq!(channel.recover(&mut io), Err(Error::Recovering));
-    let err = channel
-        .start_leased(
-            &mut io,
-            pool.lease(2, 64).unwrap(),
-            pool.lease(3, 64).unwrap(),
-        )
-        .err()
-        .unwrap();
-    assert_eq!(*err.error(), Error::Recovering);
-    drop(err.into_parts());
+    assert!(matches!(
+        start_leased(&mut io, 2, &mut channel.state, &mut next_src, &mut next_dst),
+        Err(Error::Recovering)
+    ));
+    assert!(!next_src.is_quarantined());
+    assert!(!next_dst.is_quarantined());
     io.stop(2, int::CH_DISABLED | int::DMA_TFR_DONE);
     channel.recover(&mut io).unwrap();
     assert_eq!(io.read(channel_base(2) + ch::INTSTATUS), 0);
+    assert!(matches!(
+        start_leased(&mut io, 2, &mut channel.state, &mut src, &mut dst),
+        Err(Error::Busy)
+    ));
+    drop((src, dst));
+    assert!(matches!(pool.lease(0, 64), Err(Error::Busy)));
     assert!(matches!(pool.lease(1, 64), Err(Error::Busy)));
-    let mut transfer = channel
-        .start_leased(
-            &mut io,
-            pool.lease(2, 64).unwrap(),
-            pool.lease(3, 64).unwrap(),
-        )
-        .unwrap();
+    let mut transfer =
+        start_leased(&mut io, 2, &mut channel.state, &mut next_src, &mut next_dst).unwrap();
     assert_eq!(transfer.raw.poll(&mut io), None);
     io.stop(2, int::DMA_TFR_DONE);
     transfer.release_on_drop(&mut io);
-    core::mem::forget(transfer);
+    drop(transfer);
+    assert!(!next_src.is_quarantined());
+    assert!(!next_dst.is_quarantined());
+    drop((next_src, next_dst));
     assert!(pool.lease(2, 64).is_ok());
     assert!(pool.lease(3, 64).is_ok());
 }
@@ -306,21 +337,19 @@ fn stuck_drop_is_bounded_and_quarantines_both_slots() {
     io.refuse_stop = true;
     let pool = pool::fake_pool::<2>();
     let mut channel = channel::<7>();
-    let mut transfer = channel
-        .start_leased(
-            &mut io,
-            pool.lease(0, 4).unwrap(),
-            pool.lease(1, 4).unwrap(),
-        )
-        .unwrap();
+    let [mut src, mut dst] = pool.leases(4).unwrap();
+    let mut transfer = start_leased(&mut io, 7, &mut channel.state, &mut src, &mut dst).unwrap();
     let reads = io.reads;
     let writes = io.writes.len();
     transfer.release_on_drop(&mut io);
     assert!(io.reads - reads <= 5);
     assert_eq!(io.writes.len() - writes, 2);
     assert_eq!(reg(&io, BASE + common::CHEN), 1 << 15);
-    core::mem::forget(transfer);
+    core::mem::forget(transfer); // the fake already ran release_on_drop
     assert_eq!(channel.state, State::Stopping);
+    assert!(src.as_slice().is_empty());
+    assert!(dst.as_mut_slice().is_empty());
+    drop((src, dst));
     assert!(matches!(pool.lease(0, 4), Err(Error::Busy)));
     assert!(matches!(pool.lease(1, 4), Err(Error::Busy)));
 }
@@ -344,16 +373,16 @@ fn stale_or_late_status_requires_idle_and_ack_before_rearm() {
     io.refuse_ack = false;
     start_block(&mut io, 0, &mut channel.state, src, dst, 64).unwrap();
     assert_eq!(io.read(isr), 0);
-    request_stop(&mut io, 0, &mut channel.state, Error::Cancelled).unwrap_err();
+    request_stop(&mut io, 0, &mut channel.state, Error::Cancelled, &mut 0).unwrap_err();
     io.regs.insert(isr, int::DMA_TFR_DONE);
-    assert_eq!(observe(&mut io, 0, &mut channel.state), None);
+    assert_eq!(observe(&mut io, 0, &mut channel.state, &mut 0), None);
     io.stop(0, int::CH_DISABLED);
     io.refuse_ack = true;
     assert_eq!(channel.recover(&mut io), Err(Error::Recovering));
     io.refuse_ack = false;
     channel.recover(&mut io).unwrap();
     start_block(&mut io, 0, &mut channel.state, src, dst, 64).unwrap();
-    assert_eq!(observe(&mut io, 0, &mut channel.state), None);
+    assert_eq!(observe(&mut io, 0, &mut channel.state, &mut 0), None);
 }
 
 #[test]
@@ -436,22 +465,9 @@ fn controller_waits_for_every_issued_channel_even_if_one_transfer_was_forgotten(
     let mut ch0 = channel::<0>();
     let mut ch2 = channel::<2>();
     let pool = pool::fake_pool::<4>();
-    core::mem::forget(
-        ch0.start_leased(
-            &mut io,
-            pool.lease(0, 64).unwrap(),
-            pool.lease(1, 64).unwrap(),
-        )
-        .unwrap(),
-    );
-    core::mem::forget(
-        ch2.start_leased(
-            &mut io,
-            pool.lease(2, 64).unwrap(),
-            pool.lease(3, 64).unwrap(),
-        )
-        .unwrap(),
-    );
+    let [mut s0, mut d0, mut s2, mut d2] = pool.leases(64).unwrap();
+    core::mem::forget(start_leased(&mut io, 0, &mut ch0.state, &mut s0, &mut d0).unwrap());
+    core::mem::forget(start_leased(&mut io, 2, &mut ch2.state, &mut s2, &mut d2).unwrap());
     let checked = ch0.recover(&mut io).and(ch2.recover(&mut io));
     assert_eq!(checked, Err(Error::Recovering));
     assert!(io.writes.contains(&(BASE + common::CHEN, 1 << 8)));
@@ -494,33 +510,70 @@ fn lease_range_checks_guards_and_overflow_before_start() {
 }
 
 #[test]
-fn cancellation_returns_both_leases_only_after_terminal_observation() {
+fn cancellation_requires_even_a_late_disabled_status_before_reclaim() {
     let mut io = running();
     io.stuck = true;
-    io.refuse_stop = true;
+    io.disable_status = DisableStatus::Late;
     let pool = pool::fake_pool::<2>();
+    let [mut src, mut dst] = pool.leases(64).unwrap();
     let mut channel = channel::<6>();
-    let mut transfer = channel
-        .start_leased(
-            &mut io,
-            pool.lease(0, 64).unwrap(),
-            pool.lease(1, 64).unwrap(),
-        )
-        .unwrap();
+    let mut transfer = start_leased(&mut io, 6, &mut channel.state, &mut src, &mut dst).unwrap();
     assert_eq!(
         transfer.raw.stop(&mut io, Error::Cancelled),
         Err(Error::Recovering)
     );
+    assert!(!enabled(&mut io, 6));
     let transfer = transfer.reclaim(&mut io).err().unwrap();
     assert!(matches!(pool.lease(0, 64), Err(Error::Busy)));
     assert!(matches!(pool.lease(1, 64), Err(Error::Busy)));
-    io.stop(6, int::CH_DISABLED);
-    let done = transfer.reclaim(&mut io).ok().unwrap();
-    assert_eq!(done.result, Err(Error::Cancelled));
-    assert!(matches!(pool.lease(1, 64), Err(Error::Busy)));
-    drop(done);
-    assert!(pool.lease(0, 64).is_ok());
-    assert!(pool.lease(1, 64).is_ok());
+    io.deliver_disable(6);
+    assert_eq!(transfer.reclaim(&mut io).ok(), Some(Err(Error::Cancelled)));
+    assert!(!src.is_quarantined());
+    assert!(!dst.is_quarantined());
+    drop((src, dst));
+    assert!(pool.leases(64).is_ok());
+}
+
+#[test]
+fn an_idle_bus_fault_with_no_terminal_status_keeps_the_original_fault_and_claims() {
+    let mut io = running();
+    io.stuck = true;
+    let pool = pool::fake_pool::<2>();
+    let [mut src, mut dst] = pool.leases(64).unwrap();
+    let mut channel = channel::<3>();
+    let end = Deadline::after_ticks(read_instant(&mut io), 50).unwrap();
+    let mut transfer = start_leased(&mut io, 3, &mut channel.state, &mut src, &mut dst).unwrap();
+    io.stop(3, int::SRC_DEC_ERR);
+    assert_eq!(
+        transfer.raw.wait_accepted(&mut io, end),
+        Err(Error::Recovering)
+    );
+    assert_eq!(transfer.raw.result, Some(Err(Error::Bus(int::SRC_DEC_ERR))));
+    assert_eq!(transfer.terminal_status(), 0);
+    let mut transfer = transfer.reclaim(&mut io).err().unwrap();
+    transfer.release_on_drop(&mut io);
+    core::mem::forget(transfer);
+    assert!(src.as_slice().is_empty());
+    assert!(dst.as_mut_slice().is_empty());
+    assert_eq!(channel.recover(&mut io), Err(Error::Recovering));
+}
+
+#[test]
+fn a_disable_without_terminal_status_quarantines_after_drop() {
+    let mut io = running();
+    io.stuck = true;
+    io.disable_status = DisableStatus::Missing;
+    let pool = pool::fake_pool::<2>();
+    let [mut src, mut dst] = pool.leases(64).unwrap();
+    let mut channel = channel::<1>();
+    let mut transfer = start_leased(&mut io, 1, &mut channel.state, &mut src, &mut dst).unwrap();
+    transfer.release_on_drop(&mut io);
+    core::mem::forget(transfer);
+    assert!(!enabled(&mut io, 1));
+    assert!(src.as_slice().is_empty());
+    assert!(dst.as_mut_slice().is_empty());
+    drop((src, dst));
+    assert!(matches!(pool.leases(64), Err(Error::Busy)));
 }
 
 #[cfg(feature = "unstable-ring-dma")]

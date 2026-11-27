@@ -192,7 +192,7 @@ impl Default for Stack {
 }
 pub use crate::board::{Gpiomem, Linux, OnConflict};
 pub use crate::declaration::{
-    Core, DmaChannels, Heartbeat, I2cPins, Instance, PwmPins, SpiPins, UartPins,
+    Core, DmaChannels, DmaPool, Heartbeat, I2cPins, Instance, PwmPins, SpiPins, UartPins,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

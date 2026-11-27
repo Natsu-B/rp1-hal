@@ -8,9 +8,10 @@ mod status_nonce;
 use core::cell::UnsafeCell;
 use rp1_hal::{
     clocks::Clocks,
-    dma::{Channel, Completed, Error, Lease, PollingTimeout, Pool},
+    dma::{BusAddr, Channel, Error, Lease, Pool, Transfer},
     log,
-    timer::{Deadline, Duration, Timer, WaitTimer},
+    pac::dw_axi_dmac::{BASE, CHANNEL_BASE, CHANNEL_STRIDE, ch, common, int},
+    timer::{Deadline, Duration, Instant, Timer, WaitTimer},
 };
 use rp1_rt::{Proc0, Proc1, entry};
 
@@ -24,13 +25,20 @@ const CANCEL_OFFSET: usize = 17;
 const CANCEL_BYTES: usize = 4096;
 const TIMEOUT: Duration = Duration::millis(100);
 const STOP_LIMIT: Duration = Duration::millis(1);
+// Allow for software overhead and the final observation inside the full 1 ms gate.
+const RECHECK_US: u64 = 900;
+const TERMINAL: u32 = int::CH_DISABLED | int::DMA_TFR_DONE;
+const FIXTURE_SLOT: usize = 544;
 
 #[repr(align(16))]
-struct Memory(UnsafeCell<[u8; 2 * CAPACITY]>);
+struct FixtureMemory(UnsafeCell<[[u8; 2 * FIXTURE_SLOT]; 2]>);
 // SAFETY: the single proc1 entry takes exclusive ownership.
-unsafe impl Sync for Memory {}
+unsafe impl Sync for FixtureMemory {}
 #[unsafe(link_section = ".shared")]
-static MEMORY: Memory = Memory(UnsafeCell::new([0; 2 * CAPACITY]));
+static FIXTURES: FixtureMemory = FixtureMemory(UnsafeCell::new([[0; 2 * FIXTURE_SLOT]; 2]));
+
+#[unsafe(link_section = ".shared")]
+static mut FAULT_DESTINATION: [u8; 16] = [0; 16];
 
 type Pair<'a> = (Lease<'a>, Lease<'a>);
 
@@ -69,8 +77,9 @@ fn run(core: Proc1, p: rp1::Proc1Resources, nonce: u32) -> Result<(), Error> {
         Clocks::wait_from_proc0(&core, Duration::micros(0)).map_err(|_| Error::Precondition)?;
     let mut dma = p.dma.init(&clocks)?;
     let mut wait = p.wait_timer;
-    let pool = Pool::<2>::new(unsafe { &mut *MEMORY.0.get() })?;
-    let mut buffers = (pool.lease(0, CAPACITY)?, pool.lease(1, CAPACITY)?);
+    let pool = p.dma_pool;
+    let [src, dst] = pool.leases(CAPACITY)?;
+    let mut buffers = (src, dst);
     let channels: [&mut dyn Exercise; 8] = [
         &mut dma.ch0,
         &mut dma.ch1,
@@ -83,85 +92,274 @@ fn run(core: Proc1, p: rp1::Proc1Resources, nonce: u32) -> Result<(), Error> {
     ];
     let mut partial = 0;
     for (n, channel) in channels.into_iter().enumerate() {
-        let (next, count) = channel_run(channel, &mut wait, nonce, n, buffers)?;
-        buffers = next;
-        partial += count;
+        partial += channel_run(channel, &mut wait, nonce, n, &mut buffers)?;
     }
     if partial == 0 {
         return Err(Error::Invalid);
     }
 
-    // A forgotten handle keeps both leases claimed even after the controller is recovered and
-    // reinitialized. The fake also forces the case where the leaked transfer refuses to stop.
-    buffers.0.set_range(CANCEL_OFFSET, CANCEL_BYTES)?;
-    buffers.1.set_range(CANCEL_OFFSET, CANCEL_BYTES)?;
-    core::mem::forget(dma.ch7.try_start(buffers.0, buffers.1)?);
+    prepare(&mut buffers, CAPACITY, CANCEL_OFFSET, CANCEL_BYTES)?;
+    drop_trial(&mut dma.ch0, &mut buffers, &mut wait, nonce, false)?;
+
+    // SAFETY: run is entered once on proc1 and these are distinct .shared reservations.
+    let [forgotten, drop_fixture] = unsafe { &mut *FIXTURES.0.get() };
+    let forgotten = Pool::<2>::new(forgotten)?;
+    let [mut src, mut dst] = forgotten.leases(512)?;
+    src.set_range(CANCEL_OFFSET, 512)?;
+    dst.set_range(CANCEL_OFFSET, 512)?;
+    core::mem::forget(dma.ch7.try_start(&mut src, &mut dst)?);
+    if !src.as_slice().is_empty() || !dst.as_mut_slice().is_empty() {
+        return Err(Error::Invalid);
+    }
+    drop((src, dst));
     let token = dma
         .free_until(&mut wait, Deadline::after(STOP_LIMIT)?)
         .map_err(|e| *e.error())?;
-    token.init(&clocks)?.try_free().map_err(|e| *e.error())?;
-    if !matches!(pool.lease(0, 4), Err(Error::Busy))
-        || !matches!(pool.lease(1, 4), Err(Error::Busy))
+    let mut dma = token.init(&clocks)?;
+    if !matches!(forgotten.lease(0, 4), Err(Error::Busy))
+        || !matches!(forgotten.lease(1, 4), Err(Error::Busy))
     {
         return Err(Error::Invalid);
     }
     log!("PARITY_DMA_RECOVERY nonce={nonce:08x} forgotten=1 leases_claimed=2 reinit=1\n").unwrap();
+
+    inject_bus_error(&mut dma.ch6, nonce)?;
+    prepare(&mut buffers, CAPACITY, CANCEL_OFFSET, CANCEL_BYTES)?;
+    quarantine_cancel(&mut dma.ch7, buffers, &pool, &mut wait, nonce)?;
+    let drop_pool = Pool::<2>::new(drop_fixture)?;
+    let [src, dst] = drop_pool.leases(512)?;
+    let mut buffers = (src, dst);
+    prepare(&mut buffers, FIXTURE_SLOT, CANCEL_OFFSET, 512)?;
+    drop_trial(&mut dma.ch1, &mut buffers, &mut wait, nonce, true)?;
+    drop(buffers);
+    if !matches!(drop_pool.leases(4), Err(Error::Busy)) {
+        return Err(Error::Invalid);
+    }
     Ok(())
 }
 
 trait Exercise {
-    fn copy<'p>(&mut self, buffers: Pair<'p>) -> Result<Pair<'p>, Error>;
-    fn cancel<'p>(
+    fn copy(&mut self, buffers: &mut Pair<'_>) -> Result<(), Error>;
+    fn cancel(
         &mut self,
-        buffers: Pair<'p>,
+        buffers: &mut Pair<'_>,
         wait: &mut WaitTimer,
         stimulus_us: u32,
-    ) -> Result<(Completed<'p>, bool, u32), Error>;
+    ) -> Result<(Result<(), Error>, CancelSample), Error>;
 }
 
 impl<const N: u8> Exercise for Channel<N> {
-    fn copy<'p>(&mut self, (src, dst): Pair<'p>) -> Result<Pair<'p>, Error> {
-        self.copy(src, dst, PollingTimeout::new(TIMEOUT))
+    fn copy(&mut self, (src, dst): &mut Pair<'_>) -> Result<(), Error> {
+        self.copy_polling(src, dst, TIMEOUT)
     }
 
-    fn cancel<'p>(
+    fn cancel(
         &mut self,
-        (src, dst): Pair<'p>,
+        (src, dst): &mut Pair<'_>,
         wait: &mut WaitTimer,
         stimulus_us: u32,
-    ) -> Result<(Completed<'p>, bool, u32), Error> {
+    ) -> Result<(Result<(), Error>, CancelSample), Error> {
         let timer = Timer::new();
         let mut transfer = self.try_start(src, dst)?;
-        // Polled delay is an explicit stimulus just before the cancellation, not part of its time.
+        // Polled delay is an explicit stimulus just before cancellation.
         timer.delay_polling(Duration::micros(stimulus_us))?;
-        let start = timer.now_32().ticks();
-        let decision = transfer.try_cancel();
-        let elapsed = timer.now_32().ticks().wrapping_sub(start);
-        let quarantined = match decision {
-            Ok(()) => false,
-            Err(Error::Recovering) => {
-                transfer.cancel_until(wait, Deadline::after(STOP_LIMIT)?)?;
-                true
-            }
-            Err(error) => return Err(error),
-        };
-        let done = transfer.try_reclaim().map_err(|_| Error::Recovering)?;
-        Ok((done, quarantined, elapsed))
+        let (decision, sample) = timed_cancel::<N>(&mut transfer, wait);
+        if let Err(error) = decision {
+            log!(
+                "PARITY_DMA_CANCEL_FAIL ch={N} first_us={} decision_us={} ch_status_before=0x{:08x} ch_status_after=0x{:08x} int_status_after=0x{:08x} error={error:?}\n",
+                sample.first_us, sample.decision_us, sample.before, sample.after, sample.after_ack,
+            )
+            .unwrap();
+            return Err(error);
+        }
+        let result = transfer.try_reclaim().map_err(|_| Error::Recovering)?;
+        Ok((result, sample))
     }
 }
 
-fn channel_run<'p>(
+#[derive(Default)]
+struct CancelSample {
+    first_us: u32,
+    decision_us: u32,
+    rechecked: u32,
+    before: u32,
+    terminal: u32,
+    after: u32,
+    after_ack: u32,
+}
+
+fn timed_cancel<const N: u8>(
+    transfer: &mut Transfer<'_>,
+    wait: &mut WaitTimer,
+) -> (Result<(), Error>, CancelSample) {
+    let timer = Timer::new();
+    let before = channel_read::<N>(ch::STATUS);
+    let start = timer.now().ticks();
+    let first = transfer.try_cancel();
+    let first_us = timer.now_32().ticks().wrapping_sub(start as u32);
+    let rechecked = first == Err(Error::Recovering);
+    let decision = if rechecked {
+        let end = Deadline::at(Instant::from_ticks(start + RECHECK_US));
+        transfer.cancel_until(wait, end)
+    } else {
+        first
+    };
+    let decision_us = timer.now_32().ticks().wrapping_sub(start as u32);
+    let sample = CancelSample {
+        first_us,
+        decision_us,
+        rechecked: u32::from(rechecked),
+        before,
+        terminal: transfer.terminal_status(),
+        after: channel_read::<N>(ch::STATUS),
+        after_ack: channel_read::<N>(ch::INTSTATUS),
+    };
+    (decision, sample)
+}
+
+fn channel_read<const N: u8>(offset: usize) -> u32 {
+    let address = BASE + CHANNEL_BASE + N as usize * CHANNEL_STRIDE + offset;
+    // SAFETY: the caller is exercising its channel on the sole DMA-owning core.
+    unsafe { (address as *const u32).read_volatile() }
+}
+
+fn enabled<const N: u8>() -> bool {
+    // SAFETY: reading the DMAC's enable register has no side effects.
+    unsafe { ((BASE + common::CHEN) as *const u32).read_volatile() & (1 << N) != 0 }
+}
+
+fn hide_terminal_status<const N: u8>() -> Result<(), Error> {
+    // The real engine still gets graceful disable. Suppress its terminal evidence to
+    // model a stop the HAL cannot confirm, while retaining bus-error and abort capture.
+    let address = BASE + CHANNEL_BASE + N as usize * CHANNEL_STRIDE + ch::INTSTATUS_ENA;
+    let mask = channel_read::<N>(ch::INTSTATUS_ENA);
+    // SAFETY: the fixture owns this channel and never reuses it after this test.
+    unsafe { (address as *mut u32).write_volatile(mask & !TERMINAL) };
+    if channel_read::<N>(ch::INTSTATUS_ENA) & TERMINAL != 0 {
+        return Err(Error::Precondition);
+    }
+    Ok(())
+}
+
+fn drop_trial<const N: u8>(
+    channel: &mut Channel<N>,
+    (src, dst): &mut Pair<'_>,
+    wait: &mut WaitTimer,
+    nonce: u32,
+    injected: bool,
+) -> Result<(), Error> {
+    src.as_mut_slice().fill(0x3c);
+    let transfer = channel.try_start(src, dst)?;
+    if injected {
+        hide_terminal_status::<N>()?;
+    }
+    let active = enabled::<N>();
+    let timer = Timer::new();
+    let start = timer.now_32().ticks();
+    drop(transfer);
+    let drop_us = timer.now_32().ticks().wrapping_sub(start);
+    let held = dst.is_quarantined();
+    let valid_claims = src.is_quarantined() == held
+        && src.as_slice().is_empty() == held
+        && dst.as_mut_slice().is_empty() == held;
+    let signature = crc32(dst.as_slice());
+    wait.delay(Duration::micros(100))?;
+    let late_diff = u32::from(signature != crc32(dst.as_slice()));
+    let chen_after = u32::from(enabled::<N>());
+    let int_status_after = channel_read::<N>(ch::INTSTATUS);
+    let good = active
+        && valid_claims
+        && held == injected
+        && drop_us <= STOP_LIMIT.ticks()
+        && late_diff == 0
+        && chen_after == 0
+        && int_status_after & (TERMINAL | int::ALL_ERR | int::CH_ABORTED) == 0;
+    log!(
+        "PARITY_DMA_DROP nonce={nonce:08x} ch={N} injected={} active={} drop_us={drop_us} quarantined={} chen_after={chen_after} int_status_after=0x{int_status_after:08x} late_diff={late_diff} ok={}\n",
+        u32::from(injected), u32::from(active), u32::from(held), u32::from(good),
+    )
+    .unwrap();
+    if good { Ok(()) } else { Err(Error::Invalid) }
+}
+
+fn quarantine_cancel<const N: u8>(
+    channel: &mut Channel<N>,
+    (mut src, mut dst): Pair<'_>,
+    pool: &Pool<2>,
+    wait: &mut WaitTimer,
+    nonce: u32,
+) -> Result<(), Error> {
+    let mut transfer = channel.try_start(&mut src, &mut dst)?;
+    hide_terminal_status::<N>()?;
+    let active = enabled::<N>();
+    let (decision, sample) = timed_cancel::<N>(&mut transfer, wait);
+    drop(transfer);
+    let quarantined = src.as_slice().is_empty() && dst.as_mut_slice().is_empty();
+    drop((src, dst));
+    let claimed = matches!(pool.lease(0, 4), Err(Error::Busy))
+        && matches!(pool.lease(1, 4), Err(Error::Busy));
+    let chen_after = u32::from(enabled::<N>());
+    let good = active
+        && decision == Err(Error::Recovering)
+        && sample.rechecked == 1
+        && sample.decision_us <= STOP_LIMIT.ticks()
+        && chen_after == 0
+        && sample.after_ack == 0
+        && quarantined
+        && claimed;
+    log!(
+        "PARITY_DMA_QUARANTINE nonce={nonce:08x} ch={N} active={} first_us={} decision_us={} rechecked={} ch_status_before=0x{:08x} ch_status_after=0x{:08x} int_status_after=0x{:08x} chen_after={chen_after} quarantined={} leases_claimed={} ok={}\n",
+        u32::from(active), sample.first_us, sample.decision_us, sample.rechecked,
+        sample.before, sample.after, sample.after_ack, u32::from(quarantined),
+        2 * u32::from(claimed), u32::from(good),
+    )
+    .unwrap();
+    if good { Ok(()) } else { Err(Error::Invalid) }
+}
+
+fn inject_bus_error(channel: &mut Channel<6>, nonce: u32) -> Result<(), Error> {
+    // A read from an unmapped RP1 bus address cannot write outside the dedicated destination.
+    // SAFETY: the destination occupies a private shared-SRAM static retired for the epoch.
+    let dst = BusAddr::from_proc((&raw mut FAULT_DESTINATION) as usize)?;
+    let mut transfer = unsafe { channel.start_raw(BusAddr(0xc0_6000_0000), dst, 16) }?;
+    let result = transfer.wait_polling(Deadline::after(STOP_LIMIT)?);
+    let latched = channel_read::<6>(ch::INTSTATUS);
+    let (status, stopped) = match result {
+        Err(Error::Bus(status)) => (status, 1),
+        Err(Error::Recovering) => (latched, 0),
+        Err(error) => return Err(error),
+        Ok(()) => return Err(Error::Invalid),
+    };
+    drop(transfer);
+    let retry = channel.try_recover();
+    let valid_recovery = if stopped == 1 {
+        retry.is_ok() && latched == 0
+    } else {
+        // A status bit may arrive between the wait and this bounded recovery check.
+        matches!(retry, Ok(()) | Err(Error::Recovering))
+    };
+    let chen_after = u32::from(enabled::<6>());
+    let good = status & int::SRC_DEC_ERR != 0 && chen_after == 0 && valid_recovery;
+    log!(
+        "PARITY_DMA_BUS_ERROR nonce={nonce:08x} ch=6 status=0x{status:08x} stopped={stopped} recovered={} chen_after={chen_after} ok={}\n",
+        u32::from(retry.is_ok()), u32::from(good),
+    )
+    .unwrap();
+    if good { Ok(()) } else { Err(Error::Invalid) }
+}
+
+fn channel_run(
     channel: &mut dyn Exercise,
     wait: &mut WaitTimer,
     nonce: u32,
     n: usize,
-    mut buffers: Pair<'p>,
-) -> Result<(Pair<'p>, u32), Error> {
+    buffers: &mut Pair<'_>,
+) -> Result<u32, Error> {
+    let timer = Timer::new();
     for bytes in SIZES {
-        let mut crc_diff = 0;
-        let mut range_diff = 0;
+        let (mut crc_diff, mut range_diff, mut total_us, mut max_us) = (0, 0, 0, 0);
         for iteration in 0..REPEATS {
-            prepare(&mut buffers, 16, bytes)?;
+            prepare(buffers, CAPACITY, 16, bytes)?;
             let payload = buffers.0.as_mut_slice();
             for (i, word) in payload.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let pattern = (i as u32).wrapping_mul(0x9e37_79b9)
@@ -170,13 +368,17 @@ fn channel_run<'p>(
                 word.copy_from_slice(&pattern.to_le_bytes());
             }
             let expected = crc32(payload);
-            buffers = channel.copy(buffers)?;
+            let start = timer.now_32().ticks();
+            channel.copy(buffers)?;
+            let elapsed = timer.now_32().ticks().wrapping_sub(start);
+            total_us += elapsed;
+            max_us = max_us.max(elapsed);
             crc_diff += u32::from(crc32(buffers.0.as_slice()) != expected);
             crc_diff += u32::from(crc32(buffers.1.as_slice()) != expected);
-            range_diff += guards(&mut buffers, 16, bytes)?;
+            range_diff += guards(buffers, 16, bytes)?;
         }
         log!(
-            "PARITY_DMA_COPY nonce={nonce:08x} ch={n} bytes={bytes} count={REPEATS} crc_diff={crc_diff} range_diff={range_diff}\n"
+            "PARITY_DMA_COPY nonce={nonce:08x} ch={n} bytes={bytes} count={REPEATS} total_us={total_us} max_us={max_us} crc_diff={crc_diff} range_diff={range_diff}\n"
         )
         .unwrap();
         if crc_diff != 0 || range_diff != 0 {
@@ -186,20 +388,27 @@ fn channel_run<'p>(
 
     // Four channels get 13 trials and four get 12, for exactly 100 actual cancellations.
     let attempts = 12 + u32::from(n < 4);
-    let (mut quarantined, mut max_us, mut partial, mut early) = (0, 0, 0, 0);
+    let (mut partial, mut early) = (0, 0);
     let (mut range_diff, mut late_diff, mut payload_diff) = (0, 0, 0);
+    let mut cancel = CancelSample::default();
     for trial in 0..attempts {
-        prepare(&mut buffers, CANCEL_OFFSET, CANCEL_BYTES)?;
+        prepare(buffers, CAPACITY, CANCEL_OFFSET, CANCEL_BYTES)?;
         buffers.0.as_mut_slice().fill(0x3c);
-        let (done, held, elapsed) = channel.cancel(buffers, wait, 2 + trial % 5)?;
-        max_us = max_us.max(elapsed);
-        quarantined += u32::from(held);
-        match done.result {
+        let (result, sample) = channel.cancel(buffers, wait, 2 + trial % 5)?;
+        cancel.first_us = cancel.first_us.max(sample.first_us);
+        if sample.decision_us >= cancel.decision_us {
+            cancel.decision_us = sample.decision_us;
+            cancel.before = sample.before;
+            cancel.terminal = sample.terminal;
+            cancel.after = sample.after;
+        }
+        cancel.rechecked += sample.rechecked;
+        cancel.after_ack |= sample.after_ack;
+        match result {
             Err(Error::Cancelled) => {}
             Ok(()) => early += 1,
             Err(error) => return Err(error),
         }
-        buffers = (done.src, done.dst);
         let dst = buffers.1.as_slice();
         let prefix = dst.iter().take_while(|&&b| b == 0x3c).count();
         partial += u32::from((1..CANCEL_BYTES).contains(&prefix));
@@ -208,25 +417,32 @@ fn channel_run<'p>(
         let signature = crc32(dst);
         wait.delay(Duration::micros(100))?;
         late_diff += u32::from(crc32(buffers.1.as_slice()) != signature);
-        range_diff += guards(&mut buffers, CANCEL_OFFSET, CANCEL_BYTES)?;
+        range_diff += guards(buffers, CANCEL_OFFSET, CANCEL_BYTES)?;
     }
-    let stopped = attempts - quarantined;
     log!(
-        "PARITY_DMA_CANCEL nonce={nonce:08x} ch={n} count={attempts} stopped={stopped} quarantined={quarantined} max_us={max_us} partial={partial} early={early} range_diff={range_diff} late_diff={late_diff} payload_diff={payload_diff}\n"
+        "PARITY_DMA_CANCEL nonce={nonce:08x} ch={n} count={attempts} stopped={attempts} quarantined=0 rechecked={} first_us={} decision_us={} ch_status_before=0x{:08x} terminal_status=0x{:08x} ch_status_after=0x{:08x} int_status_after=0x{:08x} partial={partial} early={early} range_diff={range_diff} late_diff={late_diff} payload_diff={payload_diff}\n",
+        cancel.rechecked, cancel.first_us, cancel.decision_us, cancel.before,
+        cancel.terminal, cancel.after, cancel.after_ack,
     )
     .unwrap();
-    if max_us > STOP_LIMIT.ticks()
+    if cancel.decision_us > STOP_LIMIT.ticks()
+        || cancel.after_ack != 0
         || early != 0
         || (range_diff + late_diff as usize + payload_diff) != 0
     {
         return Err(Error::Invalid);
     }
-    Ok((buffers, partial))
+    Ok(partial)
 }
 
-fn prepare(buffers: &mut Pair<'_>, offset: usize, bytes: usize) -> Result<(), Error> {
+fn prepare(
+    buffers: &mut Pair<'_>,
+    capacity: usize,
+    offset: usize,
+    bytes: usize,
+) -> Result<(), Error> {
     for lease in [&mut buffers.0, &mut buffers.1] {
-        lease.set_len(CAPACITY)?;
+        lease.set_len(capacity)?;
         lease.as_mut_slice().fill(CANARY);
         lease.set_range(offset, bytes)?;
     }

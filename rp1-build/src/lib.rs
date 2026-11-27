@@ -369,6 +369,19 @@ fn resources(
                 }}"
             )?;
         }
+        let dma_pool = c.instances.get("dma").and_then(|instance| match instance {
+            metadata::Instance::Dma(dma) => dma.pool,
+            _ => None,
+        });
+        if let Some(metadata::DmaPool { slots, bytes }) = dma_pool {
+            writeln!(
+                s,
+                "#[repr(C, align(16))]\nstruct Proc{index}DmaMemory([[u8; {bytes}]; {slots}]);\n\
+                 #[unsafe(link_section = \".shared\")]\n\
+                 static mut PROC{index}_DMA_MEMORY: Proc{index}DmaMemory =\n\
+                 Proc{index}DmaMemory([[0; {bytes}]; {slots}]);"
+            )?;
+        }
         // Instances come as bundles of their token and pins; `pins` keeps the rest.
         let parts = c
             .instances
@@ -471,6 +484,9 @@ fn resources(
         if wait_alarm.is_some() {
             s.push_str("pub wait_timer: ::rp1_hal::timer::WaitTimer,\n");
         }
+        if let Some(pool) = dma_pool {
+            writeln!(s, "pub dma_pool: ::rp1_hal::dma::Pool<{}>,", pool.slots)?;
+        }
         for (name, (field_ty, _, _)) in c.instances.keys().zip(&parts) {
             s.push_str(&format!("pub {name}: {field_ty},\n"));
         }
@@ -525,6 +541,15 @@ fn resources(
                 "wait_timer: unsafe {{ ::rp1_hal::timer::WaitTimer::__bind::<{alarm}, {}, {index}>(\n\
                     ::rp1_hal::timer::Alarm::new(), ::rp1_rt::interrupt::Binding::new()) }},",
                 26 + alarm
+            )?;
+        }
+        if dma_pool.is_some() {
+            // SAFETY in the generated code: only the owning core's once-per-epoch
+            // constructor can borrow this private, linker-aligned shared SRAM static.
+            writeln!(
+                s,
+                "dma_pool: unsafe {{ ::rp1_hal::dma::Pool::__from_declared(\n\
+                    &raw mut PROC{index}_DMA_MEMORY.0) }},"
             )?;
         }
         for (name, (_, init, _)) in c.instances.keys().zip(&parts) {
@@ -678,7 +703,7 @@ fn dma_resource(
     writeln!(
         source,
         "        result.and_then(|()| self._controller.__check_idle())\n}}\n\
-             /// Recover the issued subset using the dedicated timer IRQ for its deadline.\n\
+             /// Request stops, then recheck by timer IRQ until the earlier of end and 999 µs after entry.\n\
              pub fn stop_all_until(&mut self, wait: &mut ::rp1_hal::timer::WaitTimer,\n\
                  end: ::rp1_hal::timer::Deadline) -> Result<(), ::rp1_hal::dma::Error> {{\n\
                  ::rp1_hal::dma::__stop_until(wait, end, || self.try_stop_all())\n}}\n\

@@ -1,13 +1,17 @@
 error[E0308]: arguments to this method are incorrect
  --> tests/ui/dma_borrowed_copy.rs:4:21
   |
-4 |     let _ = channel.copy(src, dst, PollingTimeout::new(Duration::millis(1)));
-  |                     ^^^^ ---  --- expected `Lease<'_>`, found `&mut [u8]`
-  |                          |
-  |                          expected `Lease<'_>`, found `&[u8]`
+4 |     let _ = channel.copy_polling(src, dst, Duration::millis(1));
+  |                     ^^^^^^^^^^^^ ---  --- expected `&mut Lease<'_>`, found `&mut [u8]`
+  |                                  |
+  |                                  expected `&mut Lease<'_>`, found `&mut [u8]`
   |
+  = note: expected mutable reference `&mut Lease<'_>`
+             found mutable reference `&mut [u8]`
+  = note: expected mutable reference `&mut Lease<'_>`
+             found mutable reference `&mut [u8]`
 note: method defined here
  --> src/dma.rs
   |
-  |     pub fn copy<'p>(
-  |            ^^^^
+  |     pub fn copy_polling(
+  |            ^^^^^^^^^^^^

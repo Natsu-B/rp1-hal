@@ -17,7 +17,8 @@ pub struct ExperimentalRingDma<'a, const N: u8> {
 }
 
 impl<const N: u8> Channel<N> {
-    /// Select the experimental, polling ring adapter. The scratch slot must be 16-byte aligned and fit a batch plus 15 bytes.
+    /// Select the experimental, polling ring adapter. The scratch slot must be 16-byte
+    /// aligned and fit a batch plus 15 bytes.
     ///
     /// # Safety
     /// The caller must establish the current outbound mapping and keep it pinned for the

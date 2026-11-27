@@ -1,0 +1,9 @@
+error[E0499]: cannot borrow `destination` as mutable more than once at a time
+ --> tests/ui/dma_lease_borrowed.rs:5:5
+  |
+4 |     let transfer = channel.try_start(&mut source, &mut destination).unwrap();
+  |                                                   ---------------- first mutable borrow occurs here
+5 |     destination.as_mut_slice()[0] = 0;
+  |     ^^^^^^^^^^^ second mutable borrow occurs here
+6 |     drop(transfer);
+  |          -------- first borrow later used here
