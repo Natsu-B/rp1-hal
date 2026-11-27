@@ -1,0 +1,39 @@
+error[E0599]: no method named `enable_rx_interrupt` found for struct `rp1_hal::uart::Uart<1, (rp1_hal::gpio::Pin<0>, rp1_hal::gpio::Pin<1>), Irq<0>>` in the current scope
+ --> tests/ui/uart_managed_raw_irq.rs:7:10
+  |
+7 |     uart.enable_rx_interrupt();
+  |          ^^^^^^^^^^^^^^^^^^^
+  |
+help: there is a method `clear_interrupt` with a similar name, but with different arguments
+ --> src/uart.rs
+  |
+  |     pub fn clear_interrupt(&mut self, mask: u32) {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `enable_tx_interrupt` found for struct `rp1_hal::uart::Uart<1, (rp1_hal::gpio::Pin<0>, rp1_hal::gpio::Pin<1>), Irq<0>>` in the current scope
+ --> tests/ui/uart_managed_raw_irq.rs:8:10
+  |
+8 |     uart.enable_tx_interrupt();
+  |          ^^^^^^^^^^^^^^^^^^^
+  |
+help: there is a method `clear_interrupt` with a similar name, but with different arguments
+ --> src/uart.rs
+  |
+  |     pub fn clear_interrupt(&mut self, mask: u32) {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `enable_interrupt` found for struct `Tx<1, 0, Irq<0>>` in the current scope
+  --> tests/ui/uart_managed_raw_irq.rs:10:8
+   |
+10 |     tx.enable_interrupt();
+   |        ^^^^^^^^^^^^^^^^ method not found in `Tx<1, 0, Irq<0>>`
+   |
+   = note: the method was found for `Tx<N, PIN>`
+
+error[E0599]: no method named `enable_interrupt` found for struct `Rx<1, 1, Irq<0>>` in the current scope
+  --> tests/ui/uart_managed_raw_irq.rs:11:8
+   |
+11 |     rx.enable_interrupt();
+   |        ^^^^^^^^^^^^^^^^ method not found in `Rx<1, 1, Irq<0>>`
+   |
+   = note: the method was found for `Rx<N, PIN>`

@@ -75,6 +75,8 @@ STATIC（2026-11-27）: 同期待機にはコアごとに `wait_timer` で専有
 どちらも完了を再確認してから WFE に入り、無応答は一発の deadline IRQ で終了する。
 `wait_timer = { alarm = "ALARMn", feature = "name" }` は指定の Cargo feature が有効なときだけ
 wait ISR を生成する。他の構成でもアラームは同じコアの raw timer として予約する。
+同じコアに UART1 がある場合、feature 有効時は `p.uart1` が `Uart1Parts` となり、
+無効時は polling 用の `Parts<1, Uart1Pins>` と `p.irq.UART1` が提供される。
 
 STATIC（2026-11-27）: UART1 は `uart.blocking(&mut p.wait_timer)` で同期待機する。
 同じコアの `uart1` と `wait_timer` から生成されたハンドラが RX/TX の両マスクを所有する。

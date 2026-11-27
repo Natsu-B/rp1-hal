@@ -21,7 +21,9 @@ impl<const CORE: u8, P: CompletePins<UART>> Parts<UART, P, Irq<CORE>> {
     /// install the matching UART1 handler on the same core.
     #[doc(hidden)]
     pub unsafe fn __new(token: Token<UART>, pins: Pins<UART, P>, line: Line<CORE>) -> Self {
-        with_state::<CORE, _>(|state| state.line = Delivery::Unstarted(line.into_line()));
+        let stored =
+            with_state::<CORE, _>(|state| state.line = Delivery::Unstarted(line.into_line()));
+        debug_assert!(stored.is_some());
         Self {
             token,
             pins,

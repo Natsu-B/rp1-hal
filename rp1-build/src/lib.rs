@@ -689,6 +689,7 @@ fn instance_resource(
     let token = format!("::rp1_hal::{module}::Token::new()");
     let mut builder = format!("::rp1_hal::{module}::Pins::<{n}>::builder()");
     for (role, _) in &signals {
+        // The managed resource constructor wraps the whole builder in its unsafe block.
         if managed_core.is_some() {
             write!(builder, ".{role}(::rp1_hal::gpio::Pin::new())")?;
         } else {

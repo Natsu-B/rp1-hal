@@ -1,4 +1,5 @@
-//! Proc0 declaration: `uart1 = { tx = 0, rx = 1 }`, with `linux.keep = {}`.
+//! Declare `uart1 = { tx = 0, rx = 1 }` and `wait_timer = "ALARM1"` on proc0
+//! with `linux.keep = {}`. The wait timer makes the generator own UART1’s IRQ.
 //! Cross GPIO0/1 TX/RX with a 3.3 V UART adapter and share ground. At 115200 8N1,
 //! send eight nonce bytes after UART0 logs READY, verify the echo, then send ACK (0x06).
 

@@ -414,6 +414,7 @@ where
         config: Config,
         route: impl FnOnce(Pin<TX>, Pin<RX>) -> (Pin<TX, Alternate>, Pin<RX, Alternate>),
     ) -> Result<Uart<N, PinTuple<TX, RX>, I>, InitError<N, PinTuple<TX, RX>, I>> {
+        debug_assert!(N != 1 || clock.raw() == crate::clocks::XOSC_HZ);
         match start::<true>(io, N, clock, config.baud) {
             Ok((integer, fraction)) => {
                 let (tx, rx) = self.pins.0;
@@ -693,6 +694,15 @@ impl<const N: u8, const PIN: u8, I> Tx<N, PIN, I> {
         Ok(Mmio.read(base(N) + FR) & FR_BUSY == 0)
     }
 
+    /// Clears the TX interrupt bit selected by `mask`.
+    pub fn clear_interrupt(&mut self, mask: u32) {
+        if !self.state.resetting {
+            clear_interrupts(&mut Mmio, N, int::TX, mask);
+        }
+    }
+}
+
+impl<const N: u8, const PIN: u8> Tx<N, PIN, Serial> {
     /// Unmasks the TX FIFO threshold interrupt. The NVIC line is `irq.UARTn`.
     pub fn enable_interrupt(&mut self) {
         if !self.state.resetting {
@@ -715,13 +725,6 @@ impl<const N: u8, const PIN: u8, I> Tx<N, PIN, I> {
             pending_interrupts(&mut Mmio, N, int::TX)
         }
     }
-
-    /// Clears the TX interrupt bit selected by `mask`.
-    pub fn clear_interrupt(&mut self, mask: u32) {
-        if !self.state.resetting {
-            clear_interrupts(&mut Mmio, N, int::TX, mask);
-        }
-    }
 }
 
 impl<const N: u8, const PIN: u8, I> Rx<N, PIN, I> {
@@ -739,6 +742,17 @@ impl<const N: u8, const PIN: u8, I> Rx<N, PIN, I> {
         read_byte(&mut Mmio, N)
     }
 
+    /// Clears the receive interrupt bits selected by `mask`.
+    /// Receive error interrupts clear only through the PL011 interrupt-clear register
+    /// (UARTICR, DOC: ARM DDI0183 §2.8.5). Draining the FIFO also clears RX and RT.
+    pub fn clear_interrupt(&mut self, mask: u32) {
+        if !self.state.resetting {
+            clear_interrupts(&mut Mmio, N, RX_INTERRUPTS, mask);
+        }
+    }
+}
+
+impl<const N: u8, const PIN: u8> Rx<N, PIN, Serial> {
     /// Unmasks the RX FIFO threshold, receive timeout and receive error interrupts.
     /// Receive timeout lets a short message below the threshold raise an interrupt.
     /// Use [`Rx::clear_interrupt`] to acknowledge receive errors. The NVIC line is `irq.UARTn`.
@@ -763,15 +777,6 @@ impl<const N: u8, const PIN: u8, I> Rx<N, PIN, I> {
             pending_interrupts(&mut Mmio, N, RX_INTERRUPTS)
         }
     }
-
-    /// Clears the receive interrupt bits selected by `mask`.
-    /// Receive error interrupts clear only through the PL011 interrupt-clear register
-    /// (UARTICR, DOC: ARM DDI0183 §2.8.5). Draining the FIFO also clears RX and RT.
-    pub fn clear_interrupt(&mut self, mask: u32) {
-        if !self.state.resetting {
-            clear_interrupts(&mut Mmio, N, RX_INTERRUPTS, mask);
-        }
-    }
 }
 
 fn pending_interrupts(io: &mut impl Registers, n: u8, direction: u32) -> u32 {
@@ -789,7 +794,8 @@ where
 {
     /// Splits the UART into independently owned halves. Dropping a half leaves the UART running.
     ///
-    /// Put the receive half in a slot for its owning core before enabling the NVIC line.
+    /// For a custom handler, put the receive half in a slot for its owning core
+    /// before enabling the NVIC line.
     ///
     /// ```no_run
     /// use rp1_hal::{gpio::Pin, pac::pl011::int};
@@ -853,6 +859,21 @@ where
         self.halves.0.try_flush()
     }
 
+    /// Clears the [PL011 interrupt bits](int) in `mask`. Receive error interrupts clear
+    /// only through UARTICR (see [`Rx::clear_interrupt`]). RX and RT also clear by draining
+    /// the FIFO, TX by refilling it.
+    pub fn clear_interrupt(&mut self, mask: u32) {
+        if !self.halves.0.state.resetting {
+            Mmio.write(base(N) + ICR, mask);
+        }
+    }
+}
+
+impl<const N: u8, const TX: u8, const RX: u8> Uart<N, PinTuple<TX, RX>, Serial>
+where
+    Pin<TX>: TxPin<N>,
+    Pin<RX>: RxPin<N>,
+{
     /// Unmasks the same receive interrupt sources as [`Rx::enable_interrupt`].
     pub fn enable_rx_interrupt(&mut self) {
         self.halves.1.enable_interrupt();
@@ -881,15 +902,6 @@ where
             Mmio.read(base(N) + MIS)
         }
     }
-
-    /// Clears the [PL011 interrupt bits](int) in `mask`. Receive error interrupts clear
-    /// only through UARTICR (see [`Rx::clear_interrupt`]). RX and RT also clear by draining
-    /// the FIFO, TX by refilling it.
-    pub fn clear_interrupt(&mut self, mask: u32) {
-        if !self.halves.0.state.resetting {
-            Mmio.write(base(N) + ICR, mask);
-        }
-    }
 }
 impl<const N: u8, const TX: u8, const RX: u8, I> Uart<N, PinTuple<TX, RX>, I>
 where
@@ -902,8 +914,10 @@ where
     /// [`Error::Timeout`] from [`Self::free_polling`]). Retry or request cancellation.
     /// If reset has already been requested, retry `try_free` to confirm it.
     ///
-    /// Disable and unpend the separately owned NVIC line first, or ensure its handler
-    /// accepts the UART being gone. Reset masks the device sources but does not unpend NVIC.
+    /// With a separately owned NVIC line, disable and unpend it first, or use a
+    /// handler that accepts the UART being gone. Reset masks the device sources
+    /// but leaves NVIC pending state intact. The generated UART1 handler already
+    /// ignores a UART held in reset.
     ///
     /// ```no_run
     /// # use rp1_hal::{FreeError, gpio::Pin, uart::{Error, Parts, Uart}};

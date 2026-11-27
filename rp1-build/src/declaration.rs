@@ -331,7 +331,7 @@ pub struct Core {
     /// Use the app's one IO_BANK0 dispatcher for this core's doorbell.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub custom_doorbell_handler: bool,
-    /// Per-driver escape hatches, emitted under their manifest keys.
+    /// Per-driver escape hatches, serialized as flattened `key = true` entries.
     #[serde(flatten)]
     pub custom_driver_handlers: BTreeMap<&'static str, bool>,
     /// `heartbeat = { period_ms = N }`: this core calls `rp1_rt::status::beat` at least every
