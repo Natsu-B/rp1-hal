@@ -4,7 +4,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if args.first().is_some_and(|s| s == "rp1") {
         args.remove(0);
     }
-    const USAGE: &str = "usage: cargo rp1 check <firmware.elf> [--dtb <base.dtb> [--allow-boot-disable]] [--require-link-irq]\n       \
+    const USAGE: &str = "usage: cargo rp1 check <firmware.elf> [--dtb <base.dtb> [--allow-boot-disable]] [--require-link-irq] (requires NOTE link rings, all with notify = \"irq\")\n       \
         cargo rp1 bundle <firmware.elf> --kernel <Image[.gz]> [--initramfs <file>] \
         [--loader <rp1boot.img>] [--cmdline <args>] [--config-extra <line>]... --out <dir>\n       \
         cargo rp1 isram-plan <firmware.elf> [--out <plan.x>]\n       \

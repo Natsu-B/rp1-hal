@@ -227,9 +227,9 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
     let mut rings = note
         .records()
         .filter_map(core::result::Result::ok)
-        .filter(|record| record.kind == note::SHM_REGION && record.value[0] == 1)
+        .filter(|record| record.kind == note::SHM_REGION && record.value.first() == Some(&1))
         .peekable();
-    let link_irq = rings.peek().is_some() && rings.all(|record| record.value[3] == 1);
+    let link_irq = rings.peek().is_some() && rings.all(|record| record.value.get(3) == Some(&1));
     let overlay = file
         .section_by_name(".rp1.dtbo")
         .ok_or("missing embedded overlay")?;
