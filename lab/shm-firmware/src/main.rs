@@ -222,7 +222,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         adc
     };
     #[cfg(feature = "spi")]
-    let mut spi_bus = {
+    let mut spi = {
         let spi = match clocks {
             Ok(c) => p
                 .spi0
@@ -238,15 +238,13 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             Err(e) => log!("p1 spi0 init Err 0x{:x}\n", 0x100 + *e as u32),
         }
         .unwrap();
-        spi.ok()
+        spi.ok().map(|bus| (bus, p.pins.gpio8))
     };
+    #[cfg(any(feature = "spi", feature = "dma"))]
+    let mut wait_timer = p.wait_timer;
     #[cfg(feature = "spi")]
-    let mut spi = spi_bus
-        .as_mut()
-        .map(|bus| rp1_hal::spi::Device::new(bus.polling(), p.pins.gpio8));
-    #[cfg(feature = "spi")]
-    if let Some(dev) = spi.as_mut() {
-        spi_proof::log_result("boot", &spi_proof::prove(dev, "P1BOOT"));
+    if let Some(result) = spi_proof::prove(&mut spi, &mut wait_timer, "P1BOOT") {
+        spi_proof::log_result("boot", &result);
     }
     #[cfg(any(feature = "dma", feature = "ring-dma"))]
     #[allow(unused_mut)]
@@ -256,8 +254,6 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         let dma = dma.and_then(|mut dma| dma_proof::sram(&mut dma).ok().map(|()| dma));
         dma
     };
-    #[cfg(feature = "dma")]
-    let mut dma_wait = p.wait_timer;
     #[cfg(feature = "dma")]
     let mut bulk_quarantined = false;
     #[cfg(feature = "ring-dma")]
@@ -278,7 +274,9 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             #[cfg(feature = "adc")]
             adc.as_mut(),
             #[cfg(feature = "spi")]
-            spi.as_mut(),
+            &mut spi,
+            #[cfg(feature = "spi")]
+            &mut wait_timer,
         );
     };
     let rp1::link::Proc1Link {
@@ -303,7 +301,9 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             #[cfg(feature = "adc")]
             adc.as_mut(),
             #[cfg(feature = "spi")]
-            spi.as_mut(),
+            &mut spi,
+            #[cfg(feature = "spi")]
+            &mut wait_timer,
         );
         if sequence == seen {
             continue;
@@ -443,7 +443,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                         let data = unsafe { writer.as_ptr() };
                         let phys =
                             rp1_proto::SHM_PHYS + (data as u64 - u64::from(rp1_proto::SHM_WINDOW));
-                        let (e, out) = dma_proof::ddr(d, &mut dma_wait, data, phys, seed);
+                        let (e, out) = dma_proof::ddr(d, &mut wait_timer, data, phys, seed);
                         if e == 0 {
                             writer.commit();
                         } else {
@@ -561,13 +561,14 @@ fn proc1_request(request: u32) -> bool {
 }
 fn serve_proc1(
     #[cfg(feature = "adc")] adc: Option<&mut rp1_hal::adc::Adc>,
-    #[cfg(feature = "spi")] spi: Option<&mut spi_proof::Dev>,
+    #[cfg(feature = "spi")] spi: &mut Option<spi_proof::Parts>,
+    #[cfg(feature = "spi")] wait: &mut rp1_hal::timer::WaitTimer,
 ) {
     match proof_pending() {
         #[cfg(feature = "adc")]
         ADC_REQUEST => adc_proof::run(adc, ADC_REQUEST),
         #[cfg(feature = "spi")]
-        SPI_REQUEST => spi_proof::run(spi, SPI_REQUEST),
+        SPI_REQUEST => spi_proof::run(spi, wait, SPI_REQUEST),
         request if proc1_request(request) => proof_reply(request, false),
         _ => {}
     }

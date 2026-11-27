@@ -1,6 +1,14 @@
-//! Polling SPI master on the RP1 DesignWare APB SSI blocks (DOC: RP1 peripherals §3.6, Linux
-//! spi-dw-core). Select [`Spi::polling`] for embedded-hal 1.0 [`SpiBus`] or a [`Device`]
-//! with GPIO chip select.
+//! SPI master on the RP1 DesignWare APB SSI blocks (DOC: RP1 peripherals §3.6, Linux
+//! spi-dw-core). SPI0 provides IRQ-backed [`Spi::blocking`] waits. All supported
+//! controllers offer explicit [`Spi::polling`]. Both adapters implement [`SpiBus`]
+//! and support [`Device`] with GPIO chip select.
+//!
+//! | Instance | Synchronous waits | Immediate I/O |
+//! |---|---|---|
+//! | SPI0 | [`Spi::blocking`] (IRQ, alarm and WFE) when a wait timer is declared on the same core, or explicit [`Spi::polling`] | Native `try_*` |
+//! | SPI1/2/3/5 | Explicit [`Spi::polling`]. Managed waits need instance-specific hardware proof. | Native `try_*` on valid pin routes |
+//! | SPI4/7 | Target-only | Controller API unavailable |
+//! | SPI6/8 | Internal GPIO bank | Bank-0 controller API unavailable |
 //!
 //! Instances (DOC §3.6.1): SPI0/1/2/3/5/6/8 are masters, SPI4/7 slave-only. Only the bank-0
 //! masters SPI0, 1, 2, 3, 5 are exposed; SPI6/8 are not on bank 0. The serial clock is clk_sys
@@ -13,12 +21,17 @@
 use crate::{
     clocks::Clocks,
     gpio::{Alternate, Output, Pin, Unconfigured},
-    read, write,
+    read,
+    timer::{self, Deadline, Duration, Instant, Timer, WaitConfig},
+    write,
 };
 use core::marker::PhantomData;
+use rp1_rt::interrupt::ThreadGuard;
+
 use embedded_hal::spi::{
     ErrorKind, ErrorType, Mode, Operation, Phase, Polarity, SpiBus, SpiDevice,
 };
+pub use irq_wait::{__on_interrupt, Blocking, Irq};
 
 use crate::pac::dw_ssi::{RegisterBlock, ctrlr0, int, irq_wrap, sr};
 macro_rules! offsets {
@@ -29,7 +42,9 @@ offsets! {
     RXFLR = rxflr, SR = sr, IMR = imr, ISR = isr, RISR = risr, ICR = icr, DMACR = dmacr, DR = dr,
     RX_SAMPLE_DLY = rx_sample_dly, IRQ_WRAP = irq_wrap,
 }
-/// No progress for this long fails a transfer (one 32-bit frame at the slowest rate is 10 ms).
+/// Default deadline for a whole bus call or device transaction. At the slowest
+/// SCLK (~3 kHz), it covers about ten 32-bit frames. Use `*_until` or
+/// [`WaitConfig`] for longer transfers.
 const TIMEOUT_US: u32 = 100_000;
 const RESETS_SET1: usize = 0x4001_4000 + 0x2000 + 4;
 const RESETS_CLR1: usize = 0x4001_4000 + 0x3000 + 4;
@@ -44,7 +59,7 @@ const fn base(n: u8) -> usize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
-    /// No transfer progress within 100 ms, or the controller stayed busy.
+    /// The operation's absolute deadline elapsed.
     Timeout,
     /// Frequency, frame size or word type out of range.
     Invalid,
@@ -54,11 +69,34 @@ pub enum Error {
     Overrun,
     /// The controller has not stopped.
     Busy,
+    /// The deadline exceeds the supported comparison horizon.
+    InvalidDeadline,
+    /// Synchronous operations require unmasked thread context.
+    WrongContext,
+    /// The managed device IRQ is unavailable.
+    IrqUnavailable,
+    /// The dedicated deadline alarm could not be retired.
+    AlarmUnavailable,
+    /// The controller reported a multi-master/chip-select conflict.
+    ChipSelectFault,
 }
+impl From<timer::Error> for Error {
+    fn from(error: timer::Error) -> Self {
+        match error {
+            timer::Error::Timeout => Self::Timeout,
+            timer::Error::InvalidDeadline => Self::InvalidDeadline,
+            timer::Error::IrqUnavailable => Self::IrqUnavailable,
+            timer::Error::AlarmUnavailable => Self::AlarmUnavailable,
+            timer::Error::WrongContext | timer::Error::Masked => Self::WrongContext,
+        }
+    }
+}
+
 impl embedded_hal::spi::Error for Error {
     fn kind(&self) -> ErrorKind {
         match self {
             Self::Overrun => ErrorKind::Overrun,
+            Self::ChipSelectFault => ErrorKind::ChipSelectFault,
             _ => ErrorKind::Other,
         }
     }
@@ -69,14 +107,18 @@ mod sealed {
     impl<const N: u8> Pin for crate::gpio::Pin<N> {}
     pub trait CompletePins<const N: u8> {}
     pub trait Bus {}
-    impl<const N: u8, P: super::CompletePins<N>> Bus for super::Polling<'_, N, P> {}
+    impl<const N: u8, P: super::CompletePins<N>, I> Bus for super::Polling<'_, N, P, I> {}
     impl<B: Bus + ?Sized> Bus for &mut B {}
+    impl<P: super::CompletePins<0>, const CORE: u8> Bus for super::Blocking<'_, P, CORE> {}
     /// Lets a [`super::Bus::admit`] call through; only `spi` can make one, so code outside
     /// this crate cannot call any [`super::Bus`] method.
     pub struct Key(pub(in crate::spi) ());
     /// Proof that [`super::Bus::admit`] passed for words `W` (frame size and clk_sys); the
     /// unchecked operations take it. Only `admit` makes one.
-    pub struct Admitted<W>(pub(in crate::spi) core::marker::PhantomData<W>);
+    pub struct Admitted<W>(
+        pub(in crate::spi) super::Deadline,
+        pub(in crate::spi) core::marker::PhantomData<W>,
+    );
     impl<W> Clone for Admitted<W> {
         fn clone(&self) -> Self {
             *self
@@ -251,33 +293,50 @@ pub struct Controller {
     _private: (),
 }
 
-/// A configured controller. Use [`Spi::polling`] to run the synchronous engine.
-/// Each polling `SpiBus` call checks once that clk_sys still matches, before any
+/// Marker for a controller whose IRQ is available to the application.
+pub struct NoIrq;
+
+/// A configured controller. Use [`Spi::blocking`] on SPI0, or select [`Spi::polling`].
+/// Each `SpiBus` call checks once that clk_sys still matches, before any
 /// FIFO access. This includes a whole `transfer_in_place` buffer. A [`Device`]
 /// checks once for an entire transaction.
 ///
 /// Dropping the driver leaves the controller enabled and the pins muxed. Recover
 /// the token with [`Spi::try_free`] when you need to initialize it again.
-pub struct Spi<const N: u8, P: CompletePins<N>, Role = Controller> {
+pub struct Spi<const N: u8, P: CompletePins<N>, Role = Controller, I = NoIrq> {
     pins: P::Active,
     clocks: Clocks,
-    depth: usize,
+    depth: u16,
+    outstanding: u16,
     dfs32: bool,
     /// Frame size, as encoded in `cr0`.
     bits: u8,
     cr0: u32,
     div: u32,
     rsd: u32,
-    stopping: bool,
+    state: State,
     _role: PhantomData<Role>,
+    irq: I,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum State {
+    Idle,
+    Transfer,
+    Stopping,
 }
 
 /// The initialization error retains the block and its pins during recovery.
-pub type InitError<const N: u8, P> =
-    crate::InitError<Parts<N, P>, Error, crate::Recovery<Parts<N, P>>>;
+pub type InitError<const N: u8, P, I = NoIrq> =
+    crate::InitError<Parts<N, P, I>, Error, crate::Recovery<Parts<N, P, I>>>;
 
 /// Explicit polling access to the SPI bus.
-pub struct Polling<'a, const N: u8, P: CompletePins<N>>(&'a mut Spi<N, P>);
+/// Bus calls and reconfiguration require unmasked thread context. Use the
+/// controller's native `try_*` operations from an interrupt handler.
+pub struct Polling<'a, const N: u8, P: CompletePins<N>, I = NoIrq> {
+    spi: &'a mut Spi<N, P, Controller, I>,
+    config: WaitConfig,
+}
 
 impl<const N: u8> Token<N> {
     /// # Safety
@@ -303,14 +362,19 @@ pin_builder!(Pin, [sck: SCK, mosi: MOSI], miso: MISO => Miso);
 complete_pins!(SCK: Sck, MOSI: Mosi, MISO: Miso; PinTuple<SCK, MOSI, MISO, Alternate>);
 
 /// A declared SPI N with its pins, as the generated resources hand it out.
-pub struct Parts<const N: u8, P: CompletePins<N>> {
+pub struct Parts<const N: u8, P: CompletePins<N>, I = NoIrq> {
     token: Token<N>,
     pins: Pins<N, P>,
+    irq: I,
 }
 impl<const N: u8, P: CompletePins<N>> Parts<N, P> {
     /// Assemble the owned block and the routed pin bundle.
     pub fn new(token: Token<N>, pins: Pins<N, P>) -> Self {
-        Self { token, pins }
+        Self {
+            token,
+            pins,
+            irq: NoIrq,
+        }
     }
 
     /// Return the block and pins for manual assembly.
@@ -323,7 +387,8 @@ impl<const N: u8, P: CompletePins<N>> Parts<N, P> {
 type PinTuple<const SCK: u8, const MOSI: u8, const MISO: u8, M = Unconfigured> =
     (Pin<SCK, M>, Pin<MOSI, M>, Pin<MISO, M>);
 
-impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Parts<N, PinTuple<SCK, MOSI, MISO>>
+impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8, I>
+    Parts<N, PinTuple<SCK, MOSI, MISO>, I>
 where
     Pin<SCK>: Sck<N>,
     Pin<MOSI>: Mosi<N>,
@@ -357,7 +422,10 @@ where
         self,
         clocks: &Clocks,
         config: Config,
-    ) -> Result<Spi<N, PinTuple<SCK, MOSI, MISO>>, InitError<N, PinTuple<SCK, MOSI, MISO>>> {
+    ) -> Result<
+        Spi<N, PinTuple<SCK, MOSI, MISO>, Controller, I>,
+        InitError<N, PinTuple<SCK, MOSI, MISO>, I>,
+    > {
         self.init_on(
             &mut Mmio { base: base(N) },
             clocks,
@@ -378,7 +446,10 @@ where
         clocks: &Clocks,
         config: Config,
         route: impl FnOnce(PinTuple<SCK, MOSI, MISO>) -> PinTuple<SCK, MOSI, MISO, Alternate>,
-    ) -> Result<Spi<N, PinTuple<SCK, MOSI, MISO>>, InitError<N, PinTuple<SCK, MOSI, MISO>>> {
+    ) -> Result<
+        Spi<N, PinTuple<SCK, MOSI, MISO>, Controller, I>,
+        InitError<N, PinTuple<SCK, MOSI, MISO>, I>,
+    > {
         if !io.sys_current_strict(clocks) {
             return Err(InitError::new(Error::Precondition, self));
         }
@@ -412,15 +483,17 @@ where
             cr0,
             div,
             rsd,
-            stopping: false,
+            state: State::Idle,
+            outstanding: 0,
             _role: PhantomData,
+            irq: self.irq,
         })
     }
 }
 
-impl<const N: u8, P: CompletePins<N>> InitError<N, P> {
+impl<const N: u8, P: CompletePins<N>, I> InitError<N, P, I> {
     /// Request SPI reset and return the parts once reset is confirmed.
-    pub fn try_recover(self) -> Result<Parts<N, P>, Self> {
+    pub fn try_recover(self) -> Result<Parts<N, P, I>, Self> {
         self.recover(|| {
             write(RESETS_SET1, reset_bit(N));
             read(RESETS_DONE1) & reset_bit(N) == 0
@@ -446,7 +519,7 @@ fn fifo_depth(io: &mut impl Io, reg: usize) -> u32 {
 /// Frames that may be in flight (the shallower of the TX and RX FIFOs, which DW_apb_ssi sizes
 /// separately) and whether CTRLR0 has the 32-bit DFS field. `None` if the block does not behave
 /// like a DW SSI (no FIFO).
-fn probe(io: &mut impl Io) -> Option<(usize, bool)> {
+fn probe(io: &mut impl Io) -> Option<(u16, bool)> {
     io.write(SSIENR, 0);
     if io.read(SSIENR) & 1 != 0 || io.read(SR) & sr::BUSY != 0 {
         return None;
@@ -455,7 +528,7 @@ fn probe(io: &mut impl Io) -> Option<(usize, bool)> {
     io.write(CTRLR0, u32::MAX);
     let dfs32 = io.read(CTRLR0) & ctrlr0::DFS_MASK == 0;
     io.write(CTRLR0, 0);
-    (depth > 1).then_some((depth as usize, dfs32))
+    (depth > 1).then_some((depth as u16, dfs32))
 }
 
 /// CTRLR0: Motorola SPI, transmit and receive, mode, frame size (SRL off).
@@ -508,7 +581,7 @@ fn enable_interrupt(io: &mut impl Io, mask: u32) {
 trait Io {
     fn read(&mut self, offset: usize) -> u32;
     fn write(&mut self, offset: usize, value: u32);
-    fn now(&mut self) -> u32;
+    fn now(&mut self) -> Instant;
     /// clk_sys still matches `clocks`, per bus call ([`Clocks::sys_current`]).
     fn sys_current(&mut self, clocks: &Clocks) -> bool;
     /// clk_sys still matches `clocks`, at init and reconfiguration
@@ -535,8 +608,8 @@ impl Io for Mmio {
         }
     }
     #[inline(always)]
-    fn now(&mut self) -> u32 {
-        read(crate::TIMER_RAWL)
+    fn now(&mut self) -> Instant {
+        Timer::new().now()
     }
     #[inline(always)]
     fn sys_current(&mut self, clocks: &Clocks) -> bool {
@@ -551,46 +624,83 @@ impl Io for Mmio {
     }
 }
 
-/// Full-duplex exchange of `max(read, write)` frames. Frames beyond `write` send 0; received
-/// frames beyond `read` are dropped. At most `depth` frames are in flight, so neither FIFO can
-/// overflow; a stall of [`TIMEOUT_US`] without progress fails.
-#[rp1_rt::isram]
-fn exchange(
-    io: &mut impl Io,
-    mut read: Rx<'_>,
-    write: Tx<'_>,
+const FIFO_ERRORS: u32 = int::RXOI | int::RXUI | int::TXOI;
+const ERRORS: u32 = FIFO_ERRORS | int::MSTI;
+const IDLE: u32 = sr::BUSY | sr::TFE;
+
+fn error(status: u32) -> Result<(), Error> {
+    if status & FIFO_ERRORS != 0 {
+        Err(Error::Overrun)
+    } else if status & int::MSTI != 0 {
+        Err(Error::ChipSelectFault)
+    } else {
+        Ok(())
+    }
+}
+
+/// Frames beyond `write` send zero and frames beyond `read` are discarded. Each
+/// step drains and fills at most one FIFO, with at most `depth` frames in flight, so neither FIFO can overflow.
+struct Exchange<'a> {
+    read: Rx<'a>,
+    write: Tx<'a>,
+    sent: usize,
+    received: usize,
+    len: usize,
     mask: u32,
     depth: usize,
-) -> Result<(), Error> {
-    let len = read.len().max(write.len());
-    let (mut sent, mut received) = (0, 0);
-    let mut start = io.now();
-    while received < len {
-        let mut progress = false;
-        let mut ready = (io.read(RXFLR) as usize).min(sent - received);
-        while ready > 0 {
-            read.set(received, io.read(DR) & mask);
-            received += 1;
-            ready -= 1;
-            progress = true;
-        }
-        let mut room = (depth - (sent - received)).min(len - sent);
-        while room > 0 {
-            io.write(DR, write.get(sent) & mask);
-            sent += 1;
-            room -= 1;
-            progress = true;
-        }
-        if io.read(RISR) & (int::RXOI | int::RXUI | int::TXOI) != 0 {
-            return Err(Error::Overrun);
-        }
-        if progress {
-            start = io.now();
-        } else if io.now().wrapping_sub(start) >= TIMEOUT_US {
-            return Err(Error::Timeout);
+}
+
+impl<'a> Exchange<'a> {
+    fn new(read: Rx<'a>, write: Tx<'a>, bits: u8, depth: usize) -> Self {
+        let len = read.len().max(write.len());
+        Self {
+            read,
+            write,
+            sent: 0,
+            received: 0,
+            len,
+            mask: word_mask(bits),
+            depth,
         }
     }
-    Ok(())
+
+    #[rp1_rt::isram]
+    fn step(&mut self, io: &mut impl Io, can_send: bool) -> Result<bool, Error> {
+        error(io.read(RISR))?;
+        let ready = (io.read(RXFLR) as usize).min(self.sent - self.received);
+        for _ in 0..ready {
+            self.read.set(self.received, io.read(DR) & self.mask);
+            self.received += 1;
+        }
+        if can_send {
+            let room = (self.depth - (self.sent - self.received)).min(self.len - self.sent);
+            for _ in 0..room {
+                io.write(DR, self.write.get(self.sent) & self.mask);
+                self.sent += 1;
+            }
+        }
+        error(io.read(RISR))?;
+        Ok(self.received == self.len)
+    }
+}
+
+fn word_mask(bits: u8) -> u32 {
+    u32::MAX >> (32 - u32::from(bits))
+}
+
+fn poll_exchange(io: &mut impl Io, mut exchange: Exchange<'_>, end: Deadline) -> Result<(), Error> {
+    if exchange.len == 0 {
+        return Ok(());
+    }
+    let mut remaining = end.check(io.now());
+    remaining?;
+    loop {
+        if exchange.step(io, remaining.is_ok())? {
+            return Ok(());
+        }
+        remaining?;
+        remaining = end.check(io.now());
+    }
 }
 
 /// The check each public bus call makes once, before any FIFO access: `Precondition` if
@@ -604,38 +714,34 @@ fn admit(io: &mut impl Io, clocks: &Clocks) -> Result<(), Error> {
     }
 }
 
-/// One exchange of an admitted call (no clock check of its own); after a failed exchange the
-/// controller is disabled (both FIFOs flushed, shifter stopped) and set up again unchanged.
-fn run(
-    io: &mut impl Io,
-    (cr0, div, rsd): (u32, u32, u32),
-    bits: u8,
-    depth: usize,
-    read: Rx<'_>,
-    write: Tx<'_>,
-) -> Result<(), Error> {
-    // A handler would race the exchange loop for the FIFOs and the status it polls.
+fn run_polling(io: &mut impl Io, transfer: Exchange<'_>, end: Deadline) -> Result<(), Error> {
+    if transfer.len == 0 {
+        return Ok(());
+    }
+    end.check(io.now())?;
+    // The polling loop owns the FIFO and preserves the raw mask on success.
     let interrupts = io.read(IMR);
     io.write(IMR, 0);
-    let mask = u32::MAX >> (32 - u32::from(bits));
-    let result = exchange(io, read, write, mask, depth);
-    if result.is_err() {
-        setup(io, cr0, div, rsd);
+    let result = poll_exchange(io, transfer, end);
+    if result.is_ok() {
+        io.write(IMR, interrupts);
     }
-    io.write(IMR, interrupts);
     result
 }
 
+fn default_deadline(config: WaitConfig) -> Result<Deadline, Error> {
+    Deadline::after(config.timeout_or(Duration::from_ticks(TIMEOUT_US))).map_err(Error::from)
+}
+
 #[inline(never)]
-fn wait_idle(io: &mut impl Io) -> Result<(), Error> {
-    let start = io.now();
+fn poll_idle(io: &mut impl Io, end: Deadline) -> Result<(), Error> {
     loop {
-        if io.read(SR) & (sr::BUSY | sr::TFE) == sr::TFE {
+        let remaining = end.check(io.now());
+        error(io.read(RISR))?;
+        if io.read(SR) & IDLE == sr::TFE {
             return Ok(());
         }
-        if io.now().wrapping_sub(start) >= TIMEOUT_US {
-            return Err(Error::Timeout);
-        }
+        remaining?;
     }
 }
 
@@ -662,18 +768,22 @@ fn reconfigure(
     if !io.sys_current_strict(clocks) {
         return Err(Error::Precondition);
     }
-    wait_idle(io)?;
+    let end = Deadline::at(io.now() + Duration::from_ticks(TIMEOUT_US));
+    poll_idle(io, end)?;
     setup(io, cr0, div, rsd);
     Ok(())
 }
 
-impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
+impl<const N: u8, P: CompletePins<N>, I> Spi<N, P, Controller, I> {
     fn io(&self) -> Mmio {
         Mmio { base: base(N) }
     }
     /// Selects the synchronous polling engine.
-    pub fn polling(&mut self) -> Polling<'_, N, P> {
-        Polling(self)
+    pub fn polling(&mut self) -> Polling<'_, N, P, I> {
+        Polling {
+            spi: self,
+            config: WaitConfig::new(),
+        }
     }
 
     /// SCLK actually used: clk_sys / BAUDR.
@@ -691,43 +801,123 @@ impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
     }
     /// FIFO depth in frames (detected at init).
     pub fn fifo_depth(&self) -> usize {
-        self.depth
+        usize::from(self.depth)
     }
     pub fn has_32_bit_frames(&self) -> bool {
         self.dfs32
     }
-    /// Once per public call, before any FIFO access: the frame fits `word_bits`
-    /// (`Invalid`) and clk_sys still matches (`Precondition`).
+    /// Once per public call, before any FIFO access.
     fn check(&self, word_bits: u8) -> Result<(), Error> {
-        if self.stopping {
+        self.check_exchange(word_bits)?;
+        admit(&mut self.io(), &self.clocks)
+    }
+
+    fn check_exchange(&self, word_bits: u8) -> Result<(), Error> {
+        self.check_state(word_bits)?;
+        if self.outstanding != 0 {
+            return Err(Error::Busy);
+        }
+        Ok(())
+    }
+
+    fn check_state(&self, word_bits: u8) -> Result<(), Error> {
+        if self.state != State::Idle {
             return Err(Error::Busy);
         }
         if self.frame_bits() > word_bits {
             return Err(Error::Invalid);
         }
-        admit(&mut self.io(), &self.clocks)
-    }
-    /// An exchange of an admitted call.
-    fn run<W: Word>(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error> {
-        run(
-            &mut self.io(),
-            (self.cr0, self.div, self.rsd),
-            self.frame_bits(),
-            self.depth,
-            W::rx(read),
-            W::tx(write),
-        )
-    }
-    /// An in-place exchange of an admitted call, 32 frames at a time through a stack copy.
-    fn run_in_place<W: Word>(&mut self, words: &mut [W]) -> Result<(), Error> {
-        let mut tx = [W::from_u32(0); 32];
-        for chunk in words.chunks_mut(tx.len()) {
-            let tx = &mut tx[..chunk.len()];
-            tx.copy_from_slice(chunk);
-            self.run(chunk, tx)?;
-        }
         Ok(())
     }
+
+    /// One bounded FIFO step. While the transfer exists, it owns both buffers.
+    /// Neither the IRQ handler nor DMA sees the buffers.
+    pub fn try_start_transfer<'a, W: Word>(
+        &'a mut self,
+        read: &'a mut [W],
+        write: &'a [W],
+    ) -> Result<Transfer<'a, N, P, I>, Error> {
+        self.start_with(&mut self.io(), read, write)
+    }
+
+    fn start_with<'a, W: Word>(
+        &'a mut self,
+        io: &mut impl Io,
+        read: &'a mut [W],
+        write: &'a [W],
+    ) -> Result<Transfer<'a, N, P, I>, Error> {
+        self.check_exchange(W::BITS)?;
+        admit(io, &self.clocks)?;
+        mask_interrupts(io);
+        self.state = State::Transfer;
+        let exchange = Exchange::new(W::rx(read), W::tx(write), self.bits, self.fifo_depth());
+        let mut transfer = Transfer {
+            spi: self,
+            exchange,
+            report: None,
+        };
+        transfer.complete_with(io)?;
+        Ok(transfer)
+    }
+
+    /// Queue one frame, or return `WouldBlock` if either FIFO has no capacity.
+    pub fn try_write_word<W: Word>(&mut self, word: W) -> Result<Try<()>, Error> {
+        self.check_state(W::BITS)?;
+        let mut io = self.io();
+        admit(&mut io, &self.clocks)?;
+        self.check_error(&mut io)?;
+        if self.outstanding == self.depth || io.read(SR) & sr::TFNF == 0 {
+            return Ok(Try::WouldBlock);
+        }
+        io.write(DR, word.to_u32() & word_mask(self.bits));
+        self.outstanding += 1;
+        Ok(Try::Ready(()))
+    }
+
+    /// Read one frame from a preceding [`Self::try_write_word`].
+    pub fn try_read_word<W: Word>(&mut self) -> Result<Try<W>, Error> {
+        self.check_state(W::BITS)?;
+        let mut io = self.io();
+        admit(&mut io, &self.clocks)?;
+        self.check_error(&mut io)?;
+        if self.outstanding == 0 || io.read(SR) & sr::RFNE == 0 {
+            return Ok(Try::WouldBlock);
+        }
+        let word = W::from_u32(io.read(DR) & word_mask(self.bits));
+        self.outstanding -= 1;
+        Ok(Try::Ready(word))
+    }
+
+    fn check_error(&mut self, io: &mut impl Io) -> Result<(), Error> {
+        error(io.read(RISR)).inspect_err(|_| {
+            let _ = self.cancel_with(io);
+        })
+    }
+
+    /// Explicitly poll for all frames under one absolute deadline.
+    pub fn transfer_polling<W: Word>(
+        &mut self,
+        read: &mut [W],
+        write: &[W],
+        end: Deadline,
+    ) -> Result<(), Error> {
+        self.polling().transfer_until(read, write, end)
+    }
+
+    /// Explicitly poll for physical wire idle under the supplied deadline.
+    pub fn flush_polling(&mut self, end: Deadline) -> Result<(), Error> {
+        self.polling().flush_until(end)
+    }
+
+    /// Clears the overflow, underflow and multi-master interrupts. TXEI and RXFI follow the
+    /// FIFO levels instead.
+    pub fn clear_interrupt(&mut self) {
+        if self.state == State::Idle {
+            self.io().read(ICR);
+        }
+    }
+}
+impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
     /// Unmasks the [`int`] bits in `mask` and opens the RP1 wrapper
     /// that routes the controller interrupt to the cores; the NVIC line comes from the generated
     /// `irq` resources. Polling transfers mask every interrupt while they run and restore the
@@ -737,12 +927,12 @@ impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
     /// can run with CS asserted. Mixing interrupt-driven and polling use of one controller is
     /// unsupported.
     pub fn enable_interrupt(&mut self, mask: u32) {
-        if !self.stopping {
+        if self.state == State::Idle {
             enable_interrupt(&mut self.io(), mask);
         }
     }
     pub fn disable_interrupt(&mut self, mask: u32) {
-        if !self.stopping {
+        if self.state == State::Idle {
             let mut io = self.io();
             let masked = io.read(IMR) & !mask;
             io.write(IMR, masked);
@@ -750,21 +940,15 @@ impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
     }
     /// Pending unmasked interrupts (ISR).
     pub fn interrupt_status(&self) -> u32 {
-        if self.stopping {
+        if self.state != State::Idle {
             0
         } else {
             self.io().read(ISR)
         }
     }
-    /// Clears the overflow, underflow and multi-master interrupts. TXEI and RXFI follow the
-    /// FIFO levels instead.
-    pub fn clear_interrupt(&mut self) {
-        if !self.stopping {
-            self.io().read(ICR);
-        }
-    }
 }
-impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
+
+impl<const N: u8, P: CompletePins<N>, I> Spi<N, P, Controller, I> {
     /// Mask interrupts and request stop. Unsent and unread FIFO frames are discarded.
     /// Disabling can truncate a frame on the wire. On success, SCK has stopped toggling.
     /// Collect the parts with [`Self::try_free`] once stopped.
@@ -773,12 +957,32 @@ impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
     }
 
     fn cancel_with(&mut self, io: &mut impl Io) -> Result<(), Error> {
-        self.stopping = true;
+        self.state = State::Stopping;
+        self.outstanding = 0;
         stop(io)
+    }
+
+    /// Restore the original configuration once stop is confirmed. A cancelled
+    /// transfer may have sent a prefix. RX and TX FIFOs are discarded on stop.
+    pub fn try_recover(&mut self) -> Result<(), Error> {
+        self.recover_with(&mut self.io())
+    }
+
+    fn recover_with(&mut self, io: &mut impl Io) -> Result<(), Error> {
+        if self.state == State::Stopping {
+            stop(io)?;
+            if !io.sys_current_strict(&self.clocks) {
+                return Err(Error::Precondition);
+            }
+            setup(io, self.cr0, self.div, self.rsd);
+            self.state = State::Idle;
+        }
+        Ok(())
     }
 }
 
-impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Spi<N, PinTuple<SCK, MOSI, MISO>>
+impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8, I>
+    Spi<N, PinTuple<SCK, MOSI, MISO>, Controller, I>
 where
     Pin<SCK>: Sck<N>,
     Pin<MOSI>: Mosi<N>,
@@ -789,29 +993,38 @@ where
     /// (or [`Error::Timeout`] from [`Self::free_polling`]). Retry or call
     /// [`Self::try_cancel`] before trying again. If stop has already been
     /// requested, `try_free` retries disable until it can confirm stop.
-    /// The pins stay muxed and reset stays released. The NVIC line is separately owned:
-    /// disable and unpend it first, or ensure its handler accepts the controller being gone.
+    /// The pins stay muxed and reset stays released. The managed IRQ remains
+    /// reserved for these parts. When using a raw IRQ, disable and unpend it
+    /// first or ensure its handler accepts the controller being gone.
     pub fn try_free(
         self,
-    ) -> Result<Parts<N, PinTuple<SCK, MOSI, MISO>>, crate::FreeError<Self, Error>> {
+    ) -> Result<Parts<N, PinTuple<SCK, MOSI, MISO>, I>, crate::FreeError<Self, Error>> {
         self.free_with(false)
     }
 
     /// Poll for wire idle for up to 100 ms before disabling. On failure the driver is returned.
     pub fn free_polling(
         self,
-    ) -> Result<Parts<N, PinTuple<SCK, MOSI, MISO>>, crate::FreeError<Self, Error>> {
+    ) -> Result<Parts<N, PinTuple<SCK, MOSI, MISO>, I>, crate::FreeError<Self, Error>> {
+        if let Err(error) = poll_context() {
+            return Err(crate::FreeError {
+                driver: self,
+                error,
+            });
+        }
         self.free_with(true)
     }
 
     fn free_with(
         mut self,
         polling: bool,
-    ) -> Result<Parts<N, PinTuple<SCK, MOSI, MISO>>, crate::FreeError<Self, Error>> {
-        let idle = if self.stopping {
+    ) -> Result<Parts<N, PinTuple<SCK, MOSI, MISO>, I>, crate::FreeError<Self, Error>> {
+        let idle = if self.state == State::Transfer || self.outstanding != 0 {
+            Err(Error::Busy)
+        } else if self.state == State::Stopping {
             Ok(())
         } else if polling {
-            wait_idle(&mut self.io())
+            default_deadline(WaitConfig::new()).and_then(|end| poll_idle(&mut self.io(), end))
         } else if self.io().read(SR) & (sr::BUSY | sr::TFE) == sr::TFE {
             Ok(())
         } else {
@@ -824,121 +1037,273 @@ where
             });
         }
         let (sck, mosi, miso) = self.pins;
-        Ok(Parts::new(
-            Token {
+        Ok(Parts {
+            token: Token {
                 _private: PhantomData,
             },
-            Pins::from_required((sck.release(), mosi.release(), miso.release())),
-        ))
+            pins: Pins::from_required((sck.release(), mosi.release(), miso.release())),
+            irq: self.irq,
+        })
     }
 }
 
-impl<const N: u8, P: CompletePins<N>> Polling<'_, N, P> {
-    /// SCLK actually used, in hertz.
-    pub fn frequency(&self) -> fugit::HertzU32 {
-        self.0.frequency()
-    }
-
-    /// BAUDR divider in use.
-    pub fn divider(&self) -> u32 {
-        self.0.divider()
-    }
-
-    /// FIFO depth in frames.
-    pub fn fifo_depth(&self) -> usize {
-        self.0.fifo_depth()
-    }
-
-    /// Whether the controller supports frames up to 32 bits.
-    pub fn has_32_bit_frames(&self) -> bool {
-        self.0.has_32_bit_frames()
-    }
-
-    fn reconfigure(&mut self, cr0: u32, div: u32) -> Result<(), Error> {
-        if self.0.stopping {
-            return Err(Error::Busy);
-        }
-        reconfigure(&mut self.0.io(), &self.0.clocks, cr0, div, self.0.rsd)?;
-        self.0.cr0 = cr0;
-        self.0.div = div;
-        Ok(())
-    }
-    /// Sets SCLK to at most `frequency` and returns the rate used.
-    pub fn set_frequency(&mut self, frequency: fugit::HertzU32) -> Result<fugit::HertzU32, Error> {
-        let div = divider(self.0.clocks.sys().raw(), frequency.raw())?;
-        self.reconfigure(self.0.cr0, div)?;
-        Ok(self.0.frequency())
-    }
-    pub fn set_mode(&mut self, mode: Mode) -> Result<(), Error> {
-        let cr0 = control(mode, self.0.frame_bits(), self.0.dfs32)? | (self.0.cr0 & ctrlr0::SRL);
-        self.reconfigure(cr0, self.0.div)
-    }
-    pub fn set_frame_bits(&mut self, bits: u8) -> Result<(), Error> {
-        let mut mode = embedded_hal::spi::MODE_0;
-        if self.0.cr0 & ctrlr0::SCPH != 0 {
-            mode.phase = Phase::CaptureOnSecondTransition;
-        }
-        if self.0.cr0 & ctrlr0::SCPOL != 0 {
-            mode.polarity = Polarity::IdleHigh;
-        }
-        let cr0 = control(mode, bits, self.0.dfs32)? | (self.0.cr0 & ctrlr0::SRL);
-        self.reconfigure(cr0, self.0.div)?;
-        self.0.bits = bits;
-        Ok(())
-    }
-    /// Internal loopback (CTRLR0.SRL): received data is the transmitted data, not MISO.
-    pub fn set_loopback(&mut self, on: bool) -> Result<(), Error> {
-        let cr0 = if on {
-            self.0.cr0 | ctrlr0::SRL
-        } else {
-            self.0.cr0 & !ctrlr0::SRL
-        };
-        self.reconfigure(cr0, self.0.div)
-    }
-}
-impl<const N: u8, P: CompletePins<N>> ErrorType for Polling<'_, N, P> {
+#[cfg(feature = "eh-nb")]
+impl<const N: u8, P: CompletePins<N>, I> ErrorType for Spi<N, P, Controller, I> {
     type Error = Error;
 }
-impl<W: Word, const N: u8, P: CompletePins<N>> SpiBus<W> for Polling<'_, N, P> {
-    /// Sends zero frames. Each call checks clk_sys once before any FIFO access.
-    fn read(&mut self, words: &mut [W]) -> Result<(), Error> {
-        self.transfer(words, &[])
-    }
-    fn write(&mut self, words: &[W]) -> Result<(), Error> {
-        self.transfer(&mut [], words)
-    }
-    fn transfer(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error> {
-        self.0.check(W::BITS)?;
-        self.0.run(read, write)
-    }
-    /// One clock check for the whole buffer, then 32-frame chunks.
-    fn transfer_in_place(&mut self, words: &mut [W]) -> Result<(), Error> {
-        self.0.check(W::BITS)?;
-        self.0.run_in_place(words)
-    }
-    /// All frames have been received, so wait for BUSY to clear on the wire.
-    fn flush(&mut self) -> Result<(), Error> {
-        if self.0.stopping {
-            return Err(Error::Busy);
+
+#[cfg(feature = "eh-nb")]
+impl<W: Word, const N: u8, P: CompletePins<N>, I> embedded_hal_nb::spi::FullDuplex<W>
+    for Spi<N, P, Controller, I>
+{
+    fn read(&mut self) -> nb::Result<W, Error> {
+        match self.try_read_word().map_err(nb::Error::Other)? {
+            Try::Ready(word) => Ok(word),
+            Try::WouldBlock => Err(nb::Error::WouldBlock),
         }
-        wait_idle(&mut self.0.io())
+    }
+
+    fn write(&mut self, word: W) -> nb::Result<(), Error> {
+        self.check_state(W::BITS).map_err(nb::Error::Other)?;
+        // The trait associates a read with the immediately preceding write.
+        if self.outstanding != 0 {
+            return Err(nb::Error::WouldBlock);
+        }
+        match self.try_write_word(word).map_err(nb::Error::Other)? {
+            Try::Ready(()) => Ok(()),
+            Try::WouldBlock => Err(nb::Error::WouldBlock),
+        }
     }
 }
 
-/// The bus side of [`Device`]: one admission (frame size, clk_sys) per transaction, before the
-/// chip select moves, then the operations without a check of their own. Implemented by
-/// [`Polling`] and mutable references to it. The methods take arguments only this crate
-/// can make, so they cannot be called directly or through a generic bound:
+/// Progress of a CPU-driven transfer. A failed or cancelled transfer may have
+/// sent part of its transmit buffer and updated part of its receive buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransferReport {
+    pub sent: usize,
+    pub received: usize,
+}
+
+#[must_use = "dropping the handle requests stop"]
+pub struct Transfer<'a, const N: u8, P: CompletePins<N>, I = NoIrq> {
+    spi: &'a mut Spi<N, P, Controller, I>,
+    exchange: Exchange<'a>,
+    report: Option<TransferReport>,
+}
+
+/// Result of a bounded nonblocking observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Try<T> {
+    Ready(T),
+    WouldBlock,
+}
+
+impl<const N: u8, P: CompletePins<N>, I> Transfer<'_, N, P, I> {
+    pub fn progress(&self) -> TransferReport {
+        TransferReport {
+            sent: self.exchange.sent,
+            received: self.exchange.received,
+        }
+    }
+
+    /// Service at most one FIFO and return completion when all RX is collected.
+    pub fn try_complete(&mut self) -> Result<Try<TransferReport>, Error> {
+        self.complete_with(&mut self.spi.io())
+    }
+
+    fn complete_with(&mut self, io: &mut impl Io) -> Result<Try<TransferReport>, Error> {
+        if let Some(report) = self.report {
+            return Ok(Try::Ready(report));
+        }
+        if self.spi.state == State::Stopping {
+            return Err(Error::Busy);
+        }
+        match self.exchange.step(io, true) {
+            Ok(true) => {
+                let report = self.progress();
+                self.report = Some(report);
+                self.spi.state = State::Idle;
+                Ok(Try::Ready(report))
+            }
+            Ok(false) => Ok(Try::WouldBlock),
+            Err(error) => {
+                let _ = self.spi.cancel_with(io);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn try_cancel(&mut self) -> Result<(), Error> {
+        if self.report.is_some() {
+            Ok(())
+        } else {
+            self.spi.try_cancel()
+        }
+    }
+}
+
+impl<const N: u8, P: CompletePins<N>, I> Drop for Transfer<'_, N, P, I> {
+    fn drop(&mut self) {
+        if self.spi.state == State::Transfer {
+            let _ = self.spi.try_cancel();
+        }
+    }
+}
+
+fn poll_context() -> Result<(), Error> {
+    ThreadGuard::new()
+        .map(|_| ())
+        .map_err(timer::Error::from)
+        .map_err(Error::from)
+}
+
+fn in_place<W: Word>(
+    words: &mut [W],
+    mut transfer: impl FnMut(&mut [W], &[W]) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut tx = [W::from_u32(0); 32];
+    // One admission and deadline for all 32-frame chunks.
+    for chunk in words.chunks_mut(tx.len()) {
+        let tx = &mut tx[..chunk.len()];
+        tx.copy_from_slice(chunk);
+        transfer(chunk, tx)?;
+    }
+    Ok(())
+}
+
+// Both adapters expose the same configuration calls. Their reconfiguration
+// methods use the selected engine to reach wire idle.
+macro_rules! adapter_config {
+    ($spi:ident) => {
+        /// SCLK actually used.
+        pub fn frequency(&self) -> fugit::HertzU32 {
+            self.$spi.frequency()
+        }
+
+        pub fn divider(&self) -> u32 {
+            self.$spi.divider()
+        }
+
+        pub fn fifo_depth(&self) -> usize {
+            self.$spi.fifo_depth()
+        }
+
+        pub fn has_32_bit_frames(&self) -> bool {
+            self.$spi.has_32_bit_frames()
+        }
+
+        /// Sets SCLK to at most `frequency` and returns the rate used.
+        pub fn set_frequency(
+            &mut self,
+            frequency: fugit::HertzU32,
+        ) -> Result<fugit::HertzU32, Error> {
+            let div = divider(self.$spi.clocks.sys().raw(), frequency.raw())?;
+            self.reconfigure(self.$spi.cr0, div)?;
+            Ok(self.$spi.frequency())
+        }
+
+        pub fn set_mode(&mut self, mode: Mode) -> Result<(), Error> {
+            let cr0 =
+                control(mode, self.$spi.bits, self.$spi.dfs32)? | (self.$spi.cr0 & ctrlr0::SRL);
+            self.reconfigure(cr0, self.$spi.div)
+        }
+
+        pub fn set_frame_bits(&mut self, bits: u8) -> Result<(), Error> {
+            let cr0 =
+                control(self.$spi.mode(), bits, self.$spi.dfs32)? | (self.$spi.cr0 & ctrlr0::SRL);
+            self.reconfigure(cr0, self.$spi.div)?;
+            self.$spi.bits = bits;
+            Ok(())
+        }
+
+        /// Internal loopback feeds transmitted frames back into RX.
+        pub fn set_loopback(&mut self, on: bool) -> Result<(), Error> {
+            let cr0 = (self.$spi.cr0 & !ctrlr0::SRL) | if on { ctrlr0::SRL } else { 0 };
+            self.reconfigure(cr0, self.$spi.div)
+        }
+
+        pub fn try_recover(&mut self) -> Result<(), Error> {
+            self.$spi.try_recover()
+        }
+    };
+}
+
+impl<const N: u8, P: CompletePins<N>, I> Spi<N, P, Controller, I> {
+    fn mode(&self) -> Mode {
+        Mode {
+            phase: if self.cr0 & ctrlr0::SCPH != 0 {
+                Phase::CaptureOnSecondTransition
+            } else {
+                Phase::CaptureOnFirstTransition
+            },
+            polarity: if self.cr0 & ctrlr0::SCPOL != 0 {
+                Polarity::IdleHigh
+            } else {
+                Polarity::IdleLow
+            },
+        }
+    }
+}
+
+impl<const N: u8, P: CompletePins<N>, I> Polling<'_, N, P, I> {
+    // Named field for use by both adapters' shared configuration methods.
+    pub fn with_wait_config(mut self, config: WaitConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    adapter_config!(spi);
+
+    fn reconfigure(&mut self, cr0: u32, div: u32) -> Result<(), Error> {
+        self.spi.check_state(u8::MAX)?;
+        if self.spi.outstanding != 0 {
+            return Err(Error::Busy);
+        }
+        poll_context()?;
+        reconfigure(&mut self.spi.io(), &self.spi.clocks, cr0, div, self.spi.rsd)?;
+        self.spi.cr0 = cr0;
+        self.spi.div = div;
+        Ok(())
+    }
+
+    pub fn transfer_until<W: Word>(
+        &mut self,
+        read: &mut [W],
+        write: &[W],
+        end: Deadline,
+    ) -> Result<(), Error> {
+        let ok = self.admit(sealed::Key(()), Some(end))?;
+        self.exchange(ok, read, write)
+    }
+
+    pub fn flush_until(&mut self, end: Deadline) -> Result<(), Error> {
+        self.check_flush(end)?;
+        self.flush_admitted(end)
+    }
+
+    fn check_flush(&self, end: Deadline) -> Result<(), Error> {
+        self.spi.check_state(u8::MAX)?;
+        poll_context()?;
+        end.check(Timer::new().now())?;
+        admit(&mut self.spi.io(), &self.spi.clocks)
+    }
+
+    fn flush_admitted(&mut self, end: Deadline) -> Result<(), Error> {
+        let mut io = self.spi.io();
+        let result = poll_idle(&mut io, end);
+        if result.is_err() {
+            let _ = self.spi.cancel_with(&mut io);
+        }
+        result
+    }
+}
+
+/// The bus side of [`Device`]. Only the HAL's adapters and their mutable
+/// references implement it, and admission is required before CS moves.
 ///
 /// ```compile_fail,E0061
 /// fn skip_the_check<B: rp1_hal::spi::Bus<u8>>(bus: &mut B, rx: &mut [u8], tx: &[u8]) {
 ///     let _ = bus.exchange(rx, tx);
-/// }
-/// ```
-///
-/// ```compile_fail,E0061
-/// fn admit_by_hand(spi: &mut rp1_hal::spi::Polling<'_, 0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>)>) {
-///     let _ = rp1_hal::spi::Bus::<u8>::admit(spi);
 /// }
 /// ```
 ///
@@ -947,7 +1312,11 @@ impl<W: Word, const N: u8, P: CompletePins<N>> SpiBus<W> for Polling<'_, N, P> {
 /// ```
 pub trait Bus<W: Word>: sealed::Bus {
     #[doc(hidden)]
-    fn admit(&mut self, key: sealed::Key) -> Result<sealed::Admitted<W>, Error>;
+    fn admit(
+        &mut self,
+        key: sealed::Key,
+        end: Option<Deadline>,
+    ) -> Result<sealed::Admitted<W>, Error>;
     #[doc(hidden)]
     fn exchange(
         &mut self,
@@ -959,31 +1328,93 @@ pub trait Bus<W: Word>: sealed::Bus {
     fn exchange_in_place(&mut self, ok: sealed::Admitted<W>, words: &mut [W]) -> Result<(), Error>;
     #[doc(hidden)]
     fn wait_idle(&mut self, ok: sealed::Admitted<W>) -> Result<(), Error>;
+    #[doc(hidden)]
+    fn delay(&mut self, ok: sealed::Admitted<W>, ns: u32) -> Result<(), Error>;
+    #[doc(hidden)]
+    fn abort(&mut self, ok: sealed::Admitted<W>);
 }
-impl<W: Word, const N: u8, P: CompletePins<N>> Bus<W> for Polling<'_, N, P> {
-    fn admit(&mut self, _: sealed::Key) -> Result<sealed::Admitted<W>, Error> {
-        self.0.check(W::BITS)?;
-        Ok(sealed::Admitted(core::marker::PhantomData))
+
+fn delay_end(now: Instant, end: Deadline, ns: u32) -> Result<Instant, Error> {
+    end.check(now)?;
+    if ns == 0 {
+        return Ok(now);
     }
+    // Round up to microseconds and allow for the current counter phase.
+    let ticks = now
+        .ticks()
+        .checked_add(u64::from(ns.div_ceil(1000)) + 1)
+        .ok_or(Error::InvalidDeadline)?;
+    Ok(Instant::from_ticks(ticks))
+}
+
+impl<W: Word, const N: u8, P: CompletePins<N>, I> Bus<W> for Polling<'_, N, P, I> {
+    fn admit(
+        &mut self,
+        _: sealed::Key,
+        end: Option<Deadline>,
+    ) -> Result<sealed::Admitted<W>, Error> {
+        self.spi.check_state(W::BITS)?;
+        poll_context()?;
+        let end = end.map_or_else(|| default_deadline(self.config), Ok)?;
+        end.check(Timer::new().now())?;
+        self.spi.check(W::BITS)?;
+        Ok(sealed::Admitted(end, PhantomData))
+    }
+
     fn exchange(
         &mut self,
-        _: sealed::Admitted<W>,
+        ok: sealed::Admitted<W>,
         read: &mut [W],
         write: &[W],
     ) -> Result<(), Error> {
-        self.0.run(read, write)
+        let io = &mut self.spi.io();
+        let transfer = Exchange::new(
+            W::rx(read),
+            W::tx(write),
+            self.spi.bits,
+            self.spi.fifo_depth(),
+        );
+        let result = run_polling(io, transfer, ok.0);
+        if result.is_err() {
+            let _ = self.spi.cancel_with(io);
+        }
+        result
     }
-    fn exchange_in_place(&mut self, _: sealed::Admitted<W>, words: &mut [W]) -> Result<(), Error> {
-        self.0.run_in_place(words)
+
+    fn exchange_in_place(&mut self, ok: sealed::Admitted<W>, words: &mut [W]) -> Result<(), Error> {
+        in_place(words, |read, write| self.exchange(ok, read, write))
     }
-    fn wait_idle(&mut self, _: sealed::Admitted<W>) -> Result<(), Error> {
-        wait_idle(&mut self.0.io())
+
+    fn wait_idle(&mut self, ok: sealed::Admitted<W>) -> Result<(), Error> {
+        self.flush_admitted(ok.0)
+    }
+
+    fn delay(&mut self, ok: sealed::Admitted<W>, ns: u32) -> Result<(), Error> {
+        let timer = Timer::new();
+        let target = delay_end(timer.now(), ok.0, ns)?;
+        while timer.now() < target.min(ok.0.instant()) {
+            core::hint::spin_loop();
+        }
+        if target > ok.0.instant() {
+            return Err(Error::Timeout);
+        }
+        Ok(())
+    }
+
+    fn abort(&mut self, _: sealed::Admitted<W>) {
+        if self.spi.state != State::Stopping {
+            let _ = self.spi.try_cancel();
+        }
     }
 }
-/// A transaction can also borrow a polling adapter.
+
 impl<W: Word, B: Bus<W> + ?Sized> Bus<W> for &mut B {
-    fn admit(&mut self, key: sealed::Key) -> Result<sealed::Admitted<W>, Error> {
-        Bus::<W>::admit(&mut **self, key)
+    fn admit(
+        &mut self,
+        key: sealed::Key,
+        end: Option<Deadline>,
+    ) -> Result<sealed::Admitted<W>, Error> {
+        (**self).admit(key, end)
     }
     fn exchange(
         &mut self,
@@ -991,28 +1422,65 @@ impl<W: Word, B: Bus<W> + ?Sized> Bus<W> for &mut B {
         read: &mut [W],
         write: &[W],
     ) -> Result<(), Error> {
-        Bus::<W>::exchange(&mut **self, ok, read, write)
+        (**self).exchange(ok, read, write)
     }
     fn exchange_in_place(&mut self, ok: sealed::Admitted<W>, words: &mut [W]) -> Result<(), Error> {
-        Bus::<W>::exchange_in_place(&mut **self, ok, words)
+        (**self).exchange_in_place(ok, words)
     }
     fn wait_idle(&mut self, ok: sealed::Admitted<W>) -> Result<(), Error> {
-        Bus::<W>::wait_idle(&mut **self, ok)
+        (**self).wait_idle(ok)
+    }
+    fn delay(&mut self, ok: sealed::Admitted<W>, ns: u32) -> Result<(), Error> {
+        (**self).delay(ok, ns)
+    }
+    fn abort(&mut self, ok: sealed::Admitted<W>) {
+        (**self).abort(ok);
     }
 }
+
+macro_rules! spi_bus {
+    ([$($generic:tt)*], $adapter:ty) => {
+        impl<$($generic)*> ErrorType for $adapter {
+            type Error = Error;
+        }
+
+        impl<W: Word, $($generic)*> SpiBus<W> for $adapter {
+            fn read(&mut self, words: &mut [W]) -> Result<(), Error> {
+                self.transfer(words, &[])
+            }
+            fn write(&mut self, words: &[W]) -> Result<(), Error> {
+                self.transfer(&mut [], words)
+            }
+            fn transfer(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error> {
+                let ok = self.admit(sealed::Key(()), None)?;
+                self.exchange(ok, read, write)
+            }
+            fn transfer_in_place(&mut self, words: &mut [W]) -> Result<(), Error> {
+                let ok = self.admit(sealed::Key(()), None)?;
+                self.exchange_in_place(ok, words)
+            }
+            fn flush(&mut self) -> Result<(), Error> {
+                self.flush_until(default_deadline(self.config)?)
+            }
+        }
+    };
+}
+
+spi_bus!([const N: u8, P: CompletePins<N>, I], Polling<'_, N, P, I>);
 
 /// A bus with an active-low GPIO chip select for one [`SpiDevice`].
 ///
 /// ```no_run
-/// # use rp1_hal::{fugit::RateExtU32, gpio::Pin, spi::{Device, Error, Spi}};
+/// # use rp1_hal::{fugit::RateExtU32, gpio::Pin, spi::{Controller, Device, Error, Irq, Spi}, timer::WaitTimer};
 /// use embedded_hal::spi::SpiDevice;
-/// fn lend(spi: &mut Spi<0, (Pin<11>, Pin<10>, Pin<9>)>, cs: Pin<8>) -> Result<Pin<8>, Error> {
-///     let mut dev = Device::new(spi.polling(), cs);
+/// # type Spi0 = Spi<0, (Pin<11>, Pin<10>, Pin<9>), Controller, Irq<0, 0>>;
+/// fn lend(spi: &mut Spi0, cs: Pin<8>, wait: &mut WaitTimer) -> Result<Pin<8>, Error> {
+///     let mut dev = Device::new(spi.blocking(wait), cs);
 ///     dev.write(&[1u8, 2])?;
 ///     let (_, cs) = dev.free();
-///     spi.polling().set_frequency(1.MHz())?;
+///     spi.blocking(wait).set_frequency(1.MHz())?;
 ///     // The chip select comes back as `Pin<8>` and can make a new device.
-///     let mut dev = Device::new(spi.polling(), cs);
+///     let mut dev = Device::new(spi.blocking(wait), cs);
 ///     dev.write(&[3u8])?;
 ///     Ok(dev.free().1)
 /// }
@@ -1021,6 +1489,7 @@ pub struct Device<B, const CS: u8> {
     bus: B,
     cs: Pin<CS, Output>,
 }
+
 impl<B, const CS: u8> Device<B, CS> {
     /// Drives `cs` high (deselected) and owns the bus exclusively.
     pub fn new(bus: B, cs: Pin<CS>) -> Self {
@@ -1029,25 +1498,38 @@ impl<B, const CS: u8> Device<B, CS> {
             cs: cs.into_output(true),
         }
     }
+
     pub fn bus_mut(&mut self) -> &mut B {
         &mut self.bus
     }
-    /// Returns the bus and the chip select, which stays driven high (deselected). The pin is
-    /// handed back unconfigured, so it can go to [`Device::new`] again or be reconfigured.
+
+    /// Returns the bus and the chip select, which stays driven high (deselected).
+    /// The pin is handed back unconfigured, so it can go to [`Device::new`]
+    /// again or be reconfigured.
     pub fn free(self) -> (B, Pin<CS>) {
         (self.bus, self.cs.release())
     }
-}
-impl<B, const CS: u8> ErrorType for Device<B, CS> {
-    type Error = Error;
-}
-impl<W: Word, B: Bus<W>, const CS: u8> SpiDevice<W> for Device<B, CS> {
-    /// The bus check (frame size, clk_sys) once, before CS moves: if it fails, CS is never
-    /// asserted. Then CS low, the operations in order (a delay flushes first), flush, CS high.
-    /// CS is deasserted even when an operation fails; the first error is returned.
-    /// `Operation::DelayNs` busy-waits and returns [`Error::Precondition`] in a handler
-    /// or masked context.
-    fn transaction(&mut self, operations: &mut [Operation<'_, W>]) -> Result<(), Error> {
+
+    /// Uses one deadline for all operations, including wire flush and CS delays.
+    pub fn transaction_until<W: Word>(
+        &mut self,
+        operations: &mut [Operation<'_, W>],
+        end: Deadline,
+    ) -> Result<(), Error>
+    where
+        B: Bus<W>,
+    {
+        self.run(operations, Some(end))
+    }
+
+    fn run<W: Word>(
+        &mut self,
+        operations: &mut [Operation<'_, W>],
+        end: Option<Deadline>,
+    ) -> Result<(), Error>
+    where
+        B: Bus<W>,
+    {
         use embedded_hal::digital::OutputPin;
         let cs = &mut self.cs;
         transaction(
@@ -1055,42 +1537,72 @@ impl<W: Word, B: Bus<W>, const CS: u8> SpiDevice<W> for Device<B, CS> {
             |high| {
                 let _ = if high { cs.set_high() } else { cs.set_low() };
             },
-            |ns| {
-                crate::timer::Timer::new()
-                    .delay_polling(crate::timer::Duration::from_ticks(ns.div_ceil(1000)))
-                    .map_err(|_| Error::Precondition)
-            },
             operations,
+            end,
         )
     }
 }
 
-/// [`SpiDevice::transaction`] with the chip select (`cs(high)`) and the delay passed in.
+impl<B, const CS: u8> ErrorType for Device<B, CS> {
+    type Error = Error;
+}
+
+impl<W: Word, B: Bus<W>, const CS: u8> SpiDevice<W> for Device<B, CS> {
+    /// Admits once before CS moves, then executes the operations in order.
+    /// Delays flush first. Errors stop the bus and release CS.
+    fn transaction(&mut self, operations: &mut [Operation<'_, W>]) -> Result<(), Error> {
+        self.run(operations, None)
+    }
+}
+
 fn transaction<W: Word, B: Bus<W>>(
     bus: &mut B,
-    mut cs: impl FnMut(bool),
-    mut delay: impl FnMut(u32) -> Result<(), Error>,
+    cs: impl FnMut(bool),
     operations: &mut [Operation<'_, W>],
+    end: Option<Deadline>,
 ) -> Result<(), Error> {
-    let ok = bus.admit(sealed::Key(()))?;
-    cs(false);
-    let mut result = Ok(());
-    for op in operations.iter_mut() {
-        result = match op {
-            Operation::Read(r) => bus.exchange(ok, r, &[]),
-            Operation::Write(w) => bus.exchange(ok, &mut [], w),
-            Operation::Transfer(r, w) => bus.exchange(ok, r, w),
-            Operation::TransferInPlace(b) => bus.exchange_in_place(ok, b),
-            Operation::DelayNs(ns) => bus.wait_idle(ok).and_then(|()| delay(*ns)),
-        };
-        if result.is_err() {
-            break;
-        }
+    let ok = bus.admit(sealed::Key(()), end)?;
+    let mut selected = Selected {
+        bus,
+        cs,
+        ok,
+        complete: false,
+    };
+    (selected.cs)(false);
+    for op in operations {
+        match op {
+            Operation::Read(r) => selected.bus.exchange(ok, r, &[]),
+            Operation::Write(w) => selected.bus.exchange(ok, &mut [], w),
+            Operation::Transfer(r, w) => selected.bus.exchange(ok, r, w),
+            Operation::TransferInPlace(w) => selected.bus.exchange_in_place(ok, w),
+            Operation::DelayNs(ns) => selected
+                .bus
+                .wait_idle(ok)
+                .and_then(|()| selected.bus.delay(ok, *ns)),
+        }?;
     }
-    let flushed = bus.wait_idle(ok);
-    cs(true);
-    result.and(flushed)
+    selected.bus.wait_idle(ok)?;
+    selected.complete = true;
+    Ok(())
 }
+
+struct Selected<'a, W: Word, B: Bus<W>, F: FnMut(bool)> {
+    bus: &'a mut B,
+    cs: F,
+    ok: sealed::Admitted<W>,
+    complete: bool,
+}
+
+impl<W: Word, B: Bus<W>, F: FnMut(bool)> Drop for Selected<'_, W, B, F> {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.bus.abort(self.ok);
+        }
+        (self.cs)(true);
+    }
+}
+
+mod irq_wait;
 
 #[cfg(test)]
 mod tests {
@@ -1101,10 +1613,10 @@ mod tests {
     const STEP_US: u32 = 1000;
     /// A bounded wait that started reading the timer at `start` gave up at the first look
     /// past [`TIMEOUT_US`], whatever the model's step.
-    fn assert_timed_out(tick: u32, start: u32) {
-        let waited = tick.wrapping_sub(start) - STEP_US;
+    fn assert_timed_out(tick: u64, start: u32) {
+        let waited = (tick - u64::from(start)) as u32;
         assert!(
-            (TIMEOUT_US..TIMEOUT_US + STEP_US).contains(&waited),
+            (TIMEOUT_US..=TIMEOUT_US + STEP_US).contains(&waited),
             "{waited}"
         );
     }
@@ -1112,16 +1624,16 @@ mod tests {
     /// Loopback DW SSI: every RXFLR read shifts the whole TX FIFO into the RX FIFO. After the
     /// last push SR keeps BUSY for `hold_busy` more polls (the last frame still on the wire
     /// although RX already has it).
-    struct Model {
+    pub(super) struct Model {
         tx: VecDeque<u32>,
         rx: VecDeque<u32>,
         depth: usize,
         rx_depth: usize,
-        tick: u32,
+        pub(super) tick: u64,
         stalled: bool,
         hold_busy: u32,
         busy_left: u32,
-        risr: u32,
+        pub(super) risr: u32,
         pushed: Vec<u32>,
         txftlr: u32,
         rxftlr: u32,
@@ -1138,18 +1650,18 @@ mod tests {
         strict: u32,
         /// Reset bits released.
         resets: Vec<u32>,
-        imr: u32,
-        wrap: u32,
+        pub(super) imr: u32,
+        pub(super) wrap: u32,
         stuck_enabled: bool,
     }
     impl Model {
-        fn new(depth: usize) -> Self {
+        pub(super) fn new(depth: usize) -> Self {
             Self {
                 tx: VecDeque::new(),
                 rx: VecDeque::new(),
                 depth,
                 rx_depth: depth,
-                tick: u32::MAX - 50,
+                tick: u64::from(u32::MAX - 50),
                 stalled: false,
                 hold_busy: 0,
                 busy_left: 0,
@@ -1184,6 +1696,8 @@ mod tests {
                 }
                 DR => self.rx.pop_front().expect("RX underflow"),
                 RISR => self.risr,
+                ISR => self.risr & self.imr,
+                ICR => core::mem::take(&mut self.risr),
                 SSIENR => u32::from(self.stuck_enabled),
                 SR => {
                     if self.stalled {
@@ -1212,6 +1726,10 @@ mod tests {
                     self.busy_left = self.hold_busy;
                     assert!(self.tx.len() <= self.depth, "TX overflow");
                 }
+                SSIENR if value == 0 && !self.stuck_enabled => {
+                    self.tx.clear();
+                    self.rx.clear();
+                }
                 IMR => self.imr = value,
                 IRQ_WRAP => self.wrap = value,
                 TXFTLR => self.txftlr = value.min(self.depth as u32 - 1),
@@ -1226,9 +1744,9 @@ mod tests {
                 _ => {}
             }
         }
-        fn now(&mut self) -> u32 {
-            self.tick = self.tick.wrapping_add(STEP_US);
-            self.tick
+        fn now(&mut self) -> Instant {
+            self.tick += u64::from(STEP_US);
+            Instant::from_ticks(self.tick)
         }
         fn sys_current(&mut self, clocks: &Clocks) -> bool {
             self.fast += 1;
@@ -1242,6 +1760,30 @@ mod tests {
             self.resets.push(bit);
             Ok(())
         }
+    }
+
+    fn end(m: &Model) -> Deadline {
+        Deadline::at(Instant::from_ticks(m.tick + u64::from(TIMEOUT_US)))
+    }
+
+    fn exchange(
+        m: &mut Model,
+        read: Rx<'_>,
+        write: Tx<'_>,
+        mask: u32,
+        depth: usize,
+    ) -> Result<(), Error> {
+        let end = end(m);
+        poll_exchange(
+            m,
+            Exchange::new(read, write, mask.count_ones() as u8, depth),
+            end,
+        )
+    }
+
+    fn wait_idle(m: &mut Model) -> Result<(), Error> {
+        let end = end(m);
+        poll_idle(m, end)
     }
 
     /// `free` used to disable at once, cutting a frame still on the wire.
@@ -1290,6 +1832,66 @@ mod tests {
         model.stalled = false;
         assert_eq!(bus.cancel_with(&mut model), Ok(()));
         assert_eq!(bus.polling().write(&[0u8]), Err(Error::Busy));
+    }
+
+    #[test]
+    fn bounded_transfer_cancel_recover_clears_old_fifo_and_fault() {
+        let mut model = Model::new(4);
+        let config = Config::new(1.MHz(), embedded_hal::spi::MODE_0);
+        let mut bus = init_model(
+            unsafe { Token::new() },
+            &mut model,
+            pins(),
+            config,
+            &mut false,
+        )
+        .unwrap();
+        let mut rx = [0u8; 10];
+        let mut first = bus.start_with(&mut model, &mut rx, &[9; 10]).unwrap();
+        assert_eq!(
+            first.progress(),
+            TransferReport {
+                sent: 4,
+                received: 0
+            }
+        );
+        model.stalled = true;
+        model.risr = int::RXOI;
+        assert_eq!(first.complete_with(&mut model), Err(Error::Overrun));
+        drop(first);
+        assert_eq!(bus.recover_with(&mut model), Err(Error::Busy));
+        assert_eq!(bus.check_state(8), Err(Error::Busy));
+        model.stalled = false;
+        bus.recover_with(&mut model).unwrap();
+        let mut next = bus.start_with(&mut model, &mut rx, &[3; 10]).unwrap();
+        assert_eq!(next.complete_with(&mut model), Ok(Try::WouldBlock));
+        assert_eq!(next.complete_with(&mut model), Ok(Try::WouldBlock));
+        assert_eq!(
+            next.complete_with(&mut model),
+            Ok(Try::Ready(TransferReport {
+                sent: 10,
+                received: 10
+            }))
+        );
+        assert_eq!(
+            next.complete_with(&mut model),
+            Ok(Try::Ready(next.progress()))
+        );
+        drop(next);
+        assert_eq!(rx, [3; 10]);
+    }
+
+    #[test]
+    fn expired_or_unreachable_poll_deadline_never_touches_fifo() {
+        for (delta, error) in [(0, Error::Timeout), (1u64 << 32, Error::InvalidDeadline)] {
+            let mut io = Model::new(4);
+            let now = io.now().ticks();
+            let end = Deadline::at(Instant::from_ticks(now + delta));
+            let mut received = [0; 8];
+            let exchange = Exchange::new(Rx::U8(&mut received), Tx::U8(&[0; 8]), 8, 4);
+            assert_eq!(run_polling(&mut io, exchange, end), Err(error));
+            assert!(io.writes.is_empty());
+        }
     }
 
     #[test]
@@ -1347,7 +1949,14 @@ mod tests {
         let (depth, _) = probe(&mut m).unwrap();
         let tx: Vec<u8> = (0..100).collect();
         let mut rx = [0u8; 100];
-        exchange(&mut m, Rx::U8(&mut rx), Tx::U8(&tx), 0xff, depth).unwrap();
+        exchange(
+            &mut m,
+            Rx::U8(&mut rx),
+            Tx::U8(&tx),
+            0xff,
+            usize::from(depth),
+        )
+        .unwrap();
         assert_eq!(rx[..], tx[..]);
     }
 
@@ -1382,7 +1991,7 @@ mod tests {
             Err(Error::Timeout)
         );
         assert_eq!(m.pushed.len(), 4);
-        assert_eq!(m.tick.wrapping_sub(u32::MAX - 50), 102_000);
+        assert_timed_out(m.tick, u32::MAX - 50);
         let mut m = Model::new(4);
         m.risr = int::RXOI;
         assert_eq!(
@@ -1434,34 +2043,38 @@ mod tests {
         let mut m = Model::new(4);
         assert_eq!(admit(&mut m, &CLOCKS), Ok(()));
         let mut rx = [0; 4];
-        run(
+        let deadline = end(&m);
+        run_polling(
             &mut m,
-            (7, 20, 0),
-            8,
-            4,
-            Rx::U16(&mut rx),
-            Tx::U16(&[1, 2, 3, 0x1ff]),
+            Exchange::new(Rx::U16(&mut rx), Tx::U16(&[1, 2, 3, 0x1ff]), 8, 4),
+            deadline,
         )
         .unwrap();
         assert_eq!(rx, [1, 2, 3, 0xff]);
-        // An exchange error re-runs setup with the same configuration.
+        // An exchange error retires the source. Explicit recovery restores the configuration.
         let mut m = Model::new(4);
+        let config = Config::new(10.MHz(), embedded_hal::spi::MODE_0).with_rx_sample_dly(2);
+        let mut spi =
+            init_model(unsafe { Token::new() }, &mut m, pins(), config, &mut false).unwrap();
         m.risr = int::RXOI;
+        let end = end(&m);
         assert_eq!(
-            run(
+            run_polling(
                 &mut m,
-                (7, 20, 2),
-                8,
-                4,
-                Rx::U8(&mut [0; 2]),
-                Tx::U8(&[1, 2])
+                Exchange::new(Rx::U8(&mut [0; 2]), Tx::U8(&[1, 2]), 8, 4),
+                end
             ),
             Err(Error::Overrun)
         );
+        spi.cancel_with(&mut m).unwrap();
+        assert_eq!(spi.check_state(8), Err(Error::Busy));
+        spi.recover_with(&mut m).unwrap();
+        assert_eq!(spi.check_state(8), Ok(()));
         assert!(
             m.writes
-                .ends_with(&[(RX_SAMPLE_DLY, 2), (SER, 1), (SSIENR, 1), (IMR, 0)])
+                .ends_with(&[(RX_SAMPLE_DLY, 2), (SER, 1), (SSIENR, 1)])
         );
+        assert_eq!(m.risr, 0);
     }
 
     #[test]
@@ -1476,7 +2089,7 @@ mod tests {
         let mut m = Model::new(4);
         (m.imr, m.wrap) = (0x3f, 0x9);
         let config = Config::new(10.MHz(), embedded_hal::spi::MODE_0);
-        let spi =
+        let mut spi =
             init_model(unsafe { Token::new() }, &mut m, pins(), config, &mut false).expect("init");
         assert_eq!((m.imr, m.wrap), (0, 0x8));
         m.writes.clear();
@@ -1485,23 +2098,29 @@ mod tests {
             interrupt_writes(&m),
             [(IMR, int::RXFI | int::RXOI), (IRQ_WRAP, 0x9)]
         );
-        // Also after a failed exchange, whose recovery runs setup again.
+        let end = end(&m);
+        run_polling(
+            &mut m,
+            Exchange::new(Rx::U8(&mut [0; 2]), Tx::U8(&[1, 2]), 8, 4),
+            end,
+        )
+        .unwrap();
+        assert!(interrupt_writes(&m).ends_with(&[(IMR, 0), (IMR, int::RXFI | int::RXOI)]));
+
         m.risr = int::RXOI;
         m.writes.clear();
-        let registers = (spi.cr0, spi.div, spi.rsd);
-        let result = run(
-            &mut m,
-            registers,
-            8,
-            4,
-            Rx::U8(&mut [0; 2]),
-            Tx::U8(&[1, 2]),
-        );
-        assert_eq!(result, Err(Error::Overrun));
         assert_eq!(
-            interrupt_writes(&m),
-            [(IMR, 0), (IMR, int::RXFI | int::RXOI)]
+            run_polling(
+                &mut m,
+                Exchange::new(Rx::U8(&mut [0; 2]), Tx::U8(&[1, 2]), 8, 4),
+                end,
+            ),
+            Err(Error::Overrun)
         );
+        spi.cancel_with(&mut m).unwrap();
+        spi.recover_with(&mut m).unwrap();
+        assert_eq!(m.imr, 0);
+        assert_eq!(m.wrap, 0x8);
     }
 
     fn pins() -> PinTuple<11, 10, 9> {
@@ -1679,11 +2298,11 @@ mod tests {
         let mut cs = |high| log.borrow_mut().push(high);
         let mut ops = [Operation::<u8>::Write(&[1, 2]), Operation::DelayNs(10)];
         assert_eq!(
-            transaction(&mut spi, &mut cs, |_| panic!("delay"), &mut ops),
+            transaction(&mut spi, &mut cs, &mut ops, None),
             Err(Error::Invalid)
         );
         assert_eq!(
-            transaction(&mut &mut spi, &mut cs, |_| panic!("delay"), &mut ops),
+            transaction(&mut &mut spi, &mut cs, &mut ops, None),
             Err(Error::Invalid)
         );
         assert!(log.borrow().is_empty(), "CS moved");
@@ -1757,11 +2376,15 @@ mod tests {
         }
     }
     impl Bus<u8> for LogBus<'_> {
-        fn admit(&mut self, _: sealed::Key) -> Result<sealed::Admitted<u8>, Error> {
+        fn admit(
+            &mut self,
+            _: sealed::Key,
+            deadline: Option<Deadline>,
+        ) -> Result<sealed::Admitted<u8>, Error> {
             let r = admit(&mut self.m, &CLOCKS);
             let name = if r.is_ok() { "admit" } else { "admit err" };
             self.log.borrow_mut().push(name.to_string());
-            r.map(|()| sealed::Admitted(core::marker::PhantomData))
+            r.map(|()| sealed::Admitted(deadline.unwrap_or_else(|| end(&self.m)), PhantomData))
         }
         fn exchange(
             &mut self,
@@ -1794,6 +2417,14 @@ mod tests {
             self.log.borrow_mut().push("flush".to_string());
             Ok(())
         }
+        fn delay(&mut self, _: sealed::Admitted<u8>, ns: u32) -> Result<(), Error> {
+            self.log.borrow_mut().push(std::format!("delay {ns}"));
+            Ok(())
+        }
+
+        fn abort(&mut self, _: sealed::Admitted<u8>) {
+            self.log.borrow_mut().push("abort".to_string());
+        }
     }
     /// (result, event log, (fast, strict) clock checks) of one transaction over a model whose
     /// clk_sys reads as `sys` to the fast check. The strict check always fails there, so a
@@ -1822,11 +2453,8 @@ mod tests {
                 log.borrow_mut()
                     .push(if high { "cs high" } else { "cs low" }.to_string())
             },
-            |ns| {
-                log.borrow_mut().push(std::format!("delay {ns}"));
-                Ok(())
-            },
             ops,
+            None,
         );
         let checks = (bus.m.fast, bus.m.strict);
         drop(bus);
@@ -1843,7 +2471,7 @@ mod tests {
     }
 
     /// Review 6 (Codex #2): admission, CS low -> operations -> flush -> CS high, a flush before
-    /// each delay, and on error the flush and CS release still happen with the first error kept.
+    /// each delay. On an operation error, request stop and release CS, keeping the error.
     #[test]
     fn device_transaction_orders_cs_flush_and_delay() {
         let mut read = [0u8; 2];
@@ -1876,8 +2504,7 @@ mod tests {
             ]
         );
         assert_eq!(buf, [5, 6]);
-        // An operation fails: no later operation or delay, flush and CS high still run, and
-        // the operation's error wins over the flush's.
+        // An operation fails: skip further operations, request stop, and release CS.
         let (r, log) = logged(
             Some((1, Error::Overrun)),
             Some(Error::Timeout),
@@ -1891,14 +2518,7 @@ mod tests {
         assert_eq!(r, Err(Error::Overrun));
         assert_eq!(
             log,
-            [
-                "admit",
-                "cs low",
-                "write",
-                "write err",
-                "flush err",
-                "cs high"
-            ]
+            ["admit", "cs low", "write", "write err", "abort", "cs high"]
         );
         // The flush before a delay fails: no delay, CS still released, that error returned.
         let (r, log) = logged(
@@ -1913,19 +2533,15 @@ mod tests {
         assert_eq!(r, Err(Error::Timeout));
         assert_eq!(
             log,
-            [
-                "admit",
-                "cs low",
-                "write",
-                "flush err",
-                "flush err",
-                "cs high"
-            ]
+            ["admit", "cs low", "write", "flush err", "abort", "cs high"]
         );
         // Only the final flush fails.
         let (r, log) = logged(None, Some(Error::Timeout), &mut [Operation::Write(&[1])]);
         assert_eq!(r, Err(Error::Timeout));
-        assert_eq!(log, ["admit", "cs low", "write", "flush err", "cs high"]);
+        assert_eq!(
+            log,
+            ["admit", "cs low", "write", "flush err", "abort", "cs high"]
+        );
         // No operations: still a framed, flushed CS pulse.
         let (r, log) = logged(None, None, &mut []);
         assert_eq!(r, Ok(()));

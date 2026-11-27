@@ -7,9 +7,9 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use rp1_hal::{gpio::Pin, timer::WaitTimer};
 
 pub fn run(output: Pin<13>, input: Pin<23>, timer: &mut WaitTimer) -> Result<(), &'static str> {
-    let mut output = output.into_output(false);
     // The default pull-down holds the sense pin low if the jumper is missing.
     let mut input = input.into_input();
+    let mut output = output.into_output(false);
 
     for _ in 0..3 {
         for high in [false, true] {

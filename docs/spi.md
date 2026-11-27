@@ -1,8 +1,11 @@
 # SPI master
 
-STATIC (2026-11-27). Select `spi.polling()` for the synchronous embedded-hal 1.0
-`SpiBus<u8 | u16 | u32>` engine. `spi::Device` takes this adapter and drives an
-active-low GPIO chip select while borrowing the controller exclusively.
+STATIC (2026-11-27). SPI0 uses `spi.blocking(&mut p.wait_timer)` for synchronous
+embedded-hal 1.0 `SpiBus<u8 | u16 | u32>` and `SpiDevice`. The IRQ binding
+and wait alarm belong to the declaring core. When the same core declares
+`spi0` and `wait_timer`, the generator emits the ISRAM dispatcher and
+returns `rp1::Spi0Parts` with the IRQ capability. All supported controllers offer
+the same synchronous traits through explicit `spi.polling()`.
 
 ```toml
 [package.metadata.rp1]
@@ -11,18 +14,24 @@ schema = 2
 [package.metadata.rp1.proc0]
 gpio = [8]                                 # chip select, driven as a GPIO
 spi0 = { sck = 11, mosi = 10, miso = 9 }
+wait_timer = "ALARM1"
 ```
 
 ```rust,ignore
 use embedded_hal::spi::{MODE_0, Operation, SpiDevice};
-use rp1_hal::fugit::RateExtU32;
+use rp1_hal::{fugit::RateExtU32, spi::{Config, Device}};
 
-let mut bus = p.spi0.init(&clocks, rp1_hal::spi::Config::new(10.MHz(), MODE_0))?;
-let mut dev = rp1_hal::spi::Device::new(bus.polling(), p.pins.gpio8);
+// In the proc0 entry:
+let mut bus = p.spi0.init(&clocks, Config::new(10.MHz(), MODE_0))?;
+let mut dev = Device::new(bus.blocking(&mut p.wait_timer), p.pins.gpio8);
 dev.transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])?;
 ```
 
-`examples/dual-core` uses SPI0 on proc0 this way (STATIC, compile-checked).
+`examples/peripherals` uses SPI0 on proc0. The SHM SPI proof uses proc1.
+The SPI0 ISR masks the armed FIFO or error source, publishes readiness and
+sends an event. Thread mode does FIFO service. The Slot ceiling and IRQ
+priority are both 4. The one-shot wait alarm bounds missing device delivery.
+Use the explicit polling adapter when comparing serviced wire latency.
 
 ## Which blocks
 
@@ -81,19 +90,30 @@ instead).
 
 ## Behaviour
 
-STATIC (host model tests): `transfer` shifts `max(read, write)` frames; frames past `write`
-send 0, received frames past `read` are dropped. At most `fifo_depth()` frames are in flight,
-so neither FIFO can overflow. Any 100 ms without progress returns `Timeout`, an RX/TX overflow
-or underflow flag returns `Overrun`; after an error the controller is disabled and enabled again
-(flushing both FIFOs) with the same configuration. `flush` waits (bounded) for TX empty and not
-busy. `frame_bits` is 4..=16, or 4..=32 when the block has the 32-bit field; `SpiBus<W>`
-returns `Invalid` if the frame is wider than `W`. The transfer loop runs from ISRAM; all word
-types share it.
+STATIC (host model tests, 2026-11-27). `transfer` shifts `max(read, write)` frames.
+Frames past `write` send zero, and the driver discards receives past `read`. At
+most `fifo_depth()` frames are in flight. One absolute deadline covers the
+call, including all chunks of an in-place transfer. A device transaction shares
+its deadline with each transfer, flush and chip-select delay. The adapters
+default to 100 ms, configurable via `WaitConfig`, and support explicit
+`transfer_until`, `flush_until` and `Device::transaction_until` deadlines.
+
+`flush` waits for TX FIFO empty and wire idle. SPI0 uses a frame-time one-shot
+alarm to check the shifter after TX FIFO empty. An error or elapsed deadline
+after admission retires the wait and requests stop. The transaction releases
+CS, and `try_recover` verifies stop before restoring the configuration and
+clearing stale FIFO and fault state. A failed or cancelled call may transmit
+or receive a prefix. FIFO overflow and underflow return `Overrun`. The DW
+multi-master indication maps to `ChipSelectFault`. Motorola controller mode
+does not expose a distinct peer framing error. Frame width remains 4–16 bits,
+or 4–32 on a controller with the 32-bit frame field. A word narrower than the
+configured width is rejected before FIFO access.
+All word types share the FIFO service step in ISRAM.
 
 The native chip selects are not routed: SER selects CS0 internally because the DW SSI only
 shifts with a slave selected. `Device::transaction` checks the bus once (frame size,
-clk_sys), then drives CS low, runs the operations (`DelayNs` flushes first), flushes, and
-drives CS high even after an error. A failed check returns before CS moves. The unchecked
+clk_sys, context and deadline) before asserting CS. It flushes before every delay and
+before deselecting on success. An error stops the controller and deselects. The unchecked
 operations behind this (the hidden `spi::Bus` methods) take arguments only rp1-hal can
 make, so code outside the crate cannot call them and skip the check (STATIC, trybuild and
 doctest compile-fail cases, through a generic bound and on the polling adapter).
@@ -114,11 +134,13 @@ probe, leaving the controller disabled and the pins untouched for a retry.
 Build `Config` with `Config::new(frequency, mode)` and the `with_*` setters. The frequency
 is a `HertzU32`. Dropping the controller leaves it enabled and the pins muxed.
 `try_free()` checks TX FIFO empty and BUSY clear before disabling. `free_polling()`
-waits up to 100 ms for the same wire-idle condition. Both return the controller
-in `FreeError` until stop is confirmed. `try_cancel()` requests disable immediately.
-This can truncate a frame and discard both FIFOs. After cancellation, polling
-operations return `Busy` and interrupt controls cannot reopen the wrapper.
-Collect the parts with `try_free()` once stop is confirmed.
+waits up to 100 ms for the same wire-idle condition. SPI0 also has IRQ-backed
+`free_until()`. All return the controller in `FreeError` when stop cannot be
+confirmed. `try_cancel()` requests disable immediately and may truncate a
+frame and discard both FIFOs. Both synchronous adapters report `Busy` during
+recovery, and raw interrupt controls cannot reopen the wrapper. Restore the
+configuration with `try_recover()`, or collect the parts with `try_free()`
+once stop is confirmed.
 
 `Device::free` returns the bus and the chip select as an unconfigured `Pin<CS>` (still driven
 high), so the same pin can make a new `Device` (STATIC: a host compile test).
@@ -129,25 +151,26 @@ read-back, as Linux spi-dw-core does. The usable maximum is the DW_apb_ssi synth
 parameter SSI_RX_DLY_SR_DEPTH, which is not known for RP1, and what the block does with a
 larger value is unverified (recalled, not checked: the databook treats it as no delay).
 
-STATIC (host tests): init, reconfiguration and transactions are checked against a model whose
-fast and strict clock checks are counted apart and can disagree (a drift only the strict
-check sees): init and reconfiguration use only the strict one and fail before the reset,
-the pin mux or any register write; transactions use only the fast one. The polling bus impls return `Invalid` for words narrower than the frame before any
-register access and before CS moves.
-`Device::transaction` checks clk_sys once, then drives CS low, runs the
-operations, flushes, then drives CS high; with a stale clk_sys it returns `Precondition` with
-no CS edge; a `DelayNs` flushes before it waits; after a failed operation it skips the
-rest but still flushes and releases CS, and returns the operation's error, not the flush's.
-The model keeps BUSY after the last frame is received, so `flush` must wait it out. The
-delay itself waits at least the requested time (the 1 MHz timer is read for `us + 1` steps,
-since the first step can come right after the start).
+STATIC (host tests, 2026-11-27). The model separates fast and strict clock
+checks. Init and reconfiguration use the strict check and reject a stale clock
+before touching reset, mux or controller registers. Bus and device transactions
+use the fast check. The model also keeps BUSY asserted after the final receive so
+physical flush must wait for the shifter. For `DelayNs` each engine rounds up to
+the next microsecond and allows one timer tick for phase.
 
-The transfer engine uses polling. There is no interrupt-driven transfer, DMA, dual/quad
-mode, or slave support. The controller
-interrupt itself can be unmasked (`enable_interrupt`, which also opens the RP1 `+0x108` output
-enable) for a handler on the `SPIn` line; see `docs/interrupts.md`.
+For an application-managed SPI0 IRQ, declare `custom_spi0_handler = true`
+and provide `#[rp1_rt::interrupt(procN)] fn SPI0()`. This gives the application
+`p.irq.SPI0` and the raw mask and status methods. Raw `enable_interrupt` opens
+the RP1 `+0x108` output gate and unmasks the selected sources.
+`clear_interrupt` is available on both resource types. See [Interrupts](interrupts.md).
 
 ## Hardware proof
+
+STATIC (2026-11-27). `lab/spi-parity` checks internal loopback, RX/TX delivery,
+timeouts, shifter idle and sensed CS levels with the RP1 timer.
+`lab/verify-spi-parity.py` checks the firmware transcript. It can also check
+an optional wire CSV from a bench with a MOSI/MISO loopback and a sample rate
+of at least 100 MS/s. The measurements below used the previous polling driver.
 
 `lab/shm-firmware` declares SPI0 on proc1 (GPIO8 chip select). proc1 runs `spi_proof` at boot
 and on Linux's request: with loopback off MISO reads all zeros (pad pull-down; the lab wiring

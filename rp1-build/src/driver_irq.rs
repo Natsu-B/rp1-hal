@@ -15,12 +15,20 @@ pub(crate) struct DriverIrq {
 // Each driver provides Irq<N, CORE>, Parts::__new(token, pins, binding) and
 // __on_interrupt::<N, CORE>(). The declaration and handler use the verified
 // vector binding for the same block.
-pub(crate) const DRIVERS: &[DriverIrq] = &[DriverIrq {
-    instance: "uart1",
-    vector: "UART1",
-    custom: "custom_uart1_handler",
-    module: "uart",
-}];
+pub(crate) const DRIVERS: &[DriverIrq] = &[
+    DriverIrq {
+        instance: "uart1",
+        vector: "UART1",
+        custom: "custom_uart1_handler",
+        module: "uart",
+    },
+    DriverIrq {
+        instance: "spi0",
+        vector: "SPI0",
+        custom: "custom_spi0_handler",
+        module: "spi",
+    },
+];
 
 impl DriverIrq {
     pub fn verified_line(&self) -> Result<&'static board::VerifiedIrq> {

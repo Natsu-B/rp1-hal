@@ -7,6 +7,8 @@ use rp1_rt::interrupt::ThreadGuard;
 mod wait;
 pub use rp1_rt::interrupt::ContextError;
 pub use wait::{Delay, WaitConfig, WaitContext, WaitTimer};
+#[cfg(test)]
+pub(crate) use wait::{WaitAlarm, wait as test_wait};
 
 pub type Instant = fugit::TimerInstantU64<1_000_000>;
 pub type Duration = fugit::MicrosDurationU32;

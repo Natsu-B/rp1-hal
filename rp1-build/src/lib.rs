@@ -683,12 +683,17 @@ fn instance_resource(
     let capability = managed
         .map(|(_, core)| format!(", ::rp1_hal::{module}::Irq<{n}, {core}>"))
         .unwrap_or_default();
+    let role = if module == "spi" && managed.is_some() {
+        ", ::rp1_hal::spi::Controller"
+    } else {
+        ""
+    };
     writeln!(
         source,
         "/// Required pin routes for the declared `{name}`.\n\
          pub type {required} = ({});\n\
          /// Initialized driver for the declared `{name}`.\n\
-         pub type {alias} = ::rp1_hal::{module}::{driver}<{n}, {required}{capability}>;",
+         pub type {alias} = ::rp1_hal::{module}::{driver}<{n}, {required}{role}{capability}>;",
         pin_types.join(", "),
     )?;
     let parts = format!("::rp1_hal::{module}::Parts<{n}, {required}{capability}>");
@@ -974,6 +979,50 @@ mod tests {
                 .to_string()
                 .contains("needs uart1")
         );
+    }
+
+    #[test]
+    fn spi0_wait_handler_and_raw_irq_follow_the_owning_core() {
+        for core in 0..2 {
+            let config = format!(
+                "schema=2\n[linux]\nkeep={{}}\n[proc{core}]\nuart1={{tx=0,rx=1}}\nspi0={{sck=11,mosi=10,miso=9}}"
+            );
+            let with_timer = format!("{config}\nwait_timer='ALARM1'");
+            let generate = |config: &str| {
+                let decl: metadata::Declaration = toml::from_str(config).unwrap();
+                decl.validate().unwrap();
+                let source = resources(&decl, &[], &decl.shm_layout().unwrap()).unwrap();
+                (source, custom_irq_assertions(&decl))
+            };
+            let (managed, _) = generate(&with_timer);
+            let spi_symbol = format!("__rp1_p{core}_SPI0");
+            assert!(managed.contains(&format!(".isram.text.{spi_symbol}")));
+            assert!(managed.contains(&format!("spi::__on_interrupt::<0, {core}>()")));
+            assert!(managed.contains(&format!("uart::__on_interrupt::<1, {core}>()")));
+            assert!(managed.contains(&format!(
+                "Spi0Parts = ::rp1_hal::spi::Parts<0, Spi0Pins, ::rp1_hal::spi::Irq<0, {core}>>"
+            )));
+            let spi_block = rp1_proto::BlockId::Spi0 as u16;
+            assert!(managed.contains(&format!(
+                "Binding::<::rp1_rt::interrupt::BlockIrq<{spi_block}>, 19, {core}>::new()"
+            )));
+            assert!(irq_fields(&managed, core).is_empty());
+            assert!(!managed.contains("impl sealed::Admitted for SPI0"));
+
+            for input in [&config, &format!("{with_timer}\ncustom_spi0_handler=true")] {
+                let (raw, checks) = generate(input);
+                assert!(!raw.contains(&spi_symbol));
+                assert!(!raw.contains("Spi0Parts"));
+                assert!(raw.contains("impl sealed::Admitted for SPI0"));
+                assert!(
+                    irq_fields(&raw, core).contains(&format!("pub SPI0: proc{core}_irq::SPI0,"))
+                );
+                assert_eq!(
+                    checks.contains(&format!("{spi_symbol} != __rp1_default_irq")),
+                    input.contains("custom_spi0_handler")
+                );
+            }
+        }
     }
 
     #[test]

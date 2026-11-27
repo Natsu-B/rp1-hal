@@ -573,7 +573,7 @@ fn in_tree_declarations_have_stable_notes() {
         (
             "examples/dual-core/Cargo.toml",
             &[][..],
-            "e54262bfda73416c2ba101df4e7debf483745f7d725befaa0f1c18a0f7f1c1da",
+            "e7c15826bc0cd04cd1926b154d13109f3965c2c3997371055cfd2ad4a9dd6ed9",
         ),
         (
             "lab/shm-firmware/Cargo.toml",
@@ -584,6 +584,16 @@ fn in_tree_declarations_have_stable_notes() {
             "lab/shm-firmware/Cargo.toml",
             &["i2c"],
             "126a5121311f6f20e0ca4af785c8633b01bc1ee607309048e001c1a7df52fc94",
+        ),
+        (
+            "lab/shm-firmware/Cargo.toml",
+            &["spi", "proc1-wait"],
+            "777151e615cb17a6ac4ef69e64a3bf526ce22730ca966406d8c503bef9dc1140",
+        ),
+        (
+            "lab/spi-parity/Cargo.toml",
+            &[],
+            "b28c30a8cec93dbbd90830d8515a1878d7bdf49f29a4ffd74b55a5b06ead1796",
         ),
     ] {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))

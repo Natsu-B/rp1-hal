@@ -23,8 +23,6 @@ STATIC
   `Timer::delay_polling` to choose a busy wait explicitly.
 - Use `fugit::ExtU32` for durations such as `10.millis()` in `WaitTimer::delay`,
   `Deadline::after`, `uart.polling().set_read_timeout` and the DMA wait APIs.
-- `spi::Device` busy-waits for `Operation::DelayNs` and returns `Precondition` in a
-  handler or masked context. IRQ-backed CS delays arrive with the SPI wait PR.
 - Proc0 gets its clocks from `rp1::platform::init`. Proc1 uses
   `Clocks::wait_from_proc0(&core, timeout)`. Pass `0.micros()` for a single attempt.
 - `Uart::split` gives a `Tx` and `Rx` for use in main and an ISR on the owning core.
@@ -156,3 +154,27 @@ UART0 and UART2–4 offer immediate operations and explicit `polling()`.
 UART0's boot log sink continues to use its dedicated bounded path. UART5 is
 unrouted on bank 0. Polling methods accept an absolute deadline with
 `read_polling`, `write_polling` and `flush_polling`.
+
+
+## SPI0 synchronous waits
+
+**STATIC · 2026-11-27.** Declare `spi0` and `wait_timer` on the same core for
+`rp1::Spi0Parts` and a generated handler. Initialize as before with
+`p.spi0.init(&clocks, Config::new(1.MHz(), MODE_0))?`. For a raw handler,
+set `custom_spi0_handler = true` and provide
+`#[rp1_rt::interrupt(procN)] fn SPI0()`. This exposes `p.irq.SPI0` and the
+raw mask and status methods.
+
+| Before | v0.2 |
+|---|---|
+| `bus.polling().transfer(&mut rx, &tx)?` | `bus.blocking(&mut p.wait_timer).transfer(&mut rx, &tx)?` on managed SPI0 |
+| `Device::new(bus.polling(), cs)` | `Device::new(bus.blocking(&mut p.wait_timer), cs)` on managed SPI0 |
+| Polling timeout restarted on each FIFO progress event | One absolute deadline for each call or transaction, including CS delays and flush. The default is 100 ms. Share a deadline with `transfer_until`, `flush_until` and `transaction_until`. |
+| An exchange error re-enabled the controller implicitly | Call `try_recover` after an admitted transfer faults or times out. The driver confirms stop before clearing stale state and re-enabling. |
+| Polling bus operations from a handler or critical section | **Breaking.** `polling()` transfer, flush and reconfiguration, and `free_polling` require unmasked thread mode on every instance and otherwise return `WrongContext`. Use `try_read_word`, `try_write_word` or `try_start_transfer` in an ISR. |
+
+SPI0's IRQ adapter uses WFE for RX and TX FIFO waits and the dedicated timer
+for shifter and CS-delay waits. Explicit `polling()` remains available on all
+supported controllers. The native transfer handle borrows both buffers.
+With `eh-nb`, the native driver also implements
+`embedded_hal_nb::spi::FullDuplex`.

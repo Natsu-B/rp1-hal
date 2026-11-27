@@ -11,6 +11,7 @@ log = { sink = "uart0", baudrate = 115200 }
 [package.metadata.rp1.proc0]
 gpio = [8, 22] # 8 = SPI0 chip select driven as GPIO
 timer = ["ALARM0", "ALARM1"]
+wait_timer = "ALARM2"
 heartbeat = { period_ms = 1000 } # TIMER_0 beats once per tick
 spi0 = { sck = 11, mosi = 10, miso = 9 }
 

@@ -4,7 +4,10 @@
 use crate::proof::{self, Entries, Wrapped, expect, mark, now, settle, ticker, wait};
 use crate::rings::Reader;
 use crate::rp1;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed};
+use core::{
+    mem::offset_of,
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering::Relaxed},
+};
 use rp1_hal::{
     fugit::ExtU32,
     log,
@@ -14,7 +17,7 @@ use rp1_link::Progress;
 use rp1_rt::{
     Proc0, Proc1, interrupt,
     interrupt::{Line, Slot, free},
-    pac::dw_ssi::int::TXEI,
+    pac::dw_ssi::{RegisterBlock, int::TXEI},
     sync::Producer,
 };
 
@@ -23,7 +26,6 @@ static BELL: Slot<Option<rp1::Doorbell1>, 1> = Slot::empty();
 /// The `down1` ring, once main has opened it.
 pub static DOWN1: Slot<Option<Reader<27, 1>>, 1> = Slot::empty();
 pub static PING: Slot<Option<rp1::link::Ping>, 1> = Slot::empty();
-static SPI: Slot<Option<rp1::Spi0>, 1> = Slot::empty();
 static WRAP: Entries = Entries::new();
 /// Handler entries with the doorbell set.
 static BELL_ENTRIES: Entries = Entries::new();
@@ -51,11 +53,11 @@ fn TIMER_1() {
 }
 #[interrupt(proc1)]
 fn SPI0() {
-    SPI.with(|spi| {
-        spi.disable_interrupt(TXEI);
-        // Read back so that the write has finished before the handler returns.
-        spi.interrupt_status();
-    });
+    // The wrapper proof enables this line only after SPI0 is initialized on proc1.
+    // Acknowledge the diagnostic source here without storing the whole bus in an ISR slot.
+    let mask = SPI0_BASE + offset_of!(RegisterBlock, imr);
+    proof::wr(mask, proof::rd(mask) & !TXEI);
+    proof::rd(SPI0_BASE + offset_of!(RegisterBlock, isr)); // Order the mask write before returning.
     WRAP.enter(1);
 }
 /// Both endpoints share a force bit. Ack before draining either one.
@@ -114,23 +116,20 @@ pub fn run(parts: Parts) {
     proof::doorbell_test(doorbell, &BELL_ENTRIES, &mut irq.IO_BANK0, idle);
 
     match spi {
-        Some(spi) => {
-            SPI.put(spi).ok().unwrap();
+        Some(mut spi) => {
             // The driver leaves the controller enabled with an empty TX FIFO: TXEI is active.
             proof::wrap_test(
                 &Wrapped {
                     name: "spi0",
-                    status: SPI0_BASE + 0x30,
-                    mask: SPI0_BASE + 0x2c,
+                    status: SPI0_BASE + offset_of!(RegisterBlock, isr),
+                    mask: SPI0_BASE + offset_of!(RegisterBlock, imr),
                     source: TXEI,
                     wrap: SPI0_BASE + 0x108,
                     entries: &WRAP,
                     fail: "p1_wrap_spi0",
                 },
                 &mut irq.SPI0,
-                &mut || {
-                    SPI.with(|spi| spi.enable_interrupt(TXEI));
-                },
+                &mut || spi.enable_interrupt(TXEI),
                 idle,
             );
         }

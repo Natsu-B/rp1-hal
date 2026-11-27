@@ -84,7 +84,7 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
             rp1_hal::spi::Config::new(10.MHz(), embedded_hal::spi::MODE_0),
         )
         .unwrap();
-    let mut device = rp1_hal::spi::Device::new(bus.polling(), p.pins.gpio8);
+    let mut device = rp1_hal::spi::Device::new(bus.blocking(&mut p.wait_timer), p.pins.gpio8);
     let mut id = [0u8; 2];
     {
         use embedded_hal::spi::{Operation, SpiDevice};

@@ -2,7 +2,8 @@
 
 One CM5 firmware runs seven finite examples on proc0. Each module lists the
 declaration it uses from [Cargo.toml](Cargo.toml) and takes the corresponding
-typed resources. SPI, I²C and UART use their explicit polling engines. After each check, UART0 prints
+typed resources. SPI0 and UART1 use IRQ waits. I²C selects explicit polling.
+After each check, UART0 prints
 `EXAMPLE_END name=<name> result=PASS` on success or `EXAMPLE_FAIL` with the cause.
 The next example runs either way.
 

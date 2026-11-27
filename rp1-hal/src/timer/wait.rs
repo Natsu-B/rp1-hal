@@ -12,7 +12,6 @@ use rp1_rt::{
 };
 
 /// Override a blocking driver's default timeout. The driver admits it at each call.
-#[doc(hidden)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WaitConfig {
     timeout: Option<Duration>,
@@ -267,13 +266,13 @@ impl DelayNs for Delay<'_, '_> {
     }
 }
 
-trait WaitAlarm {
+pub(crate) trait WaitAlarm {
     fn arm(&mut self, end: Deadline) -> Result<(), Error>;
     fn elapsed(&self, end: Deadline) -> bool;
     fn sleep(&mut self);
 }
 
-fn wait<T>(
+pub(crate) fn wait<T>(
     alarm: &mut impl WaitAlarm,
     end: Deadline,
     mut probe: impl FnMut() -> Option<T>,

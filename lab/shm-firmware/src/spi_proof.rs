@@ -9,10 +9,26 @@ use crate::rp1;
 use embedded_hal::spi::{MODE_0, MODE_3, Operation, SpiBus, SpiDevice};
 use rp1_hal::{
     fugit::RateExtU32,
+    gpio::Pin,
     log,
-    spi::{Device, Error, Polling},
+    spi::{Blocking, Device, Error},
+    timer::WaitTimer,
 };
-pub type Dev<'a> = Device<Polling<'a, 0, rp1::Spi0Pins>, 8>;
+type Dev<'a> = Device<Blocking<'a, rp1::Spi0Pins, 1>, 8>;
+pub type Parts = (rp1::Spi0, Pin<8>);
+
+pub fn prove(
+    parts: &mut Option<Parts>,
+    wait: &mut WaitTimer,
+    tag: &str,
+) -> Option<Result<(), Failure>> {
+    let (mut bus, cs) = parts.take()?;
+    let mut dev = Device::new(bus.blocking(wait), cs);
+    let result = exercise(&mut dev, tag);
+    let (_, cs) = dev.free();
+    *parts = Some((bus, cs));
+    Some(result)
+}
 /// Transfers per measurement (each of 32 frames).
 const ROUNDS: u32 = 32;
 
@@ -77,9 +93,10 @@ fn report(dev: &mut Dev<'_>, tag: &str, hz: u32, bits: u8) -> Result<(), Failure
     Ok(())
 }
 
-pub fn prove(dev: &mut Dev<'_>, tag: &str) -> Result<(), Failure> {
+fn exercise(dev: &mut Dev<'_>, tag: &str) -> Result<(), Failure> {
     // Loopback off: MISO is pulled down, so the data path really is the internal loop below.
     let bus = dev.bus_mut();
+    bus.try_recover().map_err(fail(0, 8, "recovery"))?;
     bus.set_loopback(false).map_err(fail(0, 8, "loopback"))?;
     bus.set_mode(MODE_0).map_err(fail(0, 8, "mode"))?;
     bus.set_frame_bits(8).map_err(fail(0, 8, "frame_bits"))?;
@@ -154,11 +171,13 @@ pub fn log_result(what: &str, result: &Result<(), Failure>) {
     .unwrap();
 }
 
-pub fn run(dev: Option<&mut Dev<'_>>, request: u32) {
-    let result = match dev {
-        Some(dev) => prove(dev, "P1REQ"),
-        None => Err(Failure(0, 0, "init", 0x100 + Error::Precondition as u32)),
-    };
+pub fn run(parts: &mut Option<Parts>, wait: &mut WaitTimer, request: u32) {
+    let result = prove(parts, wait, "P1REQ").unwrap_or(Err(Failure(
+        0,
+        0,
+        "init",
+        0x100 + Error::Precondition as u32,
+    )));
     log_result("request=0x5b1", &result);
     super::proof_reply(request, result.is_ok());
 }

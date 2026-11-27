@@ -77,6 +77,8 @@ STATIC（2026-11-27）: 同期待機にはコアごとに `wait_timer` で専有
 wait ISR を生成する。他の構成でもアラームは同じコアの raw timer として予約する。
 同じコアに UART1 がある場合、feature 有効時は `p.uart1` が `Uart1Parts` となり、
 無効時は polling 用の `Parts<1, Uart1Pins>` と `p.irq.UART1` が提供される。
+SPI0 も feature 有効時は `Spi0Parts`、無効時は `Parts<0, Spi0Pins>` と
+`p.irq.SPI0` が提供される。独自ハンドラを選んだインスタンスは raw IRQ を保持する。
 
 STATIC（2026-11-27）: UART1 は `uart.blocking(&mut p.wait_timer)` で同期待機する。
 同じコアの `uart1` と `wait_timer` から生成されたハンドラが RX/TX の両マスクを所有する。
@@ -86,6 +88,11 @@ STATIC（2026-11-27）: UART1 は `uart.blocking(&mut p.wait_timer)` で同期�
 IRQ 待機と明示的な polling はマスクされていない thread mode 専用とし、
 ISR では固定時間の `try_read_byte`、`try_write_byte`、`try_flush` を使う。
 
+STATIC（2026-11-27）: SPI0 は `spi.blocking(&mut p.wait_timer)` で同期待機する。
+`custom_spi0_handler = true` でアプリ側の `#[rp1_rt::interrupt(procN)] fn SPI0()` と
+`p.irq.SPI0` を使える。IRQ と明示的な polling はどちらもマスクされていない
+thread mode 専用。ISR では `try_read_word`、`try_write_word`、`try_start_transfer` を使う。
+
 ## 3. 周辺側で開けるもの
 
 | 線 | 周辺側の操作 | 備考 |
@@ -93,7 +100,7 @@ ISR では固定時間の `try_read_byte`、`try_write_byte`、`try_flush` を�
 | GPIO（IO_BANK0） | `PinIrq::enable(Event)`、`force()` | ピンの設定（`into_input` など）は GPIOn_CTRL を書き直してイベントを消すので、`enable` の前に済ませる |
 | TIMER | `Alarm::enable_interrupt`、`clear_interrupt` | |
 | raw UART | `enable_rx_interrupt` / `enable_tx_interrupt`、`interrupt_status` | UART1 の生成ハンドラは待機に属さない asserted 源をマスクする |
-| I2C / SPI | `enable_interrupt(mask)`、`interrupt_status`、`clear_interrupt` | 下の `+0x108` を開ける |
+| I2C / raw SPI | `enable_interrupt(mask)`、`interrupt_status`、`clear_interrupt` | 下の `+0x108` を開ける |
 | PWM / ADC | ドライバに API は無い（初期化で INTE = 0） | 線は所有できる。源を開けるのは PAC の生書き込み（ドライバ化は後回し） |
 
 I2C と SPI の割り込みは、コントローラのマスクの先にある RP1 の出力イネーブル（ブロックの `+0x108`、

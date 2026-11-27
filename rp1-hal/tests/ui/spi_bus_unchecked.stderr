@@ -12,21 +12,21 @@ note: the module `sealed` is defined here
    | mod sealed {
    | ^^^^^^^^^^
 
-error[E0061]: this method takes 1 argument but 0 arguments were supplied
+error[E0061]: this method takes 2 arguments but 0 arguments were supplied
  --> tests/ui/spi_bus_unchecked.rs:5:17
   |
 5 |     let _ = bus.admit();
-  |                 ^^^^^-- argument #1 of type `spi::sealed::Key` is missing
+  |                 ^^^^^-- two arguments of type `spi::sealed::Key` and `Option<Deadline>` are missing
   |
 note: method defined here
  --> src/spi.rs
   |
-  |     fn admit(&mut self, key: sealed::Key) -> Result<sealed::Admitted<W>, Error>;
+  |     fn admit(
   |        ^^^^^
-help: provide the argument
+help: provide the arguments
   |
-5 |     let _ = bus.admit(/* Key */);
-  |                       +++++++++
+5 |     let _ = bus.admit(/* Key */, /* Option<Deadline> */);
+  |                       +++++++++++++++++++++++++++++++++
 
 error[E0061]: this method takes 3 arguments but 2 arguments were supplied
  --> tests/ui/spi_bus_unchecked.rs:6:17

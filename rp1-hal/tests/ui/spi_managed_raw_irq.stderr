@@ -1,0 +1,27 @@
+error[E0599]: no method named `enable_interrupt` found for struct `Spi<0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>), rp1_hal::spi::Controller, rp1_hal::spi::Irq<0, 0>>` in the current scope
+ --> tests/ui/spi_managed_raw_irq.rs:4:9
+  |
+4 |     spi.enable_interrupt(1);
+  |         ^^^^^^^^^^^^^^^^ method not found in `Spi<0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>), rp1_hal::spi::Controller, rp1_hal::spi::Irq<0, 0>>`
+  |
+  = note: the method was found for `Spi<N, P>`
+
+error[E0599]: no method named `disable_interrupt` found for struct `Spi<0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>), rp1_hal::spi::Controller, rp1_hal::spi::Irq<0, 0>>` in the current scope
+ --> tests/ui/spi_managed_raw_irq.rs:5:9
+  |
+5 |     spi.disable_interrupt(1);
+  |         ^^^^^^^^^^^^^^^^^
+  |
+help: there is a method `clear_interrupt` with a similar name, but with different arguments
+ --> src/spi.rs
+  |
+  |     pub fn clear_interrupt(&mut self) {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `interrupt_status` found for struct `Spi<0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>), rp1_hal::spi::Controller, rp1_hal::spi::Irq<0, 0>>` in the current scope
+ --> tests/ui/spi_managed_raw_irq.rs:6:17
+  |
+6 |     let _ = spi.interrupt_status();
+  |                 ^^^^^^^^^^^^^^^^ method not found in `Spi<0, (rp1_hal::gpio::Pin<11>, rp1_hal::gpio::Pin<10>, rp1_hal::gpio::Pin<9>), rp1_hal::spi::Controller, rp1_hal::spi::Irq<0, 0>>`
+  |
+  = note: the method was found for `Spi<N, P>`

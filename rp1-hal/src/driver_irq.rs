@@ -202,6 +202,107 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum Arrival {
+        BeforeArm,
+        DuringArm,
+        AfterArm,
+        DuringSleep,
+        AtDeadline,
+        Missing,
+    }
+
+    #[derive(Default)]
+    struct Fixture {
+        ready: Cell<bool>,
+        arms: Cell<u8>,
+        sleeps: Cell<u8>,
+        event: Cell<bool>,
+    }
+
+    struct Alarm<'a>(&'a Fixture, Arrival);
+
+    impl timer::WaitAlarm for Alarm<'_> {
+        fn arm(&mut self, _: Deadline) -> Result<(), timer::Error> {
+            if matches!(self.1, Arrival::AfterArm) {
+                self.0.ready.set(true);
+                self.0.event.set(true);
+            }
+            Ok(())
+        }
+
+        fn elapsed(&self, _: Deadline) -> bool {
+            self.0.sleeps.get() == 2
+        }
+
+        fn sleep(&mut self) {
+            // A first unrelated event may wake the waiter. The second wake is the deadline.
+            let sleeps = self.0.sleeps.get() + 1;
+            self.0.sleeps.set(sleeps);
+            match (self.1, sleeps) {
+                (Arrival::DuringSleep, 1) => {
+                    self.0.ready.set(true);
+                    self.0.event.set(true);
+                }
+                (Arrival::AtDeadline, 2) => self.0.ready.set(true),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn irq_arrival_before_during_after_arm_or_at_deadline() {
+        for (arrival, sleeps) in [
+            (Arrival::BeforeArm, 0),
+            (Arrival::DuringArm, 0),
+            (Arrival::AfterArm, 0),
+            (Arrival::DuringSleep, 1),
+            (Arrival::AtDeadline, 2),
+            (Arrival::Missing, 2),
+        ] {
+            let f = Fixture::default();
+            f.ready.set(matches!(arrival, Arrival::BeforeArm));
+            let end = Deadline::at(timer::Instant::from_ticks(1));
+            let result = timer::test_wait(&mut Alarm(&f, arrival), end, || {
+                probe_and_arm(
+                    &mut (),
+                    |_| f.ready.replace(false).then_some(Ok::<_, timer::Error>(())),
+                    |_| {
+                        if f.arms.get() != 0 || f.sleeps.get() == 2 {
+                            return Ok(false);
+                        }
+                        f.arms.set(1);
+                        if matches!(arrival, Arrival::DuringArm) {
+                            f.ready.set(true);
+                            f.event.set(true);
+                        }
+                        Ok(true)
+                    },
+                )
+            });
+            assert_eq!(f.sleeps.get(), sleeps);
+            assert_eq!(
+                f.arms.get(),
+                u8::from(!matches!(arrival, Arrival::BeforeArm))
+            );
+            assert_eq!(
+                f.event.get(),
+                matches!(
+                    arrival,
+                    Arrival::DuringArm | Arrival::AfterArm | Arrival::DuringSleep
+                )
+            );
+            assert_eq!(
+                result,
+                if matches!(arrival, Arrival::Missing) {
+                    Err(timer::Error::Timeout)
+                } else {
+                    Ok(Ok(()))
+                }
+            );
+        }
+    }
+
     #[test]
     fn deadline_probe_preserves_completion_without_starting_a_new_wait() {
         // A UART IRQ was never delivered. The deadline alarm gets one final
