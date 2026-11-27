@@ -663,7 +663,46 @@ fn dma_resource(
     for n in channels {
         writeln!(source, "ch{n}: unsafe {{ controller.channel() }},")?;
     }
-    writeln!(source, "_controller: controller,\n}})\n}}\n}}")?;
+    writeln!(
+        source,
+        "_controller: controller,\n}})\n}}\n}}\n\
+         impl {initialized} {{\n\
+             /// Request graceful disable on every issued channel, then check all eight slots.\n\
+             pub fn try_stop_all(&mut self) -> Result<(), ::rp1_hal::dma::Error> {{\n\
+                 let result = Ok(());"
+    )?;
+    for n in channels {
+        // Evaluate every recovery even if an earlier channel is still draining.
+        writeln!(source, "let result = result.and(self.ch{n}.try_recover());")?;
+    }
+    writeln!(
+        source,
+        "        result.and_then(|()| self._controller.__check_idle())\n}}\n\
+             /// Recover the issued subset using the dedicated timer IRQ for its deadline.\n\
+             pub fn stop_all_until(&mut self, wait: &mut ::rp1_hal::timer::WaitTimer,\n\
+                 end: ::rp1_hal::timer::Deadline) -> Result<(), ::rp1_hal::dma::Error> {{\n\
+                 ::rp1_hal::dma::__stop_until(wait, end, || self.try_stop_all())\n}}\n\
+             /// Return the declaration's token after all channels prove idle.\n\
+             pub fn try_free(mut self) -> Result<{ty}, ::rp1_hal::FreeError<Self, ::rp1_hal::dma::Error>> {{\n\
+                 if let Err(error) = self.try_stop_all() {{\n\
+                     return Err(::rp1_hal::FreeError::new(self, error));\n\
+                 }}\n\
+                 // SAFETY: this set owns all issued channels and just proved them idle.\n\
+                 match unsafe {{ self._controller.__try_free() }} {{\n\
+                     Ok(token) => Ok({ty}(token)),\n\
+                     Err(e) => {{\n\
+                         let (controller, error) = e.into_parts();\n\
+                         Err(::rp1_hal::FreeError::new(Self {{ _controller: controller, ..self }}, error))\n\
+                     }},\n\
+                 }}\n}}\n\
+             /// Wait in thread mode for a bounded stop before returning the token.\n\
+             pub fn free_until(mut self, wait: &mut ::rp1_hal::timer::WaitTimer,\n\
+                 end: ::rp1_hal::timer::Deadline) -> Result<{ty}, ::rp1_hal::FreeError<Self, ::rp1_hal::dma::Error>> {{\n\
+                 match self.stop_all_until(wait, end) {{\n\
+                     Ok(()) => self.try_free(),\n\
+                     Err(error) => Err(::rp1_hal::FreeError::new(self, error)),\n\
+                 }}\n}}\n}}"
+    )?;
     Ok((
         ty.clone(),
         format!("{ty}(unsafe {{ ::rp1_hal::dma::Token::new() }})"),

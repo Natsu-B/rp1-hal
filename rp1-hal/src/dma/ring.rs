@@ -3,6 +3,7 @@
 use super::{BusAddr, Channel, Error, Lease, Pool, RawTransfer, State, start_block};
 use crate::{
     linux_blocks::Mmio,
+    scmi::Registers,
     timer::{Deadline, Duration},
 };
 use core::mem::ManuallyDrop;
@@ -42,7 +43,7 @@ fn window(address: usize, len: usize) -> Result<BusAddr, Error> {
     BusAddr::from_proc(address)
 }
 
-fn stage<'a>(pool: &'a Pool<1>, src: &[u8]) -> Result<(Lease<'a>, BusAddr), Error> {
+fn stage<'a>(pool: &'a Pool<1>, src: &[u8]) -> Result<Lease<'a>, Error> {
     // Preserve the original stage alignment, including the second block of a wrap.
     let offset = src.as_ptr() as usize & 15;
     let mut scratch = pool.lease(0, offset + src.len())?;
@@ -50,8 +51,9 @@ fn stage<'a>(pool: &'a Pool<1>, src: &[u8]) -> Result<(Lease<'a>, BusAddr), Erro
     if base & 15 != 0 {
         return Err(Error::Invalid);
     }
-    scratch.as_mut_slice()[offset..].copy_from_slice(src);
-    Ok((scratch, BusAddr(base + offset as u64)))
+    scratch.set_range(offset, src.len())?;
+    scratch.as_mut_slice().copy_from_slice(src);
+    Ok(scratch)
 }
 
 // SAFETY: the constructor requires the outbound lifetime and ordering proofs. DMA reads only
@@ -69,34 +71,41 @@ unsafe impl<const N: u8> rp1_proto::shm::SlotCopy for ExperimentalRingDma<'_, N>
     unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Error> {
         rp1_rt::interrupt::ThreadGuard::new().map_err(crate::timer::Error::from)?;
         let destination = window(dst as usize, src.len())?;
-        let (scratch, source) = stage(self.scratch, src)?;
-        let len = src.len() as u32;
+        let scratch = stage(self.scratch, src)?;
         let end = Deadline::after(TIMEOUT)?;
-        let mut scratch = ManuallyDrop::new(scratch);
-        let mut io = Mmio;
-        // Hold the claim even on unwind after enable.
-        let started = start_block(
-            &mut io,
+        copy_scratch(
+            &mut Mmio,
             N,
             &mut self.channel.state,
-            source,
+            scratch,
             destination,
-            len,
-        );
-        let result = match started {
-            Ok(()) => RawTransfer {
-                channel: self.channel,
-                result: None,
-            }
-            .wait_accepted(&mut io, end),
-            Err(error) => Err(error),
-        };
-        if started.is_err() || self.channel.state == State::Idle {
-            // SAFETY: the block never started, or the engine retired its use of SRAM.
-            unsafe { ManuallyDrop::drop(&mut scratch) };
-        }
-        result
+            end,
+        )
     }
+}
+
+pub(super) fn copy_scratch(
+    io: &mut impl Registers,
+    n: u8,
+    state: &mut State,
+    scratch: Lease<'_>,
+    destination: BusAddr,
+    end: Deadline,
+) -> Result<(), Error> {
+    let source = scratch.address()?;
+    let len = scratch.len();
+    // Hold the claim even on unwind after enable.
+    let mut scratch = ManuallyDrop::new(scratch);
+    let started = start_block(io, n, state, source, destination, len);
+    let result = match started {
+        Ok(()) => RawTransfer::new(n, state).wait_accepted(io, end),
+        Err(error) => Err(error),
+    };
+    if started.is_err() || *state == State::Idle {
+        // SAFETY: the block never started, or the engine retired its use of SRAM.
+        unsafe { ManuallyDrop::drop(&mut scratch) };
+    }
+    result
 }
 
 #[cfg(test)]

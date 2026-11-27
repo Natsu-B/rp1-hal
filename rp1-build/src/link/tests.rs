@@ -466,6 +466,10 @@ fn channels(dma: rp1::Proc1DmaChannels) {{
     let _: rp1_hal::dma::Channel<0> = dma.ch0;
     let _: rp1_hal::dma::Channel<2> = dma.ch2;
 }}
+fn free_subset(dma: rp1::Proc1DmaChannels) -> Result<rp1::Proc1Dma,
+    rp1_hal::FreeError<rp1::Proc1DmaChannels, rp1_hal::dma::Error>> {{
+    dma.try_free()
+}}
 fn gpio(p: rp1::Proc0Resources) -> rp1_hal::gpio::Pin<22> {{ p.pins.gpio22 }}
 #[rp1_rt::interrupt(proc0)]
 fn IO_BANK0() {{}}
@@ -492,6 +496,24 @@ fn host_alarm(p: rp1::Proc0Resources) {
 }
 fn unlisted_channel(dma: rp1::Proc1DmaChannels) {
     let _ = dma.ch1;
+}
+fn main() {}
+"#,
+        ),
+        (
+            "ownership_dma_release",
+            r#"fn partial(dma: rp1::Proc1DmaChannels) {
+    let _channel = dma.ch2;
+    let _ = dma.try_free();
+}
+fn active(mut dma: rp1::Proc1DmaChannels, src: rp1_hal::dma::Lease<'_>, dst: rp1_hal::dma::Lease<'_>) {
+    let transfer = dma.ch0.try_start(src, dst).unwrap();
+    let _ = dma.try_free();
+    drop(transfer);
+}
+fn twice(dma: rp1::Proc1DmaChannels) {
+    let _ = dma.try_free();
+    let _ = dma.try_free();
 }
 fn main() {}
 "#,

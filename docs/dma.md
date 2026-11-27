@@ -16,8 +16,15 @@ dma = { channels = [0, 2] }
   Without the declaration Linux keeps `rp1_dma` with SCMI clocks.
 - `channels` selects the generated channel fields. Omission (`dma = {}`) gives all eight channels.
   An empty list reserves the controller. The NOTE still claims block 65.
-- **BREAKING**, STATIC, 2026-11-27. `Dma::free` was removed. Returning the controller needs an
-  idle proof that survives a leaked `Transfer`. Controller recovery is planned for v0.2 PR 4.
+- **STATIC · 2026-11-27.** The complete generated set can `try_stop_all` or
+  `stop_all_until(&mut wait, end)`. Release uses `try_free` or `free_until` and returns
+  the original declaration token. A partially moved channel set cannot release the
+  controller. Every issued channel must prove quiescence and retire its state. The driver
+  also checks all hardware slots, including reserved channels, before disabling the block.
+  `FreeError::driver` returns the owner if recovery has to be retried.
+- A forgotten transfer retains its pool claims for the epoch. Recovery may return the
+  controller after the channel drains and its terminal status is acknowledged. Controller
+  reuse grants no access to the forgotten leases.
 - With the declaration the generated overlay disables `rp1_dma`, the image's `linux_resets`
   leave RESETS CTRL0 bit 3 alone, and the SCMI server holds clk_dma (Linux cannot change it).
   STATIC: `rp1-build` artifacts test; HW (2026-11-05): `rp1_dma` reads `status=disabled` and
@@ -42,16 +49,16 @@ dma = { channels = [0, 2] }
   `InitError::resources` returns the declaration's controller token for a retry.
 - **BREAKING**, STATIC, 2026-11-27. Safe copies consume two equal-length leases from
   `Pool`, which takes exclusive ownership of a reserved static shared-SRAM allocation.
-  A slot has a fixed capacity and its lease selects a prefix. Safe admission excludes
+  A slot has a fixed capacity and its lease selects a range. Safe admission excludes
   ISRAM, DSRAM, peripherals, stack and the outbound window. A raw slice cannot encode
   retention beyond timeout or `mem::forget`.
 - `Channel::try_start(src, dst)` returns both leases in `InitError::resources` if admission
   fails. The transfer exclusively holds the channel and owns both leases while active.
   `try_complete` observes once. `try_reclaim` returns `Completed` with the outcome and both
   leases after quiescence and ACK. A failed or cancelled destination may contain a prefix.
-- `Channel::polling().copy(src, dst, timeout)` returns both leases on success. An error
+- `Channel::copy(src, dst, timeout)` returns both leases on success. An error
   returns proven-idle slots to their pools and leaves uncertain slots claimed. Polling is
-  explicit because RP1 IRQ40 delivery is unverified. `Transfer::wait_polling(end)` uses an
+  selected explicitly with `PollingTimeout::new(duration)` while IRQ40 delivery awaits verification. `Transfer::wait_polling(end)` uses an
   absolute `Deadline`. Completion already visible at that deadline wins.
 - `unsafe Channel::start_raw(src, dst, len)` accepts caller-managed bus addresses.
   Its caller owns the entire lifetime of both ranges, including a lost handle. A graceful
@@ -75,6 +82,23 @@ dma = { channels = [0, 2] }
 - Deferred capabilities are linked lists, IRQ40 delivery and peripheral handshakes.
 - Ring producer: `rp1_link::ring_dma::RingDma`, feature `rp1-link/unstable-ring-dma`
   (below, "DMA ring producer").
+
+### v0.2 migration (STATIC · 2026-11-27)
+
+| Before | After |
+|---|---|
+| `ch.copy(&src, &mut dst, timeout)` | `let (src, dst) = ch.copy(src, dst, timeout)?;` with pool leases and `PollingTimeout::new(duration)` |
+| `unsafe { ch.start(src, dst, len) }?.wait(timeout)` | `ch.try_start(src, dst)?` with leases, then `wait_polling(end)` and `try_reclaim`. Externally managed ranges use `unsafe { ch.start_raw(src, dst, len) }`. |
+| `transfer.cancel()` and blocking Drop | `transfer.try_cancel()` or timer-backed `cancel_until`. Recover both leases with `try_reclaim` after a proven stop. |
+| `Dma::free()` (removed in PR 1a) | `channels.try_free()` or `channels.free_until(&mut wait, end)` after assembling the declared set |
+| A channel implements `SlotCopy` when the feature is enabled | `unsafe { ch.experimental_ring_dma(&scratch) }` selects the experimental polling adapter with private scratch and external ordering obligations. |
+
+The transfer call retains the channel-field form.
+
+```rust
+let timeout = PollingTimeout::new(Duration::millis(10));
+let (src, dst) = p.dma.init(&clocks)?.ch2.copy(src, dst, timeout)?;
+```
 
 ## Cancellation and the abort register
 

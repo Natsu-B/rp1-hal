@@ -137,6 +137,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dma-parity"
+version = "0.1.0"
+dependencies = [
+ "rp1-build",
+ "rp1-hal",
+ "rp1-rt",
+]
+
+[[package]]
 name = "dual-core"
 version = "0.1.0"
 dependencies = [

@@ -49,6 +49,7 @@ impl<const SLOTS: usize> Pool<SLOTS> {
             .map_addr(|base| base.saturating_add(slot * self.slot_len));
         Ok(Lease {
             ptr,
+            offset: 0,
             len,
             capacity: self.slot_len,
             claimed,
@@ -72,6 +73,7 @@ pub(super) fn sram(address: usize, len: usize) -> Result<BusAddr, Error> {
 #[derive(Debug)]
 pub struct Lease<'a> {
     ptr: NonNull<u8>,
+    offset: usize,
     len: usize,
     capacity: usize,
     claimed: &'a Cell<bool>,
@@ -80,25 +82,39 @@ pub struct Lease<'a> {
 impl Lease<'_> {
     /// Select the number of bytes at the start of this slot to transfer.
     pub fn set_len(&mut self, len: usize) -> Result<(), Error> {
-        if len == 0 || len > self.capacity {
+        self.set_range(0, len)
+    }
+
+    /// Select a nonempty range within the slot, keeping the rest of the slot reserved.
+    pub fn set_range(&mut self, offset: usize, len: usize) -> Result<(), Error> {
+        if len == 0
+            || offset
+                .checked_add(len)
+                .is_none_or(|end| end > self.capacity)
+        {
             return Err(Error::Invalid);
         }
+        self.offset = offset;
         self.len = len;
         Ok(())
     }
 
+    fn data(&self) -> *mut u8 {
+        self.ptr.as_ptr().wrapping_add(self.offset)
+    }
+
     pub fn as_slice(&self) -> &[u8] {
         // SAFETY: this lease owns the slot and CPU access cannot overlap a live DMA transfer.
-        unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+        unsafe { slice::from_raw_parts(self.data(), self.len) }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         // SAFETY: as for as_slice, with exclusive access to the lease.
-        unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+        unsafe { slice::from_raw_parts_mut(self.data(), self.len) }
     }
 
     pub(super) fn address(&self) -> Result<BusAddr, Error> {
-        sram(self.ptr.as_ptr() as usize, self.len)
+        sram(self.data() as usize, self.len)
     }
 
     pub(super) fn len(&self) -> u32 {

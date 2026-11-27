@@ -66,6 +66,12 @@ impl Registers for Fake {
                         .or_default() &= !v;
                 }
             }
+            _ if a == BASE + common::COMMON_INTCLEAR => {
+                *self
+                    .regs
+                    .entry(BASE + common::COMMON_INTSTATUS)
+                    .or_default() &= !v;
+            }
             _ => {
                 self.regs.insert(a, v);
             }
@@ -187,10 +193,10 @@ fn failed_admission_preserves_both_leases_and_does_not_enable() {
         )
         .err()
         .unwrap();
-    assert_eq!(failure.error, Error::Invalid);
+    assert_eq!(*failure.error(), Error::Invalid);
     assert!(io.writes.is_empty());
     assert!(matches!(pool.lease(0, 64), Err(Error::Busy)));
-    drop(failure.resources);
+    drop(failure.into_parts());
     assert!(pool.lease(0, 64).is_ok());
     assert!(pool.lease(1, 4).is_ok());
     let start = BusAddr(BusAddr::SRAM);
@@ -272,8 +278,8 @@ fn forgotten_transfer_keeps_slots_and_blocks_channel_until_current_generation_dr
         )
         .err()
         .unwrap();
-    assert_eq!(err.error, Error::Recovering);
-    drop(err.resources);
+    assert_eq!(*err.error(), Error::Recovering);
+    drop(err.into_parts());
     io.stop(2, int::CH_DISABLED | int::DMA_TFR_DONE);
     channel.recover(&mut io).unwrap();
     assert_eq!(io.read(channel_base(2) + ch::INTSTATUS), 0);
@@ -391,13 +397,158 @@ fn a_bus_error_requests_stop_then_reports_the_original_fault() {
     io.regs
         .insert(channel_base(3) + ch::INTSTATUS, int::SRC_SLV_ERR);
     let end = Deadline::after_ticks(read_instant(&mut io), 50).unwrap();
-    let mut transfer = RawTransfer {
-        channel: &mut channel,
-        result: None,
-    };
+    let mut transfer = RawTransfer::new(3, &mut channel.state);
     assert_eq!(
         transfer.wait_accepted(&mut io, end),
         Err(Error::Bus(int::SRC_SLV_ERR))
     );
-    assert_eq!(transfer.channel.state, State::Idle);
+    assert_eq!(*transfer.state, State::Idle);
+}
+
+#[test]
+fn controller_rejects_busy_reserved_channel_then_retires_common_and_all_channel_status() {
+    let mut io = running();
+    io.regs.insert(BASE + common::CHEN, 1 << 7);
+    assert_eq!(release_controller(&mut io), Err(Error::Busy));
+    assert!(io.writes.is_empty());
+    io.stop(7, int::CH_DISABLED);
+    io.regs.insert(BASE + common::COMMON_INTSTATUS, 1 << 3);
+    io.refuse_ack = true;
+    assert_eq!(release_controller(&mut io), Err(Error::Recovering));
+    assert_eq!(io.read(BASE + common::CFG), common::CFG_DMAC_EN);
+    io.refuse_ack = false;
+    release_controller(&mut io).unwrap();
+    assert_eq!(io.read(BASE + common::COMMON_INTSTATUS), 0);
+    assert_eq!(io.read(BASE + common::CFG), 0);
+    for n in 0..8 {
+        let c = channel_base(n);
+        assert_eq!(reg(&io, c + ch::INTSIGNAL_ENA), 0);
+        assert_eq!(reg(&io, c + ch::INTCLEAR), int::ALL);
+        assert_eq!(reg(&io, c + ch::INTSTATUS_ENA), 0);
+    }
+}
+
+#[test]
+fn controller_waits_for_every_issued_channel_even_if_one_transfer_was_forgotten() {
+    let mut io = running();
+    io.stuck = true;
+    io.refuse_stop = true;
+    let mut ch0 = channel::<0>();
+    let mut ch2 = channel::<2>();
+    let pool = pool::fake_pool::<4>();
+    core::mem::forget(
+        ch0.start_leased(
+            &mut io,
+            pool.lease(0, 64).unwrap(),
+            pool.lease(1, 64).unwrap(),
+        )
+        .unwrap(),
+    );
+    core::mem::forget(
+        ch2.start_leased(
+            &mut io,
+            pool.lease(2, 64).unwrap(),
+            pool.lease(3, 64).unwrap(),
+        )
+        .unwrap(),
+    );
+    let checked = ch0.recover(&mut io).and(ch2.recover(&mut io));
+    assert_eq!(checked, Err(Error::Recovering));
+    assert!(io.writes.contains(&(BASE + common::CHEN, 1 << 8)));
+    assert!(io.writes.contains(&(BASE + common::CHEN, 1 << 10)));
+    assert_eq!(release_controller(&mut io), Err(Error::Busy));
+    io.stop(0, int::CH_DISABLED);
+    ch0.recover(&mut io).unwrap();
+    assert_eq!(ch2.recover(&mut io), Err(Error::Recovering));
+    io.stop(2, int::CH_DISABLED);
+    ch2.recover(&mut io).unwrap();
+    release_controller(&mut io).unwrap();
+    for slot in 0..4 {
+        assert!(matches!(pool.lease(slot, 64), Err(Error::Busy)));
+    }
+}
+
+#[test]
+fn controller_refuses_forced_abort_and_pending_abort_without_clearing_them() {
+    let mut io = running();
+    io.regs.insert(BASE + common::CHEN_H, 4);
+    assert_eq!(release_controller(&mut io), Err(Error::Busy));
+    io.regs.insert(BASE + common::CHEN_H, 0);
+    io.stop(2, int::CH_ABORTED);
+    assert_eq!(release_controller(&mut io), Err(Error::Aborted));
+    assert!(io.writes.is_empty());
+}
+
+#[test]
+fn lease_range_checks_guards_and_overflow_before_start() {
+    let pool = pool::fake_pool::<2>();
+    let mut lease = pool.lease(0, 4).unwrap();
+    assert_eq!(lease.set_range(17, 64), Ok(()));
+    assert_eq!(lease.address(), Ok(BusAddr(BusAddr::SRAM + 0x2011)));
+    assert_eq!(lease.len(), 64);
+    assert_eq!(lease.set_range(usize::MAX, 1), Err(Error::Invalid));
+    assert_eq!(lease.set_range(4095, 2), Err(Error::Invalid));
+    assert_eq!(lease.address(), Ok(BusAddr(BusAddr::SRAM + 0x2011)));
+    lease.set_len(4).unwrap();
+    assert_eq!(lease.address(), Ok(BusAddr(BusAddr::SRAM + 0x2000)));
+}
+
+#[test]
+fn cancellation_returns_both_leases_only_after_terminal_observation() {
+    let mut io = running();
+    io.stuck = true;
+    io.refuse_stop = true;
+    let pool = pool::fake_pool::<2>();
+    let mut channel = channel::<6>();
+    let mut transfer = channel
+        .start_leased(
+            &mut io,
+            pool.lease(0, 64).unwrap(),
+            pool.lease(1, 64).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        transfer.raw.stop(&mut io, Error::Cancelled),
+        Err(Error::Recovering)
+    );
+    let transfer = transfer.reclaim(&mut io).err().unwrap();
+    assert!(matches!(pool.lease(0, 64), Err(Error::Busy)));
+    assert!(matches!(pool.lease(1, 64), Err(Error::Busy)));
+    io.stop(6, int::CH_DISABLED);
+    let done = transfer.reclaim(&mut io).ok().unwrap();
+    assert_eq!(done.result, Err(Error::Cancelled));
+    assert!(matches!(pool.lease(1, 64), Err(Error::Busy)));
+    drop(done);
+    assert!(pool.lease(0, 64).is_ok());
+    assert!(pool.lease(1, 64).is_ok());
+}
+
+#[cfg(feature = "unstable-ring-dma")]
+#[test]
+fn an_unconfirmed_outbound_stop_never_releases_the_engines_scratch_slot() {
+    let mut io = running();
+    io.stuck = true;
+    io.refuse_stop = true;
+    let pool = pool::fake_pool::<1>();
+    let mut channel = channel::<1>();
+    let end = Deadline::after_ticks(read_instant(&mut io), 5).unwrap();
+    let destination = BusAddr(BusAddr::ATU + 0x1000);
+    assert_eq!(
+        ring::copy_scratch(
+            &mut io,
+            1,
+            &mut channel.state,
+            pool.lease(0, 64).unwrap(),
+            destination,
+            end
+        ),
+        Err(Error::Recovering)
+    );
+    assert_eq!(reg(&io, channel_base(1) + ch::DAR + 4), 0x80);
+    assert_eq!(reg(&io, channel_base(1) + ch::SAR + 4), 0xc0);
+    assert!(matches!(pool.lease(0, 64), Err(Error::Busy)));
+    io.stop(1, int::CH_DISABLED);
+    assert_eq!(channel.recover(&mut io), Ok(()));
+    assert!(matches!(pool.lease(0, 64), Err(Error::Busy)));
+    // A DMAC stop still grants no ownership or write-drain proof for the outbound address.
 }

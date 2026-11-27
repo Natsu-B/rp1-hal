@@ -196,6 +196,12 @@ pub struct FreeError<D, E> {
 }
 
 impl<D, E> FreeError<D, E> {
+    /// Wrap a failed release with the driver that still owns the peripheral.
+    #[doc(hidden)]
+    pub fn new(driver: D, error: E) -> Self {
+        Self { driver, error }
+    }
+
     /// The error that prevented release.
     pub fn error(&self) -> &E {
         &self.error

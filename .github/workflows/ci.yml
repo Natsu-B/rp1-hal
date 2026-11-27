@@ -61,6 +61,7 @@ jobs:
           - { package: peripherals }
           - { package: pwm-loopback }
           - { package: timer-parity }
+          - { package: dma-parity }
           - { package: irq-proof }
           - { package: link-wake-fixture, features: --features firmware }
           - { package: irq-sweep }

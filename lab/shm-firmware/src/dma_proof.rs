@@ -20,7 +20,10 @@ use crate::rp1;
 use crate::rp1::Proc1DmaChannels as Dma;
 use core::cell::UnsafeCell;
 #[cfg(feature = "dma")]
-use rp1_hal::timer::{Deadline, Duration, Timer, WaitTimer};
+use rp1_hal::{
+    dma::PollingTimeout,
+    timer::{Deadline, Duration, Timer, WaitTimer},
+};
 use rp1_hal::{
     dma::{BusAddr, Channel, Error, Pool},
     log,
@@ -145,8 +148,10 @@ pub fn sram(dma: &mut Dma) -> Result<(), Error> {
         destination.set_len(WORDS * 4)?;
         for (i, (s, d)) in source
             .as_mut_slice()
-            .chunks_exact_mut(4)
-            .zip(destination.as_mut_slice().chunks_exact_mut(4))
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(destination.as_mut_slice().as_chunks_mut::<4>().0)
             .enumerate()
         {
             s.copy_from_slice(&pattern(i, 0x5a5a_0000 + k as u32).to_le_bytes());
@@ -154,7 +159,9 @@ pub fn sram(dma: &mut Dma) -> Result<(), Error> {
         }
         source.set_len(bytes)?;
         destination.set_len(bytes)?;
-        let result = dma.ch0.polling().copy(source, destination, TIMEOUT);
+        let result = dma
+            .ch0
+            .copy(source, destination, PollingTimeout::new(TIMEOUT));
         let rc = code(result.as_ref().map(|_| ()).map_err(|e| *e));
         (source, destination) = match result {
             Ok(buffers) => buffers,
@@ -189,10 +196,14 @@ pub fn sram(dma: &mut Dma) -> Result<(), Error> {
         for _ in 0..1000 {
             match slot {
                 0 => {
-                    (source, destination) = dma.ch0.polling().copy(source, destination, TIMEOUT)?
+                    (source, destination) =
+                        dma.ch0
+                            .copy(source, destination, PollingTimeout::new(TIMEOUT))?
                 }
                 1 => {
-                    (source, destination) = dma.ch2.polling().copy(source, destination, TIMEOUT)?
+                    (source, destination) =
+                        dma.ch2
+                            .copy(source, destination, PollingTimeout::new(TIMEOUT))?
                 }
                 _ => {
                     let s = source.as_slice().as_ptr().cast::<u32>();
@@ -618,9 +629,8 @@ fn raw_abort(
         }
         unsafe { (CHEN_H as *mut u32).write_volatile((1 << 2) | (1 << 10)) };
         let t = now();
-        // Raw register control. Its result is never used by the safe DMA admission path.
-        while chen() & (1 << 2) != 0 && now().wrapping_sub(t) < 200 {
-            core::hint::spin_loop();
+        if wait_raw_abort_polling().is_err() {
+            return false;
         }
         clear_us = now().wrapping_sub(t);
         en = chen() & (1 << 2);
@@ -674,4 +684,16 @@ fn raw_abort(
     )
     .unwrap();
     good
+}
+
+/// Explicit polling for the raw register control, isolated from the bounded HAL stop path.
+#[cfg(feature = "dma")]
+fn wait_raw_abort_polling() -> Result<(), Error> {
+    const CHANNEL: u32 = 1 << 2;
+    let end = Deadline::after(Duration::micros(200))?;
+    let timer = Timer::new();
+    while chen() & CHANNEL != 0 && timer.now() < end.instant() {
+        core::hint::spin_loop();
+    }
+    Ok(())
 }

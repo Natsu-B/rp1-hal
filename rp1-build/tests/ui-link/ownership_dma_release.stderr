@@ -1,0 +1,37 @@
+error[E0382]: use of partially moved value: `dma`
+ --> $CASE:7:13
+  |
+6 |     let _channel = dma.ch2;
+  |                    ------- value partially moved here
+7 |     let _ = dma.try_free();
+  |             ^^^ value used here after partial move
+  |
+  = note: partial move occurs because `dma.ch2` has type `rp1_hal::dma::Channel<2>`, which does not implement the `Copy` trait
+
+error[E0505]: cannot move out of `dma` because it is borrowed
+  --> $CASE:11:13
+   |
+ 9 | fn active(mut dma: rp1::Proc1DmaChannels, src: rp1_hal::dma::Lease<'_>, dst: rp1_hal::dma::Lease<'_>) {
+   |           ------- binding `dma` declared here
+10 |     let transfer = dma.ch0.try_start(src, dst).unwrap();
+   |                    ------- borrow of `dma.ch0` occurs here
+11 |     let _ = dma.try_free();
+   |             ^^^ move out of `dma` occurs here
+12 |     drop(transfer);
+   |          -------- borrow later used here
+
+error[E0382]: use of moved value: `dma`
+   --> $CASE:16:13
+    |
+ 14 | fn twice(dma: rp1::Proc1DmaChannels) {
+    |          --- move occurs because `dma` has type `Proc1DmaChannels`, which does not implement the `Copy` trait
+ 15 |     let _ = dma.try_free();
+    |                 ---------- `dma` moved due to this method call
+ 16 |     let _ = dma.try_free();
+    |             ^^^ value used here after move
+    |
+note: `rp1::Proc1DmaChannels::try_free` takes ownership of the receiver `self`, which moves `dma`
+   --> $GENERATED:259:21
+    |
+259 | pub fn try_free(mut self) -> Result<Proc1Dma, ::rp1_hal::FreeError<Self, ::rp1_hal::dma::Error>> {
+    |                     ^^^^
