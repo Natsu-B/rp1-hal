@@ -80,6 +80,8 @@ class VerifyUartParity(unittest.TestCase):
                 ("tx_stream_tx=2", "tx_stream_tx=0", "TX stream"),
                 ("tx_stream_other=0", "tx_stream_other=1", "IRQ direction"),
                 (f"run={NONCE} kind=rt i=0", "run=deadbeef kind=rt i=0", "sequence/nonce"),
+                (TAIL, TAIL + next(line for line in TAIL.splitlines()
+                                   if line.startswith("UART_PARITY_REARM")) + "\n", "REARM"),
                 (FW, FW + "\n" + FW, "duplicate"),
             ]:
                 uart0.write_text(log.replace(before, after))

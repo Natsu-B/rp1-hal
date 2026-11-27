@@ -373,10 +373,6 @@ fn main(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let mut value = [0];
     rx.blocking(bench.wait).read_exact(&mut value).unwrap();
     assert_eq!(value, [nonce[0]]);
-    let _ = log!(
-        "UART_PARITY_REARM run={run} timeout_us={timeout_us} timeout_irq=0 rearm_rt=1 byte={}\n",
-        value[0]
-    );
     assert_eq!(
         counts(),
         Counts {
