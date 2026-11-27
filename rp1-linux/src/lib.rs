@@ -895,6 +895,7 @@ mod sealed {
         fn available(&self) -> u32;
         fn arm(&mut self) -> crate::Result<()>;
         fn acknowledge(&mut self) -> crate::Result<()>;
+        fn acknowledge_and_cancel(&mut self) -> crate::Result<()>;
         fn cancel(&mut self) -> crate::Result<()>;
         fn stats(&mut self) -> &mut crate::WaitStats;
     }
@@ -928,6 +929,13 @@ impl<T: Message> sealed::Waitable for RingRx<T> {
             .ok_or(Error::Unsupported)?
             .acknowledge()?;
         Ok(())
+    }
+    fn acknowledge_and_cancel(&mut self) -> Result<()> {
+        Ok(self
+            .ticket
+            .as_mut()
+            .ok_or(Error::Unsupported)?
+            .acknowledge_and_cancel()?)
     }
     fn cancel(&mut self) -> Result<()> {
         self.ticket.as_mut().ok_or(Error::Unsupported)?.cancel()?;

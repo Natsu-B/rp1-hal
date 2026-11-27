@@ -448,6 +448,8 @@ startup doorbell と Ready のイベント配送は後続の実装に残る。
 3. 待機側は現在の arm と一致する seq を観測したときだけ ACK できる。同じアドレスを
    readback する。取消しは `arm + 1` を commit/readback する。現在の arm 以外の seq/ACK
    は効力を持たない。待機側は shared vector の起床ごとに全条件を再確認する。
+   Linux の RPC は ready を確認して即座に解除するとき、同じ BAR2 制御窓に ACK → arm
+   の順で公開し、最後の arm の readback で両方を完了できる。
 4. arm は `0xffff_fffd` から `1` へ回り、現在の seq と直近の ACK に等しい候補を飛ばす。
    同じ世代の reopen は保持した arm から進む。通知側は arm の取得から seq の commit までに
    その待機側が `2^31 - 3` 回の新規 arm を行う前に完了する。通知側が停止している間は seq が
@@ -474,7 +476,10 @@ arm/seq/ACK をゼロ化して各語を readback し、header を書き、最後
 **STATIC · 2026-11-27.** v3 の Linux session は `rp1:irq` を排他 `flock` と
 `O_NONBLOCK` で開き、初回に 4 byte の `write(1)` を行う。WaitSet は
 対象の RX ticket と link ticket を arm/readback し、世代・終端・全 RX の
-head を再確認してから元の絶対期限まで `ppoll` する。4 byte の count を受けたら
+head を再確認してから元の絶対期限まで `ppoll` する。RPC の返信が RX arm 後の
+確認で ready なら同じ手順で終端を確認し、その場で RX ticket を解除する。
+実際に block する RPC は link ticket も arm して全条件を再確認する。
+4 byte の count を受けたら
 `write(1)` を完了してから再走査する。空振りでは同じ ticket と期限を使う。
 取消し時はその WaitSet の ticket を解除する。
 

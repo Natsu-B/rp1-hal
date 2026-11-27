@@ -32,7 +32,8 @@ pub struct WaitSet<'a, 'endpoints> {
     cores: u8,
     tickets_armed: bool,
     cleanup_checked: bool,
-    check_before_scan: bool,
+    rpc: bool,
+    mailbox_armed: bool,
     #[cfg(test)]
     before_arm: Option<Box<dyn FnOnce()>>,
 }
@@ -94,7 +95,7 @@ impl<T: Message> RingRx<T> {
         let session = self.session.clone();
         let mut endpoints = [self as &mut dyn Waitable];
         let mut wait = WaitSet::new(session, &mut endpoints)?;
-        wait.check_before_scan = rpc;
+        wait.rpc = rpc;
         wait.wait_inner(end, report_lost)?;
         Ok(())
     }
@@ -121,7 +122,8 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
             cores,
             tickets_armed: false,
             cleanup_checked: false,
-            check_before_scan: false,
+            rpc: false,
+            mailbox_armed: false,
             #[cfg(test)]
             before_arm: None,
         })
@@ -155,15 +157,8 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
 
     fn prepare_inner(&mut self, end: Option<Instant>) -> Result<WaitState> {
         self.intake(0)?;
-        // A solicited RPC reply can arrive while we verify the serving cores.
-        // Do those required reads before the first head sample so a ready reply
-        // avoids arm and cancel. Passive receivers sample empty DDR first.
-        if self.check_before_scan {
-            if let Some(index) = self.scan()? {
-                return Ok(WaitState::Ready(index));
-            }
-            self.cleanup_checked = false;
-        } else if let Some(index) = self.endpoints.iter().position(|ep| ep.available() != 0) {
+        // The local DDR head may already hold the reply.
+        if let Some(index) = self.endpoints.iter().position(|ep| ep.available() != 0) {
             self.check()?;
             return Ok(WaitState::Ready(index));
         }
@@ -176,14 +171,31 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
             hook();
         }
         self.tickets_armed = true;
-        self.strict().mailbox.borrow_mut().arm()?;
+        if !self.rpc {
+            self.arm_mailbox()?;
+        }
         for ep in self.endpoints.iter_mut() {
             ep.arm()?;
+        }
+        if self.rpc {
+            // A solicited reply can arrive while we arm its receive ticket and
+            // verify liveness. A ready reply needs no terminal mailbox arm.
+            if let Some(index) = self.scan()? {
+                return Ok(WaitState::Ready(index));
+            }
+            self.cleanup_checked = false;
+            self.arm_mailbox()?;
         }
         match self.scan()? {
             Some(index) => Ok(WaitState::Ready(index)),
             None => Ok(WaitState::Armed),
         }
+    }
+
+    fn arm_mailbox(&mut self) -> Result<()> {
+        self.strict().mailbox.borrow_mut().arm()?;
+        self.mailbox_armed = true;
+        Ok(())
     }
 
     /// Take a queued count, re-enable and scan every condition. Pass the link fd's
@@ -271,7 +283,7 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
             if self.cores & (1 << core) != 0 {
                 match self.session.check_peer(core) {
                     Err(e @ Error::PeerDown(PeerDown::Terminal { .. })) => {
-                        if self.tickets_armed {
+                        if self.mailbox_armed {
                             strict.mailbox.borrow_mut().acknowledge()?;
                         }
                         return Err(e);
@@ -294,7 +306,11 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
                 // ACK only a ticket with an observed, sticky readiness condition.
                 // Another endpoint may have caused the wake on this shared vector.
                 if self.tickets_armed {
-                    ep.acknowledge()?;
+                    if self.rpc {
+                        ep.acknowledge_and_cancel()?;
+                    } else {
+                        ep.acknowledge()?;
+                    }
                 }
             }
         }
@@ -322,13 +338,16 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
             return Ok(());
         }
         self.tickets_armed = false;
+        let mailbox_armed = std::mem::take(&mut self.mailbox_armed);
         if !std::mem::take(&mut self.cleanup_checked) {
             self.session.check()?;
         }
         for ep in self.endpoints.iter_mut() {
             ep.cancel()?;
         }
-        self.strict().mailbox.borrow_mut().cancel()?;
+        if mailbox_armed {
+            self.strict().mailbox.borrow_mut().cancel()?;
+        }
         Ok(())
     }
 }

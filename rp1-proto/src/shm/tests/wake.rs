@@ -270,6 +270,10 @@ fn stale_handles_never_store_and_reopen_advances_the_arm() {
         assert_eq!(waiter.arm(), Err(SessionError::Restarted));
         assert_eq!(waiter.pending(), Err(SessionError::Restarted));
         assert_eq!(waiter.acknowledge(), Err(SessionError::Restarted));
+        assert_eq!(
+            waiter.acknowledge_and_cancel(),
+            Err(SessionError::Restarted)
+        );
         assert_eq!(waiter.cancel(), Err(SessionError::Restarted));
     }
     assert_eq!((data.0, ctrl.0), old);
@@ -339,6 +343,32 @@ fn wrap_model_bounds_aba_from_a_stalled_publisher() {
     assert_eq!(earliest_reuse(false), 7);
     assert_eq!(next_ticket(LAST, 1, 3, LAST), 5);
     assert_eq!(next_ticket(LAST, 0, 0, LAST), 1); // Broken variant aliases a retained seq.
+}
+
+#[test]
+fn retiring_arm_readback_flushes_its_ack_through_the_same_window() {
+    let mut data = mem::<CONTROL_SIZE>();
+    let mut real = mem::<CONTROL_SIZE>();
+    let mut shadow = mem::<CONTROL_SIZE>();
+    let path = Path::new(0, shadow.0.as_mut_ptr(), real.0.as_mut_ptr(), CONTROL_SIZE);
+    let sched = Sched::new(1, std::vec![path]);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            sched.side(0, || {
+                let data = data.0.as_mut_ptr();
+                let ctrl = shadow.0.as_mut_ptr();
+                let words = unsafe { Words::rx(data, ctrl) };
+                let live = || Session::new(2, 2);
+                let mut waiter = unsafe { words.waiter(live().unwrap(), live) }.unwrap();
+                waiter.arm().unwrap();
+                unsafe { st(data, RX_SEQ, 1) };
+                waiter.acknowledge_and_cancel().unwrap();
+            })
+        });
+        sched.drive(|_| 0, &mut std::vec::Vec::new(), 0);
+    });
+    assert_eq!(unsafe { ld(real.0.as_ptr(), RX_ACK) }, 1);
+    assert_eq!(unsafe { ld(real.0.as_ptr(), RX_WAIT) }, 2);
 }
 
 #[test]

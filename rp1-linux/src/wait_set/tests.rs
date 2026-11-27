@@ -437,3 +437,29 @@ fn recv_and_rpc_return_data_at_the_deadline_without_a_count() {
     assert_eq!(client.call(&7, Duration::from_millis(30)).unwrap(), 48);
     assert_eq!(client.wait_stats().late, 1);
 }
+
+#[test]
+fn solicited_reply_retires_its_ticket_before_the_mailbox_is_armed() {
+    let Rig {
+        session,
+        mut rx,
+        tx: [mut tx, _],
+        peer: _peer,
+    } = Rig::new();
+    let data = rx[0]._map.clone();
+    let mut endpoints: [&mut dyn Waitable; 1] = [&mut rx[0]];
+    let mut wait = WaitSet::new(session.clone(), &mut endpoints).unwrap();
+    wait.rpc = true;
+    wait.before_arm = Some(Box::new(move || {
+        tx.push(&23).unwrap();
+    }));
+    assert_eq!(
+        wait.prepare(Instant::now() + Duration::from_secs(1))
+            .unwrap(),
+        WaitState::Ready(0)
+    );
+    assert_eq!(session.link.read(mailbox::WAIT), 0);
+    assert_eq!(control(&session.link, 0, shm::wake::RX_WAIT), 2);
+    assert_eq!(control(&session.link, 0, shm::wake::RX_ACK), 0);
+    assert_eq!(data.read(shm::wake::RX_SEQ), 0);
+}

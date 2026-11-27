@@ -158,16 +158,36 @@ impl<S: Copy + Eq, F: Fn() -> Result<S, SessionError>> Waiter<S, F> {
         Ok(true)
     }
 
+    /// ACK an observed ready endpoint and immediately retire its ticket. Arm and
+    /// ACK share the control window, so reading back the final arm store completes
+    /// both stores. Only call after observing the endpoint's ready condition.
+    pub fn acknowledge_and_cancel(&mut self) -> Result<(), SessionError> {
+        let pending = self.pending()?;
+        if self.armed {
+            if pending {
+                barrier();
+                unsafe { st(self.words.ack, 0, self.arm.to_le()) };
+                self.acked = self.arm;
+            }
+            self.cancel_inner();
+        }
+        Ok(())
+    }
+
     /// Cancel the current ticket. A newly reopened or already canceled waiter is idle.
     pub fn cancel(&mut self) -> Result<bool, SessionError> {
         check(self.scope, (self.live)())?;
         if !self.armed {
             return Ok(false);
         }
+        self.cancel_inner();
+        Ok(true)
+    }
+
+    fn cancel_inner(&mut self) {
         self.arm += 1;
         commit(self.words.arm, self.arm);
         self.armed = false;
-        Ok(true)
     }
 }
 
