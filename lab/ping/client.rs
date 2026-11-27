@@ -17,7 +17,7 @@ const ROUNDS: u32 = 5_000;
 pub fn run(args: &[String]) -> Result<()> {
     let [mode, step] = args else {
         return Err(
-            "usage: linux-ping --test irq|poll|wake ready|rtt|late|panic|stop|fault|proc0-panic|idle|idle60|drop|backpressure|reopen|status"
+            "usage: linux-ping --test irq|poll|wake ready|rtt|late|panic|stop|fault|proc0-panic|idle|idle60|burst-idle|drop|backpressure|reopen|status"
                 .into(),
         );
     };
@@ -52,6 +52,9 @@ pub fn run(args: &[String]) -> Result<()> {
     if strict && matches!(step.as_str(), "idle" | "idle60") {
         return idle(&fw, if step == "idle" { 11 } else { 62 });
     }
+    if strict && step == "burst-idle" {
+        return burst_idle(&fw);
+    }
     if strict && matches!(step.as_str(), "drop" | "proc0-panic") {
         return dropped(&fw, step == "proc0-panic");
     }
@@ -73,8 +76,9 @@ pub fn run(args: &[String]) -> Result<()> {
                 return Err(format!("reopened nonce took {elapsed_ns} ns").into());
             }
         }
-        "rtt" if strict => strict_rtt(&mut client)?,
-        "reference" if !strict => strict_rtt(&mut client)?,
+        "rtt" if strict => strict_rtt(&mut client, 1_000)?,
+        "rtt-10k" if strict => strict_rtt(&mut client, 10_000)?,
+        "reference" if !strict => strict_rtt(&mut client, 1_000)?,
         "rtt" => rtt(&mut client, ROUNDS, &format!(" mode={mode}"))?,
         "late" => {
             let before = client.call(&commands::COUNT, CALL_TIMEOUT)?;
@@ -178,10 +182,10 @@ fn check_note(irq: bool, strict: bool) -> Result<()> {
     Ok(())
 }
 
-fn strict_rtt(client: &mut Client<u32, u32>) -> Result<()> {
-    let mut nanos = Vec::with_capacity(1_000);
+fn strict_rtt(client: &mut Client<u32, u32>, rounds: u32) -> Result<()> {
+    let mut nanos = Vec::with_capacity(rounds as usize);
     let mut failed = 0;
-    for value in 0..1_000u32 {
+    for value in 0..rounds {
         let start = Instant::now();
         let reply = client.call_until(&value, start + CALL_TIMEOUT);
         let ns = start.elapsed().as_nanos();
@@ -267,6 +271,75 @@ fn idle(fw: &Firmware, seconds: u64) -> Result<()> {
         ),
         (1, 0, 0, 0, 1)
     );
+    Ok(())
+}
+
+fn burst_idle(fw: &Firmware) -> Result<()> {
+    let mut client = fw.client("ping")?;
+    let (mut tx, mut rx) = fw.channel::<u32, u32>("channel")?.split();
+    let mut shortest_us = u128::MAX;
+    let mut failed = 0;
+    for trial in 0..1_000 {
+        let calls = [1, 2, 10, 100][trial % 4];
+        for seq in 0..calls {
+            echo(&mut client, seq)?;
+        }
+        let irq = irq_count()?;
+        let stats = rx.wait_stats();
+        let mut endpoints: [&mut dyn Waitable; 1] = [&mut rx];
+        let mut wait = fw.wait_set(&mut endpoints)?;
+        let start = Instant::now();
+        let result = wait.wait(start + Duration::from_millis(100));
+        let idle_us = start.elapsed().as_micros();
+        drop(wait);
+        let after = rx.wait_stats();
+        let idle_irqs = irq_count()? - irq;
+        let idle_wakes = after.woken - stats.woken;
+        shortest_us = shortest_us.min(idle_us);
+        let quiet = matches!(result, Err(Error::Timeout))
+            && idle_us >= 100_000
+            && idle_irqs == 0
+            && idle_wakes == 0
+            && after.deadline_checks - stats.deadline_checks == 1;
+        let irq = irq_count()?;
+        let nonce = 0xc5b2_1000 + trial as u32;
+        let mut endpoints: [&mut dyn Waitable; 1] = [&mut rx];
+        let mut wait = fw.wait_set(&mut endpoints)?;
+        let end = Instant::now() + CALL_TIMEOUT;
+        assert_eq!(wait.prepare(end)?, WaitState::Armed);
+        tx.send(&nonce)?;
+        let mut pfd = libc::pollfd {
+            fd: std::os::fd::AsRawFd::as_raw_fd(&wait.as_fd()),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            let ms = end.saturating_duration_since(Instant::now()).as_millis();
+            let polled = unsafe { libc::poll(&mut pfd, 1, (ms as i32).max(1)) };
+            if polled >= 0 {
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error.into());
+            }
+        }
+        let ready = matches!(wait.dispatch(pfd.revents), Ok(WaitState::Ready(0)));
+        drop(wait);
+        let next_irqs = irq_count()? - irq;
+        let next_wakes = rx.wait_stats().woken - after.woken;
+        let received = rx.try_recv()? == Some(nonce) && rx.try_recv()?.is_none();
+        let ok = quiet && ready && received && next_irqs == 1 && next_wakes == 1;
+        failed += u32::from(!ok);
+        println!(
+            "BURST_IDLE trial={trial} calls={calls} idle_us={idle_us} idle_irqs={idle_irqs} idle_wakes={idle_wakes} next_irqs={next_irqs} next_wakes={next_wakes} ok={}",
+            u32::from(ok)
+        );
+    }
+    println!("BURST_IDLE_RESULT n=1000 failed={failed} min_idle_us={shortest_us}");
+    if failed != 0 {
+        return Err(format!("{failed} burst/idle trials failed").into());
+    }
     Ok(())
 }
 
