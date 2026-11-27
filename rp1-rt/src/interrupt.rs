@@ -310,14 +310,6 @@ impl ThreadGuard {
         self.check_number(IRQ)
     }
 
-    #[doc(hidden)]
-    pub fn check_owned_line(&self, line: &OwnedLine) -> Result<(), ContextError> {
-        check_thread()?;
-        line.is_enabled()
-            .then_some(())
-            .ok_or(ContextError::IrqUnavailable)
-    }
-
     fn check_number(&self, irq: u8) -> Result<(), ContextError> {
         check_thread()?;
         Nvic(Hardware).check_delivery(irq)
@@ -467,8 +459,9 @@ mod tests {
 
     #[test]
     fn owned_line_remembers_the_nvic_bank_and_bit() {
-        let low = unsafe { Binding::<(), 31, 0>::new() }.into_owned_line();
-        let high = unsafe { Binding::<(), 32, 0>::new() }.into_owned_line();
+        // SAFETY: The host test owns these tokens and only inspects their fields.
+        let (low, high) = unsafe { (Binding::<(), 31, 0>::new(), Binding::<(), 32, 0>::new()) };
+        let (low, high) = (low.into_owned_line(), high.into_owned_line());
         assert_eq!((low.bank_offset, low.bit), (0, 1 << 31));
         assert_eq!((high.bank_offset, high.bit), (4, 1));
     }

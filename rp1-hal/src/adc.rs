@@ -428,6 +428,10 @@ fn ready(cs: u32) -> bool {
     cs & (CS_EN | CS_IDLE_MASK) == CS_EN | CS_READY
 }
 
+fn idle_clean(cs: u32, fcs: u32) -> bool {
+    ready(cs) && cs & CS_ERR_STICKY == 0 && fcs & (FCS_LEVEL | FCS_FLAGS | FCS_EMPTY) == FCS_EMPTY
+}
+
 #[rp1_rt::cold]
 fn clean(io: &mut impl Registers) -> bool {
     io.write_relaxed(INTE, 0);
@@ -446,8 +450,7 @@ fn clean(io: &mut impl Registers) -> bool {
     io.write_relaxed(FCS, FCS_ONE_SAMPLE | FCS_FLAGS);
     io.write_relaxed(CS, CS_POWERED | CS_ERR_STICKY);
     let fcs = io.read(FCS);
-    fcs & (FCS_LEVEL | FCS_FLAGS | FCS_EMPTY) == FCS_EMPTY
-        && io.read(CS) & (CS_EN | CS_IDLE_MASK | CS_ERR_STICKY) == CS_EN | CS_READY
+    idle_clean(io.read(CS), fcs)
 }
 
 fn temperature(raw: u16) -> i32 {

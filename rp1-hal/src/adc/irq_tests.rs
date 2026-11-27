@@ -77,6 +77,14 @@ impl WaitAlarm for Alarm<'_, '_> {
         self.fixture.borrow().wakes == 2
     }
 
+    fn elapsed_after_arm(&self, _: Deadline) -> bool {
+        false
+    }
+
+    fn deadline_signaled(&self) -> bool {
+        false
+    }
+
     fn sleep(&mut self) {
         let mut f = self.fixture.borrow_mut();
         let Fixture {

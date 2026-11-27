@@ -82,10 +82,7 @@ impl<I: Registers> WaitIo<'_, I> {
 // generation; the next launch programs its own channel.
 fn retire_idle_timeout(state: &mut State, io: &mut impl Registers) -> bool {
     let cs = io.read(CS);
-    if cs & (CS_POWERED | CS_IDLE_MASK | CS_ERR_STICKY) != CS_POWERED | CS_READY
-        || io.read(INTF) & FIFO_IRQ != 0
-        || io.read(FCS) & (FCS_LEVEL | FCS_FLAGS | FCS_EMPTY) != FCS_EMPTY
-    {
+    if cs & CS_TS_EN == 0 || io.read(INTF) & FIFO_IRQ != 0 || !idle_clean(cs, io.read(FCS)) {
         return false;
     }
     *state = State::Idle;

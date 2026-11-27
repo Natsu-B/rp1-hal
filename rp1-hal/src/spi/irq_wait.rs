@@ -328,8 +328,9 @@ fn flush_tail(
     empty: u32,
 ) -> Result<(), Error> {
     let mut context = timer.thread_context()?;
-    // BUSY has no IRQ. Bound late detection with a short alarm cadence.
-    let frame = frame_delay(bits - 1, hz).ticks();
+    // BUSY has no IRQ. Check near the end of the last frame, then use
+    // short rechecks to bound late detection if it is still busy.
+    let frame = first_tail_ticks(bits, hz);
     let step = frame_delay(1, hz).min(Duration::from_ticks(3));
     let mut first = true;
     loop {
@@ -356,6 +357,12 @@ fn wire_idle(io: &mut impl Io) -> Result<bool, Error> {
 
 fn tail_delay(frame: u32, empty: u32, now: u32) -> Duration {
     Duration::from_ticks(frame.saturating_sub(now.wrapping_sub(empty)))
+}
+
+fn first_tail_ticks(bits: u8, hz: u32) -> u32 {
+    // Budget two SCLK periods around the last payload after TX empty.
+    // Lead the alarm by 3 µs for TX IRQ handling and the wake-to-probe cost.
+    frame_delay(bits + 2, hz).ticks().saturating_sub(3)
 }
 
 fn frame_delay(bits: u8, hz: u32) -> Duration {
@@ -493,14 +500,21 @@ mod tests {
     }
 
     #[test]
-    fn tx_empty_timestamp_excludes_waiter_retirement_across_wrap() {
+    fn tx_empty_probe_samples_the_clock() {
         let mut io = Model::new(4);
         let mut clock = Model::new(4);
         io.risr = int::TXEI;
         let empty = ready(&mut io, int::TXEI).unwrap().unwrap();
         assert_eq!(empty, clock.now_low());
+    }
+
+    #[test]
+    fn first_tail_delay_accounts_for_wake_lead_and_elapsed_ticks() {
+        assert_eq!(first_tail_ticks(8, 100_000), 98);
+        assert_eq!(first_tail_ticks(8, 1_000_000), 8);
         let before_wrap = u32::MAX - 1;
-        assert_eq!(tail_delay(8, before_wrap, 2).ticks(), 4);
-        assert_eq!(tail_delay(8, before_wrap, 7).ticks(), 0);
+        let first = first_tail_ticks(8, 1_000_000);
+        assert_eq!(tail_delay(first, before_wrap, 2).ticks(), 4);
+        assert_eq!(tail_delay(first, before_wrap, 7).ticks(), 0);
     }
 }

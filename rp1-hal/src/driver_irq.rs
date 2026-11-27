@@ -13,6 +13,8 @@ pub(crate) enum Error {
 
 pub(crate) enum Limit {
     Absolute(Deadline),
+    /// An admitted relative deadline. The first probe may prepare the device
+    /// after expiry. The arm path checks the deadline before launching work.
     Relative(Deadline),
 }
 
@@ -254,6 +256,14 @@ mod tests {
 
         fn elapsed(&self, _: Deadline) -> bool {
             self.0.sleeps.get() == 2
+        }
+
+        fn elapsed_after_arm(&self, _: Deadline) -> bool {
+            false
+        }
+
+        fn deadline_signaled(&self) -> bool {
+            false
         }
 
         fn sleep(&mut self) {
