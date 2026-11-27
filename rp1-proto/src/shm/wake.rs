@@ -15,13 +15,6 @@ pub const CREDIT_WAIT: usize = 72; // data
 pub const CREDIT_SEQ: usize = 72; // ctrl
 pub const CREDIT_ACK: usize = 76; // data
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Ticket<S> {
-    scope: S,
-    arm: *const u8,
-    word: u32,
-}
-
 #[derive(Clone, Copy)]
 pub struct Words<S> {
     arm: *mut u8,
@@ -47,6 +40,14 @@ impl Words<Session> {
     /// # Safety
     /// As for [`Self::rx`], on a reject ring.
     pub unsafe fn credit(data: *mut u8, ctrl: *mut u8) -> Self {
+        unsafe { Self::credit_words(data, ctrl) }
+    }
+
+    pub(super) unsafe fn reset_credit(data: *mut u8, ctrl: *mut u8) {
+        unsafe { Self::credit_words(data, ctrl) }.reset();
+    }
+
+    unsafe fn credit_words(data: *mut u8, ctrl: *mut u8) -> Self {
         unsafe {
             Self {
                 arm: data.add(CREDIT_WAIT),
@@ -73,128 +74,158 @@ impl Words<BootEpoch> {
     }
 }
 
-impl<S> Words<S> {
+impl<S: Copy + Eq> Words<S> {
     /// # Safety
     /// The mappings stay valid, with exclusive local ownership of arm and ACK until this
     /// handle is released. Mapping reuse requires revoking old writers and draining posted
     /// accesses before a new session is made visible. No v2 wait may write these words.
-    pub unsafe fn waiter(self, scope: S) -> Waiter<S> {
-        Waiter { words: self, scope }
+    /// `live` must report the current boot or session, or an error if the link is unavailable.
+    pub unsafe fn waiter<F>(self, scope: S, live: F) -> Result<Waiter<S, F>, SessionError>
+    where
+        F: Fn() -> Result<S, SessionError>,
+    {
+        check(scope, live())?;
+        Ok(Waiter {
+            words: self,
+            scope,
+            live,
+            arm: load(self.arm),
+            acked: load(self.ack),
+            armed: false,
+        })
     }
 
     /// # Safety
     /// As for [`Self::waiter`], with exclusive local ownership of seq.
-    pub unsafe fn publisher(self, scope: S) -> Publisher<S> {
-        Publisher { words: self, scope }
-    }
-}
-
-pub struct Waiter<S> {
-    words: Words<S>,
-    scope: S,
-}
-
-impl<S: Copy + Eq> Waiter<S> {
-    /// Arm a fresh ticket and flush it. Reopen advances even if the previous owner
-    /// left an odd arm behind. The caller then acquires and rechecks its ready condition.
-    pub fn arm(
-        &mut self,
-        mut live: impl FnMut() -> Result<S, SessionError>,
-    ) -> Result<Ticket<S>, SessionError> {
-        check(self.scope, live())?;
-        let previous = load(self.words.arm);
-        // Reserve the even cancel value as well. Reconnect before any word can repeat.
-        let word = (previous | 1)
-            .checked_add(if previous & 1 == 0 { 0 } else { 2 })
-            .filter(|&word| word != u32::MAX)
-            .ok_or(SessionError::Exhausted)?;
-        check(self.scope, live())?;
-        commit(self.words.arm, word);
-        Ok(Ticket {
-            scope: self.scope,
-            arm: self.words.arm,
-            word,
+    pub unsafe fn publisher<F>(self, scope: S, live: F) -> Result<Publisher<S, F>, SessionError>
+    where
+        F: Fn() -> Result<S, SessionError>,
+    {
+        check(scope, live())?;
+        Ok(Publisher {
+            words: self,
+            scope,
+            live,
+            seq: load(self.seq),
         })
     }
+}
 
-    /// Acquire only pending work for this ticket. The caller rechecks all readiness
-    /// conditions after re-enabling a shared vector, including when there is no pending seq.
-    pub fn pending(
-        &self,
-        ticket: Ticket<S>,
-        mut live: impl FnMut() -> Result<S, SessionError>,
-    ) -> Result<bool, SessionError> {
-        check(self.scope, live())?;
-        let pending = self.is_current(ticket)?
-            && load(self.words.seq) == ticket.word
-            && load(self.words.ack) != ticket.word;
-        check(self.scope, live())?;
-        Ok(pending)
-    }
-
-    /// ACK the observed ticket. A late ACK can neither consume a newer ticket nor disarm it.
-    pub fn acknowledge(
-        &mut self,
-        ticket: Ticket<S>,
-        mut live: impl FnMut() -> Result<S, SessionError>,
-    ) -> Result<bool, SessionError> {
-        if !self.pending(ticket, &mut live)? {
-            return Ok(false);
-        }
-        commit(self.words.ack, ticket.word);
-        Ok(true)
-    }
-
-    /// Cancel only the caller's ticket. Use the ticket with the endpoint that issued it.
-    pub fn cancel(
-        &mut self,
-        ticket: Ticket<S>,
-        mut live: impl FnMut() -> Result<S, SessionError>,
-    ) -> Result<bool, SessionError> {
-        check(self.scope, live())?;
-        if !self.is_current(ticket)? {
-            return Ok(false);
-        }
-        check(self.scope, live())?;
-        commit(self.words.arm, ticket.word + 1);
-        Ok(true)
-    }
-
-    fn is_current(&self, ticket: Ticket<S>) -> Result<bool, SessionError> {
-        check(self.scope, Ok(ticket.scope))?;
-        Ok(core::ptr::eq(self.words.arm, ticket.arm) && load(self.words.arm) == ticket.word)
+impl Words<Session> {
+    // The initializing proc0 owns both endpoints while the SHM generation is odd.
+    pub(super) fn reset(self) {
+        commit(self.arm, 0);
+        commit(self.seq, 0);
+        commit(self.ack, 0);
     }
 }
 
-pub struct Publisher<S> {
+pub struct Waiter<S, F> {
     words: Words<S>,
     scope: S,
+    live: F,
+    arm: u32,
+    acked: u32,
+    armed: bool,
 }
 
-impl<S: Copy + Eq> Publisher<S> {
+impl<S: Copy + Eq, F: Fn() -> Result<S, SessionError>> Waiter<S, F> {
+    /// Arm a fresh ticket and flush it. Reopen advances even if the previous owner
+    /// left an odd arm behind. The caller then acquires and rechecks its ready condition.
+    pub fn arm(&mut self) -> Result<(), SessionError> {
+        check(self.scope, (self.live)())?;
+        let seq = load(self.words.seq);
+        self.arm = next_ticket(self.arm, seq, self.acked, LAST_TICKET);
+        commit(self.words.arm, self.arm);
+        self.armed = true;
+        Ok(())
+    }
+
+    /// Acquire pending work for the current ticket. The caller rechecks all readiness
+    /// conditions after re-enabling a shared vector, including when there is no pending seq.
+    pub fn pending(&self) -> Result<bool, SessionError> {
+        check(self.scope, (self.live)())?;
+        Ok(self.armed && self.acked != self.arm && load(self.words.seq) == self.arm)
+    }
+
+    /// ACK the current pending ticket so a takeover publisher can suppress a recovery kick.
+    pub fn acknowledge(&mut self) -> Result<bool, SessionError> {
+        if !self.pending()? {
+            return Ok(false);
+        }
+        commit(self.words.ack, self.arm);
+        self.acked = self.arm;
+        Ok(true)
+    }
+
+    /// Cancel the current ticket. A newly reopened or already canceled waiter is idle.
+    pub fn cancel(&mut self) -> Result<bool, SessionError> {
+        check(self.scope, (self.live)())?;
+        if !self.armed {
+            return Ok(false);
+        }
+        self.arm += 1;
+        commit(self.words.arm, self.arm);
+        self.armed = false;
+        Ok(true)
+    }
+}
+
+// All-ones is reserved so that even the last ticket has a nonzero cancel word.
+pub(super) const LAST_TICKET: u32 = u32::MAX - 2;
+
+pub(super) fn next_ticket(previous: u32, seq: u32, acked: u32, last: u32) -> u32 {
+    let advance = |word| if word >= last { 1 } else { (word + 1) | 1 };
+    let mut ticket = advance(previous);
+    // Either retained value could match again after wrap. Skip both before committing arm.
+    while ticket == seq || ticket == acked {
+        ticket = advance(ticket);
+    }
+    ticket
+}
+
+pub struct Publisher<S, F> {
+    words: Words<S>,
+    scope: S,
+    live: F,
+    seq: u32,
+}
+
+impl<S: Copy + Eq, F: Fn() -> Result<S, SessionError>> Publisher<S, F> {
     /// Complete the previous data, tail or terminal commit with a readback through its
     /// window. Publish the current odd ticket and flush it through the seq's window.
     /// A true result asks the vector owner to signal. The seq alone proves no delivery.
-    pub fn publish(
-        &mut self,
-        read_commit: impl FnOnce(),
-        mut live: impl FnMut() -> Result<S, SessionError>,
-    ) -> Result<bool, SessionError> {
-        check(self.scope, live())?;
+    ///
+    /// The interval from sampling arm to committing seq must span fewer than
+    /// 2^31 - 3 fresh arms on these words, so arm cannot be reused during that interval.
+    pub fn publish(&mut self, read_commit: impl FnOnce()) -> Result<bool, SessionError> {
+        check(self.scope, (self.live)())?;
         barrier();
         read_commit();
         barrier();
         let arm = load(self.words.arm);
-        if arm & 1 == 0 || load(self.words.seq) == arm {
+        if arm & 1 == 0 || self.seq == arm {
             return Ok(false);
         }
-        check(self.scope, live())?;
         commit(self.words.seq, arm);
+        self.seq = arm;
         Ok(true)
+    }
+
+    /// Use after acquiring exclusive same-session ownership and draining the old publisher.
+    /// If work is still ready and the committed ticket is still armed and unacknowledged,
+    /// issue one recovery kick. Check this once per takeover, before normal publication.
+    pub fn needs_recovery_kick(&self) -> Result<bool, SessionError> {
+        check(self.scope, (self.live)())?;
+        let arm = load(self.words.arm);
+        Ok(arm & 1 != 0 && self.seq == arm && load(self.words.ack) != arm)
     }
 }
 
 fn check<S: Eq>(scope: S, live: Result<S, SessionError>) -> Result<(), SessionError> {
+    // Validate before touching ticket/data words. The ownership contract excludes
+    // invalidation during an in-flight operation from reusing the mapping until it drains.
+    // An odd generation (NotReady) also invalidates an already-attached handle.
     match live {
         Ok(current) if current == scope => Ok(()),
         _ => Err(SessionError::Restarted),

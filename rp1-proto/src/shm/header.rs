@@ -1,19 +1,21 @@
 //! The DDR region header: RP1 initializes and publishes it, Linux opens and checks it.
 use super::HEADER_SIZE;
 use super::access::{aligned, ld, st};
+use super::wake::Words;
 use crate::{
     Error, barrier,
-    wake::{self, Session, SessionError},
+    note::{ShmKind, ShmRegion},
+    wake::{self, BootEpoch, Session, SessionError},
 };
 
 const MAGIC: [u8; 8] = *b"RP1SHM\0\0";
 const VERSION: u32 = 1;
-const WAKE_VERSION: u32 = 2;
+const VERSION_V2: u32 = 2;
 
 /// RP1's initializing handle for the DDR region header (protocol.md §1.3).
 ///
-/// [`HeaderInit::begin`] and [`HeaderInit::begin_v2`] create it, under a writable-mapping contract; Linux's
-/// read-only [`Header`] has no write path, so a `PROT_READ` mapping stays sound.
+/// [`HeaderInit::begin`] creates it under a writable-mapping contract. Linux's read-only
+/// [`Header`] has no write path, so a `PROT_READ` mapping stays sound.
 pub struct HeaderInit {
     base: *mut u8,
     generation: u32,
@@ -33,41 +35,28 @@ impl HeaderInit {
         barrier();
         Self { base, generation }
     }
-    /// Begin v2 initialization without reusing a generation.
+    /// Begin v2 initialization. Generations advance within a boot and restart at 2 for
+    /// a different boot epoch.
     ///
     /// # Safety
-    /// As for [`Self::begin`]. Old CPU writers and posted writes/DMA must be drained
-    /// before reusing the reservation. This reads the odd generation back through
-    /// the header window before the caller can modify an already-visible reservation.
-    pub unsafe fn begin_v2(base: *mut u8, previous: u32) -> Result<Self, SessionError> {
+    /// As for [`Self::begin`]. Only proc0 may initialize. Old CPU writers and posted
+    /// writes/DMA must be drained before reusing the reservation. This reads the odd
+    /// generation back through the header window before modifying the reservation.
+    pub unsafe fn begin_v2(base: *mut u8, epoch: BootEpoch) -> Result<HeaderInitV2, SessionError> {
+        let previous = if unsafe { ld(base, 56) } == epoch.word() {
+            unsafe { ld(base, 12) }
+        } else {
+            0
+        };
         let generation = Session::next_generation(previous)?;
         unsafe { st(base, 12, generation - 1) };
         barrier();
         let _ = unsafe { ld(base, 12) };
         barrier();
-        Ok(Self { base, generation })
-    }
-
-    /// Write a v2 header with the boot and negotiated capability fields.
-    pub fn write_v2(
-        &mut self,
-        note_sha256: &[u8; 32],
-        regions: u32,
-        uptime_us: u32,
-        epoch: u32,
-        accepted_caps: u32,
-    ) -> Result<(), SessionError> {
-        Session::new(epoch, self.generation)?;
-        if accepted_caps & !wake::KNOWN_CAPS != 0 {
-            return Err(SessionError::Unsupported);
-        }
-        self.write(note_sha256, regions, uptime_us);
-        unsafe {
-            st(self.base, 8, ((HEADER_SIZE as u32) << 16) | WAKE_VERSION);
-            st(self.base, 56, epoch);
-            st(self.base, 60, accepted_caps);
-        }
-        Ok(())
+        Ok(HeaderInitV2 {
+            header: Self { base, generation },
+            epoch,
+        })
     }
 
     /// The generation [`HeaderInit::publish`] will write.
@@ -76,6 +65,18 @@ impl HeaderInit {
     }
     /// RP1: write the header fields (generation stays odd).
     pub fn write(&mut self, note_sha256: &[u8; 32], regions: u32, uptime_us: u32) {
+        self.write_fields(note_sha256, regions, uptime_us, VERSION, 0, 0);
+    }
+
+    fn write_fields(
+        &mut self,
+        note_sha256: &[u8; 32],
+        regions: u32,
+        uptime_us: u32,
+        version: u32,
+        epoch: u32,
+        accepted_caps: u32,
+    ) {
         let b = self.base;
         unsafe {
             st(
@@ -88,14 +89,14 @@ impl HeaderInit {
                 4,
                 u32::from_le_bytes([MAGIC[4], MAGIC[5], MAGIC[6], MAGIC[7]]),
             );
-            st(b, 8, ((HEADER_SIZE as u32) << 16) | VERSION);
+            st(b, 8, ((HEADER_SIZE as u32) << 16) | version);
             for (i, w) in note_sha256.as_chunks::<4>().0.iter().enumerate() {
                 st(b, 16 + i * 4, u32::from_le_bytes(*w));
             }
             st(b, 48, regions);
             st(b, 52, uptime_us);
-            st(b, 56, 0);
-            st(b, 60, 0);
+            st(b, 56, epoch);
+            st(b, 60, accepted_caps);
         }
     }
     /// RP1: publish (even generation) and give up write access. Call after all rings/blocks
@@ -107,14 +108,67 @@ impl HeaderInit {
         barrier();
         self.generation
     }
+}
 
-    /// Commit the even v2 generation and complete publication through the header window.
-    pub fn publish_v2(self) -> u32 {
-        let base = self.base;
-        let generation = self.publish();
+/// An unpublished v2 header. Only [`Self::publish_v2`] can commit its even generation.
+pub struct HeaderInitV2 {
+    header: HeaderInit,
+    epoch: BootEpoch,
+}
+
+impl HeaderInitV2 {
+    /// Reset both sets of wake words in every ring, then commit the even generation.
+    /// Other initialization (including draining any payload writes) must finish first.
+    ///
+    /// # Safety
+    /// The proc0 initializer owns both parts of each ring. `regions` is the complete
+    /// validated v3 layout for this reservation. The header and link bases must map
+    /// the writable DDR reservation and link page for all those regions.
+    pub unsafe fn publish_v2(
+        mut self,
+        link: *mut u8,
+        regions: &[ShmRegion<'_>],
+        note_sha256: &[u8; 32],
+        uptime_us: u32,
+        accepted_caps: u32,
+    ) -> Result<Session, SessionError> {
+        if accepted_caps & !wake::KNOWN_CAPS != 0 {
+            return Err(SessionError::Unsupported);
+        }
+        let base = self.header.base;
+        for region in regions {
+            let (data, ctrl) = unsafe {
+                match region.kind {
+                    ShmKind::RingToLinux => (
+                        base.add(region.ddr_offset as usize),
+                        link.add(region.sram_offset as usize),
+                    ),
+                    ShmKind::RingToRp1 => (
+                        link.add(region.sram_offset as usize),
+                        base.add(region.ddr_offset as usize),
+                    ),
+                    ShmKind::Block { .. } => continue,
+                }
+            };
+            // Credit is reserved even on overwrite rings, which never arm it.
+            unsafe {
+                Words::rx(data, ctrl).reset();
+                Words::reset_credit(data, ctrl);
+            }
+        }
+        let epoch = self.epoch.word();
+        self.header.write_fields(
+            note_sha256,
+            regions.len() as u32,
+            uptime_us,
+            VERSION_V2,
+            epoch,
+            accepted_caps,
+        );
+        let generation = self.header.publish();
         let _ = unsafe { ld(base, 12) };
         barrier();
-        generation
+        Session::new(epoch, generation)
     }
 }
 
@@ -143,17 +197,16 @@ impl Header {
         note_sha256: &[u8; 32],
         session: Session,
         accepted_caps: u32,
-    ) -> Result<Self, Error> {
-        let header = unsafe { Self::open_version(base, note_sha256, WAKE_VERSION) }?;
+    ) -> Result<HeaderV2, Error> {
+        let header = unsafe { Self::open_version(base, note_sha256, VERSION_V2) }?;
         if header.generation != session.generation()
-            || unsafe { ld(base, 56) } != session.epoch()
             || unsafe { ld(base, 60) } != accepted_caps
             || accepted_caps & !wake::KNOWN_CAPS != 0
         {
             return Err(Error::Mismatch);
         }
-        barrier();
-        header.check()?;
+        let header = HeaderV2 { header, session };
+        header.session().map_err(|_| Error::Mismatch)?;
         Ok(header)
     }
 
@@ -203,5 +256,31 @@ impl Header {
     }
     pub fn regions(&self) -> u32 {
         unsafe { ld(self.base, 48) }
+    }
+}
+
+/// Read-only v2 attachment, bound to both the boot epoch and the even generation.
+#[derive(Clone, Copy)]
+pub struct HeaderV2 {
+    header: Header,
+    session: Session,
+}
+impl HeaderV2 {
+    /// Revalidate the attachment, including after a boot that reuses the generation.
+    pub fn session(&self) -> Result<Session, SessionError> {
+        let base = self.header.base;
+        let generation = unsafe { ld(base, 12) };
+        barrier();
+        let epoch = unsafe { ld(base, 56) };
+        barrier();
+        let current = Session::new(epoch, generation)?;
+        if current != self.session {
+            return Err(SessionError::Restarted);
+        }
+        Ok(current)
+    }
+
+    pub fn regions(&self) -> u32 {
+        self.header.regions()
     }
 }

@@ -12,7 +12,8 @@ pub mod mailbox {
     pub const LEN: usize = 64;
     pub const END: usize = START + LEN;
 
-    // proc0 publishes the boot epoch last, before BAR2 becomes usable.
+    // A copy of status::EPOCH. proc0 commits the offered caps by publishing this
+    // word last, so a reader can distinguish mailbox admission from status startup.
     pub const BOOT_EPOCH: usize = START;
     pub const OFFERED_CAPS: usize = START + 4;
     // Linux commits these fields by publishing link::SHM_REQUEST.

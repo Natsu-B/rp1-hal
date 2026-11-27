@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{
     Error,
+    note::{ShmKind, ShmRegion, Writer},
     shm::{
         CONTROL_SIZE, HEAD, Header, HeaderInit, TAIL,
         access::{ld, st},
@@ -17,24 +18,37 @@ use crate::{
 #[test]
 fn session_header_binds_note_epoch_generation_and_caps() {
     let mut hdr = mem::<64>();
+    let mut link = mem::<{ mailbox::END }>();
     let base = hdr.0.as_mut_ptr();
-    let epoch = 8;
+    let link = link.0.as_mut_ptr();
+    let epoch = BootEpoch::new(8).unwrap();
     let hash = [5; 32];
-    let session = Session::new(epoch, 2).unwrap();
-    let mut init = unsafe { HeaderInit::begin_v2(base, 0) }.unwrap();
-    init.write_v2(&hash, 3, 7, epoch, LATCHED_WAKE).unwrap();
-    assert!(unsafe { Header::open_v2(base, &hash, session, LATCHED_WAKE) }.is_err());
-    assert_eq!(init.publish_v2(), session.generation());
+    let session = Session::new(epoch.word(), 2).unwrap();
+    let init = unsafe { HeaderInit::begin_v2(base, epoch) }.unwrap();
+    assert_eq!(unsafe { ld(base, 12) }, 1);
+    assert_eq!(
+        unsafe { Header::open_v2(base, &hash, session, LATCHED_WAKE) }.err(),
+        Some(Error::NotReady)
+    );
+    assert_eq!(
+        unsafe { init.publish_v2(link, &[], &hash, 7, LATCHED_WAKE) },
+        Ok(session)
+    );
     let header = unsafe { Header::open_v2(base, &hash, session, LATCHED_WAKE) }.unwrap();
-    assert_eq!(header.regions(), 3);
+    assert_eq!(header.regions(), 0);
+    assert_eq!(header.session(), Ok(session));
     assert_eq!(
         unsafe { Header::open(base, &hash) }.err(),
         Some(Error::NotReady)
     );
     for (digest, expected, caps) in [
         ([6; 32], session, LATCHED_WAKE),
-        (hash, Session::new(epoch + 2, 2).unwrap(), LATCHED_WAKE),
-        (hash, Session::new(epoch, 4).unwrap(), LATCHED_WAKE),
+        (
+            hash,
+            Session::new(epoch.word() + 2, 2).unwrap(),
+            LATCHED_WAKE,
+        ),
+        (hash, Session::new(epoch.word(), 4).unwrap(), LATCHED_WAKE),
         (hash, session, 0),
     ] {
         assert_eq!(
@@ -42,13 +56,128 @@ fn session_header_binds_note_epoch_generation_and_caps() {
             Some(Error::Mismatch)
         );
     }
-    assert_eq!(
-        unsafe { HeaderInit::begin_v2(base, 0xffff_fffe) }.err(),
-        Some(SessionError::Exhausted)
-    );
-    header.check().unwrap();
-    let _replacement = unsafe { HeaderInit::begin_v2(base, 2) }.unwrap();
-    assert_eq!(header.check(), Err(Error::Reset));
+    let _replacement = unsafe { HeaderInit::begin_v2(base, epoch) }.unwrap();
+    assert_eq!(unsafe { ld(base, 12) }, 3);
+    assert_eq!(header.session(), Err(SessionError::NotReady));
+
+    let epoch = BootEpoch::new(10).unwrap();
+    let replacement = unsafe { HeaderInit::begin_v2(base, epoch) }.unwrap();
+    unsafe { replacement.publish_v2(link, &[], &hash, 0, LATCHED_WAKE) }.unwrap();
+    assert_eq!(unsafe { ld(base, 12) }, 2);
+    assert_eq!(header.session(), Err(SessionError::Restarted));
+}
+
+#[test]
+fn initialization_clears_retained_ring_tickets_and_scopes_generation_exhaustion() {
+    let ring = ShmRegion {
+        kind: ShmKind::RingToLinux,
+        core: 1,
+        notify_irq: true,
+        overwrite: false,
+        ddr_offset: 0x10000,
+        ddr_len: 0x10000,
+        sram_offset: 0x100,
+        sram_len: CONTROL_SIZE as u16,
+        elem_size: 4,
+        depth: 1,
+        type_id: 0,
+        name: "up",
+        type_name: "u32",
+    };
+    let regions = [
+        ring,
+        ShmRegion {
+            kind: ShmKind::RingToRp1,
+            overwrite: true,
+            ddr_offset: 0x20000,
+            sram_offset: 0x200,
+            sram_len: 144,
+            name: "down",
+            ..ring
+        },
+        ShmRegion {
+            kind: ShmKind::Block {
+                writer: Writer::Linux,
+            },
+            ddr_offset: 0x30000,
+            depth: 0,
+            notify_irq: false,
+            sram_offset: 0,
+            sram_len: 0,
+            name: "block",
+            ..ring
+        },
+    ];
+    let mut ddr = mem::<0x40000>();
+    let mut sram = mem::<0x300>();
+    let base = ddr.0.as_mut_ptr();
+    let link = sram.0.as_mut_ptr();
+    let up = unsafe { (base.add(0x10000), link.add(0x100)) };
+    let down = unsafe { (link.add(0x200), base.add(0x20000)) };
+    let block = unsafe { base.add(0x30000) };
+    let rx = unsafe { Words::rx(up.0, up.1) };
+    let credit = unsafe { Words::credit(up.0, up.1) };
+    let down_rx = unsafe { Words::rx(down.0, down.1) };
+    let epoch = BootEpoch::new(8).unwrap();
+    let hash = [0; 32];
+
+    for previous in [u32::MAX - 1, u32::MAX] {
+        unsafe {
+            st(base, 12, previous);
+            st(base, 56, epoch.word() - 2);
+            st(block, 0, 42);
+            for (data, ctrl) in [up, down] {
+                st(ctrl, RX_WAIT, u32::MAX - 1);
+                st(data, RX_SEQ, 1); // Stale seq would suppress the first pulse.
+                st(ctrl, RX_ACK, 1); // Stale ACK would hide the first pending ticket.
+                st(data, CREDIT_WAIT, u32::MAX - 1);
+                st(ctrl, CREDIT_SEQ, 1);
+                st(data, CREDIT_ACK, 1);
+            }
+        }
+        let old_epoch = BootEpoch::new(epoch.word() - 2).unwrap();
+        assert_eq!(
+            unsafe { HeaderInit::begin_v2(base, old_epoch) }.err(),
+            Some(SessionError::Exhausted)
+        );
+        let init = unsafe { HeaderInit::begin_v2(base, epoch) }.unwrap();
+        assert_eq!(unsafe { ld(base, 12) }, 1);
+        let session = unsafe { init.publish_v2(link, &regions, &hash, 0, LATCHED_WAKE) }.unwrap();
+        assert_eq!(session, Session::new(epoch.word(), 2).unwrap());
+        let header = unsafe { Header::open_v2(base, &hash, session, LATCHED_WAKE) }.unwrap();
+        assert_eq!(header.regions(), regions.len() as u32);
+        assert_eq!(unsafe { ld(block, 0) }, 42);
+        for (data, ctrl) in [up, down] {
+            for (address, offset) in [
+                (ctrl, RX_WAIT),
+                (data, RX_SEQ),
+                (ctrl, RX_ACK),
+                (data, CREDIT_WAIT),
+                (ctrl, CREDIT_SEQ),
+                (data, CREDIT_ACK),
+            ] {
+                assert_eq!(unsafe { ld(address, offset) }, 0);
+            }
+        }
+        for words in [rx, credit, down_rx] {
+            let mut waiter = unsafe { words.waiter(session, || header.session()) }.unwrap();
+            let mut publisher = unsafe { words.publisher(session, || header.session()) }.unwrap();
+            waiter.arm().unwrap();
+            assert!(!waiter.pending().unwrap());
+            assert!(publisher.publish(|| {}).unwrap());
+            assert!(waiter.pending().unwrap());
+            assert!(waiter.acknowledge().unwrap());
+            assert!(!waiter.pending().unwrap());
+        }
+
+        // A same-boot restart clears the departing owner's state too.
+        let init = unsafe { HeaderInit::begin_v2(base, epoch) }.unwrap();
+        let replacement =
+            unsafe { init.publish_v2(link, &regions, &hash, 0, LATCHED_WAKE) }.unwrap();
+        assert_eq!(replacement.generation(), 4);
+        assert_eq!(header.session(), Err(SessionError::Restarted));
+        assert_eq!(unsafe { ld(up.1, RX_WAIT) }, 0);
+    }
 }
 
 #[test]
@@ -97,71 +226,144 @@ fn stale_handles_never_store_and_reopen_advances_the_arm() {
     let mut ctrl = mem::<CONTROL_SIZE>();
     let base = ctrl.0.as_mut_ptr();
     let words = unsafe { Words::rx(data.0.as_mut_ptr(), base) };
-    let boot = Session::new(2, 2).unwrap();
-    let live = || Ok(boot);
-    let original = {
-        let mut waiter = unsafe { words.waiter(boot) };
-        let mut publisher = unsafe { words.publisher(boot) };
-        let original = waiter.arm(live).unwrap();
-        assert!(publisher.publish(|| {}, live).unwrap());
-        assert!(waiter.acknowledge(original, live).unwrap());
-        assert!(!publisher.publish(|| {}, live).unwrap());
-        original // The owner exits before releasing the arm.
-    };
-    let mut waiter = unsafe { words.waiter(boot) };
-    let mut publisher = unsafe { words.publisher(boot) };
-    let current = waiter.arm(live).unwrap();
-    assert!(!waiter.pending(current, live).unwrap());
-    assert!(!waiter.cancel(original, live).unwrap());
-    assert!(publisher.publish(|| {}, live).unwrap());
-    assert!(!waiter.acknowledge(original, live).unwrap());
-    assert!(waiter.pending(current, live).unwrap());
+    let session = Session::new(2, 2).unwrap();
+    let current = core::cell::Cell::new(Ok(session));
+    let live = || current.get();
+    {
+        let mut waiter = unsafe { words.waiter(session, live) }.unwrap();
+        let mut publisher = unsafe { words.publisher(session, live) }.unwrap();
+        waiter.arm().unwrap();
+        assert!(publisher.publish(|| {}).unwrap());
+        assert!(waiter.acknowledge().unwrap());
+        assert!(!publisher.publish(|| {}).unwrap());
+        // The owner exits before releasing the arm.
+    }
+    let mut waiter = unsafe { words.waiter(session, live) }.unwrap();
+    let mut publisher = unsafe { words.publisher(session, live) }.unwrap();
+    assert!(!waiter.pending().unwrap());
+    assert!(!waiter.acknowledge().unwrap());
+    assert!(!waiter.cancel().unwrap());
+    waiter.arm().unwrap();
+    assert_eq!(unsafe { ld(base, RX_WAIT) }, 3);
+    assert!(!waiter.pending().unwrap());
+    assert!(publisher.publish(|| {}).unwrap());
+    assert!(waiter.pending().unwrap());
+    assert!(waiter.cancel().unwrap());
+    assert!(!waiter.pending().unwrap());
+    waiter.arm().unwrap();
 
     let old = (data.0, ctrl.0);
-    for live in [
+    for replacement in [
         Session::new(4, 2), // boot changed while SHM generation is the same
         Session::new(2, 4),
         Session::new(2, 3), // initialization in progress
     ] {
+        current.set(replacement);
         assert_eq!(
-            publisher.publish(|| panic!("stale readback"), || live),
-            Err(SessionError::Restarted)
-        );
-        assert_eq!(waiter.arm(|| live), Err(SessionError::Restarted));
-        assert_eq!(
-            waiter.acknowledge(current, || live),
+            publisher.publish(|| panic!("stale readback")),
             Err(SessionError::Restarted)
         );
         assert_eq!(
-            waiter.cancel(current, || live),
+            publisher.needs_recovery_kick(),
             Err(SessionError::Restarted)
         );
+        assert_eq!(waiter.arm(), Err(SessionError::Restarted));
+        assert_eq!(waiter.pending(), Err(SessionError::Restarted));
+        assert_eq!(waiter.acknowledge(), Err(SessionError::Restarted));
+        assert_eq!(waiter.cancel(), Err(SessionError::Restarted));
     }
-    let restarted_during_operation = || {
-        let mut samples = [boot, Session::new(4, 2).unwrap()].into_iter();
-        move || Ok(samples.next().unwrap())
-    };
-    assert_eq!(
-        waiter.acknowledge(current, restarted_during_operation()),
-        Err(SessionError::Restarted)
-    );
-    assert_eq!(
-        waiter.cancel(current, restarted_during_operation()),
-        Err(SessionError::Restarted)
-    );
-    assert_eq!(
-        waiter.arm(restarted_during_operation()),
-        Err(SessionError::Restarted)
-    );
     assert_eq!((data.0, ctrl.0), old);
-    assert!(waiter.cancel(current, live).unwrap());
-    assert!(!waiter.pending(current, live).unwrap());
+}
 
-    unsafe { st(base, RX_WAIT, (u32::MAX - 3).to_le()) };
-    let last = waiter.arm(live).unwrap();
-    assert!(waiter.cancel(last, live).unwrap());
-    assert_eq!(waiter.arm(live), Err(SessionError::Exhausted));
-    assert_eq!(u32::from_le(unsafe { ld(base, RX_WAIT) }), u32::MAX - 1);
+#[test]
+fn wrap_skips_retained_seq_and_ack_then_reuses_tickets_without_reconnecting() {
+    let mut data = mem::<CONTROL_SIZE>();
+    let mut ctrl = mem::<CONTROL_SIZE>();
+    let data = data.0.as_mut_ptr();
+    let ctrl = ctrl.0.as_mut_ptr();
+    let session = Session::new(2, 2).unwrap();
+    let live = || Ok(session);
+    let words = unsafe { Words::rx(data, ctrl) };
+    unsafe {
+        st(ctrl, RX_WAIT, LAST_TICKET - 1);
+        st(data, RX_SEQ, 1);
+        st(ctrl, RX_ACK, 3);
+    }
+    let mut waiter = unsafe { words.waiter(session, live) }.unwrap();
+    let mut publisher = unsafe { words.publisher(session, live) }.unwrap();
+    waiter.arm().unwrap();
+    assert_eq!(unsafe { ld(ctrl, RX_WAIT) }, LAST_TICKET);
+    assert!(waiter.cancel().unwrap());
+    assert_eq!(unsafe { ld(ctrl, RX_WAIT) }, u32::MAX - 1);
+    waiter.arm().unwrap();
+    assert_eq!(unsafe { ld(ctrl, RX_WAIT) }, 5);
+    assert!(!waiter.pending().unwrap());
+    assert!(publisher.publish(|| {}).unwrap());
+    assert!(waiter.pending().unwrap());
+    assert!(waiter.acknowledge().unwrap());
+    assert!(waiter.cancel().unwrap());
+    waiter.arm().unwrap();
+    assert_eq!(unsafe { ld(ctrl, RX_WAIT) }, 7);
+}
+
+#[test]
+fn wrap_model_bounds_aba_from_a_stalled_publisher() {
+    // Use the production ticket selection on a small ring. While the publisher is
+    // stalled seq cannot change; ACK can remain at its old value or advance to seq.
+    const LAST: u32 = 13;
+    let tickets = (1..=LAST).step_by(2);
+    let earliest_reuse = |skip: bool| {
+        let mut earliest = u32::MAX;
+        for sampled in tickets.clone() {
+            for seq in [0].into_iter().chain(tickets.clone()) {
+                for acked in [0].into_iter().chain(tickets.clone()) {
+                    for ack_at in 0..=7 {
+                        let mut arm = sampled;
+                        for step in 1..=7 {
+                            let ack = if step >= ack_at { seq } else { acked };
+                            let (seq, ack) = if skip { (seq, ack) } else { (0, 0) };
+                            arm = next_ticket(arm, seq, ack, LAST);
+                            if arm == sampled {
+                                // A delayed store of the sampled ticket aliases the new arm.
+                                earliest = earliest.min(step);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        earliest
+    };
+    assert_eq!(earliest_reuse(true), 5); // Seven odd tickets minus at most two skips.
+    assert_eq!(earliest_reuse(false), 7);
+    assert_eq!(next_ticket(LAST, 1, 3, LAST), 5);
+    assert_eq!(next_ticket(LAST, 0, 0, LAST), 1); // Broken variant aliases a retained seq.
+}
+
+#[test]
+fn takeover_recovers_only_the_current_unacknowledged_publication() {
+    let mut page = mem::<{ mailbox::END }>();
+    let base = page.0.as_mut_ptr();
+    let boot = BootEpoch::new(4).unwrap();
+    let live = || Ok(boot);
+    let words = unsafe { Words::link(base) };
+    let mut waiter = unsafe { words.waiter(boot, live) }.unwrap();
+    waiter.arm().unwrap();
+    {
+        let mut publisher = unsafe { words.publisher(boot, live) }.unwrap();
+        assert!(!publisher.needs_recovery_kick().unwrap());
+        assert!(publisher.publish(|| {}).unwrap());
+        // The old publisher exits after the seq readback and before the pulse.
+    }
+    let publisher = unsafe { words.publisher(boot, live) }.unwrap();
+    assert!(publisher.needs_recovery_kick().unwrap());
+    assert!(waiter.acknowledge().unwrap());
+    assert!(!publisher.needs_recovery_kick().unwrap());
+    waiter.cancel().unwrap();
+    assert!(!publisher.needs_recovery_kick().unwrap());
+    waiter.arm().unwrap();
+    assert!(!publisher.needs_recovery_kick().unwrap());
 }
 
 #[test]
@@ -185,17 +387,15 @@ fn invalidation_drains_posted_stores_before_reusing_the_mailbox() {
         page.0.fill(0);
         let boot = BootEpoch::new(4).unwrap();
         let words = unsafe { Words::link(base) };
-        let mut waiter = unsafe { words.waiter(boot) };
-        let mut publisher = unsafe { words.publisher(boot) };
-        let ticket = waiter.arm(|| Ok(boot)).unwrap();
-        assert!(publisher.publish(|| {}, || Ok(boot)).unwrap());
+        let live = || Ok(boot);
+        let mut waiter = unsafe { words.waiter(boot, live) }.unwrap();
+        let mut publisher = unsafe { words.publisher(boot, live) }.unwrap();
+        waiter.arm().unwrap();
+        assert!(publisher.publish(|| {}).unwrap());
         if !drain_before_reuse {
             old_write.land(1);
         }
-        assert_eq!(
-            waiter.pending(ticket, || Ok(boot)).unwrap(),
-            drain_before_reuse
-        );
+        assert_eq!(publisher.needs_recovery_kick().unwrap(), drain_before_reuse);
     }
 }
 
@@ -246,18 +446,16 @@ fn stalled(credit: bool, arm_flush: bool, publish_flush: bool) -> usize {
                 sched.side(0, || {
                     let (data, ctrl) = if credit { (d, cs) } else { (ds, c) };
                     let mut publisher = unsafe {
-                        words(data as *mut u8, ctrl as *mut u8).publisher(live().unwrap())
-                    };
+                        words(data as *mut u8, ctrl as *mut u8).publisher(live().unwrap(), live)
+                    }
+                    .unwrap();
                     unsafe { st(posted as *mut u8, commit, 1) };
                     if publisher
-                        .publish(
-                            || {
-                                if publish_flush {
-                                    let _ = unsafe { ld(posted as *const u8, commit) };
-                                }
-                            },
-                            live,
-                        )
+                        .publish(|| {
+                            if publish_flush {
+                                let _ = unsafe { ld(posted as *const u8, commit) };
+                            }
+                        })
                         .unwrap()
                     {
                         sched.raise(0);
@@ -267,10 +465,12 @@ fn stalled(credit: bool, arm_flush: bool, publish_flush: bool) -> usize {
             let waiter = scope.spawn(move || {
                 sched.side(1, || {
                     let (data, ctrl, arm_base) = if credit { (ds, c, ds) } else { (d, cs, cs) };
-                    let mut waiter =
-                        unsafe { words(data as *mut u8, ctrl as *mut u8).waiter(live().unwrap()) };
+                    let mut waiter = unsafe {
+                        words(data as *mut u8, ctrl as *mut u8).waiter(live().unwrap(), live)
+                    }
+                    .unwrap();
                     if arm_flush {
-                        waiter.arm(live).unwrap();
+                        waiter.arm().unwrap();
                     } else {
                         unsafe { st(arm_base as *mut u8, arm, 1) };
                     }

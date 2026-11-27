@@ -28,7 +28,7 @@ pub mod wake;
 
 pub use access::{copy_from_mapping, copy_to_mapping};
 pub use block::{Block, BlockReader, BlockWriter};
-pub use header::{Header, HeaderInit};
+pub use header::{Header, HeaderInit, HeaderInitV2, HeaderV2};
 pub use ring::{Overflow, RingRx, RingTx};
 #[cfg(feature = "unstable-ring-dma")]
 pub use staged::{SlotCopy, Staged};

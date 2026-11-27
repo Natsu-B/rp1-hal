@@ -59,10 +59,6 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     for offset in [COMMAND[0], COMMAND[1], VECTOR_STATUS] {
         write(offset, 0);
     }
-    // This fixture starts cold with exclusive ownership of the mailbox.
-    for offset in (mailbox::START..mailbox::END).step_by(4) {
-        write(offset, 0);
-    }
     write(mailbox::OFFERED_CAPS, LATCHED_WAKE);
     write(mailbox::BOOT_EPOCH, read(rp1_proto::status::EPOCH));
 

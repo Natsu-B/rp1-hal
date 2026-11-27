@@ -18,6 +18,17 @@ use rp1_proto::{
 ))]
 mod panic_handler;
 
+/// Compile-time check used by generated v3 resources.
+#[cfg(feature = "experimental-link-wake")]
+#[doc(hidden)]
+pub const __REQUIRES_EXPERIMENTAL_LINK_WAKE: () = ();
+
+// Only an opted-in firmware owns the mailbox. The v2 layout can place rings here.
+#[cfg(any(test, feature = "experimental-link-wake"))]
+const INIT_END: usize = rp1_proto::wake::mailbox::END;
+#[cfg(not(any(test, feature = "experimental-link-wake")))]
+const INIT_END: usize = s::END;
+
 /// This core's number (0 = proc0). `.bss` has one copy per core.
 static CORE: AtomicU32 = AtomicU32::new(0);
 
@@ -28,7 +39,7 @@ fn word(offset: usize) -> &'static AtomicU32 {
 }
 #[cfg(not(all(target_arch = "arm", target_os = "none")))]
 fn word(offset: usize) -> &'static AtomicU32 {
-    static PAGE: [AtomicU32; s::END / 4] = [const { AtomicU32::new(0) }; s::END / 4];
+    static PAGE: [AtomicU32; INIT_END / 4] = [const { AtomicU32::new(0) }; INIT_END / 4];
     &PAGE[offset / 4]
 }
 fn field(core: u32, offset: usize) -> &'static AtomicU32 {
@@ -64,7 +75,8 @@ fn init_epoch() {
     };
     word(s::EPOCH).store(epoch.wrapping_add(1), Relaxed);
     barrier();
-    for offset in (s::ABI + 4..s::END).step_by(4) {
+    // Clear the v3 mailbox before the boot owner can publish its offered caps and BOOT_EPOCH.
+    for offset in (s::ABI + 4..INIT_END).step_by(4) {
         word(offset).store(0, Relaxed);
     }
     word(s::ABI).store(s::ABI_VALUE, Relaxed);
@@ -314,6 +326,22 @@ mod tests {
         word(s::EPOCH).store(5, Relaxed);
         start(0);
         assert_eq!(word(s::EPOCH).load(Relaxed), 6);
+    }
+
+    #[test]
+    fn proc0_clears_the_experimental_mailbox_before_startup() {
+        use rp1_proto::wake::mailbox;
+
+        let _page = PAGE_LOCK.lock().unwrap();
+        for offset in (mailbox::START..mailbox::END).step_by(4) {
+            word(offset).store(u32::MAX, Relaxed);
+        }
+        word(mailbox::SEQ).store(1, Relaxed);
+        word(mailbox::ACK).store(1, Relaxed);
+        start(0);
+        for offset in (mailbox::START..mailbox::END).step_by(4) {
+            assert_eq!(word(offset).load(Relaxed), 0, "offset {offset:#x}");
+        }
     }
 
     #[test]
