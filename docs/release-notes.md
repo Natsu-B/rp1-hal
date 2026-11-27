@@ -109,6 +109,17 @@ sizes and use reserved words for notification. The opt-in generates typed endpoi
 `VectorOwner`. Update the loader, firmware and Linux client as a set.
 Default manifests continue to generate the schema-2 wire profile.
 
+**STATIC.** NOTE v3 `offered_caps` changes from 1 to 9. The new bit 3,
+`RPC_REPLY_WAKE`, allows IRQ RPC requests to encode a reply-wake flag as
+`seq = index ^ 0x80000000`. The full 32-bit ring index still wraps.
+The caller arms a reply ticket only if its local reply scan is empty.
+The earlier v3 profile uses the ticket fallback in protocol §10.4.
+
+The B2 RTT profile runs back-to-back RPCs with the dual-core lab service
+loop in ISRAM. The schema-2 template uses its regular service loop in shared
+SRAM. Place a comparable service loop in ISRAM with `#[rp1_rt::isram]`.
+A call that blocks also pays for notification and kernel dispatch.
+
 **STATIC · 2026-11-27.** The Linux receiver and RPC client share one
 exclusive nonblocking UIO listener for v3. The listener is acquired at
 `wait_ready`. A competing session returns `Busy`. Relative waits accept

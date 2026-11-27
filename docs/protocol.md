@@ -477,7 +477,8 @@ arm/seq/ACK をゼロ化して各語を readback し、header を書き、最後
 `O_NONBLOCK` で開き、初回に 4 byte の `write(1)` を行う。WaitSet は
 対象の RX ticket と link ticket を arm/readback し、世代・終端・全 RX の
 head を再確認してから元の絶対期限まで `ppoll` する。`RPC_REPLY_WAKE` 未合意時の
-IRQ RPC もこの ticket 経路を使う。
+IRQ RPC は RX ticket を arm して再走査し、返信がなければ mailbox ticket を arm して
+再確認してから待つ。
 4 byte の count を受けたら
 `write(1)` を完了してから再走査する。空振りでは同じ ticket と期限を使う。
 取消し時はその WaitSet の ticket を解除する。
@@ -501,8 +502,13 @@ owner の panic/fault から期限より早く起床するには独立した sup
 
 Linux は要求を公開する前に listener を初回 enable する。同じ BAR2 SRAM 窓の
 世代を readback して要求 head の書き込みを完了し、世代を照合してから force を書く。
-RP1 は要求を読んでから返信を公開し、DDR head の readback 後に未消費なら pulse を送る。
-Linux はローカル DDR に返信があれば取得する。空なら既存 count を受領して
-再 enable し、返信 head を再確認してから同じ期限まで `ppoll` する。
-再確認では、既存 count と合流した通知の返信も取得できる。
+ローカル DDR に返信があれば取得する。reply ticket が未 arm の間、RP1 は RPC の
+pulse を送らない。
+
+返信がなければ Linux は既存 count を受領して再 enable し、再走査する。まだ空なら
+待つ返信の head を RX control の offset 76 に書き、RX ticket を arm/readback
+して再度 force を書く。RP1 は DDR の返信 head を readback し、指定 head の
+通知付き返信が未消費なら、その ticket に一度だけ pulse を送る。再度の force は
+arm より先に返信を公開した場合にもこの確認を起こす。Linux は count を取り込み、
+ticket を確認して返信を取得する。期限時には count がなくても返信を取得できる。
 通知できる owner は終端状態も同じ vector で伝える。Linux は起床時と期限時に検証する。
