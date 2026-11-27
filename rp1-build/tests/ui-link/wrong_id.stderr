@@ -1,5 +1,5 @@
 error[E0080]: evaluation panicked: SHM region type has a Rust TYPE_ID different from its registration
-  --> $CASE:39:15
+  --> $CASE:45:15
    |
-39 | ... = assert!(<crate::Word as Message>::TYPE_ID == REGIONS[0].type_id, "SHM region type has a Rust TYPE_ID different from its registration");
+45 | ... = assert!(<crate::Word as Message>::TYPE_ID == REGIONS[0].type_id, "SHM region type has a Rust TYPE_ID different from its registration");
    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `link::_` failed here
