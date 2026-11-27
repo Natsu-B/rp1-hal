@@ -128,8 +128,6 @@ fn generated_v3_doorbell_handler_links() {
     let dir = tempfile::tempdir().unwrap();
     let source = format!(
         "{generated}
-type Word = [u32; 4];
-mod types {{ pub type Word = [u32; 4]; }}
 static_assertions::assert_impl_all!(rp1_link::notify::VectorOwner: Send);
 static_assertions::assert_not_impl_any!(rp1_link::notify::VectorOwner: Sync);
 unsafe extern \"C\" {{ fn __rp1_p1_IO_BANK0(); }}
