@@ -21,7 +21,7 @@ pub(crate) struct Profile {
 
 impl Profile {
     pub(crate) fn open(config: LinkWake) -> Result<Self> {
-        if config.required_caps & !wake::B2_OFFERED_CAPS != 0 {
+        if config.required_caps & !wake::IRQ_RPC_CAPS != 0 {
             return Err(Error::Unsupported);
         }
         Ok(Self {
@@ -68,6 +68,7 @@ impl Profile {
         {
             fw.link.write(mailbox::REQUEST_EPOCH, request.epoch);
             fw.link.write(mailbox::REQUEST_SEQ, request.seq);
+            // Opt in when offered. The configured requirements also permit older peers.
             fw.link.write(
                 mailbox::REQUIRED_CAPS,
                 request.required_caps | (offered & wake::RPC_REPLY_WAKE),
@@ -103,9 +104,6 @@ impl Profile {
                 error => Error::from(error),
             })?;
         let scope = wake::Session::new(epoch.word(), fw.link.read(link::SHM_GENERATION))?;
-        // Enabling on open can deliver a pending edge from the previous
-        // listener. Take it before returning the newly attached session.
-        listener.intake()?;
         let session = Session::open(&fw.note, &fw.area, &fw.link, Some((scope, caps, listener)))?;
         session.check()?;
         check_epoch(&fw.link, epoch)?;

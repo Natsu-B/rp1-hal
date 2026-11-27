@@ -2,7 +2,10 @@ use crate::{
     Error, Firmware, Mapping, Message, Note, Result, RingRx, RingTx, ShmKind, ShmRegion,
     check_type, find_region, notify::listener::poll_until, proto, strict::StrictSession,
 };
-use rp1_proto::note::{RPC, rpc_name};
+use rp1_proto::{
+    note::{RPC, rpc_name},
+    shm::wake::RPC_WAIT_HEAD,
+};
 use std::{
     os::fd::{AsFd, AsRawFd},
     rc::Rc,
@@ -13,13 +16,13 @@ impl Firmware {
     /// Open both rings of the named channel.
     pub fn channel<Tx: Message, Rx: Message>(&self, name: &str) -> Result<Channel<Tx, Rx>> {
         self.open_pair(name, false, Self::map)
-            .map(|(channel, _)| channel)
+            .map(|(channel, _, _)| channel)
     }
 
     /// Open the named RPC for one caller at a time.
     pub fn client<Req: Message, Rep: Message>(&self, name: &str) -> Result<Client<Req, Rep>> {
-        let (Channel { tx, rx }, depth) = self.open_pair(name, true, Self::map)?;
-        Ok(Client::new(tx, rx, depth))
+        let (Channel { tx, rx }, depth, request_wake) = self.open_pair(name, true, Self::map)?;
+        Ok(Client::new(tx, rx, depth, request_wake))
     }
 
     fn open_pair<Tx: Message, Rx: Message>(
@@ -27,7 +30,7 @@ impl Firmware {
         name: &str,
         rpc: bool,
         mut map: impl FnMut(&ShmRegion<'_>) -> Result<Rc<Mapping>>,
-    ) -> Result<(Channel<Tx, Rx>, u32)> {
+    ) -> Result<(Channel<Tx, Rx>, u32, bool)> {
         let session = self.session()?;
         let (down, up) = pair::<Tx, Rx>(Note::parse(&self.note)?, name, rpc)?;
         let up_map = map(&up)?;
@@ -47,7 +50,7 @@ impl Firmware {
             // A previous reader may have exited between publishing tail and the IRQ.
             rx.notify_space();
         }
-        Ok((Channel { tx, rx }, down.depth))
+        Ok((Channel { tx, rx }, down.depth, direct_rpc))
     }
 }
 
@@ -146,14 +149,7 @@ pub struct Client<Req, Rep> {
 }
 
 impl<Req: Message, Rep: Message> Client<Req, Rep> {
-    pub(crate) fn new(tx: RingTx<Req>, rx: RingRx<Rep>, depth: u32) -> Self {
-        let request_wake = tx.doorbell.is_some()
-            && rx.ticket.is_some()
-            && rx
-                .session
-                .strict
-                .as_ref()
-                .is_some_and(|strict| strict.rpc_reply_wake);
+    pub(crate) fn new(tx: RingTx<Req>, rx: RingRx<Rep>, depth: u32, request_wake: bool) -> Self {
         Self {
             tx,
             rx,
@@ -224,9 +220,11 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
             return Err(Error::Busy);
         }
         check_deadline()?;
-        if self.request_wake {
+        if self.request_wake
+            && let Some(doorbell) = &self.tx.doorbell
+        {
             self.tx.inner.push_request(request, end.is_some())?;
-            self.tx.force_request()?;
+            self.tx.force_request(doorbell)?;
         } else {
             self.tx.inner.push(request)?;
             self.tx.wake()?;
@@ -241,48 +239,80 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
         end: Instant,
     ) -> Result<Rep> {
         self.check_requested_peer(strict)?;
-        // A locally ready reply needs no IRQ count. Leave a queued count
-        // readable for the next operation that enters the wait path.
+        // A ready-first call leaves the reply ticket idle, so RP1 sends no IRQ.
         if Instant::now() < end
             && let Some(reply) = self.take_requested_reply(index)?
         {
             return Ok(reply);
+        }
+        let mut ticket = self.rx.ticket.take().ok_or(Error::Unsupported)?;
+        let result = self.wait_armed_reply(strict, &mut ticket, index, end);
+        let cancel = ticket.cancel();
+        self.rx.ticket = Some(ticket);
+        result.and_then(|reply| {
+            cancel?;
+            Ok(reply)
+        })
+    }
+
+    fn wait_armed_reply(
+        &mut self,
+        strict: &StrictSession,
+        ticket: &mut crate::strict::Ticket<proto::wake::Session>,
+        index: u32,
+        end: Instant,
+    ) -> Result<Rep> {
+        // Unmask before asking for a pulse. The second force covers an arm
+        // that landed after RP1 had already published the reply.
+        strict.listener.intake()?;
+        self.check_requested_peer(strict)?;
+        if Instant::now() < end {
+            if let Some(reply) = self.take_requested_reply(index)? {
+                return Ok(reply);
+            }
+            self.rx
+                .session
+                .link
+                .write(self.rx.ctrl_offset + RPC_WAIT_HEAD, index.wrapping_add(1));
+            ticket.arm()?;
+            if let Some(doorbell) = &self.tx.doorbell {
+                self.tx.force_request(doorbell)?;
+            }
         }
         let mut pfd = [libc::pollfd {
             fd: strict.listener.as_fd().as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         }];
-        let mut dispatch = false;
+        // Match WaitSet's intake, peer checks and deadline statistics.
         loop {
-            if dispatch && Instant::now() < end {
+            let dispatch = Instant::now() < end;
+            if dispatch {
                 self.rx.stats.sleeps += 1;
                 poll_until(&mut pfd, Some(end))?;
             }
-            // The listener was enabled on open. A prior IRQ may have masked
-            // it. Take that count and unmask before scanning again.
             let woke = strict.listener.intake();
-            let expired = Instant::now() >= end;
-            if dispatch || expired || !matches!(woke, Ok(false)) {
-                self.check_requested_peer(strict)?;
-            }
+            self.check_requested_peer(strict)?;
             let woke = woke?;
             let revents = pfd[0].revents;
             if revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
                 return Err(Error::setup(format!("rp1:irq poll flags {revents:#x}")));
             }
+            let expired = Instant::now() >= end;
             self.rx.stats.woken += u64::from(dispatch && woke);
             self.rx.stats.deadline_checks += u64::from(expired);
-            // Re-enable precedes the head check. A reply whose edge merged
-            // with this count is already visible, or still has an edge to send.
-            if let Some(reply) = self.take_requested_reply(index)? {
-                self.rx.stats.late += u64::from(expired && !woke);
+            // Once armed, take the count for the matching reply before
+            // returning. A head alone can precede the IRQ it requested.
+            let notified = woke && ticket.acknowledge()?;
+            if (notified || expired)
+                && let Some(reply) = self.take_requested_reply(index)?
+            {
+                self.rx.stats.late += u64::from(expired && !notified);
                 return Ok(reply);
             }
             if expired {
                 return Err(Error::Timeout);
             }
-            dispatch = true;
         }
     }
 

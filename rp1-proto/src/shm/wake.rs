@@ -14,6 +14,8 @@ pub const RX_ACK: usize = 68; // ctrl
 pub const CREDIT_WAIT: usize = 72; // data
 pub const CREDIT_SEQ: usize = 72; // ctrl
 pub const CREDIT_ACK: usize = 76; // data
+/// Reply head requested by the current RPC receive ticket, in the control part.
+pub const RPC_WAIT_HEAD: usize = 76;
 
 #[derive(Clone, Copy)]
 pub struct Words<S> {
@@ -219,12 +221,32 @@ impl<S: Copy + Eq, F: Fn() -> Result<S, SessionError>> Publisher<S, F> {
     /// The interval from sampling arm to committing seq must span fewer than
     /// 2^31 - 3 fresh arms on these words, so arm cannot be reused during that interval.
     pub fn publish(&mut self, read_commit: impl FnOnce()) -> Result<bool, SessionError> {
+        self.publish_inner(read_commit, None::<fn() -> bool>)
+    }
+
+    /// Qualify the sampled ticket before committing its seq.
+    pub fn publish_if(
+        &mut self,
+        read_commit: impl FnOnce(),
+        ready: impl FnOnce() -> bool,
+    ) -> Result<bool, SessionError> {
+        self.publish_inner(read_commit, Some(ready))
+    }
+
+    fn publish_inner(
+        &mut self,
+        read_commit: impl FnOnce(),
+        ready: Option<impl FnOnce() -> bool>,
+    ) -> Result<bool, SessionError> {
         check(self.scope, (self.live)())?;
         barrier();
         read_commit();
         barrier();
         let arm = load(self.words.arm);
-        if arm & 1 == 0 || self.seq == arm {
+        if arm & 1 == 0
+            || self.seq == arm
+            || ready.is_some_and(|ready| !ready() || load(self.words.arm) != arm)
+        {
             return Ok(false);
         }
         commit(self.words.seq, arm);

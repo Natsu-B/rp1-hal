@@ -486,10 +486,10 @@ impl Firmware {
             _map: map,
             session,
         };
-        if direct_rpc {
+        if direct_rpc && let Some(doorbell) = &tx.doorbell {
             // Resume a request that the former caller committed before forcing.
             if tx.inner.free() != r.depth {
-                tx.force_request()?;
+                tx.force_request(doorbell)?;
             }
         } else if let Some(publisher) = &tx.publisher {
             // Publishing a seq for an empty ring would consume the receiver's
@@ -963,7 +963,7 @@ pub struct RingTx<T> {
     session: Rc<Session>,
 }
 impl<T: Message> RingTx<T> {
-    fn force_request(&self) -> Result<()> {
+    fn force_request(&self, doorbell: &Doorbell) -> Result<()> {
         let generation = self.session.generation()?;
         // Complete the posted head through its BAR2 SRAM window and verify
         // the generation with the same read before forcing the doorbell.
@@ -974,10 +974,7 @@ impl<T: Message> RingTx<T> {
             _ => {}
         }
         barrier();
-        self.doorbell
-            .as_ref()
-            .expect("direct RPC has a doorbell")
-            .ring_flushed();
+        doorbell.ring_flushed();
         Ok(())
     }
 

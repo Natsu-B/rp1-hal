@@ -434,7 +434,7 @@ fn recv_and_rpc_return_data_at_the_deadline_without_a_count() {
         _map: data,
         session,
     };
-    let mut client = crate::Client::new(tx, b, 4);
+    let mut client = crate::Client::new(tx, b, 4, false);
     BEFORE_POLL.with(|hook| hook.replace(Some(Box::new(move || tx_b.push(&48).unwrap()))));
     assert_eq!(client.call(&7, Duration::from_millis(30)).unwrap(), 48);
     assert_eq!(client.wait_stats().late, 1);

@@ -1,6 +1,6 @@
 use crate::{
     Error, Message, Progress, RingRx, RingTx,
-    notify::{Notify, Poll, Wake},
+    notify::{Notify, Poll, Wake, sealed::Token},
 };
 
 /// The firmware endpoint of a named request/reply pair.
@@ -14,6 +14,7 @@ pub struct Server<Req, Rep, N = Poll, W = Poll> {
     tx: RingTx<Rep, N>,
     rx: RingRx<Req, W>,
     failed: bool,
+    reply_requested: bool,
 }
 
 impl<Req: Message, Rep: Message, N: Notify, W: Wake> Server<Req, Rep, N, W> {
@@ -22,6 +23,7 @@ impl<Req: Message, Rep: Message, N: Notify, W: Wake> Server<Req, Rep, N, W> {
             tx,
             rx,
             failed: false,
+            reply_requested: false,
         }
     }
 
@@ -37,11 +39,18 @@ impl<Req: Message, Rep: Message, N: Notify, W: Wake> Server<Req, Rep, N, W> {
         if self.failed {
             return Err(Error::Reset);
         }
-        self.rx.try_drain_requests(max, |request, notify| {
+        let progress = self.rx.try_drain_requests(max, |request, notify| {
             let result = self.tx.send_reply(&handle(request), notify);
             self.failed = result.is_err();
+            self.reply_requested = notify == Some(true);
             result
-        })
+        })?;
+        // The host can arm after the reply. Its second force runs this check
+        // even if there are no requests left to drain.
+        if self.reply_requested {
+            self.tx.notify.wake_requested(Token(()), &self.tx.ring);
+        }
+        Ok(progress)
     }
 }
 

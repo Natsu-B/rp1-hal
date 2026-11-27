@@ -48,11 +48,9 @@ impl<T: Message, N: Notify> RingTx<T, N> {
     ) -> Result<(), Error> {
         window_ready()?;
         let sent = self.ring.push(value);
-        match requested_wake {
-            None => self.notify.wake(Token(()), &mut self.ring),
-            Some(true) if sent.is_ok() => self.notify.wake_requested(Token(()), &self.ring),
-            Some(_) => false,
-        };
+        if requested_wake.is_none() {
+            self.notify.wake(Token(()), &mut self.ring);
+        }
         sent
     }
     /// Publish a batch with one `head` store and at most one wake. Returns how many were

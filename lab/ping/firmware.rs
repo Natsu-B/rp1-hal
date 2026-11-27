@@ -150,7 +150,9 @@ pub fn run_wake(link: rp1::link::Proc1Link, owner: rp1_link::notify::VectorOwner
     let mut probe = Probe::new(owner);
     let mut pulse_failures = 0;
     loop {
-        let progress = ping.serve(8, |value| probe.reply(value)).expect("ping serve failed");
+        let progress = ping
+            .serve(8, |value| probe.reply(value))
+            .expect("ping serve failed");
         let _ = probe.host_irq.pulse_terminals();
         let drop_progress = dropped_rx
             .drain(8, |value| {

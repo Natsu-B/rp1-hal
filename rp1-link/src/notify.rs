@@ -85,6 +85,7 @@ pub(crate) mod sealed {
     pub trait Notify {
         /// Wake the reader of `ring` if it sleeps. Returns whether it notified.
         fn wake<T: Message>(&mut self, _: Token, ring: &mut shm::RingTx<T>) -> bool;
+        /// Pulse for an armed, flagged reply unless the reader has already consumed it.
         fn wake_requested<T: Message>(&mut self, _: Token, _: &shm::RingTx<T>) -> bool {
             false
         }
@@ -340,6 +341,7 @@ type LiveSession = fn() -> Result<Session, SessionError>;
 pub struct TicketIrq {
     publisher: Publisher<Session, LiveSession>,
     data: *mut u8,
+    ctrl: *mut u8,
     pulse_pending: bool,
     pulse_failures: u32,
 }
@@ -353,6 +355,7 @@ impl TicketIrq {
         Ok(Self {
             publisher,
             data,
+            ctrl,
             pulse_pending: false,
             pulse_failures: 0,
         })
@@ -389,12 +392,21 @@ impl sealed::Notify for TicketIrq {
 
     #[inline(always)]
     fn wake_requested<T: Message>(&mut self, _: sealed::Token, ring: &shm::RingTx<T>) -> bool {
-        // Complete the DDR reply before sending the separate MSI-X transaction.
-        rp1_proto::barrier();
-        let _ = unsafe { self.data.cast::<u32>().read_volatile() };
-        rp1_proto::barrier();
-        // A caller that already took this reply cannot be waiting for it.
-        self.pulse_pending |= !ring.all_consumed();
+        use shm::wake::{RPC_WAIT_HEAD, RX_WAIT};
+        let ctrl = self.ctrl;
+        let load = |offset| u32::from_le(unsafe { ctrl.add(offset).cast::<u32>().read_volatile() });
+        if load(RX_WAIT) & 1 == 0 {
+            return false;
+        }
+        let fresh = self.publisher.publish_if(
+            || {
+                let _ = unsafe { self.data.cast::<u32>().read_volatile() };
+            },
+            || load(RPC_WAIT_HEAD) == ring.head() && !ring.all_consumed(),
+        );
+        if let Ok(fresh) = fresh {
+            self.pulse_pending |= fresh;
+        }
         self.retry()
     }
 }
@@ -746,9 +758,15 @@ mod tests {
     }
 
     #[test]
-    fn v3_requested_wake_skips_a_consumed_reply() {
-        use crate::mmio::fake;
-        use rp1_proto::{LINK_START, link};
+    fn v3_rpc_doorbell_opens_pending_requests_and_only_armed_flagged_replies_pulse() {
+        use crate::{
+            RingRx, RingTx, Server,
+            mmio::fake::{self, Access},
+        };
+        use rp1_proto::{
+            LINK_START, link,
+            shm::wake::{RPC_WAIT_HEAD, RX_SEQ, RX_WAIT},
+        };
 
         let window = LINK_START as usize;
         fake::set(window + link::SHM_STATUS, link::SHM_READY);
@@ -756,28 +774,70 @@ mod tests {
         fake::set(window + mailbox::BOOT_EPOCH, 2);
         fake::alias(MSIX_CFG_SET, MSIX_CFG, true);
         fake::alias(MSIX_CFG_CLR, MSIX_CFG, false);
-        let mut data = [0u64; 64];
-        let mut ctrl = [0u64; 16];
-        let (data, ctrl) = (data.as_mut_ptr().cast(), ctrl.as_mut_ptr().cast());
-        let mut tx =
-            unsafe { shm::RingTx::attach(data, 512, ctrl, 128, 4, shm::Overflow::Reject) }.unwrap();
-        let mut rx =
-            unsafe { shm::RingRx::attach(data, 512, ctrl, 128, 4, shm::Overflow::Reject) }.unwrap();
-        let mut irq = unsafe { TicketIrq::attach(data, ctrl) }.unwrap();
-        tx.push(&17u32).unwrap();
-        assert!(sealed::Notify::wake_requested(
-            &mut irq,
-            sealed::Token(()),
-            &tx
-        ));
-        assert_eq!(rx.pop(), Ok(Some(17)));
-        tx.push(&23).unwrap();
-        assert_eq!(rx.pop(), Ok(Some(23)));
-        assert!(!sealed::Notify::wake_requested(
-            &mut irq,
-            sealed::Token(()),
-            &tx
-        ));
+        let (mut down, mut down_ctrl) = ([0u64; 64], [0u64; 16]);
+        let (mut up, mut up_ctrl) = ([0u64; 64], [0u64; 16]);
+        let (down, down_ctrl, up, up_ctrl): (*mut u8, *mut u8, *mut u8, *mut u8) = (
+            down.as_mut_ptr().cast(),
+            down_ctrl.as_mut_ptr().cast(),
+            up.as_mut_ptr().cast(),
+            up_ctrl.as_mut_ptr().cast(),
+        );
+        let ov = shm::Overflow::Reject;
+        let mut requests =
+            unsafe { shm::RingTx::attach(down, 512, down_ctrl, 128, 4, ov) }.unwrap();
+        let mut replies = unsafe { shm::RingRx::attach(up, 512, up_ctrl, 128, 4, ov) }.unwrap();
+        requests.push_request(&17u32, true).unwrap();
+        let doorbell = unsafe { TicketDoorbell::<27, 1>::attach(down, down_ctrl, true) }.unwrap();
+        let rx = RingRx::open(
+            unsafe { shm::RingRx::<u32>::attach(down, 512, down_ctrl, 128, 4, ov) }.unwrap(),
+            doorbell,
+        );
+        assert!(
+            fake::take()
+                .iter()
+                .any(|access| *access == Access::Write(0x400d_2114, 1 << 27))
+        );
+        let tx = RingTx::new(
+            unsafe { shm::RingTx::<u32>::attach(up, 512, up_ctrl, 128, 4, ov) }.unwrap(),
+            unsafe { TicketIrq::attach(up, up_ctrl) }.unwrap(),
+        );
+        let mut server = Server::new(tx, rx);
+        let pulses = || {
+            fake::take()
+                .into_iter()
+                .filter(|access| *access == Access::Write(MSIX_CFG_SET, MSIX_CFG_TEST))
+                .count()
+        };
+        let arm = |head, ticket| unsafe {
+            up_ctrl
+                .add(RPC_WAIT_HEAD)
+                .cast::<u32>()
+                .write_volatile(head);
+            up_ctrl.add(RX_WAIT).cast::<u32>().write_volatile(ticket);
+        };
+
+        assert_eq!(server.serve(0, |n| n), Ok(Progress::More));
+        assert_eq!(pulses(), 0, "an unarmed ready-first reply must never pulse");
+        arm(2, 1);
+        assert_eq!(server.serve(4, |_| unreachable!()), Ok(Progress::Idle));
+        assert_eq!(pulses(), 0, "the ticket is for a later reply");
+        arm(1, 3);
+        assert_eq!(server.serve(4, |_| unreachable!()), Ok(Progress::Idle));
+        assert_eq!(
+            pulses(),
+            1,
+            "the second force can arrive after an early reply"
+        );
+        assert_eq!(unsafe { up.add(RX_SEQ).cast::<u32>().read_volatile() }, 3);
+        assert_eq!(server.serve(4, |_| unreachable!()), Ok(Progress::Idle));
+        assert_eq!(pulses(), 0, "one pulse per ticket");
+        assert_eq!(replies.pop(), Ok(Some(17)));
+
+        requests.push_request(&23u32, false).unwrap();
+        arm(2, 5);
+        assert_eq!(server.serve(4, |n| n), Ok(Progress::Idle));
+        assert_eq!(pulses(), 0, "an unflagged request cannot send an IRQ");
+        assert_eq!(replies.pop(), Ok(Some(23)));
     }
 
     #[test]

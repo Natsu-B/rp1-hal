@@ -52,7 +52,7 @@ fn channel_owns_both_maps_and_releases_the_first_on_failure() {
     ));
     drop(open_exclusive(&dir.join("ping-up")).unwrap());
     drop(held);
-    let (channel, _) = fw.open_pair::<u32, u32>("ping", false, &mut map).unwrap();
+    let (channel, _, _) = fw.open_pair::<u32, u32>("ping", false, &mut map).unwrap();
     assert!(matches!(
         fw.open_pair::<u32, u32>("ping", false, &mut map),
         Err(Error::Busy)
@@ -93,7 +93,7 @@ impl Rig {
     }
 
     fn client(&self) -> Client<u32, u32> {
-        let (Channel { tx, rx }, depth) = self
+        let (Channel { tx, rx }, depth, request_wake) = self
             .fw
             .open_pair("ping", true, |r| {
                 Ok(if r.kind == ShmKind::RingToLinux {
@@ -103,7 +103,7 @@ impl Rig {
                 })
             })
             .unwrap();
-        Client::new(tx, rx, depth)
+        Client::new(tx, rx, depth, request_wake)
     }
 
     fn server(&self) -> (shm::RingRx<u32>, shm::RingTx<u32>) {

@@ -123,7 +123,7 @@ impl Declaration {
     pub(crate) fn wake_config(&self) -> Option<rp1_proto::note::LinkWake> {
         self.link_wake.map(|_| rp1_proto::note::LinkWake {
             required_caps: rp1_proto::wake::LATCHED_WAKE,
-            offered_caps: rp1_proto::wake::B2_OFFERED_CAPS,
+            offered_caps: rp1_proto::wake::IRQ_RPC_CAPS,
             owner: u8::from(self.proc1.host_irq),
             startup_doorbell: None,
         })

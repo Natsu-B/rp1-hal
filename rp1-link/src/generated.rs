@@ -322,7 +322,7 @@ pub unsafe fn try_enable_v3(
     regions: &[ShmRegion<'_>],
     digest: &[u8; 32],
 ) -> Result<u32, EnableError> {
-    let offered = rp1_proto::wake::B2_OFFERED_CAPS;
+    let offered = rp1_proto::wake::IRQ_RPC_CAPS;
     let epoch = read_link(rp1_proto::status::EPOCH);
     let boot = BootEpoch::new(epoch).map_err(|_| EnableError::NotReady)?;
     if read_link(mailbox::BOOT_EPOCH) != epoch {
