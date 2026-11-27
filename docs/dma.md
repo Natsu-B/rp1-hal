@@ -12,10 +12,13 @@ Linux source, **HYP** hypothesis.
 dma = { channels = [0, 2] }
 ```
 
-- The declaration assigns the whole controller, reset and clock to one core. STATIC,
-  2026-11-27: `channels` selects the generated channel fields. Omission (`dma = {}`) gives
-  all eight channels. An empty list reserves the controller. The NOTE still claims block 65.
-  Two owners, repeated channels and indices outside 0–7 are declaration errors.
+- STATIC, 2026-11-27. The controller is one block (one reset bit, one clock, one interrupt),
+  so one core declares it whole, like `adc` (two owners: E3, bad keys or channels: E0).
+  Without the declaration Linux keeps `rp1_dma` with SCMI clocks.
+- `channels` selects the generated channel fields. Omission (`dma = {}`) gives all eight channels.
+  An empty list reserves the controller. The NOTE still claims block 65.
+- **BREAKING**, STATIC, 2026-11-27. `Dma::free` was removed. Returning the controller needs an
+  idle proof that survives a leaked `Transfer`. Controller recovery is planned for v0.2 PR 4.
 - With the declaration the generated overlay disables `rp1_dma`, the image's `linux_resets`
   leave RESETS CTRL0 bit 3 alone, and the SCMI server holds clk_dma (Linux cannot change it).
   STATIC: `rp1-build` artifacts test; HW (2026-11-05): `rp1_dma` reads `status=disabled` and
