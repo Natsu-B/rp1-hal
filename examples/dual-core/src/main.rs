@@ -77,7 +77,7 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let bss = bss_check(0xb55_0000 | private);
     log!("proc0 ready private={} bss=0x{:x}\n", private, bss).unwrap();
     LOCAL.get(&core).set(1);
-    // SPI0 on proc0 with its own Clocks: SCLK/MOSI/MISO = GPIO11/10/9, GPIO8 as chip select.
+    // Poll the single v3 startup transfer to leave ISRAM for the reply loop.
     let mut bus = p
         .spi0
         .init(
@@ -85,21 +85,18 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
             rp1_hal::spi::Config::new(10.MHz(), embedded_hal::spi::MODE_0),
         )
         .unwrap();
-    let mut device = rp1_hal::spi::Device::new(bus.blocking(&mut p.wait_timer), p.pins.gpio8);
+    let frequency = bus.frequency().raw();
+    #[cfg(not(feature = "link-wake"))]
+    let spi = bus.blocking(&mut p.wait_timer);
+    #[cfg(feature = "link-wake")]
+    let spi = bus.polling();
+    let mut device = rp1_hal::spi::Device::new(spi, p.pins.gpio8);
     let mut id = [0u8; 2];
-    {
-        use embedded_hal::spi::{Operation, SpiDevice};
-        // A typical register read: command byte out, two bytes back, one CS assertion.
-        device
-            .transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])
-            .unwrap();
-    }
-    log!(
-        "proc0 spi0 {} Hz id={:x?}\n",
-        device.bus_mut().frequency().raw(),
-        id
-    )
-    .unwrap();
+    use embedded_hal::spi::{Operation, SpiDevice};
+    device
+        .transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])
+        .unwrap();
+    log!("proc0 spi0 {frequency} Hz id={id:x?}\n").unwrap();
     let mut alarm = p.TIMER_ALARM0;
     alarm.enable_interrupt();
     alarm.try_arm(next_tick()).unwrap();
