@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject calls, loops, unexpected instructions or extra stores in the RP1 duty probe."""
+"""Check the bounded native PWM probe and its exact RP1 MMIO addresses."""
 import argparse
 import re
 import subprocess
@@ -30,8 +30,22 @@ def check(assembly):
         opcode, *operands = insn.split("@", 1)[0].strip().split(None, 1)
         instructions.append((int(addr, 16), opcode.split(".")[0], operands[0] if operands else ""))
     addresses = {address for address, _, _ in instructions}
-    stores = barriers = 0
+    targets = set()
+    for _, opcode, operands in instructions:
+        if opcode in BRANCH:
+            target = re.search(r"(?:^|,\s*)([0-9a-f]+)\s+<", operands)
+            if target:
+                targets.add(int(target[1], 16))
+
+    constants = {}
+    self_in_r0 = True
+    loads = 0
+    effects = []
     for address, opcode, operands in instructions:
+        if address in targets:
+            # A branch may skip instructions that establish a constant.
+            constants.clear()
+            self_in_r0 = False
         if opcode in BRANCH:
             target = re.search(r"(?:^|,\s*)([0-9a-f]+)\s+<", operands)
             if not target or int(target[1], 16) not in addresses or int(target[1], 16) <= address:
@@ -40,11 +54,42 @@ def check(assembly):
             continue
         elif opcode not in STRAIGHT or re.search(r"\bpc\b", operands):
             raise ValueError(f"unexpected instruction at {address:x}: {opcode} {operands}")
-        stores += opcode == "str"
-        barriers += opcode in ("dsb", "dmb")
+        if opcode in ("ldr", "str"):
+            access = re.fullmatch(r"(r\d+), \[(r\d+)(?:, #(\d+))?\]", operands)
+            if not access:
+                raise ValueError(f"unexpected memory operand at {address:x}: {operands}")
+            reg, base, offset = access.groups()
+            offset = int(offset or "0")
+            if opcode == "ldr":
+                loads += 1
+                if base != "r0" or offset != 0 or not self_in_r0:
+                    raise ValueError("hot path may load only the channel's cached range from self")
+                constants.pop(reg, None)
+                self_in_r0 &= reg != "r0"
+            else:
+                if base not in constants:
+                    raise ValueError(f"store base is unknown at {address:x}")
+                effects.append(constants[base] + offset)
+        elif opcode in ("dsb", "dmb"):
+            effects.append("barrier")
+        elif opcode.startswith("mov"):
+            reg = operands.split(",", 1)[0]
+            imm = re.fullmatch(r"r\d+, #(\d+)", operands)
+            prior = constants.pop(reg, None)
+            self_in_r0 &= reg != "r0"
+            if opcode == "movw" and imm:
+                constants[reg] = int(imm[1])
+            elif opcode == "movt" and imm and prior is not None:
+                constants[reg] = (prior & 0xFFFF) | (int(imm[1]) << 16)
+        elif opcode == "ldmia" and operands != "sp!, {r7, lr}":
+            raise ValueError(f"unexpected stack restore at {address:x}: {operands}")
 
-    if (stores, barriers, instructions[-1][1:]) != (2, 2, ("bx", "lr")):
-        raise ValueError("expected two ordered stores and a return")
+    if loads != 1:
+        raise ValueError("expected exactly one load from self")
+    if effects != [0x40098020, "barrier", 0x4009A000, "barrier"]:
+        raise ValueError("expected ordered stores to CHAN0_DUTY and GLOBAL_CTRL SET")
+    if instructions[-1][1:] != ("bx", "lr"):
+        raise ValueError("expected return at end of probe")
     return match[0]
 
 
