@@ -182,6 +182,27 @@ impl<const IRQ: u8> Line<IRQ> {
     }
 }
 
+/// An owned NVIC line with its number erased.
+#[doc(hidden)]
+pub struct OwnedLine {
+    irq: u8,
+    _core: core::marker::PhantomData<*mut ()>,
+}
+
+impl OwnedLine {
+    pub fn disable(&mut self) {
+        Nvic(Hardware).disable(self.irq);
+    }
+
+    pub fn enable(&mut self) {
+        Nvic(Hardware).enable(self.irq);
+    }
+
+    pub fn unpend(&mut self) {
+        Nvic(Hardware).unpend(self.irq);
+    }
+}
+
 /// A verified NVIC line assigned to a declaration's source and core.
 /// The source's device operations remain on the source token.
 pub struct Binding<S, const IRQ: u8, const CORE: u8> {
@@ -198,6 +219,14 @@ impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
         Self {
             line: unsafe { Line::new() },
             _source: core::marker::PhantomData,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn into_owned_line(self) -> OwnedLine {
+        OwnedLine {
+            irq: IRQ,
+            _core: core::marker::PhantomData,
         }
     }
 }
@@ -228,15 +257,80 @@ pub use slot::Slot;
 /// Returns `false` on a host.
 pub fn in_handler() -> bool {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
-    {
-        let ipsr: u32;
-        unsafe {
-            core::arch::asm!("mrs {}, IPSR", out(reg) ipsr, options(nomem, nostack, preserves_flags))
-        };
-        ipsr != 0
-    }
+    return crate::cpu::ipsr() != 0;
     #[cfg(not(all(target_arch = "arm", target_os = "none")))]
     false
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ContextError {
+    WrongContext,
+    Masked,
+    IrqUnavailable,
+    UnsupportedTarget,
+}
+
+/// Thread-mode entry check. Recheck at a wait boundary since callers can change
+/// interrupt masks after entry. Fault continuation raises BASEPRI, which yields `Masked`.
+#[doc(hidden)]
+pub struct ThreadGuard {
+    _core: core::marker::PhantomData<*mut ()>,
+}
+
+impl ThreadGuard {
+    pub fn new() -> Result<Self, ContextError> {
+        check_thread()?;
+        Ok(Self {
+            _core: core::marker::PhantomData,
+        })
+    }
+
+    pub fn check(&self) -> Result<(), ContextError> {
+        check_thread()
+    }
+
+    /// Check whether this source's line can preempt the current thread.
+    pub fn check_irq<S, const IRQ: u8, const CORE: u8>(
+        &self,
+        _binding: &Binding<S, IRQ, CORE>,
+    ) -> Result<(), ContextError> {
+        self.check_number(IRQ)
+    }
+
+    #[doc(hidden)]
+    pub fn check_owned_line(&self, line: &OwnedLine) -> Result<(), ContextError> {
+        self.check_number(line.irq)
+    }
+
+    fn check_number(&self, irq: u8) -> Result<(), ContextError> {
+        check_thread()?;
+        Nvic(Hardware).check_delivery(irq)
+    }
+}
+
+fn check_thread() -> Result<(), ContextError> {
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    return context(
+        crate::cpu::ipsr(),
+        crate::cpu::primask(),
+        crate::cpu::faultmask(),
+        crate::cpu::basepri(),
+    );
+    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
+    Err(ContextError::UnsupportedTarget)
+}
+
+#[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
+fn context(ipsr: u32, primask: u32, faultmask: u32, basepri: u8) -> Result<(), ContextError> {
+    if ipsr != 0 {
+        return Err(ContextError::WrongContext);
+    }
+    // Blocking inside a caller's critical section can hold off unrelated user IRQs.
+    if primask != 0 || faultmask != 0 || basepri != 0 {
+        return Err(ContextError::Masked);
+    }
+    Ok(())
 }
 
 /// Run a thread-mode wait with events on transitions to pending, even for disabled lines.
@@ -334,6 +428,12 @@ impl<R: Registers> Nvic<R> {
     fn set_priority(&self, irq: u8, priority: Priority) {
         self.0.write_byte(IPR + usize::from(irq), priority.0 << 5);
     }
+
+    fn check_delivery(&self, irq: u8) -> Result<(), ContextError> {
+        self.is_enabled(irq)
+            .then_some(())
+            .ok_or(ContextError::IrqUnavailable)
+    }
 }
 
 #[cfg(test)]
@@ -342,6 +442,19 @@ mod tests {
     use super::*;
     use core::cell::RefCell;
     use std::{collections::BTreeMap, vec::Vec};
+
+    #[test]
+    fn waiting_requires_unmasked_thread_mode_and_an_enabled_line() {
+        assert_eq!(context(26, 0, 0, 0), Err(ContextError::WrongContext));
+        assert_eq!(context(0, 1, 0, 0), Err(ContextError::Masked));
+        assert_eq!(context(0, 0, 1, 0), Err(ContextError::Masked));
+        assert_eq!(context(0, 0, 0, 0x40), Err(ContextError::Masked));
+        assert_eq!(context(0, 0, 0, 0), Ok(()));
+        let nvic = Nvic(Fake::default());
+        nvic.enable(26);
+        assert_eq!(nvic.check_delivery(26), Ok(()));
+        assert_eq!(nvic.check_delivery(27), Err(ContextError::IrqUnavailable));
+    }
 
     #[derive(Default)]
     struct Fake {
@@ -371,6 +484,13 @@ mod tests {
             self.writes
                 .borrow_mut()
                 .push((address, u32::from(value), 1));
+        }
+    }
+
+    #[test]
+    fn every_user_priority_ceiling_rejects_blocking() {
+        for ceiling in 2..=7 {
+            assert_eq!(context(0, 0, 0, ceiling << 5), Err(ContextError::Masked));
         }
     }
 

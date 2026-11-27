@@ -11,9 +11,20 @@ STATIC
   and `Clocks::uart`, SPI SCLK with `Spi::frequency`, and the ADC and PWM clocks with
   `clock`. Use `Config::with_frequency` for SPI's rate limit. TOML rates and SCMI values
   remain integer hertz.
-- `Timer::now` returns a 64-bit microsecond instant. Use `Timer::now_32` for the absolute
-  deadline passed to `Alarm::schedule`. Use `fugit::ExtU32` for durations such as `10.millis()`
-  in `Timer::delay`, `Uart::set_read_timeout` and the DMA wait APIs.
+- `Timer::now` returns a 64-bit microsecond instant. Use `Deadline::after(timeout)?`
+  or `Deadline::at(instant)` for an absolute deadline with a maximum usable horizon
+  of `i32::MAX` µs. For raw alarm ISRs, use `alarm.try_arm(timer.now_32() + 10.millis())?`
+  and `alarm.try_expired()` in place of `schedule` and `finished`. `try_arm` also accepts
+  a full-width instant or deadline. Timer operations use the flat `timer::Error`.
+- Declare `wait_timer = "ALARM1"` on the owning core. Replace
+  `Timer::new().delay(10.millis())` with `p.wait_timer.delay_ms(10)` after importing
+  `embedded_hal::delay::DelayNs`. The IRQ delay rejects handler and masked contexts,
+  including Slot borrows. Use `p.wait_timer.delay(10.millis())?` to handle errors or
+  `Timer::delay_polling` to choose a busy wait explicitly.
+- Use `fugit::ExtU32` for durations such as `10.millis()` in `WaitTimer::delay`,
+  `Deadline::after`, `Uart::set_read_timeout` and the DMA wait APIs.
+- `spi::Device` busy-waits for `Operation::DelayNs` and returns `Precondition` in a
+  handler or masked context. IRQ-backed CS delays arrive with the SPI wait PR.
 - Proc0 gets its clocks from `rp1::platform::init`. Proc1 uses
   `Clocks::wait_from_proc0(&core, timeout)`. Pass `0.micros()` for a single attempt.
 - `Uart::split` gives a `Tx` and `Rx` for use in main and an ISR on the owning core.

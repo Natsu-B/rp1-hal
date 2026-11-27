@@ -2,13 +2,13 @@
 //! Connect GPIO12 to GPIO22 through 1 kΩ and share ground. Sample the 1 kHz,
 //! 50% duty waveform and check that pulses cease when the channel is disabled.
 
-use embedded_hal::{digital::InputPin, pwm::SetDutyCycle};
+use embedded_hal::{delay::DelayNs, digital::InputPin, pwm::SetDutyCycle};
 use rp1_hal::{
     clocks::Clocks,
     fugit::{ExtU32, HertzU32, RateExtU32},
     gpio::{Input, Pin},
     pwm::Token,
-    timer::Timer,
+    timer::{Timer, WaitTimer},
 };
 
 pub fn run(
@@ -16,6 +16,7 @@ pub fn run(
     output: Pin<12>,
     input: Pin<22>,
     clocks: &Clocks,
+    timer: &mut WaitTimer,
 ) -> Result<(), &'static str> {
     // The default pull-down holds the sense pin low if the jumper is missing.
     let mut input = input.into_input();
@@ -30,7 +31,7 @@ pub fn run(
         .set_duty_cycle_percent(50)
         .map_err(|_| "PWM duty setup failed")?;
     output.enable().map_err(|_| "PWM enable failed")?;
-    Timer::new().delay(3.millis()); // Let the range and duty latch at overflow.
+    timer.delay_ms(3); // Let the range and duty latch at overflow.
     let (rising, high, total) = sample(&mut input);
     output.disable().map_err(|_| "PWM disable failed")?;
     if !(95..=105).contains(&rising) || !(45..=55).contains(&(100 * high / total)) {

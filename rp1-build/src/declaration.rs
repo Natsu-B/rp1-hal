@@ -295,6 +295,9 @@ pub struct Core {
     pub gpio: Vec<u8>,
     pub gpio_irq: Vec<u8>,
     pub timer: Vec<String>,
+    /// One dedicated deadline alarm, with its generated interrupt handler.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_timer: Option<String>,
     /// `host_irq = true`: this core owns the RP1 -> Linux interrupt (`rp1_link::notify`)
     /// and the overlay adds the `rp1:irq` UIO node.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -335,6 +338,9 @@ impl Core {
         if let Some(v) = values.remove("timer") {
             core.timer = field(v, format!("{owner}.timer"))?;
         }
+        if let Some(v) = values.remove("wait_timer") {
+            core.wait_timer = Some(field(v, format!("{owner}.wait_timer"))?);
+        }
         if let Some(v) = values.remove("host_irq") {
             core.host_irq = field(v, format!("{owner}.host_irq"))?;
         }
@@ -372,6 +378,7 @@ impl Core {
     pub fn peripherals(&self) -> Vec<String> {
         self.timer
             .iter()
+            .chain(&self.wait_timer)
             .map(|s| format!("TIMER.{s}"))
             .chain(self.instances.keys().map(|s| s.to_ascii_uppercase()))
             .collect()
@@ -434,7 +441,7 @@ impl Declaration {
                     .into());
                 }
             }
-            for alarm in &core.timer {
+            for alarm in core.timer.iter().chain(&core.wait_timer) {
                 peripheral_type(&format!("TIMER.{alarm}"))?;
                 if let Some(previous) = blocks.insert(format!("timer.{alarm}"), owner.into()) {
                     return Err(format!(

@@ -40,6 +40,7 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | `i2c0`〜`i2c3` | `I2C0: Line<7>`、`I2C1: Line<8>`、`I2C2: Line<9>`、`I2C3: Line<10>` |
 | `spi0` / `spi1` / `spi3` | `SPI0: Line<19>`、`SPI1: Line<20>`、`SPI3: Line<22>` |
 | `timer = ["ALARMn"]` | `TIMER_n: Line<{26+n}>` |
+| `wait_timer = "ALARMn"` | `ProcNResources.wait_timer: WaitTimer` と自動 TIMER_n ハンドラ |
 | `uart1`〜`uart4` | `UARTn: Line<{41+n}>` |
 | `adc` | `ADC_FIFO: Line<52>` |
 
@@ -64,6 +65,15 @@ STATIC: `link::enable(&mut pcie, &mut alarm, &mut irq.TIMER_N)` は proc0 で SH
 ドアベルなしの構成や旧クライアント向けには、10 ms ごとに未使用アラームで WFE から復帰する。
 NVIC 線は無効のまま、起動中だけ SEVONPEND を使い、アラームと pending を解除して返す。
 `try_enable` は独自の起動処理向けの非ブロッキング API。
+
+STATIC（2026-11-27）: 同期待機にはコアごとに `wait_timer` で専有アラームを確保する。
+`WaitTimer` が比較と NVIC 線を所有する。アラームの入れ替えでマスクするのはこの線だけ。
+待機に入る前に thread mode、PRIMASK、FAULTMASK、BASEPRI、配送線の有効状態を確認する。
+別の割り込み源を待つ場合、ハンドラは状態を保持してから `send_event()` を呼ぶ。
+`WaitTimer::wait_irq_until` は配送線を確認し、`WaitTimer::wait_until` は別コアからのイベントなどを待つ。
+どちらも完了を再確認してから WFE に入り、無応答は一発の deadline IRQ で終了する。
+`wait_timer = { alarm = "ALARMn", feature = "name" }` は指定の Cargo feature が有効なときだけ
+wait ISR を生成する。他の構成でもアラームは同じコアの raw timer として予約する。
 
 ## 3. 周辺側で開けるもの
 

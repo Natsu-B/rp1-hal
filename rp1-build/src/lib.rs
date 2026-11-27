@@ -2,6 +2,7 @@
 pub use rp1_dt::fdt;
 use serde::Deserialize;
 use std::{
+    collections::BTreeMap,
     env,
     fmt::Write as _,
     fs,
@@ -19,6 +20,8 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Deserialize)]
 struct Manifest {
     package: Package,
+    #[serde(default)]
+    features: BTreeMap<String, Vec<String>>,
 }
 #[derive(Deserialize)]
 struct Package {
@@ -28,12 +31,67 @@ struct Package {
 }
 #[derive(Deserialize)]
 struct Metadata {
-    rp1: metadata::Declaration,
+    rp1: toml::Value,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConditionalWaitTimer {
+    alarm: String,
+    feature: String,
+}
+
+/// Read and validate the package declaration with feature-conditional wait timers
+/// reserved as raw alarms.
 pub fn declaration(path: &Path) -> Result<(String, String, metadata::Declaration)> {
-    let m: Manifest = toml::from_str(&fs::read_to_string(path)?)?;
-    m.package.metadata.rp1.validate()?;
+    declaration_for_features(path, &[])
+}
+
+/// Read and validate the package declaration for the given active Cargo features.
+pub fn declaration_for_features(
+    path: &Path,
+    features: &[&str],
+) -> Result<(String, String, metadata::Declaration)> {
+    load_declaration(path, |feature| features.contains(&feature))
+}
+
+fn load_declaration(
+    path: &Path,
+    feature_enabled: impl Fn(&str) -> bool,
+) -> Result<(String, String, metadata::Declaration)> {
+    let mut m: Manifest = toml::from_str(&fs::read_to_string(path)?)?;
+    for owner in ["proc0", "proc1"] {
+        let Some(core) = m
+            .package
+            .metadata
+            .rp1
+            .get_mut(owner)
+            .and_then(toml::Value::as_table_mut)
+        else {
+            continue;
+        };
+        let Some(wait_timer) = core.get_mut("wait_timer").filter(|value| value.is_table()) else {
+            continue;
+        };
+        let ConditionalWaitTimer { alarm, feature } = wait_timer.clone().try_into()?;
+        if !m.features.contains_key(&feature) {
+            return Err(
+                format!("E0: {owner}.wait_timer: unknown Cargo feature '{feature}'").into(),
+            );
+        }
+        if feature_enabled(&feature) {
+            *wait_timer = toml::Value::String(alarm);
+        } else {
+            core.remove("wait_timer");
+            core.entry("timer")
+                .or_insert_with(|| toml::Value::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or_else(|| format!("E0: {owner}.timer must be an array"))?
+                .push(toml::Value::String(alarm));
+        }
+    }
+    let d: metadata::Declaration = m.package.metadata.rp1.try_into()?;
+    d.validate()?;
     let version = if let Some(v) = m.package.version.as_str() {
         v.to_string()
     } else if m
@@ -59,7 +117,7 @@ pub fn declaration(path: &Path) -> Result<(String, String, metadata::Declaration
     } else {
         return Err("invalid package version".into());
     };
-    Ok((m.package.name, version, m.package.metadata.rp1))
+    Ok((m.package.name, version, d))
 }
 
 /// One-line build.rs entry point. Does not touch hardware or the boot directory.
@@ -75,8 +133,13 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
 pub fn configure_with_manifest(path: &Path, types: &[(&str, metadata::TypeInfo)]) -> Result<()> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let path = manifest_dir.join(path);
-    let (name, version, mut d) = declaration(&path)?;
+    let (name, version, mut d) = load_declaration(&path, |feature| {
+        // Cargo supplies one CARGO_FEATURE_<NAME> to this build script per active feature.
+        let key = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
+        env::var_os(key).is_some()
+    })?;
     d.types = types.iter().map(|(n, t)| (n.to_string(), *t)).collect();
+    d.validate()?;
     let out = PathBuf::from(env::var("OUT_DIR")?);
     for warning in d.warnings() {
         println!("cargo:warning={warning}");
@@ -93,7 +156,6 @@ pub fn configure_with_manifest(path: &Path, types: &[(&str, metadata::TypeInfo)]
             *b = u8::from_str_radix(&git[i * 2..i * 2 + 2], 16)?;
         }
     }
-    d.validate()?;
     let shm = d.shm_layout()?;
     let artifacts = generate_with_layout(&name, &version, &d, declaration_hash, source, &shm)?;
     fs::create_dir_all(&out)?;
@@ -282,6 +344,21 @@ fn resources(
                 }}"
             )?;
         }
+        let wait_alarm = c
+            .wait_timer
+            .as_deref()
+            .map(|alarm| alarm.strip_prefix("ALARM").unwrap().parse::<u8>())
+            .transpose()?;
+        if let Some(alarm) = wait_alarm {
+            writeln!(
+                s,
+                "#[unsafe(export_name = \"__rp1_p{index}_TIMER_{alarm}\")]\n\
+                #[unsafe(link_section = \".isram.text.__rp1_p{index}_TIMER_{alarm}\")]\n\
+                unsafe extern \"C\" fn wait_timer_proc{index}() {{\n\
+                    unsafe {{ ::rp1_hal::timer::WaitTimer::__on_interrupt::<{alarm}>() }};\n\
+                }}"
+            )?;
+        }
         // Instances come as bundles of their token and pins; `pins` keeps the rest.
         let parts = c
             .instances
@@ -381,6 +458,9 @@ fn resources(
                 metadata::peripheral_type(&p)?
             ));
         }
+        if wait_alarm.is_some() {
+            s.push_str("pub wait_timer: ::rp1_hal::timer::WaitTimer,\n");
+        }
         for (name, (field_ty, _, _)) in c.instances.keys().zip(&parts) {
             s.push_str(&format!("pub {name}: {field_ty},\n"));
         }
@@ -424,6 +504,14 @@ fn resources(
         for alarm in &c.timer {
             let ty = metadata::peripheral_type(&format!("TIMER.{alarm}"))?;
             s.push_str(&format!("TIMER_{alarm}: unsafe {{ <{ty}>::new() }},\n"));
+        }
+        if let Some(alarm) = wait_alarm {
+            writeln!(
+                s,
+                "wait_timer: unsafe {{ ::rp1_hal::timer::WaitTimer::__bind::<{alarm}, {}, {index}>(\n\
+                    ::rp1_hal::timer::Alarm::new(), ::rp1_rt::interrupt::Binding::new()) }},",
+                26 + alarm
+            )?;
         }
         for (name, (_, init, _)) in c.instances.keys().zip(&parts) {
             s.push_str(&format!("{name}: {init},\n"));
@@ -635,6 +723,39 @@ mod tests {
                 )));
                 assert_eq!(irq_fields(&source, 1 - core), "");
             }
+        }
+    }
+
+    #[test]
+    fn wait_timer_keeps_alarm_ownership_but_reserves_its_handler() {
+        let d: metadata::Declaration =
+            toml::from_str("schema=2\n[proc1]\nwait_timer='ALARM2'").unwrap();
+        let raw: metadata::Declaration =
+            toml::from_str("schema=2\n[proc1]\ntimer=['ALARM2']").unwrap();
+        let generated = generate("wait", "0.1", &d, [0; 32], [0; 20]).unwrap();
+        let raw = generate("wait", "0.1", &raw, [0; 32], [0; 20]).unwrap();
+        assert_eq!(generated.note, raw.note);
+        assert_eq!(generated.dts, raw.dts);
+        let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
+        assert!(source.contains("export_name = \"__rp1_p1_TIMER_2\""));
+        assert!(source.contains("WaitTimer::__bind::<2, 28, 1>"));
+        assert!(source.contains("pub wait_timer: ::rp1_hal::timer::WaitTimer"));
+        assert!(!source.contains("pub TIMER_ALARM2:"));
+        assert!(!source.contains("pub TIMER_2:"));
+        // All vectors have declaration markers. The wait vector
+        // has neither a public binding nor permission for a user handler.
+        assert!(!source.contains("pub type TIMER_2 ="));
+        assert!(!source.contains("impl sealed::Admitted for TIMER_2"));
+
+        for declaration in [
+            "[proc0]\nwait_timer='ALARM2'\ntimer=['ALARM2']",
+            "[proc0]\nwait_timer='ALARM2'\n[proc1]\ntimer=['ALARM2']",
+            "[proc0]\nwait_timer='ALARM3'\n[proc1]\nhost_irq=true",
+            "[proc0]\nwait_timer='ALARM02'",
+        ] {
+            let d: metadata::Declaration =
+                toml::from_str(&format!("schema=2\n{declaration}")).unwrap();
+            assert!(d.validate().is_err(), "{declaration}");
         }
     }
 

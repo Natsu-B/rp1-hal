@@ -46,7 +46,7 @@ mod ping_test;
 fn TIMER_0() {
     ALARM0.with(|alarm| {
         alarm.clear_interrupt();
-        alarm.schedule(next_tick()).unwrap();
+        alarm.try_arm(next_tick()).unwrap();
     });
     // The handler is the only writer: a load and a store, no read-modify-write.
     TICKS.store(TICKS.load(Relaxed) + 1, Relaxed);
@@ -101,7 +101,7 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     .unwrap();
     let mut alarm = p.TIMER_ALARM0;
     alarm.enable_interrupt();
-    alarm.schedule(next_tick()).unwrap();
+    alarm.try_arm(next_tick()).unwrap();
     ALARM0.put(alarm).ok().unwrap();
     p.irq.TIMER_0.enable();
 

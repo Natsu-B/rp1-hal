@@ -5,14 +5,14 @@ use rp1_hal::{
     fugit::ExtU32,
     i2c::{Error, I2c, Speed},
     log,
-    timer::Timer,
+    timer::{Timer, WaitTimer},
 };
 type Bus = I2c<1, 2, 3>;
 const PEER: u8 = 0x2d;
-pub fn run(bus: Option<&mut Bus>, request: u32) {
+pub fn run(bus: Option<&mut Bus>, request: u32, waiter: &mut WaitTimer) {
     let result = match bus {
         None => Err(Error::Precondition),
-        Some(bus) if request == 1 => prove(bus).map_err(|f| {
+        Some(bus) if request == 1 => prove(bus, waiter).map_err(|f| {
             log!("I2C_FAIL {:?}\n", f).unwrap();
             Error::Precondition
         }),
@@ -26,6 +26,7 @@ pub enum Failure {
     Bus(&'static str, Error),
     Data(&'static str, usize, u8),
     NoNack(Result<(), Error>),
+    Delay,
 }
 /// The step names print with `Display`: `<&str as Debug>` escaping pulls in the Unicode tables
 /// (about 3 KiB of the 48 KiB shared SRAM image).
@@ -35,6 +36,7 @@ impl core::fmt::Debug for Failure {
             Self::Bus(step, e) => write!(f, "Bus({step}, {e:?})"),
             Self::Data(step, i, b) => write!(f, "Data({step}, {i}, {b})"),
             Self::NoNack(r) => write!(f, "NoNack({r:?})"),
+            Self::Delay => f.write_str("Delay"),
         }
     }
 }
@@ -45,34 +47,34 @@ fn check(step: &'static str, bytes: &[u8]) -> Result<(), Failure> {
         Some((i, b)) => Err(Failure::Data(step, i, *b)),
     }
 }
-fn prove(bus: &mut Bus) -> Result<(), Failure> {
+fn prove(bus: &mut Bus, waiter: &mut WaitTimer) -> Result<(), Failure> {
     let timer = Timer::new();
     let mut frame = core::array::from_fn::<_, 16, _>(|i| i as u8);
     frame[..4].copy_from_slice(&0x5244_3144u32.to_le_bytes());
-    let gap = || timer.delay(2.millis());
+    let mut gap = || waiter.delay(2.millis()).map_err(|_| Failure::Delay);
     // Resync the peer: a STOP-terminated read makes it reload its reply (data unchecked).
     let _ = bus.read(PEER, &mut [0; 64]);
-    gap();
+    gap()?;
     for (speed, hz) in [(Speed::Standard, 100_000), (Speed::Fast, 400_000)] {
         let at = |step| move |e| Failure::Bus(step, e);
         bus.set_speed(speed).map_err(at("set_speed"))?;
         let start = timer.now().ticks();
         bus.write(PEER, &frame).map_err(at("write"))?;
         let write_us = timer.now().ticks().wrapping_sub(start) as u32;
-        gap();
+        gap()?;
         let mut bytes = [0; 64];
         let start = timer.now().ticks();
         bus.read(PEER, &mut bytes).map_err(at("read"))?;
         let read_us = timer.now().ticks().wrapping_sub(start) as u32;
         check("read", &bytes)?;
-        gap();
+        gap()?;
         bytes.fill(0);
         let start = timer.now().ticks();
         bus.write_read(PEER, &frame, &mut bytes)
             .map_err(at("write_read"))?;
         let combined_us = timer.now().ticks().wrapping_sub(start) as u32;
         check("write_read", &bytes)?;
-        gap();
+        gap()?;
         bytes.fill(0);
         let (a, b) = bytes.split_at_mut(32);
         bus.transaction(
@@ -86,7 +88,7 @@ fn prove(bus: &mut Bus) -> Result<(), Failure> {
         )
         .map_err(at("w8_w8_r32_r32"))?;
         check("w8_w8_r32_r32", &bytes)?;
-        gap();
+        gap()?;
         // Read-only probe; never write any other address.
         let nack = bus.read(0x2e, &mut [0]);
         if nack != Err(Error::AddressNack) {
@@ -95,7 +97,7 @@ fn prove(bus: &mut Bus) -> Result<(), Failure> {
         bytes.fill(0);
         bus.read(PEER, &mut bytes).map_err(at("read_after_nack"))?;
         check("read_after_nack", &bytes)?;
-        gap();
+        gap()?;
         log!("I2C_PASS hz={} write16_us={} read64_us={} write_read16_64_us={} nack={:?} recovery=ok\n",
             hz, write_us, read_us, combined_us, nack).unwrap();
     }

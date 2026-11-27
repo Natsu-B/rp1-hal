@@ -59,11 +59,11 @@ pub fn enable<const N: u8, const IRQ: u8>(
             if state != PcieState::Up {
                 break Err(EnableError::Detector(state));
             }
-            if !armed || alarm.finished() {
+            if !armed || alarm.try_expired() {
                 alarm.clear_interrupt();
                 barrier();
                 line.unpend();
-                armed = alarm.schedule(timer.now_32() + 10.millis()).is_ok();
+                armed = alarm.try_arm(timer.now_32() + 10.millis()).is_ok();
                 if !armed {
                     continue;
                 }

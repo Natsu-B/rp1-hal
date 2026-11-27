@@ -42,7 +42,7 @@ fn write(offset: usize, value: u32) {
 fn schedule<const N: u8>(alarm: &mut Alarm<N>) {
     alarm.clear_interrupt();
     alarm
-        .schedule(Timer::new().now_32() + PERIOD_US.micros())
+        .try_arm(Timer::new().now_32() + PERIOD_US.micros())
         .unwrap();
 }
 

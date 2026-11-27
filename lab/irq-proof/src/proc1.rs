@@ -271,7 +271,7 @@ fn default_handler_test(mut alarm: Alarm<2>, line: &mut Line<28>, idle: &mut dyn
     alarm.clear_interrupt();
     line.unpend();
     let pre = line.is_pending();
-    let _ = alarm.schedule(Timer::new().now_32() + 200.micros());
+    let _ = alarm.try_arm(Timer::new().now_32() + 200.micros());
     alarm.enable_interrupt();
     line.enable();
     wait(|| interrupt::unhandled().is_some(), 10_000, idle);

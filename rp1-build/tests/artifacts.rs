@@ -569,20 +569,27 @@ fn in_tree_declarations_have_stable_notes() {
     use sha2::{Digest, Sha256};
 
     // Fix the source commit so the snapshots cover the manifest and note encoding.
-    for (manifest, expected) in [
+    for (manifest, features, expected) in [
         (
             "examples/dual-core/Cargo.toml",
+            &[][..],
             "e54262bfda73416c2ba101df4e7debf483745f7d725befaa0f1c18a0f7f1c1da",
         ),
         (
             "lab/shm-firmware/Cargo.toml",
+            &[],
             "7226a53a23c887bdba569f58928474aac26c95db2fb5853ba3b1d12465fd44e2",
+        ),
+        (
+            "lab/shm-firmware/Cargo.toml",
+            &["i2c"],
+            "126a5121311f6f20e0ca4af785c8633b01bc1ee607309048e001c1a7df52fc94",
         ),
     ] {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join(manifest);
-        let (name, version, mut d) = rp1_build::declaration(&path).unwrap();
+        let (name, version, mut d) = rp1_build::declaration_for_features(&path, features).unwrap();
         let serialized = toml::to_string(&d).unwrap();
         let roundtrip: Declaration = toml::from_str(&serialized).unwrap();
         roundtrip.validate().unwrap();

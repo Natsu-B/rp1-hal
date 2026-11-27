@@ -15,18 +15,23 @@ use rp1_rt::{Proc0, Proc1, entry};
 rp1_rt::bind!();
 
 #[entry(proc0)]
-fn main(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
+fn main(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let sys = rp1::platform::init(&mut core, p.platform).unwrap();
     let clocks = &sys.clocks;
-    report("blinky", blinky::run(p.pins.gpio13, p.pins.gpio23));
-    report("interrupt", interrupt::run(p.TIMER_ALARM0, p.irq.TIMER_0));
-    report("spi", spi::run(p.spi0, p.pins.gpio8, clocks));
+    let gpio = p.pins;
+    let wait = &mut p.wait_timer;
+    report("blinky", blinky::run(gpio.gpio13, gpio.gpio23, wait));
+    report(
+        "interrupt",
+        interrupt::run(p.TIMER_ALARM0, p.irq.TIMER_0, wait),
+    );
+    report("spi", spi::run(p.spi0, gpio.gpio8, clocks));
     report("adc", adc::run(p.adc, clocks));
     report(
         "pwm",
-        pwm::run(p.pwm0, p.pins.gpio12, p.pins.gpio22, clocks),
+        pwm::run(p.pwm0, gpio.gpio12, gpio.gpio22, clocks, wait),
     );
-    report("i2c", i2c::run(p.i2c1, clocks));
+    report("i2c", i2c::run(p.i2c1, clocks, wait));
     report("uart", uart::run(p.uart1, clocks));
     loop {
         rp1_rt::wait_for_event();

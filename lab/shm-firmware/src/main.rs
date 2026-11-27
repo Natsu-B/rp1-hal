@@ -121,6 +121,8 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         log!("p0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
         i2c.ok()
     };
+    #[cfg(feature = "i2c")]
+    let mut wait_timer = p.wait_timer;
     let mut rx = VALUES.consumer(&mut core);
     let mut attempted = false;
     let mut probed = false;
@@ -130,7 +132,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         let request = proof_pending();
         if request != 0 && !proc1_request(request) {
             #[cfg(feature = "i2c")]
-            i2c_proof::run(i2c.as_mut(), request);
+            i2c_proof::run(i2c.as_mut(), request, &mut wait_timer);
             #[cfg(not(feature = "i2c"))]
             proof_reply(request, false);
         }

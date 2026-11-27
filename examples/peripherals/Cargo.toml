@@ -29,6 +29,7 @@ linux.keep = {} # Give UART1 to RP1. Leave the Linux UART1 overlay and getty dis
 [package.metadata.rp1.proc0]
 gpio = [8, 13, 22, 23] # SPI0 CS, blinky out, PWM sense, blinky sense
 timer = ["ALARM0"]
+wait_timer = "ALARM1"
 spi0 = { sck = 11, mosi = 10, miso = 9 }
 adc = {}
 pwm0 = { channel0 = 12 }

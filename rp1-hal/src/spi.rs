@@ -15,9 +15,8 @@ use crate::{
     gpio::{Alternate, Output, Pin, Unconfigured},
     read, write,
 };
-use embedded_hal::{
-    delay::DelayNs,
-    spi::{ErrorKind, ErrorType, Mode, Operation, Phase, Polarity, SpiBus, SpiDevice},
+use embedded_hal::spi::{
+    ErrorKind, ErrorType, Mode, Operation, Phase, Polarity, SpiBus, SpiDevice,
 };
 
 use crate::pac::dw_ssi::{RegisterBlock, ctrlr0, int, irq_wrap, sr};
@@ -989,7 +988,6 @@ impl<W: Word, const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Bus<W>
 pub struct Device<B, const CS: u8> {
     bus: B,
     cs: Pin<CS, Output>,
-    delay: crate::timer::Timer,
 }
 impl<B, const CS: u8> Device<B, CS> {
     /// Drives `cs` high (deselected) and owns the bus exclusively.
@@ -997,7 +995,6 @@ impl<B, const CS: u8> Device<B, CS> {
         Self {
             bus,
             cs: cs.into_output(true),
-            delay: crate::timer::Timer::new(),
         }
     }
     pub fn bus_mut(&mut self) -> &mut B {
@@ -1016,15 +1013,21 @@ impl<W: Word, B: Bus<W>, const CS: u8> SpiDevice<W> for Device<B, CS> {
     /// The bus check (frame size, clk_sys) once, before CS moves: if it fails, CS is never
     /// asserted. Then CS low, the operations in order (a delay flushes first), flush, CS high.
     /// CS is deasserted even when an operation fails; the first error is returned.
+    /// `Operation::DelayNs` busy-waits and returns [`Error::Precondition`] in a handler
+    /// or masked context.
     fn transaction(&mut self, operations: &mut [Operation<'_, W>]) -> Result<(), Error> {
         use embedded_hal::digital::OutputPin;
-        let (cs, delay) = (&mut self.cs, &mut self.delay);
+        let cs = &mut self.cs;
         transaction(
             &mut self.bus,
             |high| {
                 let _ = if high { cs.set_high() } else { cs.set_low() };
             },
-            |ns| delay.delay_ns(ns),
+            |ns| {
+                crate::timer::Timer::new()
+                    .delay_polling(crate::timer::Duration::from_ticks(ns.div_ceil(1000)))
+                    .map_err(|_| Error::Precondition)
+            },
             operations,
         )
     }
@@ -1034,7 +1037,7 @@ impl<W: Word, B: Bus<W>, const CS: u8> SpiDevice<W> for Device<B, CS> {
 fn transaction<W: Word, B: Bus<W>>(
     bus: &mut B,
     mut cs: impl FnMut(bool),
-    mut delay: impl FnMut(u32),
+    mut delay: impl FnMut(u32) -> Result<(), Error>,
     operations: &mut [Operation<'_, W>],
 ) -> Result<(), Error> {
     let ok = bus.admit(sealed::Key(()))?;
@@ -1046,7 +1049,7 @@ fn transaction<W: Word, B: Bus<W>>(
             Operation::Write(w) => bus.exchange(ok, &mut [], w),
             Operation::Transfer(r, w) => bus.exchange(ok, r, w),
             Operation::TransferInPlace(b) => bus.exchange_in_place(ok, b),
-            Operation::DelayNs(ns) => bus.wait_idle(ok).map(|()| delay(*ns)),
+            Operation::DelayNs(ns) => bus.wait_idle(ok).and_then(|()| delay(*ns)),
         };
         if result.is_err() {
             break;
@@ -1742,7 +1745,10 @@ mod tests {
                 log.borrow_mut()
                     .push(if high { "cs high" } else { "cs low" }.to_string())
             },
-            |ns| log.borrow_mut().push(std::format!("delay {ns}")),
+            |ns| {
+                log.borrow_mut().push(std::format!("delay {ns}"));
+                Ok(())
+            },
             ops,
         );
         let checks = (bus.m.fast, bus.m.strict);

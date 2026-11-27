@@ -41,7 +41,8 @@ stack = { proc1 = "6KiB" }
 
 [package.metadata.rp1.proc0]
 gpio = [22]
-timer = ["ALARM0"]
+# Only the I2C proof needs the wait ISR. The same alarm stays reserved in other profiles.
+wait_timer = { alarm = "ALARM0", feature = "i2c" }
 i2c1 = { sda = 2, scl = 3 }
 
 [package.metadata.rp1.proc1]

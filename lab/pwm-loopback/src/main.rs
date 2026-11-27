@@ -4,7 +4,7 @@
 #[path = "../../status-nonce.rs"]
 mod status_nonce;
 
-use embedded_hal::{digital::InputPin, pwm::SetDutyCycle};
+use embedded_hal::{delay::DelayNs, digital::InputPin, pwm::SetDutyCycle};
 use rp1_hal::{
     fugit::ExtU32,
     gpio::{Input, PadConfig, Pin, Pull},
@@ -64,7 +64,7 @@ fn check_pull<const N: u8>(pin: &Pin<N, Input>, nonce: u32, pull: Pull, bits: u3
 }
 
 #[entry(proc1)]
-fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
+fn main1(core: Proc1, mut p: rp1::Proc1Resources) -> ! {
     let clocks = rp1_hal::clocks::Clocks::wait_from_proc0(&core, 10.millis()).unwrap();
     let mut channels = p.pwm0.init(&clocks).unwrap();
     let mut a = channels.channel0.output(p.pins.gpio12);
@@ -84,11 +84,11 @@ fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
     b.set_duty_cycle_percent(50).unwrap();
     b.enable().unwrap();
     a.enable().unwrap();
-    let timer = Timer::new();
+    let timer = &mut p.wait_timer;
     for round in 0..60 {
         for percent in [0, 25, 50, 75, 100] {
             a.set_duty_cycle_percent(percent).unwrap();
-            timer.delay(3.millis()); // Range/duty latch on overflow; let old period finish.
+            timer.delay_ms(3); // Range/duty latch on overflow; let old period finish.
             let sa = sample(&mut in_a);
             let sb = sample(&mut in_b);
             log!("PWM_SAMPLE round={} duty={} a_rise={} a_high={} a_total={} a_us={} b_rise={} b_high={} b_total={} b_us={}\n",
@@ -100,7 +100,7 @@ fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
         a.set_period_ticks(100_000).unwrap();
         a.set_duty_ticks(25_000).unwrap();
         a.enable().unwrap();
-        timer.delay(5.millis());
+        timer.delay_ms(5);
         let slow = sample(&mut in_a);
         log!(
             "PWM_REPERIOD round={} rise={} high={} total={} us={}\n",

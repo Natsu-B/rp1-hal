@@ -27,3 +27,4 @@ log = { sink = "uart0", baudrate = 115200 }
 [package.metadata.rp1.proc1]
 pwm0 = { channel0 = 12, channel1 = 13 }
 gpio = [22, 23]
+wait_timer = "ALARM0"

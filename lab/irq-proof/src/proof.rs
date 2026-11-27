@@ -153,7 +153,7 @@ pub mod ticker {
             let deadline = now().wrapping_add(period_us);
             DEADLINE.store(deadline, Relaxed);
             alarm.clear_interrupt();
-            let _ = alarm.schedule(TimerInstantU32::from_ticks(deadline));
+            let _ = alarm.try_arm(TimerInstantU32::from_ticks(deadline));
             alarm.enable_interrupt();
         });
     }
@@ -181,10 +181,10 @@ pub mod ticker {
             let period = PERIOD_US.load(Relaxed);
             let mut next = DEADLINE.load(Relaxed).wrapping_add(period);
             // A handler that ran past the next deadline starts a new series from now.
-            if alarm.schedule(TimerInstantU32::from_ticks(next)).is_err() {
+            if alarm.try_arm(TimerInstantU32::from_ticks(next)).is_err() {
                 bump(&RESYNCS);
                 next = now().wrapping_add(period);
-                let _ = alarm.schedule(TimerInstantU32::from_ticks(next));
+                let _ = alarm.try_arm(TimerInstantU32::from_ticks(next));
             }
             DEADLINE.store(next, Relaxed);
         });

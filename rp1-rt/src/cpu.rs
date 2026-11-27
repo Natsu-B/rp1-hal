@@ -29,6 +29,20 @@ pub(crate) fn primask_disable() -> u8 {
 }
 
 #[inline(always)]
+pub(crate) fn primask() -> u32 {
+    let value;
+    unsafe { asm!("mrs {}, PRIMASK", out(reg) value, options(nostack, preserves_flags)) };
+    value
+}
+
+#[inline(always)]
+pub(crate) fn faultmask() -> u32 {
+    let value;
+    unsafe { asm!("mrs {}, FAULTMASK", out(reg) value, options(nostack, preserves_flags)) };
+    value
+}
+
+#[inline(always)]
 pub(crate) fn set_primask(saved: u8) {
     unsafe { asm!("msr PRIMASK, {}", in(reg) u32::from(saved), options(nostack, preserves_flags)) };
 }
