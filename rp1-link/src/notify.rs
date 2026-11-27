@@ -85,7 +85,7 @@ pub(crate) mod sealed {
     pub trait Notify {
         /// Wake the reader of `ring` if it sleeps. Returns whether it notified.
         fn wake<T: Message>(&mut self, _: Token, ring: &mut shm::RingTx<T>) -> bool;
-        fn wake_requested(&mut self, _: Token) -> bool {
+        fn wake_requested<T: Message>(&mut self, _: Token, _: &shm::RingTx<T>) -> bool {
             false
         }
     }
@@ -388,12 +388,13 @@ impl sealed::Notify for TicketIrq {
     }
 
     #[inline(always)]
-    fn wake_requested(&mut self, _: sealed::Token) -> bool {
+    fn wake_requested<T: Message>(&mut self, _: sealed::Token, ring: &shm::RingTx<T>) -> bool {
         // Complete the DDR reply before sending the separate MSI-X transaction.
         rp1_proto::barrier();
         let _ = unsafe { self.data.cast::<u32>().read_volatile() };
         rp1_proto::barrier();
-        self.pulse_pending = true;
+        // A caller that already took this reply cannot be waiting for it.
+        self.pulse_pending |= !ring.all_consumed();
         self.retry()
     }
 }
@@ -552,7 +553,7 @@ impl<const PIN: u8, const CORE: u8> Doorbell<PIN, CORE> {
     pub fn __ack_and_signal_wake(self) {
         self.ack();
         let _ = read(Self::INTF);
-        rp1_proto::barrier();
+        // send_event completes the bank read before signaling.
         rp1_rt::send_event();
     }
 
@@ -742,6 +743,41 @@ mod tests {
         assert!(sealed::Notify::wake(&mut irq, sealed::Token(()), &mut ring));
         assert!(!irq.retry());
         assert_eq!(irq.pulse_failures(), 1);
+    }
+
+    #[test]
+    fn v3_requested_wake_skips_a_consumed_reply() {
+        use crate::mmio::fake;
+        use rp1_proto::{LINK_START, link};
+
+        let window = LINK_START as usize;
+        fake::set(window + link::SHM_STATUS, link::SHM_READY);
+        fake::set(window + link::SHM_GENERATION, 2);
+        fake::set(window + mailbox::BOOT_EPOCH, 2);
+        fake::alias(MSIX_CFG_SET, MSIX_CFG, true);
+        fake::alias(MSIX_CFG_CLR, MSIX_CFG, false);
+        let mut data = [0u64; 64];
+        let mut ctrl = [0u64; 16];
+        let (data, ctrl) = (data.as_mut_ptr().cast(), ctrl.as_mut_ptr().cast());
+        let mut tx =
+            unsafe { shm::RingTx::attach(data, 512, ctrl, 128, 4, shm::Overflow::Reject) }.unwrap();
+        let mut rx =
+            unsafe { shm::RingRx::attach(data, 512, ctrl, 128, 4, shm::Overflow::Reject) }.unwrap();
+        let mut irq = unsafe { TicketIrq::attach(data, ctrl) }.unwrap();
+        tx.push(&17u32).unwrap();
+        assert!(sealed::Notify::wake_requested(
+            &mut irq,
+            sealed::Token(()),
+            &tx
+        ));
+        assert_eq!(rx.pop(), Ok(Some(17)));
+        tx.push(&23).unwrap();
+        assert_eq!(rx.pop(), Ok(Some(23)));
+        assert!(!sealed::Notify::wake_requested(
+            &mut irq,
+            sealed::Token(()),
+            &tx
+        ));
     }
 
     #[test]

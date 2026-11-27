@@ -50,7 +50,7 @@ impl<T: Message, N: Notify> RingTx<T, N> {
         let sent = self.ring.push(value);
         match requested_wake {
             None => self.notify.wake(Token(()), &mut self.ring),
-            Some(true) if sent.is_ok() => self.notify.wake_requested(Token(())),
+            Some(true) if sent.is_ok() => self.notify.wake_requested(Token(()), &self.ring),
             Some(_) => false,
         };
         sent

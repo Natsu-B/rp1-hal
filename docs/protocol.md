@@ -501,7 +501,7 @@ owner の panic/fault から期限より早く起床するには独立した sup
 
 Linux は要求を公開する前に listener を初回 enable する。要求 head の同窓
 readback が済んでから force を書く。
-RP1 は要求を読んでから返信を公開し、DDR head の readback 後に要求された pulse を送る。
+RP1 は要求を読んでから返信を公開し、DDR head の readback 後に未消費なら pulse を送る。
 Linux は既存 count を受け取った場合は再 enable してからローカル DDR の
 返信 head を確認し、空なら同じ期限まで `ppoll` する。
 別の IRQ と合流した場合は count の受領と再 enable の後に返信を確認する。

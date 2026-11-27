@@ -132,6 +132,12 @@ impl<T: Message> RingTx<T> {
         let tail = unsafe { ld(self.ctrl, TAIL) };
         (self.mask + 1).saturating_sub(self.head.wrapping_sub(tail))
     }
+
+    /// Whether the reader has consumed all published messages.
+    #[inline(always)]
+    pub fn all_consumed(&self) -> bool {
+        unsafe { ld(self.ctrl, TAIL) == self.head }
+    }
     /// Slots this writer can publish now (all slots for overwrite, zero when fenced).
     /// Reject mode refreshes the cached tail only when necessary.
     pub fn writable(&mut self) -> u32 {

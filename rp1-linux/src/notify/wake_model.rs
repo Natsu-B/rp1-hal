@@ -303,7 +303,7 @@ fn request_misses(order: RequestOrder) -> usize {
                             ready = true;
                             flag |= order == RequestOrder::ReplyBeforeFlag;
                         }
-                        Pulse if requested => {
+                        Pulse if requested && !found => {
                             uio.pulse();
                             uio.handler();
                         }
