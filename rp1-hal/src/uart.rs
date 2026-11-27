@@ -491,29 +491,28 @@ fn clear_interrupts(io: &mut impl Registers, n: u8, direction: u32, mask: u32) {
 impl<const N: u8, const TX: u8, const RX: u8> Uart<N, TX, RX> {
     /// Splits the UART into independently owned halves. Dropping a half leaves the UART running.
     ///
-    /// Place a half in a core-local mutex before enabling its NVIC line:
+    /// Put the receive half in a slot for its owning core before enabling the NVIC line.
     ///
     /// ```no_run
-    /// use core::cell::RefCell;
     /// use rp1_hal::pac::pl011::int;
     /// use rp1_hal::uart::{Rx, Tx, Uart};
-    /// use rp1_rt::interrupt::{Mutex, free};
+    /// use rp1_rt::interrupt::Slot;
     ///
-    /// static RX: Mutex<RefCell<Option<Rx<2, 5>>>> = Mutex::new(RefCell::new(None));
+    /// type Receiver = Slot<Option<Rx<2, 5>>, 0>;
     ///
-    /// fn install_rx(uart: Uart<2, 4, 5>) -> Tx<2, 4> {
+    /// fn install_rx(slot: &Receiver, uart: Uart<2, 4, 5>) -> Tx<2, 4> {
     ///     let (tx, mut rx) = uart.split();
     ///     rx.enable_interrupt();
-    ///     free(|cs| RX.borrow_ref_mut(cs).replace(rx));
+    ///     slot.try_with(|rx_slot| *rx_slot = Some(rx)).unwrap();
     ///     tx
     /// }
     ///
-    /// fn on_rx_irq() {
-    ///     free(|cs| {
-    ///         if let Some(rx) = RX.borrow_ref_mut(cs).as_mut() {
+    /// fn on_rx_irq(slot: &Receiver) {
+    ///     slot.try_with(|rx_slot| {
+    ///         if let Some(rx) = rx_slot {
     ///             let errors = rx.interrupt_status() & (int::FE | int::PE | int::BE | int::OE);
     ///             rx.clear_interrupt(errors);
-    ///             // Drain the FIFO with rx.read_byte(), handling receive errors.
+    ///             // Drain at most the ISR's FIFO service budget.
     ///         }
     ///     });
     /// }
