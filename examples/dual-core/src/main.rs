@@ -7,7 +7,10 @@ use rp1_hal::{
     log,
     timer::{Alarm, Timer},
 };
-use rp1_link::{Channel, EnableError, Error, OpenError, Progress};
+use rp1_link::{
+    Channel, EnableError, Error, OpenError, Progress,
+    notify::{Notify, Wake},
+};
 use rp1_rt::{
     Proc0, Proc1, entry, interrupt,
     interrupt::{Mutex, free},
@@ -41,6 +44,8 @@ static TICKS: AtomicU32 = AtomicU32::new(0);
 #[cfg(not(feature = "ping-poll"))]
 static DOORBELL: Mutex<core::cell::Cell<Option<rp1::Doorbell1>>> =
     Mutex::new(core::cell::Cell::new(None));
+#[cfg(not(feature = "ping-poll"))]
+static CHANNEL_RETRY: Mutex<RefCell<Option<Alarm<1>>>> = Mutex::new(RefCell::new(None));
 type Ping = u32;
 type Pong = u32;
 type Nonce = u32;
@@ -61,6 +66,8 @@ fn TIMER_0() {
     // The handler is the only writer: a load and a store, no read-modify-write.
     TICKS.store(TICKS.load(Relaxed) + 1, Relaxed);
     rp1_rt::status::beat();
+    #[cfg(not(feature = "ping-poll"))]
+    signal_event();
 }
 #[cfg(not(feature = "ping-poll"))]
 #[interrupt(proc1)]
@@ -70,8 +77,26 @@ fn IO_BANK0() {
             doorbell.ack();
         }
     });
-    // Keep the event if the interrupt arrived just before main's WFE.
-    unsafe { core::arch::asm!("sev", options(nomem, nostack, preserves_flags)) };
+    signal_event();
+}
+
+#[cfg(not(feature = "ping-poll"))]
+#[interrupt(proc1)]
+fn TIMER_1() {
+    free(|cs| {
+        CHANNEL_RETRY
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .clear_interrupt()
+    });
+    signal_event();
+}
+
+#[cfg(not(feature = "ping-poll"))]
+fn signal_event() {
+    // Complete writes before waking a core, and latch the wake if it has yet to sleep.
+    unsafe { core::arch::asm!("dsb sy", "sev", options(nostack, preserves_flags)) };
 }
 
 fn next_tick() -> TimerInstantU32<1_000_000> {
@@ -128,18 +153,26 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let mut rx = VALUES.consumer(&mut core);
     let mut logged = 0;
     let mut ready = false;
+    #[cfg(feature = "ping-poll")]
     let mut channel_init = Some(p.link);
+    #[cfg(feature = "ping-poll")]
     let mut channel = None;
+    #[cfg(feature = "ping-poll")]
     let mut pending = None;
     loop {
         if !ready {
             match rp1::link::try_enable(&mut sys.pcie) {
-                Ok(_) => ready = true,
+                Ok(_) => {
+                    ready = true;
+                    #[cfg(not(feature = "ping-poll"))]
+                    signal_event();
+                }
                 Err(EnableError::NotRequested) => {}
                 Err(_) => panic!("SHM enable failed"),
             }
         }
         // Publication must finish before opening the generated proc0 endpoint.
+        #[cfg(feature = "ping-poll")]
         if ready && let Some(init) = channel_init.take() {
             match init.try_open() {
                 Ok(link) => channel = Some(link.channel),
@@ -152,8 +185,10 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
                 }
             }
         }
+        #[cfg(feature = "ping-poll")]
         if let Some(endpoint) = channel.as_mut()
             && let Err(error) = echo_channel(endpoint, &mut pending)
+            && error != Error::Full
         {
             let _ = log!("channel stopped: {error}\n");
             channel = None;
@@ -166,26 +201,27 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         if let Some(value) = rx.pop() {
             log!("proc0 received {}\n", value).unwrap();
         }
+        // The SHM request has no IRQ; the existing timer tick drives startup checks.
+        #[cfg(not(feature = "ping-poll"))]
+        rp1_rt::wait_for_event();
     }
 }
 
 /// Echo each nonce from `linux-ping --channel` back to Linux.
-fn echo_channel(
-    channel: &mut Channel<Nonce, Nonce>,
+fn echo_channel<N: Notify, W: Wake>(
+    channel: &mut Channel<Nonce, Nonce, N, W>,
     pending: &mut Option<Nonce>,
-) -> Result<(), Error> {
-    if pending.is_none() {
-        *pending = channel.recv()?;
-    }
+) -> Result<Progress, Error> {
+    let progress = if pending.is_none() {
+        channel.drain(1, |nonce| *pending = Some(nonce))?
+    } else {
+        Progress::More
+    };
     if let Some(nonce) = *pending {
-        match channel.send(&nonce) {
-            Ok(()) => *pending = None,
-            // Keep the reply for the next pass so a slow reader can't stall proc0.
-            Err(Error::Full) => {}
-            Err(error) => return Err(error),
-        }
+        channel.send(&nonce)?;
+        *pending = None;
     }
-    Ok(())
+    Ok(progress)
 }
 
 #[entry(proc1)]
@@ -206,30 +242,73 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         let mut irq = p.irq;
         free(|cs| DOORBELL.borrow(cs).set(Some(p.doorbell)));
         irq.IO_BANK0.enable();
+        let mut alarm = p.TIMER_ALARM1;
+        alarm.clear_interrupt();
+        alarm.enable_interrupt();
+        free(|cs| CHANNEL_RETRY.borrow(cs).replace(Some(alarm)));
+        irq.TIMER_1.enable();
     }
     let mut init = p.link;
-    let mut ping = loop {
+    let link = loop {
         match init.try_open() {
-            Ok(link) => break link.ping,
-            Err(OpenError::NotReady(token)) => init = token,
+            Ok(link) => break link,
+            Err(OpenError::NotReady(token)) => {
+                init = token;
+                #[cfg(not(feature = "ping-poll"))]
+                rp1_rt::wait_for_event();
+            }
             Err(_) => panic!("ping open failed"),
         }
     };
+    let mut ping = link.ping;
+    #[cfg(not(feature = "ping-poll"))]
+    let mut channel = Some(link.channel);
+    #[cfg(not(feature = "ping-poll"))]
+    let mut pending = None;
     #[cfg(feature = "ping-test")]
     let mut probe = ping_test::Probe::default();
     loop {
-        let progress = ping.serve(8, |value| {
-            #[cfg(feature = "ping-test")]
-            let value = probe.reply(value);
-            value
-        });
-        match progress {
-            Ok(Progress::More) => continue,
-            Ok(Progress::Idle) => {}
-            Err(_) => panic!("ping serve failed"),
-        }
+        let progress = ping
+            .serve(8, |value| {
+                #[cfg(feature = "ping-test")]
+                let value = probe.reply(value);
+                value
+            })
+            .expect("ping serve failed");
         #[cfg(not(feature = "ping-poll"))]
-        rp1_rt::wait_for_event();
+        {
+            match channel
+                .as_mut()
+                .map(|endpoint| echo_channel(endpoint, &mut pending))
+            {
+                Some(Ok(Progress::More)) => continue,
+                Some(Err(Error::Full)) => {
+                    // Consuming a reply sends no IRQ. Retry the saved value on a timer
+                    // when the peer's reply ring is full and there is no ping work.
+                    if progress == Progress::Idle {
+                        free(|cs| {
+                            CHANNEL_RETRY
+                                .borrow_ref_mut(cs)
+                                .as_mut()
+                                .unwrap()
+                                .schedule(Timer::new().now_32() + 1_u32.millis())
+                                .unwrap();
+                        });
+                    }
+                }
+                Some(Err(error)) => {
+                    let _ = log!("channel stopped: {error}\n");
+                    channel = None;
+                }
+                _ => {}
+            }
+            // Both endpoints share the doorbell. Check both before going to sleep.
+            if progress == Progress::Idle {
+                rp1_rt::wait_for_event();
+            }
+        }
+        #[cfg(feature = "ping-poll")]
+        let _ = progress;
     }
 }
 

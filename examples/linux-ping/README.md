@@ -1,10 +1,10 @@
 # Linux RPC and channel example
 
 Use these clients with the matching [dual-core firmware](../dual-core). The
-firmware declares an IRQ RPC named `ping` on proc1 and a polling channel named
-`channel` on proc0. The firmware starts serving both after Linux requests
-shared-memory publication. Open the endpoints by name through the generated
-UIO devices.
+firmware serves the `ping` RPC and the `channel` echo on proc1. Both endpoints
+share the GPIO27 doorbell and the `rp1:irq` UIO interrupt. The firmware starts
+serving them after Linux requests shared-memory publication. Open the endpoints
+by name through the generated UIO devices.
 
 ```sh
 cargo build --locked --release --target aarch64-unknown-linux-musl -p linux-ping -p linux-status
@@ -17,5 +17,6 @@ cargo build --locked --release --target aarch64-unknown-linux-musl -p linux-ping
 - `linux-status` prints PCIe and SCMI status. Use `--health 2200` to sample
   liveness as well.
 
-**HYP (2026-11-27)** The channel echo and its coexistence with IRQ RPC are
-pending verification on a CM5 with the matching boot set.
+Run `linux-ping 1000` and `linux-ping --channel` against the same boot set to
+check both endpoints. Each command prints an `EXAMPLE_END` marker after
+verifying its replies.

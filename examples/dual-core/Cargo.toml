@@ -57,8 +57,8 @@ notify = "irq"
 [[package.metadata.rp1.shm]]
 name = "channel"
 kind = "channel"
-core = "proc0"
+core = "proc1"
 message = "Nonce"
 reply = "Nonce"
 depth = 8
-notify = "poll"
+notify = "irq"
