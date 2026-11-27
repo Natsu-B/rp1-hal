@@ -55,7 +55,7 @@ gpio = [8, 27]                            # 8 = SPI0 のチップセレクト（
 gpio_irq = [27]                           # 割り込みを受けるピン（gpio の部分集合）
 timer = ["ALARM1"]
 adc = {}                                  # ピンの無いブロック
-dma = { channels = [0, 2] }               # DMA コントローラー全体を予約し、0 と 2 を発行（docs/dma.md）
+dma = { channels = [0, 2], pool = { slots = 2, bytes = 1024 } } # pool は任意（docs/dma.md）
 spi0 = { sck = 11, mosi = 10, miso = 9 }  # ハードの csN は未対応（エラー）
 host_irq = true                           # RP1 → Linux 割り込み（1 コアだけ。rp1_link::notify::HostIrq、design.md §6.2）
 doorbell = 26                             # Linux → このコアのドアベル（gpio / gpio_irq と重複不可）

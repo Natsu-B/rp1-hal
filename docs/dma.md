@@ -1,14 +1,15 @@
 # RP1 DMA driver
 
 `rp1_hal::dma` drives the RP1 DMA controller, a Synopsys DW AXI DMAC (1.02a-lp02, eight
-channels, one 128-bit AXI master). The v0.2 API does single-block memory-to-memory transfers. Evidence strength: **HW** measured, **STATIC** code/tests, **DOC** datasheet or
-Linux source, **HYP** hypothesis.
+channels, one 128-bit AXI master). The v0.2 API does single-block memory-to-memory
+transfers. **HW** denotes measurement, **STATIC** code or tests, **DOC** the datasheet
+or Linux source, and **HYP** a hypothesis.
 
 ## Ownership
 
 ```toml
 [package.metadata.rp1.proc1]
-dma = { channels = [0, 2] }
+dma = { channels = [0, 2], pool = { slots = 2, bytes = 1024 } }
 ```
 
 - STATIC, 2026-11-27. The controller is one block (one reset bit, one clock, one interrupt),
@@ -16,6 +17,9 @@ dma = { channels = [0, 2] }
   Without the declaration Linux keeps `rp1_dma` with SCMI clocks.
 - `channels` selects the generated channel fields. Omission (`dma = {}`) gives all eight channels.
   An empty list reserves the controller. The NOTE still claims block 65.
+- **STATIC · 2026-11-27.** The optional `pool` generates `p.dma_pool` on the DMA-owning
+  core. `bytes` is the capacity per slot and must be a nonzero multiple of 16.
+  The linker places the aligned reservation in shared SRAM and checks the image budget.
 - **STATIC · 2026-11-27.** The complete generated set can `try_stop_all` or
   `stop_all_until(&mut wait, end)`. Release uses `try_free` or `free_until` and returns
   the original declaration token. A partially moved channel set cannot release the
@@ -47,19 +51,20 @@ dma = { channels = [0, 2] }
   soft-resets the DMAC and leaves all channels disabled with interrupts masked. The returned
   channel set has one field per selected channel (`ch0` and `ch2` above). On failure,
   `InitError::resources` returns the declaration's controller token for a retry.
-- **BREAKING**, STATIC, 2026-11-27. Safe copies consume two equal-length leases from
-  `Pool`, which takes exclusive ownership of a reserved static shared-SRAM allocation.
-  A slot has a fixed capacity and its lease selects a range. Safe admission excludes
-  ISRAM, DSRAM, peripherals, stack and the outbound window. A raw slice cannot encode
-  retention beyond timeout or `mem::forget`.
-- `Channel::try_start(src, dst)` returns both leases in `InitError::resources` if admission
-  fails. The transfer exclusively holds the channel and owns both leases while active.
-  `try_complete` observes once. `try_reclaim` returns `Completed` with the outcome and both
-  leases after quiescence and ACK. A failed or cancelled destination may contain a prefix.
-- `Channel::copy(src, dst, timeout)` returns both leases on success. An error
-  returns proven-idle slots to their pools and leaves uncertain slots claimed. Polling is
-  selected explicitly with `PollingTimeout::new(duration)` while IRQ40 delivery awaits verification. `Transfer::wait_polling(end)` uses an
-  absolute `Deadline`. Completion already visible at that deadline wins.
+- **STATIC · 2026-11-27.** Safe copies borrow two equal-length leases from a fixed
+  shared-SRAM pool. A lease selects a range of one slot. Safe admission excludes ISRAM,
+  DSRAM, peripherals, stack and the outbound window.
+- `try_start(&mut src, &mut dst)` borrows the channel and leases exclusively. An
+  admission error preserves both leases. `try_complete` observes once. `try_reclaim`
+  consumes the handle and returns the transfer outcome after quiescence and ACK. If
+  the proof is pending, it returns the handle for retry. Inspect the outcome before
+  using the destination. A cancelled transfer can write a prefix or the whole block.
+- `copy_polling(&mut src, &mut dst, duration)` and `Transfer::wait_polling(end)` explicitly
+  poll in thread mode while IRQ40 delivery awaits verification. `wait_polling` uses
+  an absolute `Deadline`. Completion already visible at that deadline wins.
+- If a transfer is forgotten or dropped without a stop proof, both leases yield empty
+  slices and reject new ranges and DMA admission. Dropping those leases preserves the
+  claims. Use `is_quarantined` to inspect a lease after its borrow ends.
 - `unsafe Channel::start_raw(src, dst, len)` accepts caller-managed bus addresses.
   Its caller owns the entire lifetime of both ranges, including a lost handle. A graceful
   stop proves local engine quiescence. Remote write drain, outbound window stability and
@@ -67,7 +72,9 @@ dma = { channels = [0, 2] }
   that proof is unavailable.
 - `Bus(CH_INTSTATUS)` reports a bus fault. `Timeout` reports an elapsed transfer deadline.
   If stop remains uncertain, polling reports `Recovering`; an external forced abort
-  reports `Aborted`. `try_recover` checks the retained channel state before reuse.
+  reports `Aborted`. An explicit transfer retains its first fault or deadline error
+  for `try_reclaim`. `try_recover` requests graceful disable if forgotten work is
+  active and checks the channel before reuse.
 - Programming (DOC, Linux `dw-axi-dmac` with the RP1 DT properties): 8-channel register map
   (`CHEN` write enables at bit 8), `CFG2` layout (`snps,dma-targets = <64>`), contiguous
   source/destination, memory-to-memory with DMAC flow control, priority = channel, MSIZE 4,
@@ -87,17 +94,27 @@ dma = { channels = [0, 2] }
 
 | Before | After |
 |---|---|
-| `ch.copy(&src, &mut dst, timeout)` | `let (src, dst) = ch.copy(src, dst, timeout)?;` with pool leases and `PollingTimeout::new(duration)` |
-| `unsafe { ch.start(src, dst, len) }?.wait(timeout)` | `ch.try_start(src, dst)?` with leases, then `wait_polling(end)` and `try_reclaim`. Externally managed ranges use `unsafe { ch.start_raw(src, dst, len) }`. |
-| `transfer.cancel()` and blocking Drop | `transfer.try_cancel()` or timer-backed `cancel_until`. Recover both leases with `try_reclaim` after a proven stop. |
+| `ch.copy(&src, &mut dst, timeout)` | `ch.copy_polling(&mut src, &mut dst, duration)` with pool leases |
+| Safe SRAM→DDR copies | Use `unsafe start_raw` with an independently managed remote mapping and drain proof |
+| `unsafe { ch.start(src, dst, len) }` | `try_start(&mut src, &mut dst)` for leases or `unsafe { ch.start_raw(src, dst, len) }` for caller-managed ranges |
+| `Transfer::poll`, `Transfer::wait` | `try_complete`, `wait_polling(end)` |
+| `transfer.cancel()`, `dma::Stopped` and blocking Drop | `try_cancel` or timer-backed `cancel_until`. `try_reclaim` ends the borrow after a proven stop. Drop makes a bounded stop attempt. |
+| Exhaustive matches on `dma::Error` | Include a fallback arm for the `#[non_exhaustive]` error type |
 | `Dma::free()` (removed in PR 1a) | `channels.try_free()` or `channels.free_until(&mut wait, end)` after assembling the declared set |
-| A channel implements `SlotCopy` when the feature is enabled | `unsafe { ch.experimental_ring_dma(&scratch) }` selects the experimental polling adapter with private scratch and external ordering obligations. |
+| A channel implements `SlotCopy`, `dma::RING_TIMEOUT_US` | `unsafe { ch.experimental_ring_dma(&scratch) }` selects the polling adapter with private scratch and a fixed internal timeout |
 
-The transfer call retains the channel-field form.
+With the declaration above and initialized clocks, a local SRAM copy uses the generated
+pool and retains the channel set for further operations.
 
 ```rust
-let timeout = PollingTimeout::new(Duration::millis(10));
-let (src, dst) = p.dma.init(&clocks)?.ch2.copy(src, dst, timeout)?;
+use rp1_hal::timer::Duration;
+
+let mut dma = p.dma.init(&clocks)?;
+let pool = p.dma_pool;
+let [mut src, mut dst] = pool.leases(1024)?;
+src.as_mut_slice().fill(0x5a);
+dma.ch2.copy_polling(&mut src, &mut dst, Duration::millis(10))?;
+assert_eq!(src.as_slice(), dst.as_slice());
 ```
 
 ## Cancellation and the abort register
@@ -119,15 +136,26 @@ on RP1 does not request an abort (that path was never exercised on HW).
 graceful disable and error handling. The channel-enable register descriptions explicitly
 allow an abnormal abort to leave AXI operations outstanding.
 
-**STATIC · 2026-11-27.** `try_cancel` masks the channel signal, requests graceful disable
-through its write-enable bit and observes the result once. The handle can be kept and
-retried when the result is `Recovering`. `cancel_until` uses a dedicated timer IRQ in
-thread mode and caps the recheck deadline at 999 µs from admission. Drop performs a fixed
-number of MMIO accesses. An unconfirmed stop leaves both slots claimed for the rest of the
-firmware epoch. Forgetting a transfer leaves both claims live even if the channel eventually
-drains. Reuse requires the cleared enable bit, a terminal status and a confirmed W1C ACK.
-The driver treats `CH_ABORTED` as an unproven stop. The 1 ms real-time bound, including any
-preemption and MMIO stalls, is a hardware acceptance criterion.
+**HW · 2026-11-27 · v0.2 candidate `8eba065`.** Boot P ran 100 mid-transfer,
+disable-only SRAM cancellations across all eight channels. Every attempt stopped on
+the first `try_cancel` (maximum 6 µs) and left a proper prefix, intact guards and no
+later destination changes. The stop logic required EN clear plus `CH_DISABLED` or
+`DMA_TFR_DONE` and W1C readback. Each attempt interrupted the block before it wrote the
+whole payload. Terminal-bit identity and full decision/Drop timing are instrumented
+in the refreshed candidate.
+
+**STATIC · 2026-11-27.** `try_cancel` masks the channel signal, writes only the channel's
+enable write-enable bit to request disable and checks for a terminal state. `cancel_until`
+issues that request before checking thread context or deadline. In thread mode the
+recheck deadline is the earlier of the caller's deadline and 999 µs from entry. With
+IRQ40 masked, a stop missed by the initial checks can be reported by the timer alarm
+nearly 1 ms after entry. Drop performs a fixed number of MMIO accesses.
+
+The `Transfer` handle itself carries the quarantined claims while it can retry. If
+the handle is dropped without proof or forgotten, the claims remain reserved for
+the firmware epoch. Reuse requires EN clear, terminal status and a confirmed W1C ACK.
+`CH_ABORTED` leaves quiescence unproven. The 1 ms real-time bound includes
+preemption and MMIO stalls and is a hardware acceptance criterion.
 
 ## Address map
 
@@ -190,9 +218,10 @@ Throughput and latency (RP1 timer, 1 µs; per block = setup + transfer + complet
 same. Fixed per-block cost is about 5 µs (16 B block), so DMA beats CPU posted writes
 (0.54 µs per word) from about 10 words (40 B) per block upward.
 
-### Cancellation proof and burst-length change (2026-11-05, 3 cold boots)
+### Previous driver cancellation proof and burst-length change
 
-Lab step in command 16 (channel 2, byte-wide 4094 B SRAM→DDR block through the ATU window,
+**HW · 2026-11-05 · three cold boots.** The previous driver used suspend followed
+by disable. Lab step in command 16 (channel 2, byte-wide 4094 B SRAM→DDR block through the ATU window,
 full block 272 µs): cancelled at 68 / 136 / 204 µs, every time stopped by suspend + disable
 (`CH_SUSPENDED` seen, no abort needed) about 7 µs after the request; `CHEN` bit clear on
 return; the destination held a prefix (≈1070 / 2110 / 3150 bytes) followed by the untouched

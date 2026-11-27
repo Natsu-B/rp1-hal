@@ -34,6 +34,17 @@ STATIC
   releasing or cancelling the UART. The pin route traits are `TxPin` and `RxPin`.
 - Enable `rp1-hal/eh02-adc` for the embedded-hal 0.2 `OneShot` ADC adapter or migrate to
   `Adc::read`.
+- Declare `dma = { channels = [0, 2], pool = { slots = 2, bytes = 1024 } }` to get
+  `p.dma_pool` and the selected channels. Use
+  `ch.copy_polling(&mut src, &mut dst, duration)` with borrowed pool leases.
+  `Transfer::try_complete` replaces `poll`. `wait_polling(end)` replaces `wait`.
+- `try_cancel` and timer-backed `cancel_until` replace `cancel` and `dma::Stopped`.
+  `try_reclaim` ends a transfer borrow after a proven stop. Drop is bounded and can
+  quarantine both slots for the rest of the epoch. `dma::Error` is `#[non_exhaustive]`.
+- SRAM-to-DDR copies require `unsafe Channel::start_raw` and an independent outbound
+  drain and mapping proof.
+- The experimental ring DMA adapter uses its own scratch pool and internal timeout.
+  The public `dma::RING_TIMEOUT_US` constant was removed.
 
 
 ## Peripheral migration
