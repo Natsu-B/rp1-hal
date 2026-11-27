@@ -15,8 +15,9 @@ STREAM = 100_000
 TX_SAMPLE = 34
 
 
-def pattern(length, offset=0):
-    return bytes(((i * 73) ^ (i >> 8)) & 255 for i in range(offset, offset + length))
+def pattern(nonce, length, offset=0):
+    return bytes((((i * 73) ^ (i >> 8)) & 255) ^ nonce[i % 8]
+                 for i in range(offset, offset + length))
 
 
 def run(port, raw, incoming, nonce):
@@ -50,28 +51,31 @@ def run(port, raw, incoming, nonce):
     for command, width in [(b"R", 16), (b"S", 1)]:
         for i in range(TRIALS):
             expect(command)
-            reply(pattern(width, i * width))
+            reply(pattern(nonce, width, i * width))
 
     occupied = []
     for i in range(TRIALS):
         expect(b"T")
-        expect(pattern(TX_SAMPLE, i * TX_SAMPLE))
+        expect(pattern(nonce, TX_SAMPLE, i * TX_SAMPLE))
         count = read(1)[0]
         if count not in (32, 33):
             raise ValueError(f"invalid TX prefill count {count}")
         occupied.append(count)
 
     expect(b"I")
-    reply(pattern(STREAM))
+    reply(pattern(nonce, STREAM))
     expect(b"O")
-    expect(pattern(STREAM))
+    expect(pattern(nonce, STREAM))
     expect(b"A")
-    reply(b"a")
-    expect(b"P")
-    reply(nonce)
-    expect(nonce)
+    reply(nonce[:1])
+    for command in (b"Q", b"P"):
+        expect(command)
+        reply(nonce)
+        expect(nonce)
     port.timeout = 0.25
-    if port.read(1):
+    extra = port.read(1)
+    raw.write(extra)
+    if extra:
         raise ValueError("unexpected trailing UART1 byte")
     return occupied
 
@@ -82,8 +86,6 @@ def main():
     parser.add_argument("--uart0", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--nonce", default=secrets.token_hex(4))
-    parser.add_argument("--sample-rate-hz", type=int, required=True,
-                        help="actual sample rate from the logic analyzer configuration")
     args = parser.parse_args()
     if not re.fullmatch("[0-9a-f]{8}", args.nonce):
         parser.error("nonce must be eight lowercase hex digits")
@@ -93,6 +95,7 @@ def main():
     port.rts = False
     port.port = args.port
     with port:
+        print("UART_PARITY_PEER_ARMED", flush=True)
         ready_by = time.monotonic() + 60
         ready = re.compile(rb"(?:^|\n)UART_PARITY_READY\r?\n")
         while time.monotonic() < ready_by:
@@ -104,8 +107,9 @@ def main():
         port.reset_input_buffer()
         with (args.out / "from-rp1.bin").open("xb") as raw, (args.out / "to-rp1.bin").open("xb") as sent:
             occupied = run(port, raw, sent, args.nonce.encode())
-    metadata = {"run": args.nonce, "prefill": occupied, "sample_rate_hz": args.sample_rate_hz}
+    metadata = {"run": args.nonce, "prefill": occupied}
     (args.out / "peer.json").write_text(json.dumps(metadata) + "\n")
+    print(f"UART_PARITY_PEER_END run={args.nonce} result=PASS", flush=True)
 
 
 if __name__ == "__main__":

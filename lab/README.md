@@ -842,24 +842,34 @@ nonce collision across distinct captures needs a fresh capture. `FAULT_DIAG` and
 ## UART1 IRQ parity
 
 `cargo rp1 build --locked -p uart-parity --target thumbv7m-none-eabi --release`
-builds the UART1 parity firmware. GPIO0/1 are UART1 at 115200 8N1.
-GPIO13 strobes at UART1 interrupt entry, GPIO22 brackets the physical flush,
-and GPIO23 brackets the measured wait. The UART1 and probe slots both use
-ceiling 4, with the UART1 IRQ at priority 4. UART0 carries the terminal markers.
+builds the UART1 parity firmware. Connect the crossed 3.3 V UART peer on
+GPIO0/1 at 115200 8N1 and capture UART0 from boot. U uses no timing GPIOs.
+Proc1 brackets RIS, TX FIFO-empty and BUSY transitions with read-only MMIO
+samples. Proc0 timestamps entry to the priority-4 UART1 handler and the
+return from flush. Both use the RP1 1 MHz timer.
 
-Use `uart-parity-peer.py` with a fresh UART0 capture and the crossed 3.3 V peer.
-Pass the calibrated analyzer's actual sample rate as `--sample-rate-hz`
-(at least 10,000,000).
-The verifier requires the peer transcripts, firmware terminal markers and a
-logic analyzer transition CSV with header `us,rx,tx,irq,flush,gate`. Here RX is
-the RP1 UART input and TX is its output. Timestamps are microseconds on one
-timebase. Include the idle levels on both ends of the capture around the
-nonce exchange. `verify-uart-parity.py` decodes both wires and measures each
-of the 1,000 RX watermark, RX timeout and TX IRQs. Each physical flush must
-return from 0.5 µs to one bit time plus 50.5 µs after the final stop bit.
-The two 100,000-byte streams must match byte for byte. The RX stream permits
-up to 7,031 RX and RT IRQs combined, the TX stream permits up to 6,250 TX IRQs,
-and any other stream source fails. `PARITY_UART_IRQ_END` includes the measured
-stream IRQ counts and `flush_late_max_us`. The firmware
-emits `PARITY_UART_NB_END` for 1,000 tries against each empty RX and full TX
-FIFO. The final eight-byte comparison uses `.polling()` explicitly.
+```sh
+python3 lab/uart-parity-peer.py --port "$PEER" --uart0 "$UART0" --out "$TRANSCRIPT"
+python3 lab/verify-uart-parity.py --uart0 "$UART0" --peer "$TRANSCRIPT"
+```
+
+The nonce binds the UART0 samples to the two UART1 byte transcripts. Require
+one IRQ of the expected source in each of 1,000 RX watermark, RX timeout and TX
+trials, with an entry upper bound of 50 µs and a transition bracket of at most
+10 µs. RX+RT serviced together counts as one receive IRQ. Both 100,000-byte
+streams must match every byte. The RX stream permits 1–7,031 combined RX and
+RT IRQs and the TX stream permits 1–6,250 TX IRQs. Opposite and other IRQ
+counts must be zero.
+
+Flush must start before the FIFO empties and return with BUSY clear. The
+upper bound on completion delay, from both the sampled BUSY transition and
+the earliest modeled stop-bit end, is one nominal bit plus 50.5 µs. The
+model adds one 8N1 frame to the TX FIFO-empty transition using the programmed
+divisor, with a bit of phase allowance and a timer tick of quantization.
+Absolute wire timing and per-frame wire gaps require an external capture.
+
+`PARITY_UART_NB_END` covers 1,000 tries against each empty RX and full TX
+FIFO, each within 10 µs including quantization. The firmware checks a
+no-input deadline, reset and re-arm, and identical eight-byte echo payloads
+with IRQ waits and explicit `.polling()`. The host verifier emits
+`PARITY_UART_IRQ_END` after checking those markers and the raw samples.
