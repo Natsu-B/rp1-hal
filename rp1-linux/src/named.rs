@@ -255,7 +255,7 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
             // have masked it. Take that count and unmask before scanning.
             let woke = strict.listener.intake();
             let expired = Instant::now() >= end;
-            self.check_requested_peer()?;
+            self.check_requested_peer(strict, !dispatch)?;
             let woke = woke?;
             let revents = pfd[0].revents;
             if revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
@@ -276,9 +276,25 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
         }
     }
 
-    fn check_requested_peer(&self) -> Result<()> {
+    fn check_requested_peer(&self, strict: &StrictSession, first_scan: bool) -> Result<()> {
         let rx = &self.rx;
-        rx.session.check()?;
+        let session = &rx.session;
+        strict.check_link(&session.link)?;
+        if first_scan {
+            // The direct path has no receive ticket to validate. Check that
+            // the DDR header, link generation and core records agree.
+            let generation = session.generation()?;
+            let link_generation = session.link.read(proto::link::SHM_GENERATION);
+            if link_generation == u32::MAX {
+                return Err(Error::PeerDown(crate::PeerDown::LinkDown));
+            }
+            if link_generation != generation {
+                return Err(Error::PeerDown(crate::PeerDown::Restarted));
+            }
+            strict.check_terminal_epoch(&session.link)?;
+        } else {
+            session.check_header()?;
+        }
         rx.session.check_peer(0)?;
         if rx.peer.core != 0 {
             rx.session.check_peer(rx.peer.core)?;

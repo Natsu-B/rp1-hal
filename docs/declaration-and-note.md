@@ -363,8 +363,9 @@ RP1 MSI-X vector 29 の edge であることも照合する。
 | 8 | `u32` | required caps |
 | 12 | `u32` | offered caps |
 
-capability の bit 0 / 1 / 2 は `LATCHED_WAKE` / `STARTUP_WAKE` / `CREDIT_WAKE`。
-実験 profile が提供するのは bit 0。v3 で `rp1-to-linux` の `notify = "irq"` を使う
+capability の bit 0 / 1 / 2 / 3 は `LATCHED_WAKE` / `STARTUP_WAKE` /
+`CREDIT_WAKE` / `RPC_REPLY_WAKE`。実験 profile は bit 0 と bit 3 を提供し、
+bit 0 を必須とする。v3 で `rp1-to-linux` の `notify = "irq"` を使う
 ring は vector owner が担当する。別コアの通知は owner への引渡しが要る。
 SRAM の宣言領域は `0x100` から。mailbox、DDR header v2、ticket の手順は
 [通信規約 §10](protocol.md#10-実験的-link-wakenote-v3) を参照。
