@@ -5,6 +5,7 @@ struct Uio {
     baseline: u32,
     enabled: bool,
     edge: bool,
+    latch_masked: bool,
     thread: bool,
 }
 
@@ -18,7 +19,7 @@ impl Uio {
     }
 
     fn pulse(&mut self) {
-        self.edge |= self.enabled;
+        self.edge |= self.enabled || self.latch_masked;
     }
 
     fn handler(&mut self) {
@@ -226,124 +227,131 @@ fn deadline_takes_a_delayed_irq_before_the_final_session_and_readiness_scan() {
     );
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum RequestStep {
-    Enable,
-    Publish,
-    Scan,
-    RequestSeen,
-    ReplyPublished,
-    Pulse,
-    OtherPulse,
+#[derive(Clone, Copy, Debug)]
+enum InitialVector {
+    Enabled,
+    Readable,
+    Replay,
+    IrqThreadPending,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum RequestOrder {
-    Ordered,
-    FlagDropped,
-    EnableAfterPublish,
-    ReplyBeforeFlag,
+impl InitialVector {
+    fn uio(self) -> Uio {
+        let mut uio = Uio {
+            latch_masked: true,
+            ..Uio::default()
+        };
+        uio.open();
+        uio.enable();
+        if !matches!(self, Self::Enabled) {
+            uio.pulse();
+            uio.handler();
+            if !matches!(self, Self::IrqThreadPending) {
+                uio.irq_thread();
+            }
+            if matches!(self, Self::Replay) {
+                uio.pulse();
+            }
+        }
+        uio
+    }
 }
 
-fn request_misses(order: RequestOrder) -> usize {
-    use RequestStep::*;
-    let host = if order == RequestOrder::EnableAfterPublish {
-        [Publish, Scan, Enable]
-    } else {
-        [Enable, Publish, Scan]
-    };
-    let peer = [RequestSeen, ReplyPublished, Pulse];
-    let mut missed = 0;
-    // Interleave both participants. Place an unrelated edge at each boundary
-    // and allow its UIO thread to publish a count immediately or after scan.
-    for peer_positions in 0u32..64 {
-        if peer_positions.count_ones() != 3 {
+fn intake(uio: &mut Uio) -> bool {
+    if uio.read().is_none() {
+        return false;
+    }
+    uio.enable();
+    uio.handler();
+    true
+}
+
+#[test]
+fn direct_ticket_closes_the_empty_scan_to_poll_race() {
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Step {
+        Publish,
+        FirstScan,
+        Intake,
+        Arm,
+        Force,
+        Block,
+        ReadFlag,
+        Reply,
+        FirstService,
+        KickedService,
+    }
+    use Step::*;
+
+    let host = [Publish, FirstScan, Intake, Arm, Force, Block];
+    let peer = [ReadFlag, Reply, FirstService, KickedService];
+    for positions in 0u16..1 << 10 {
+        if positions.count_ones() != 4 {
             continue;
         }
-        let mut steps = [OtherPulse; 7];
-        let mut host_steps = host.into_iter();
-        let mut peer_steps = peer.into_iter();
-        for (index, step) in steps[..6].iter_mut().enumerate() {
-            *step = if peer_positions & (1 << index) == 0 {
-                host_steps.next().unwrap()
+        let (mut host, mut peer) = (host.into_iter(), peer.into_iter());
+        let steps = std::array::from_fn::<_, 10, _>(|at| {
+            if positions & (1 << at) == 0 {
+                host.next().unwrap()
             } else {
-                peer_steps.next().unwrap()
-            };
-        }
-        let publish = steps.iter().position(|&step| step == Publish).unwrap();
-        let seen = steps.iter().position(|&step| step == RequestSeen).unwrap();
-        if seen <= publish {
+                peer.next().unwrap()
+            }
+        });
+        let at = |step| steps.iter().position(|&s| s == step).unwrap();
+        if at(ReadFlag) < at(Publish) || at(KickedService) < at(Force) {
             continue;
         }
-        for other in 0..=7 {
-            for thread in 0..=7 {
-                let mut steps = steps;
-                if other < 7 {
-                    steps[other..].rotate_right(1);
-                }
-                let mut uio = Uio::default();
-                uio.open();
-                let mut flag = false;
-                let mut requested = false;
-                let mut ready = false;
-                let mut found = false;
-                for (index, step) in steps.into_iter().enumerate() {
-                    if thread == index {
+        for initial in [
+            InitialVector::Enabled,
+            InitialVector::Readable,
+            InitialVector::Replay,
+            InitialVector::IrqThreadPending,
+        ] {
+            for publish_count in 0..=steps.len() {
+                let mut uio = initial.uio();
+                let (mut ready, mut armed, mut blocked, mut sent, mut found) =
+                    (false, false, false, false, false);
+                for (at, step) in steps.into_iter().enumerate() {
+                    if at == publish_count {
                         uio.irq_thread();
                     }
                     match step {
-                        Enable => uio.enable(),
-                        Publish => {
-                            flag = order == RequestOrder::Ordered
-                                || order == RequestOrder::EnableAfterPublish
+                        FirstScan if ready => found = true,
+                        Intake if !found => {
+                            intake(&mut uio);
+                            found = ready;
                         }
-                        Scan => found = ready,
-                        RequestSeen => requested = flag,
-                        ReplyPublished => {
-                            ready = true;
-                            flag |= order == RequestOrder::ReplyBeforeFlag;
-                        }
-                        Pulse if requested && !found => {
-                            uio.pulse();
-                            uio.handler();
-                        }
-                        OtherPulse if other < 7 => {
+                        Arm if !found => armed = true,
+                        Block if !found => blocked = true,
+                        Reply => ready = true,
+                        FirstService | KickedService if ready && armed && !sent => {
+                            // Only the matching arm can commit a seq and pulse.
+                            sent = true;
                             uio.pulse();
                             uio.handler();
                         }
                         _ => {}
                     }
-                    // A poll may take an already readable shared count. The
-                    // count is followed by re-enable, then an acquire scan.
-                    if steps[..=index].contains(&Scan) && !found && uio.read().is_some() {
-                        uio.enable();
-                        found = ready;
+                    if blocked && !found && intake(&mut uio) && sent {
+                        found = true;
                     }
                 }
-                uio.irq_thread();
-                if !found && uio.read().is_some() {
-                    uio.enable();
-                    found = ready;
+                // Drain delayed publication and at most one replay at the poll boundary.
+                for _ in 0..2 {
+                    uio.irq_thread();
+                    if blocked && !found && intake(&mut uio) && sent {
+                        found = true;
+                    }
                 }
-                missed += usize::from(!found);
+                assert!(
+                    found,
+                    "{initial:?} {steps:?} publication at {publish_count}"
+                );
+                if matches!(initial, InitialVector::Enabled) {
+                    assert!(!uio.edge && !uio.readable(), "RPC left a replay");
+                    assert_eq!(uio.count, u32::from(armed));
+                }
             }
         }
-    }
-    missed
-}
-
-#[test]
-fn request_ticket_closes_publish_to_poll_race() {
-    assert_eq!(request_misses(RequestOrder::Ordered), 0);
-}
-
-#[test]
-fn request_ticket_mutations_miss_a_reply() {
-    for mutation in [
-        RequestOrder::FlagDropped,
-        RequestOrder::EnableAfterPublish,
-        RequestOrder::ReplyBeforeFlag,
-    ] {
-        assert!(request_misses(mutation) > 0, "{mutation:?}");
     }
 }

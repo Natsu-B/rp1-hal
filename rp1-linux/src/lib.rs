@@ -1136,6 +1136,36 @@ mod tests {
         })
     }
 
+    pub(crate) fn strict_session(caps: u32) -> (Rc<Session>, UnixStream) {
+        use proto::wake::{BootEpoch, mailbox};
+
+        let (socket, peer) = UnixStream::pair().unwrap();
+        socket.set_nonblocking(true).unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let listener =
+            notify::listener::Listener::enable(File::from(OwnedFd::from(socket))).unwrap();
+        let link = anon(LINK_PAGE);
+        link.write(mailbox::BOOT_EPOCH, 2);
+        link.write(proto::status::EPOCH, 2);
+        link.write(proto::status::ABI, proto::status::ABI_VALUE);
+        link.write(proto::link::SHM_STATUS, proto::link::SHM_READY);
+        let map = anon(4096);
+        let init =
+            unsafe { shm::HeaderInit::begin_v2(map.ptr(), BootEpoch::new(2).unwrap()) }.unwrap();
+        let scope = unsafe { init.publish_v2(link.ptr(), &[], &[0; 32], 0, caps) }.unwrap();
+        link.write(proto::link::SHM_GENERATION, scope.generation());
+        let header = unsafe { shm::Header::open_v2(map.ptr(), &[0; 32], scope, caps) }.unwrap();
+        let session = Rc::new(Session {
+            header: SessionHeader::V3(header),
+            strict: Some(
+                strict::StrictSession::new(Rc::new(listener), &link, scope, caps).unwrap(),
+            ),
+            _map: map,
+            link,
+        });
+        (session, peer)
+    }
+
     fn rig(irq: bool) -> Rig {
         let session = new_session();
         let header = session._map.clone();

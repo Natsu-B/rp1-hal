@@ -1,13 +1,12 @@
 use super::*;
-use crate::{CoreState, Mapping, Peer, SessionHeader, tests::anon};
+use crate::{CoreState, Mapping, Peer, tests::anon};
 use rp1_proto::{
-    link, shm,
-    wake::{self, BootEpoch, LATCHED_WAKE, mailbox},
+    shm,
+    wake::{self, LATCHED_WAKE, mailbox},
 };
 use std::{
-    fs::File,
     io::{Read, Write},
-    os::{fd::OwnedFd, unix::net::UnixStream},
+    os::unix::net::UnixStream,
     time::Duration,
 };
 
@@ -22,34 +21,10 @@ const OFFSETS: [usize; 2] = [0x100, 0x200];
 
 impl Rig {
     fn new() -> Self {
-        let (socket, mut peer) = UnixStream::pair().unwrap();
-        socket.set_nonblocking(true).unwrap();
-        let listener =
-            crate::notify::listener::Listener::enable(File::from(OwnedFd::from(socket))).unwrap();
+        let (session, mut peer) = crate::tests::strict_session(LATCHED_WAKE);
         let mut int = [0; 4];
         peer.read_exact(&mut int).unwrap();
         assert_eq!(u32::from_ne_bytes(int), 1);
-        let link_page = anon(crate::LINK_PAGE);
-        link_page.write(mailbox::BOOT_EPOCH, 2);
-        link_page.write(rp1_proto::status::EPOCH, 2);
-        link_page.write(rp1_proto::status::ABI, rp1_proto::status::ABI_VALUE);
-        link_page.write(link::SHM_STATUS, link::SHM_READY);
-        let header_map = anon(4096);
-        let boot = BootEpoch::new(2).unwrap();
-        let header = unsafe { shm::HeaderInit::begin_v2(header_map.ptr(), boot) }.unwrap();
-        let scope =
-            unsafe { header.publish_v2(link_page.ptr(), &[], &[0; 32], 0, LATCHED_WAKE) }.unwrap();
-        let header =
-            unsafe { shm::Header::open_v2(header_map.ptr(), &[0; 32], scope, LATCHED_WAKE) }
-                .unwrap();
-        let session = Rc::new(Session {
-            header: SessionHeader::V3(header),
-            strict: Some(
-                StrictSession::new(Rc::new(listener), &link_page, scope, LATCHED_WAKE).unwrap(),
-            ),
-            _map: header_map,
-            link: link_page,
-        });
         let (a, tx_a) = Self::endpoint(&session, OFFSETS[0]);
         let (b, tx_b) = Self::endpoint(&session, OFFSETS[1]);
         Self {

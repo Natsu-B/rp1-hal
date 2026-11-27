@@ -792,11 +792,7 @@ mod tests {
             unsafe { shm::RingRx::<u32>::attach(down, 512, down_ctrl, 128, 4, ov) }.unwrap(),
             doorbell,
         );
-        assert!(
-            fake::take()
-                .iter()
-                .any(|access| *access == Access::Write(0x400d_2114, 1 << 27))
-        );
+        assert!(fake::take().contains(&Access::Write(0x400d_2114, 1 << 27)));
         let tx = RingTx::new(
             unsafe { shm::RingTx::<u32>::attach(up, 512, up_ctrl, 128, 4, ov) }.unwrap(),
             unsafe { TicketIrq::attach(up, up_ctrl) }.unwrap(),

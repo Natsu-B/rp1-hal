@@ -220,3 +220,314 @@ fn rpc_takes_the_reply_available_at_the_deadline() {
     }
     assert_eq!(client.wait_reply(1, Instant::now()).unwrap(), 8);
 }
+
+mod direct {
+    use super::*;
+    use crate::{PeerDown, WaitState, Waitable, notify::fake_doorbell, tests::strict_session};
+    use rp1_proto::{
+        link,
+        shm::wake::{RPC_WAIT_HEAD, RX_SEQ, RX_WAIT},
+        status,
+        wake::IRQ_RPC_CAPS,
+    };
+    use std::{
+        cell::RefCell,
+        io::{Read, Write},
+        os::unix::net::UnixStream,
+    };
+
+    const DOWN: usize = 0x100;
+    const UP: usize = 0x200;
+    const DOORBELL: usize = 0x2114;
+    const BUDGET: Duration = Duration::from_millis(30);
+
+    struct Vector {
+        peer: UnixStream,
+        deliveries: u32,
+        enabled: bool,
+        pending: bool,
+    }
+
+    impl Vector {
+        fn sync_enable(&mut self) {
+            let mut word = [0; 4];
+            loop {
+                match self.peer.read(&mut word) {
+                    Ok(4) => assert_eq!(u32::from_ne_bytes(word), 1),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
+                    result => panic!("bad UIO enable {result:?}"),
+                }
+                self.enabled = true;
+                if std::mem::take(&mut self.pending) {
+                    self.pulse();
+                }
+            }
+        }
+
+        fn pulse(&mut self) {
+            if std::mem::take(&mut self.enabled) {
+                self.deliveries += 1;
+                self.peer.write_all(&self.deliveries.to_ne_bytes()).unwrap();
+            } else {
+                self.pending = true;
+            }
+        }
+    }
+
+    struct Direct {
+        rig: Rig,
+        page: Rc<Mapping>,
+        vector: Rc<RefCell<Vector>>,
+    }
+
+    impl Direct {
+        fn new() -> Self {
+            let (session, peer) = strict_session(IRQ_RPC_CAPS);
+            let rings = [("ping-dn", 2, true), ("ping-up", 2, true)];
+            let fw = firmware(
+                named_note([None, Some(27)], &rings, &["ping"], 4),
+                Some(session),
+            );
+            let mut vector = Vector {
+                peer,
+                deliveries: 0,
+                enabled: false,
+                pending: false,
+            };
+            vector.sync_enable();
+            assert!(vector.enabled);
+            Self {
+                rig: Rig {
+                    fw,
+                    down: anon(65536),
+                    up: anon(65536),
+                },
+                page: anon(0x4000),
+                vector: Rc::new(RefCell::new(vector)),
+            }
+        }
+
+        fn link(&self) -> Rc<Mapping> {
+            self.rig.fw.session().unwrap().link.clone()
+        }
+
+        fn open(&self) -> Result<Client<u32, u32>> {
+            let (Channel { tx, rx }, depth, direct) =
+                fake_doorbell::with_page(self.page.clone(), || {
+                    self.rig.fw.open_pair("ping", true, |region| {
+                        Ok(if region.kind == ShmKind::RingToLinux {
+                            self.rig.up.clone()
+                        } else {
+                            self.rig.down.clone()
+                        })
+                    })
+                })?;
+            assert!(direct);
+            Ok(Client::new(tx, rx, depth, direct))
+        }
+
+        fn hook(
+            &self,
+            mut step: impl FnMut(
+                &Mapping,
+                &Mapping,
+                &mut Vector,
+                &mut shm::RingRx<u32>,
+                &mut shm::RingTx<u32>,
+            ) + 'static,
+        ) {
+            let (mut requests, mut replies) = self.rig.server();
+            let (link, up, vector) = (self.link(), self.rig.up.clone(), self.vector.clone());
+            fake_doorbell::hook(move || {
+                let mut vector = vector.borrow_mut();
+                vector.sync_enable();
+                step(&link, &up, &mut vector, &mut requests, &mut replies);
+            });
+        }
+    }
+
+    #[test]
+    fn ready_first_burst_and_masked_replay() {
+        for legacy_pulse in [false, true] {
+            let direct = Direct::new();
+            let mut client = direct.open().unwrap();
+            direct.hook(move |link, _, vector, requests, replies| {
+                let (value, requested) = requests.pop_request().unwrap().unwrap();
+                assert!(requested);
+                replies.push(&value).unwrap();
+                assert_eq!(link.read(UP + RX_WAIT) & 1, 0);
+                if legacy_pulse {
+                    vector.pulse();
+                }
+            });
+            for value in [19, 23] {
+                assert_eq!(client.call(&value, BUDGET).unwrap(), value);
+            }
+            fake_doorbell::clear_hook();
+            assert_eq!(client.wait_stats(), Default::default());
+            assert_eq!(direct.vector.borrow().pending, legacy_pulse);
+
+            let channel = anon(4096);
+            let mut region =
+                pair::<u32, u32>(Note::parse(&direct.rig.fw.note).unwrap(), "ping", true)
+                    .unwrap()
+                    .1;
+            region.sram_offset += 0x100;
+            let session = direct.rig.fw.session().unwrap();
+            let mut rx = Firmware::attach_rx::<u32>(region, channel, session.clone()).unwrap();
+            let mut ends: [&mut dyn Waitable; 1] = [&mut rx];
+            let mut wait = direct.rig.fw.wait_set(&mut ends).unwrap();
+            assert_eq!(
+                wait.prepare(Instant::now() + BUDGET).unwrap(),
+                WaitState::Armed
+            );
+            direct.vector.borrow_mut().sync_enable();
+            if legacy_pulse {
+                assert_eq!(wait.dispatch(libc::POLLIN).unwrap(), WaitState::Armed);
+            }
+            drop(wait);
+            assert_eq!(rx.wait_stats().woken, u64::from(legacy_pulse));
+            assert_eq!(
+                direct.vector.borrow().deliveries,
+                if legacy_pulse { 2 } else { 0 }
+            );
+            assert_eq!(rx.try_recv().unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn direct_client_ready_first_then_intake_before_asking_for_an_irq() {
+        let direct = Direct::new();
+        let mut client = direct.open().unwrap();
+        direct.vector.borrow_mut().pulse();
+        let mut deferred = None;
+        direct.hook(move |link, up, irq, requests, replies| {
+            let ticket = link.read(UP + RX_WAIT);
+            if ticket & 1 != 0 {
+                assert!(
+                    irq.enabled,
+                    "take the old count before asking for a reply IRQ"
+                );
+                let value = deferred.take().unwrap();
+                replies.push(&value).unwrap();
+                assert_eq!(link.read(UP + RPC_WAIT_HEAD), replies.head());
+                up.write(RX_SEQ, ticket);
+                irq.pulse();
+            } else {
+                let (value, requested) = requests.pop_request().unwrap().unwrap();
+                assert!(requested);
+                assert!(!irq.enabled);
+                if value == 7 {
+                    replies.push(&value).unwrap();
+                } else {
+                    deferred = Some(value);
+                }
+            }
+        });
+        assert_eq!(client.call(&7, BUDGET).unwrap(), 7);
+        assert_eq!(client.wait_stats(), Default::default());
+        assert_eq!(client.call(&9, BUDGET).unwrap(), 9);
+        fake_doorbell::clear_hook();
+        direct.vector.borrow_mut().sync_enable();
+        assert_eq!(direct.vector.borrow().deliveries, 2);
+        assert_eq!(client.wait_stats().woken, 1);
+        assert_eq!(client.wait_stats().deadline_checks, 0);
+        assert_eq!(direct.link().read(UP + RX_WAIT) & 1, 0);
+    }
+
+    #[derive(Clone, Copy)]
+    enum Deadline {
+        Reply,
+        Empty,
+        Terminal,
+        Restarted,
+    }
+
+    #[test]
+    fn direct_client_checks_data_and_peer_at_deadline_without_an_irq() {
+        use Deadline::*;
+        for case in [Reply, Empty, Terminal, Restarted] {
+            let direct = Direct::new();
+            let mut client = direct.open().unwrap();
+            direct.hook(move |link, _, _, requests, replies| {
+                if link.read(UP + RX_WAIT) & 1 == 0 {
+                    assert_eq!(requests.pop_request(), Ok(Some((7, true))));
+                    return;
+                }
+                if !matches!(case, Empty) {
+                    replies.push(&7).unwrap();
+                }
+                match case {
+                    Terminal => {
+                        let block = status::BLOCKS[1];
+                        link.write(block + status::REASON, 5);
+                        link.write(block + status::STATE, CoreState::Panicked.word());
+                    }
+                    Restarted => link.write(status::EPOCH, 4),
+                    _ => {}
+                }
+            });
+            let result = client.call(&7, BUDGET);
+            fake_doorbell::clear_hook();
+            match case {
+                Reply => {
+                    assert_eq!(result.unwrap(), 7);
+                    assert_eq!(client.wait_stats().late, 1);
+                    assert_eq!(client.wait_stats().deadline_checks, 1);
+                }
+                Empty => {
+                    assert!(matches!(result, Err(Error::Timeout)));
+                    assert_eq!(client.wait_stats().deadline_checks, 1);
+                }
+                Terminal => assert!(matches!(
+                    result,
+                    Err(Error::PeerDown(PeerDown::Terminal {
+                        core: 1,
+                        state: CoreState::Panicked,
+                        reason: 5
+                    }))
+                )),
+                Restarted => assert!(matches!(result, Err(Error::PeerDown(PeerDown::Restarted)))),
+            }
+        }
+    }
+
+    #[test]
+    fn direct_client_discards_stale_flagged_and_zero_timeout_replies() {
+        let direct = Direct::new();
+        let mut client = direct.open().unwrap();
+        assert!(matches!(client.call(&7, BUDGET), Err(Error::Timeout)));
+        assert!(matches!(
+            client.call(&8, Duration::ZERO),
+            Err(Error::Timeout)
+        ));
+        direct.hook(|_, _, _, requests, replies| {
+            for (item, wake) in [(7, true), (8, false), (9, true)] {
+                assert_eq!(requests.pop_request(), Ok(Some((item, wake))));
+                replies.push(&item).unwrap();
+            }
+        });
+        assert_eq!(client.call(&9, BUDGET).unwrap(), 9);
+        fake_doorbell::clear_hook();
+        assert_eq!(client.rx.tail(), 3);
+    }
+
+    #[test]
+    fn direct_client_reopen_forces_pending_request_after_validating_generation() {
+        let direct = Direct::new();
+        let mut client = direct.open().unwrap();
+        client.tx.inner.push_request(&7, true).unwrap();
+        drop(client);
+        assert_eq!(direct.link().read(DOWN + shm::HEAD), 1);
+        assert_eq!(direct.page.read(DOORBELL), 0);
+        direct.link().write(link::SHM_GENERATION, 4);
+        assert!(matches!(
+            direct.open(),
+            Err(Error::PeerDown(PeerDown::Restarted))
+        ));
+        assert_eq!(direct.page.read(DOORBELL), 0);
+        direct.link().write(link::SHM_GENERATION, 2);
+        let _client = direct.open().unwrap();
+        assert_eq!(direct.page.read(DOORBELL), 1 << 27);
+    }
+}

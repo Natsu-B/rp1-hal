@@ -108,6 +108,10 @@ pub(crate) struct Doorbell {
 impl Doorbell {
     /// Map `rp1:doorbell` for `pin` of `core` (0 = proc0).
     pub(crate) fn open(core: usize, pin: u8) -> Result<Self> {
+        #[cfg(test)]
+        if let Some(page) = fake_doorbell::PAGE.with(|page| page.borrow().clone()) {
+            return Ok(Self::new(page, core, pin));
+        }
         let page = Mapping::open(
             &format!("rp1:{}", uio::DOORBELL),
             DOORBELL_PHYS,
@@ -133,6 +137,45 @@ impl Doorbell {
         self.ring();
         let _ = self.page.read(self.offset - 0x2000);
         rp1_proto::barrier();
+        #[cfg(test)]
+        fake_doorbell::on_force();
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod fake_doorbell {
+    use super::*;
+    use std::cell::RefCell;
+
+    type ForceHook = Box<dyn FnMut()>;
+    thread_local! {
+        pub(super) static PAGE: RefCell<Option<Rc<Mapping>>> = const { RefCell::new(None) };
+        static FORCE: RefCell<Option<ForceHook>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn with_page<T>(page: Rc<Mapping>, open: impl FnOnce() -> T) -> T {
+        PAGE.with(|slot| {
+            assert!(slot.replace(Some(page)).is_none());
+            let result = open();
+            slot.replace(None);
+            result
+        })
+    }
+
+    pub(crate) fn hook(force: impl FnMut() + 'static) {
+        FORCE.with(|slot| assert!(slot.replace(Some(Box::new(force))).is_none()));
+    }
+
+    pub(crate) fn clear_hook() {
+        FORCE.with(|slot| slot.replace(None));
+    }
+
+    pub(super) fn on_force() {
+        FORCE.with(|slot| {
+            if let Some(force) = slot.borrow_mut().as_mut() {
+                force();
+            }
+        });
     }
 }
 
