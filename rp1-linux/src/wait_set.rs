@@ -32,6 +32,7 @@ pub struct WaitSet<'a, 'endpoints> {
     cores: u8,
     tickets_armed: bool,
     cleanup_checked: bool,
+    check_before_scan: bool,
     #[cfg(test)]
     before_arm: Option<Box<dyn FnOnce()>>,
 }
@@ -82,9 +83,19 @@ impl<T: Message> RingRx<T> {
     }
 
     pub(crate) fn wait_irq(&mut self, end: Option<Instant>, report_lost: bool) -> Result<()> {
+        self.wait_irq_inner(end, report_lost, false)
+    }
+
+    pub(crate) fn wait_rpc(&mut self, end: Instant) -> Result<()> {
+        self.wait_irq_inner(Some(end), false, true)
+    }
+
+    fn wait_irq_inner(&mut self, end: Option<Instant>, report_lost: bool, rpc: bool) -> Result<()> {
         let session = self.session.clone();
         let mut endpoints = [self as &mut dyn Waitable];
-        WaitSet::new(session, &mut endpoints)?.wait_inner(end, report_lost)?;
+        let mut wait = WaitSet::new(session, &mut endpoints)?;
+        wait.check_before_scan = rpc;
+        wait.wait_inner(end, report_lost)?;
         Ok(())
     }
 }
@@ -110,6 +121,7 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
             cores,
             tickets_armed: false,
             cleanup_checked: false,
+            check_before_scan: false,
             #[cfg(test)]
             before_arm: None,
         })
@@ -143,8 +155,15 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
 
     fn prepare_inner(&mut self, end: Option<Instant>) -> Result<WaitState> {
         self.intake(0)?;
-        // The ring heads are in local DDR. The initial empty scan needs no BAR2 reads.
-        if let Some(index) = self.endpoints.iter().position(|ep| ep.available() != 0) {
+        // A solicited RPC reply can arrive while we verify the serving cores.
+        // Do those required reads before the first head sample so a ready reply
+        // avoids arm and cancel. Passive receivers sample empty DDR first.
+        if self.check_before_scan {
+            if let Some(index) = self.scan()? {
+                return Ok(WaitState::Ready(index));
+            }
+            self.cleanup_checked = false;
+        } else if let Some(index) = self.endpoints.iter().position(|ep| ep.available() != 0) {
             self.check()?;
             return Ok(WaitState::Ready(index));
         }

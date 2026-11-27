@@ -173,6 +173,13 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     #[cfg(feature = "link-wake")]
     let mut pulse_failures = 0;
     loop {
+        let progress = ping
+            .serve(8, |value| {
+                #[cfg(feature = "ping-test")]
+                let value = probe.reply(value);
+                value
+            })
+            .expect("ping serve failed");
         #[cfg(feature = "link-wake")]
         {
             let _ = probe.host_irq.pulse_terminals();
@@ -190,13 +197,6 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 continue;
             }
         }
-        let progress = ping
-            .serve(8, |value| {
-                #[cfg(feature = "ping-test")]
-                let value = probe.reply(value);
-                value
-            })
-            .expect("ping serve failed");
         #[cfg(not(feature = "ping-poll"))]
         {
             if let Some(endpoint) = channel.as_mut() {

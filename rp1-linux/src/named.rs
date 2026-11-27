@@ -201,7 +201,7 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
     fn wait_reply(&mut self, index: u32, end: Instant) -> Result<Rep> {
         loop {
             match if self.rx.ticket.is_some() {
-                self.rx.wait_irq(Some(end), false)
+                self.rx.wait_rpc(end)
             } else {
                 self.rx.wait(end)
             } {
