@@ -95,6 +95,7 @@ pub mod adc;
 pub mod clocks;
 pub mod cold;
 pub mod dma;
+mod driver_irq;
 pub mod gpio;
 pub mod i2c;
 pub mod linux_blocks;

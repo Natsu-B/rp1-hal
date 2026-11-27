@@ -1,29 +1,28 @@
 //! UART1's shared PL011 interrupt and thread-mode adapters.
 
 use super::*;
-use crate::timer::{Instant, WaitTimer};
-use rp1_rt::interrupt::{Binding, BlockIrq, Line as NvicLine, Priority, Slot};
+use crate::{
+    driver_irq::{self, CoreState, Instance, Managed, PerCore, Source},
+    timer::{Instant, WaitTimer},
+};
+use rp1_rt::interrupt::{Binding, BlockIrq, Slot};
 
-const UART_IRQ: u8 = 42;
+const UART_IRQ: u8 = rp1_pac::Interrupt::UART1 as u8;
 type Line<const CORE: u8> = Binding<BlockIrq<{ rp1_proto::BlockId::Uart1 as u16 }>, UART_IRQ, CORE>;
 const UART: u8 = 1;
-const CEILING: u8 = 4;
-const PRIORITY: Priority = Priority::new(CEILING).unwrap();
 
 /// Capability carried by UART1 parts when their declaration reserves the IRQ for the HAL.
 #[derive(Clone, Copy)]
 // Like the pins and binding, a split half can be put in its core's Slot for try I/O.
-pub struct Irq<const CORE: u8>(PhantomData<core::cell::Cell<()>>);
+pub struct Irq<const N: u8, const CORE: u8>(PhantomData<core::cell::Cell<()>>);
 
-impl<const CORE: u8, P: CompletePins<UART>> Parts<UART, P, Irq<CORE>> {
+impl<const CORE: u8, P: CompletePins<UART>> Parts<UART, P, Irq<UART, CORE>> {
     /// # Safety
     /// Only the generated resource constructor may consume this line. It must
     /// install the matching UART1 handler on the same core.
     #[doc(hidden)]
     pub unsafe fn __new(token: Token<UART>, pins: Pins<UART, P>, line: Line<CORE>) -> Self {
-        let stored =
-            with_state::<CORE, _>(|state| state.line = Delivery::Unstarted(line.into_line()));
-        debug_assert!(stored.is_some());
+        StateSlots::bind::<CORE>(line.into_line());
         Self {
             token,
             pins,
@@ -32,106 +31,72 @@ impl<const CORE: u8, P: CompletePins<UART>> Parts<UART, P, Irq<CORE>> {
     }
 }
 
-// Ordinary DSRAM statics have one physical copy per core. Slot's core parameter
-// also checks the route in the generated handler and resource constructor.
-static PROC0: Slot<State, 0, CEILING> = Slot::new(State::new());
-static PROC1: Slot<State, 1, CEILING> = Slot::new(State::new());
+static PROC0: CoreState<State, UART_IRQ, 0> = Slot::new(Managed::new(State::new()));
+static PROC1: CoreState<State, UART_IRQ, 1> = Slot::new(Managed::new(State::new()));
+type StateSlots = PerCore<State, UART_IRQ>;
 
-#[inline(always)]
-fn with_state<const CORE: u8, T>(f: impl FnOnce(&mut State) -> T) -> Option<T> {
-    const { assert!(CORE < 2) };
-    if CORE == 0 {
-        PROC0.try_with(f)
-    } else {
-        PROC1.try_with(f)
-    }
+impl Instance<UART_IRQ> for State {
+    const PROC0: &'static CoreState<Self, UART_IRQ, 0> = &PROC0;
+    const PROC1: &'static CoreState<Self, UART_IRQ, 1> = &PROC1;
 }
 
 /// # Safety
-/// Called only by the generated UART1 handler on CORE.
+/// Called only by the generated UART handler on CORE for instance N.
 /// Returns the serviced PL011 bits for the parity fixture.
 #[doc(hidden)]
 #[inline(always)]
-pub unsafe fn __on_interrupt<const CORE: u8>() -> u32 {
-    let pending = with_state::<CORE, _>(|state| {
-        // A stale NVIC entry can arrive after the driver asserted reset.
-        if !state.armed && Mmio.read(RESETS_DONE1) & reset_bit(UART) == 0 {
-            return 0;
-        }
-        state.service(&mut Mmio)
-    })
-    .unwrap_or(0);
-    if pending != 0 {
-        rp1_rt::send_event();
-    }
-    pending
+pub unsafe fn __on_interrupt<const N: u8, const CORE: u8>() -> u32 {
+    const { assert!(N == UART) };
+    StateSlots::on_interrupt::<CORE, _>(&mut Mmio)
 }
 
-#[derive(Default)]
-enum Delivery {
-    #[default]
-    Unavailable,
-    Unstarted(NvicLine<UART_IRQ>),
-    Started(NvicLine<UART_IRQ>),
+impl From<driver_irq::Error> for Error {
+    fn from(error: driver_irq::Error) -> Self {
+        match error {
+            driver_irq::Error::Busy => Self::Busy,
+            driver_irq::Error::IrqUnavailable => Self::IrqUnavailable,
+        }
+    }
 }
 
 #[derive(Default)]
 struct State {
-    line: Delivery,
     source: u32,
-    armed: bool,
 }
 
 impl State {
     const fn new() -> Self {
-        Self {
-            line: Delivery::Unavailable,
-            source: 0,
-            armed: false,
-        }
+        Self { source: 0 }
     }
+}
 
-    // The thread has checked admission before borrowing this slot. Only its
-    // first arm may enable the NVIC line. Later removal is an error.
-    fn check_line(&self) -> Result<(), Error> {
-        match &self.line {
-            Delivery::Unstarted(_) => Ok(()),
-            Delivery::Started(line) if line.is_enabled() => Ok(()),
-            _ => Err(Error::IrqUnavailable),
-        }
-    }
+impl<R: Registers> Source<R> for State {
+    type Error = Error;
 
-    fn start_line(&mut self) {
-        if matches!(self.line, Delivery::Unstarted(_))
-            && let Delivery::Unstarted(mut line) = core::mem::take(&mut self.line)
-        {
-            line.set_priority(PRIORITY);
-            line.enable();
-            self.line = Delivery::Started(line);
-        }
+    fn is_armed(&self) -> bool {
+        self.source != 0
     }
 
     // Return true when a post-arm probe is needed.
-    fn arm(&mut self, io: &mut impl Registers, source: u32) -> Result<bool, Error> {
-        if self.armed {
+    fn arm(&mut self, io: &mut R, source: u32) -> Result<bool, Error> {
+        if self.source != 0 {
             return Ok(false);
         }
         if io.read(base(UART) + IMSC) != 0 {
             return Err(Error::IrqUnavailable);
         }
         self.source = source;
-        self.armed = true;
         io.write(base(UART) + IMSC, source);
         Ok(true)
     }
 
-    fn service(&mut self, io: &mut impl Registers) -> u32 {
+    fn service(&mut self, io: &mut R) -> u32 {
+        // A stale NVIC entry can arrive after the driver asserted reset.
+        if self.source == 0 && io.read(RESETS_DONE1) & reset_bit(UART) == 0 {
+            return 0;
+        }
         let asserted = io.read(base(UART) + MIS);
-        let owned = if self.armed {
-            asserted & self.source
-        } else {
-            0
-        };
+        let owned = asserted & self.source;
         // Retire the whole waiting direction on a hit. Mask other asserted
         // sources too, so an accidental raw unmask cannot hold the line high.
         let clear = (if owned != 0 { self.source } else { 0 }) | (asserted & !owned);
@@ -140,29 +105,17 @@ impl State {
             io.write(base(UART) + IMSC, imsc & !clear);
         }
         if owned != 0 {
-            self.armed = false;
+            self.source = 0;
         }
         owned
     }
 
-    fn retire(&mut self, io: &mut impl Registers) {
-        if self.armed {
+    fn retire(&mut self, io: &mut R) {
+        if self.source != 0 {
             let imsc = io.read(base(UART) + IMSC);
             io.write(base(UART) + IMSC, imsc & !self.source);
-            self.armed = false;
+            self.source = 0;
         }
-        self.source = 0;
-    }
-}
-
-struct Active<const CORE: u8>;
-
-impl<const CORE: u8> Drop for Active<CORE> {
-    fn drop(&mut self) {
-        // Only this thread and the priority-4 handler borrow the slot. A drop
-        // in the thread cannot run inside another borrow.
-        let retired = with_state::<CORE, _>(|state| state.retire(&mut Mmio));
-        debug_assert!(retired.is_some());
     }
 }
 
@@ -174,15 +127,15 @@ enum Operation<'a> {
 }
 
 impl Operation<'_> {
-    fn probe(&mut self) -> Option<Result<usize, Error>> {
+    fn probe(&mut self, io: &mut Mmio) -> Option<Result<usize, Error>> {
         match self {
-            Self::Read(first) => read_byte(&mut Mmio, UART).transpose().map(|value| {
+            Self::Read(first) => read_byte(io, UART).transpose().map(|value| {
                 **first = value?;
                 Ok(1)
             }),
             Self::Write(tx, bytes) => tx.enqueue(UART, bytes).map(Ok),
             Self::TxRoom => {
-                let flags = read_flags();
+                let flags = io.read(base(UART) + FR);
                 (flags & FR_TXFF == 0).then_some(Ok(flags as usize))
             }
         }
@@ -193,64 +146,17 @@ fn read_flags() -> u32 {
     Mmio.read(base(UART) + FR)
 }
 
-// The timer waiter checks the deadline and probes after arming and waking.
-// Register UART from inside that checked probe to keep expired calls side-effect free.
 #[inline(never)]
 fn wait_for<const CORE: u8>(
     wait: &mut WaitTimer,
     end: Deadline,
     mut operation: Operation<'_>,
 ) -> Result<usize, Error> {
-    let mut context = wait.thread_context()?;
-    with_state::<CORE, _>(|state| state.check_line()).ok_or(Error::Busy)??;
     let source = match operation {
         Operation::Read(_) => RX_INTERRUPTS,
         Operation::Write(..) | Operation::TxRoom => int::TX,
     };
-    let mut active = None;
-    let mut post_alarm_probe = true;
-    context.wait_until(end, || {
-        if active.is_some() && !core::mem::take(&mut post_alarm_probe) {
-            let fired = with_state::<CORE, _>(|state| !state.armed).unwrap_or(false);
-            if !fired && Timer::new().now() < end.instant() {
-                // Unrelated events do not turn an armed UART wait into polling.
-                return None;
-            }
-        }
-        probe_and_arm(&mut operation, Operation::probe, || {
-            if Timer::new().now() >= end.instant() {
-                return Ok(false);
-            }
-            let armed = with_state::<CORE, _>(|state| {
-                let armed = state.arm(&mut Mmio, source)?;
-                if armed {
-                    state.start_line();
-                }
-                Ok::<_, Error>(armed)
-            })
-            .ok_or(Error::Busy)??;
-            if armed && active.is_none() {
-                active = Some(Active::<CORE>);
-            }
-            Ok(armed)
-        })
-    })?
-}
-
-// Pass the probe's input explicitly so the waiter can borrow it on both probes.
-fn probe_and_arm<T, S>(
-    state: &mut S,
-    mut probe: impl FnMut(&mut S) -> Option<Result<T, Error>>,
-    arm: impl FnOnce() -> Result<bool, Error>,
-) -> Option<Result<T, Error>> {
-    if let Some(ready) = probe(state) {
-        return Some(ready);
-    }
-    match arm() {
-        Ok(true) => probe(state),
-        Ok(false) => None,
-        Err(error) => Some(Err(error)),
-    }
+    StateSlots::wait_for::<CORE, _, _>(&mut Mmio, wait, end, source, |io| operation.probe(io))
 }
 
 /// Synchronous UART1 I/O using its device IRQ, the dedicated wait alarm and WFE.
@@ -295,7 +201,7 @@ macro_rules! adapter_timeout {
 
 adapter_timeout!(Blocking, BlockingTx, BlockingRx);
 
-impl<const PIN: u8, const CORE: u8> Rx<UART, PIN, Irq<CORE>> {
+impl<const PIN: u8, const CORE: u8> Rx<UART, PIN, Irq<UART, CORE>> {
     /// Borrow this half for synchronous IRQ-backed reads.
     pub fn blocking<'a>(&'a mut self, wait: &'a mut WaitTimer) -> BlockingRx<'a, CORE> {
         BlockingRx {
@@ -306,7 +212,7 @@ impl<const PIN: u8, const CORE: u8> Rx<UART, PIN, Irq<CORE>> {
     }
 }
 
-impl<const PIN: u8, const CORE: u8> Tx<UART, PIN, Irq<CORE>> {
+impl<const PIN: u8, const CORE: u8> Tx<UART, PIN, Irq<UART, CORE>> {
     /// Borrow this half for synchronous IRQ-backed writes and flush.
     pub fn blocking<'a>(&'a mut self, wait: &'a mut WaitTimer) -> BlockingTx<'a, CORE> {
         BlockingTx {
@@ -317,7 +223,7 @@ impl<const PIN: u8, const CORE: u8> Tx<UART, PIN, Irq<CORE>> {
     }
 }
 
-impl<const TX: u8, const RX: u8, const CORE: u8> Uart<UART, PinTuple<TX, RX>, Irq<CORE>>
+impl<const TX: u8, const RX: u8, const CORE: u8> Uart<UART, PinTuple<TX, RX>, Irq<UART, CORE>>
 where
     Pin<TX>: TxPin<UART>,
     Pin<RX>: RxPin<UART>,
@@ -575,6 +481,9 @@ mod tests {
 
     impl Registers for Pl011 {
         fn read(&mut self, address: usize) -> u32 {
+            if address == RESETS_DONE1 {
+                return reset_bit(UART);
+            }
             match address - base(UART) {
                 IMSC => self.mask,
                 MIS => self.asserted & self.mask,
@@ -630,46 +539,6 @@ mod tests {
     }
 
     #[test]
-    fn data_on_either_side_of_arm_is_consumed_once() {
-        for phase in 0..3 {
-            let ready = Cell::new(phase == 0);
-            let arms = Cell::new(0);
-            let read = |_: &mut ()| ready.replace(false).then_some(Ok(42));
-            let arm = || {
-                arms.set(arms.get() + 1);
-                if phase == 1 {
-                    ready.set(true);
-                }
-                Ok(true)
-            };
-            let first = probe_and_arm(&mut (), read, arm);
-            if phase == 2 {
-                assert_eq!(first, None);
-                ready.set(true);
-                assert_eq!(probe_and_arm(&mut (), read, arm), Some(Ok(42)));
-            } else {
-                assert_eq!(first, Some(Ok(42)));
-            }
-            assert_eq!(arms.get(), u8::from(phase != 0));
-            assert!(!ready.get());
-        }
-    }
-
-    #[test]
-    fn deadline_probe_preserves_completion_without_starting_a_new_wait() {
-        // A UART IRQ was never delivered. The deadline alarm gets one final
-        // observation; it can see retained data or finish with Timeout.
-        assert_eq!(
-            probe_and_arm(&mut (), |_| Some(Ok(42)), || panic!("rearmed at deadline")),
-            Some(Ok(42))
-        );
-        assert_eq!(
-            probe_and_arm(&mut (), |_| None::<Result<u8, Error>>, || Ok(false)),
-            None
-        );
-    }
-
-    #[test]
     fn timed_out_source_cannot_wake_next_direction_but_incoming_data_is_retained() {
         let mut io = Pl011::default();
         let mut state = State::default();
@@ -702,13 +571,13 @@ mod tests {
         io.asserted = int::TX;
         assert_eq!(state.service(&mut io), 0);
         assert_eq!(io.mask, RX_INTERRUPTS);
-        assert!(state.armed);
+        assert_ne!(state.source, 0);
 
         io.mask |= int::TX;
         io.asserted |= int::RX;
         assert_eq!(state.service(&mut io), int::RX);
         assert_eq!(io.mask, 0);
-        assert!(!state.armed);
+        assert_eq!(state.source, 0);
     }
 
     #[test]

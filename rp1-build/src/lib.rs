@@ -379,17 +379,19 @@ fn resources(
         let managed: Vec<_> = driver_irq::DRIVERS
             .iter()
             .filter(|irq| irq.is_managed(c))
-            .collect();
-        for irq in &managed {
-            let vector = irq.vector;
+            .map(|irq| Ok((irq, irq.verified_line()?)))
+            .collect::<Result<Vec<_>>>()?;
+        for (irq, line) in &managed {
+            let vector = line.name;
             let module = irq.module;
             let instance = irq.instance;
+            let n = irq.number()?;
             writeln!(
                 s,
                 "#[unsafe(export_name = \"__rp1_p{index}_{vector}\")]\n\
                 #[unsafe(link_section = \".isram.text.__rp1_p{index}_{vector}\")]\n\
                 unsafe extern \"C\" fn {instance}_wait_proc{index}() {{\n\
-                    unsafe {{ ::rp1_hal::{module}::__on_interrupt::<{index}>() }};\n\
+                    unsafe {{ ::rp1_hal::{module}::__on_interrupt::<{n}, {index}>() }};\n\
                 }}"
             )?;
         }
@@ -420,8 +422,8 @@ fn resources(
                     instance,
                     managed
                         .iter()
-                        .any(|irq| irq.instance == name)
-                        .then_some(index),
+                        .find(|(irq, _)| irq.instance == name)
+                        .map(|(_, line)| (*line, index)),
                 ),
             })
             .collect::<Result<Vec<_>>>()?;
@@ -438,7 +440,11 @@ fn resources(
         }
         let lines: Vec<_> = board::IRQ_VERIFIED
             .iter()
-            .filter(|line| !managed.iter().any(|irq| irq.vector == line.name))
+            .filter(|line| {
+                !managed
+                    .iter()
+                    .any(|(_, managed_line)| managed_line.name == line.name)
+            })
             .filter(|line| match line.owner {
                 board::IrqOwner::GpioBank0 => !c.gpio_irq.is_empty() || c.doorbell.is_some(),
                 board::IrqOwner::Alarm(alarm) => c.timer.contains(&format!("ALARM{alarm}")),
@@ -635,7 +641,7 @@ fn instance_resource(
     source: &mut String,
     name: &str,
     instance: &metadata::Instance,
-    managed_core: Option<usize>,
+    managed: Option<(&board::VerifiedIrq, usize)>,
 ) -> Result<(String, String, Vec<u8>)> {
     use metadata::Instance;
     let n = board::find_instance(name)
@@ -674,8 +680,8 @@ fn instance_resource(
         .collect::<Vec<_>>();
     let alias = format!("{driver}{n}");
     let required = format!("{alias}Pins");
-    let capability = managed_core
-        .map(|core| format!(", ::rp1_hal::{module}::Irq<{core}>"))
+    let capability = managed
+        .map(|(_, core)| format!(", ::rp1_hal::{module}::Irq<{n}, {core}>"))
         .unwrap_or_default();
     writeln!(
         source,
@@ -690,20 +696,22 @@ fn instance_resource(
     let mut builder = format!("::rp1_hal::{module}::Pins::<{n}>::builder()");
     for (role, _) in &signals {
         // The managed resource constructor wraps the whole builder in its unsafe block.
-        if managed_core.is_some() {
+        if managed.is_some() {
             write!(builder, ".{role}(::rp1_hal::gpio::Pin::new())")?;
         } else {
             write!(builder, ".{role}(unsafe {{ ::rp1_hal::gpio::Pin::new() }})")?;
         }
     }
-    let (ty, init) = if managed_core.is_some() {
+    let (ty, init) = if let Some((line, core)) = managed {
         let ty = format!("{alias}Parts");
         writeln!(
             source,
             "/// Declared parts including the driver's IRQ capability.\npub type {ty} = {parts};"
         )?;
+        let irq = line.irq;
+        let source_type = line.owner.source_type();
         let init = format!(
-            "unsafe {{ {ty}::__new({token}, {builder}, ::rp1_rt::interrupt::Binding::new()) }}"
+            "unsafe {{ {ty}::__new({token}, {builder}, ::rp1_rt::interrupt::Binding::<::rp1_rt::interrupt::{source_type}, {irq}, {core}>::new()) }}"
         );
         (ty, init)
     } else {
@@ -929,9 +937,9 @@ mod tests {
             let symbol = format!("__rp1_p{core}_UART1");
             assert!(source.contains(&format!("export_name = \"{symbol}\"")));
             assert!(source.contains(&format!(".isram.text.{symbol}")));
-            assert!(source.contains(&format!("uart::__on_interrupt::<{core}>()")));
+            assert!(source.contains(&format!("uart::__on_interrupt::<1, {core}>()")));
             assert!(source.contains(&format!(
-                "Uart1Parts = ::rp1_hal::uart::Parts<1, Uart1Pins, ::rp1_hal::uart::Irq<{core}>>"
+                "Uart1Parts = ::rp1_hal::uart::Parts<1, Uart1Pins, ::rp1_hal::uart::Irq<1, {core}>>"
             )));
             assert!(source.contains("Uart1Parts::__new("));
             assert!(irq_fields(&source, core).is_empty());

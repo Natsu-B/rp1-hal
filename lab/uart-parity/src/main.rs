@@ -28,8 +28,8 @@ const STREAM_CHUNK: usize = 128;
 const STREAM_TX_IRQ_MAX: u32 = STREAM.div_ceil(WATERMARK) as u32;
 const STREAM_RX_IRQ_MAX: u32 = STREAM_TX_IRQ_MAX + (STREAM / STREAM_CHUNK) as u32;
 
-type Tx1 = Tx<1, 0, Irq<0>>;
-type Rx1 = Rx<1, 1, Irq<0>>;
+type Tx1 = Tx<1, 0, Irq<1, 0>>;
+type Rx1 = Rx<1, 1, Irq<1, 0>>;
 
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 struct Counts {

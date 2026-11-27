@@ -11,10 +11,10 @@ error[E0599]: no method named `blocking` found for mutable reference `&mut rp1_h
    |                  ^^^^^^^^ method not found in `&mut rp1_hal::uart::Uart<1, (rp1_hal::gpio::Pin<0>, rp1_hal::gpio::Pin<1>)>`
 
 error[E0308]: mismatched types
-  --> tests/ui/uart_wait_binding.rs:21:64
+  --> tests/ui/uart_wait_binding.rs:21:67
    |
-21 |     let _ = unsafe { Parts::<1, _, Irq<0>>::__new(token, pins, irq) };
-   |                      ----------------------------              ^^^ expected `1`, found `2`
+21 |     let _ = unsafe { Parts::<1, _, Irq<1, 0>>::__new(token, pins, irq) };
+   |                      -------------------------------              ^^^ expected `1`, found `2`
    |                      |
    |                      arguments to this function are incorrect
    |
@@ -27,15 +27,31 @@ note: associated function defined here
    |                   ^^^^^
 
 error[E0308]: mismatched types
-  --> tests/ui/uart_wait_binding.rs:25:28
+  --> tests/ui/uart_wait_binding.rs:29:67
    |
-25 |     let _ = Uart::join(tx, rx);
+29 |     let _ = unsafe { Parts::<1, _, Irq<1, 0>>::__new(token, pins, irq) };
+   |                      -------------------------------              ^^^ expected `42`, found `43`
+   |                      |
+   |                      arguments to this function are incorrect
+   |
+   = note: expected struct `Binding<BlockIrq<1>, 42, 0>`
+              found struct `Binding<BlockIrq<1>, 43, 0>`
+note: associated function defined here
+  --> src/uart/irq_wait.rs
+   |
+   |     pub unsafe fn __new(token: Token<UART>, pins: Pins<UART, P>, line: Line<CORE>) -> Self {
+   |                   ^^^^^
+
+error[E0308]: mismatched types
+  --> tests/ui/uart_wait_binding.rs:33:28
+   |
+33 |     let _ = Uart::join(tx, rx);
    |             ----------     ^^ expected `0`, found `1`
    |             |
    |             arguments to this function are incorrect
    |
-   = note: expected struct `Rx<1, 1, Irq<0>>`
-              found struct `Rx<1, 1, Irq<1>>`
+   = note: expected struct `Rx<1, 1, Irq<1, 0>>`
+              found struct `Rx<1, 1, Irq<1, 1>>`
 note: associated function defined here
   --> src/uart.rs
    |
