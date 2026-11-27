@@ -33,6 +33,7 @@ const RESETS_DONE1: usize = 0x4001_401c;
 const TIMEOUT_US: u32 = 10_000;
 const DEFAULT_PERIOD: u32 = u16::MAX as u32;
 const NS_PER_TICK: u64 = 1_000_000_000 / XOSC_HZ as u64;
+// A full-high compare must fit in the 32-bit DUTY register.
 const MAX_PERIOD_NS: u64 = u32::MAX as u64 * NS_PER_TICK;
 
 const fn base(n: u8) -> usize {
@@ -182,7 +183,7 @@ pub struct Running;
 /// A failed state transition, retaining the original owner.
 pub type TransitionError<D> = crate::FreeError<D, Error>;
 
-/// Native compare ticks. The channel checks the value against its programmed range.
+/// Native compare ticks. The channel checks the value against its cycle length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DutyTicks(u32);
 
@@ -217,7 +218,7 @@ impl Config {
         Self(Period::Nanoseconds(period))
     }
 
-    /// An exact native period, primarily for register-level diagnostics.
+    /// An exact cycle length in clock ticks. Programs RANGE to `ticks - 1`.
     pub const fn from_ticks(ticks: u32) -> Self {
         Self(Period::Ticks(ticks))
     }
@@ -235,8 +236,8 @@ impl Config {
             Period::Ticks(ticks) if ticks != 0 => u64::from(ticks),
             _ => return Err(Error::Invalid),
         };
-        let range = u32::try_from(ticks).map_err(|_| Error::Invalid)?;
-        Ok(Actual { range })
+        let ticks = u32::try_from(ticks).map_err(|_| Error::Invalid)?;
+        Ok(Actual { ticks })
     }
 }
 
@@ -245,11 +246,10 @@ const fn round_nearest(numerator: u64, denominator: u64) -> u64 {
     (numerator + denominator / 2) / denominator
 }
 
-/// Effective values calculated from the programmed registers, using the
-/// trailing-edge RANGE convention. These are calculated, not measured.
+/// Effective values calculated using the trailing-edge RANGE+1 convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Actual {
-    range: u32,
+    ticks: u32,
 }
 
 impl Actual {
@@ -258,13 +258,14 @@ impl Actual {
     }
 
     /// Denominator of the exact programmed frequency, `clock() / cycle_ticks()`.
-    /// The RANGE endpoint convention is HW unverified.
+    /// Equals the programmed RANGE plus one.
     pub const fn cycle_ticks(self) -> u64 {
-        self.range as u64
+        self.ticks as u64
     }
 
+    /// Raw RANGE register value.
     pub const fn range_ticks(self) -> u32 {
-        self.range
+        self.ticks - 1
     }
 
     pub const fn period(self) -> NanosDurationU64 {
@@ -290,7 +291,7 @@ impl<const N: u8, const C: u8> Channel<N, C, Disabled> {
     fn new() -> Self {
         Self {
             actual: Actual {
-                range: DEFAULT_PERIOD,
+                ticks: DEFAULT_PERIOD,
             },
             _state: core::marker::PhantomData,
             _core: core::marker::PhantomData,
@@ -360,7 +361,7 @@ impl<const N: u8, const C: u8, State> Channel<N, C, State> {
         clock_current(&mut Mmio, N)
     }
 
-    /// Native 32-bit compare, 0..=range. Zero is low and range is continuously high
+    /// Native 32-bit compare, 0..=cycle_ticks. Zero is low and RANGE+1 is continuously high
     /// in normal polarity. DUTY has its own strobe and, per the datasheet (Table 26),
     /// takes effect at the next overflow of a running channel (HW: not verified).
     /// Each call writes block-global SET_UPDATE as in the Linux driver. Calls
@@ -373,7 +374,7 @@ impl<const N: u8, const C: u8, State> Channel<N, C, State> {
     /// at its last level and keep the writes from latching (HW unverified).
     #[inline(always)]
     pub fn try_set_duty_ticks(&mut self, duty: DutyTicks) -> Result<(), Error> {
-        set_duty(&mut Mmio, N, C, self.actual.range, duty.ticks())
+        set_duty(&mut Mmio, N, C, self.actual.ticks, duty.ticks())
     }
 
     fn transition<Next>(
@@ -520,7 +521,7 @@ impl<const N: u8, const C: u8, const P: u8, State> SetDutyCycle for Output<N, C,
     }
     fn set_duty_cycle(&mut self, duty: u16) -> Result<(), Error> {
         self.check_clock()?;
-        let ticks = scale_duty(self.actual().range, duty);
+        let ticks = scale_duty(self.actual.ticks, duty);
         self.try_set_duty_ticks(DutyTicks::new(ticks))
     }
 }
@@ -606,14 +607,17 @@ fn configure(io: &mut impl Hardware, n: u8, c: u8, config: Config) -> Result<Act
         return Err(Error::Enabled);
     }
     io.write(base(n) + CHAN_DUTY + c as usize * STRIDE, 0);
-    io.write(base(n) + CHAN_RANGE + c as usize * STRIDE, actual.range);
+    io.write(
+        base(n) + CHAN_RANGE + c as usize * STRIDE,
+        actual.range_ticks(),
+    );
     update(io, n);
     Ok(actual)
 }
 
 #[inline(always)]
-fn set_duty(io: &mut impl Hardware, n: u8, c: u8, range: u32, duty: u32) -> Result<(), Error> {
-    if duty > range {
+fn set_duty(io: &mut impl Hardware, n: u8, c: u8, ticks: u32, duty: u32) -> Result<(), Error> {
+    if duty > ticks {
         return Err(Error::Invalid);
     }
     io.write(base(n) + CHAN_DUTY + c as usize * STRIDE, duty);
@@ -644,7 +648,7 @@ fn start(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
         io.write(base(n) + CHAN_CTRL + offset, TRAILING_EDGE);
         io.write(base(n) + CHAN_PHASE + offset, 0);
         io.write(base(n) + CHAN_DUTY + offset, 0);
-        io.write(base(n) + CHAN_RANGE + offset, DEFAULT_PERIOD);
+        io.write(base(n) + CHAN_RANGE + offset, DEFAULT_PERIOD - 1);
     }
     update(io, n);
     Ok(())
@@ -761,7 +765,10 @@ mod tests {
             assert_eq!(f.regs[&(base(n) + FIFO_CTRL)], 0);
             for c in 0..4 {
                 assert_eq!(f.regs[&(base(n) + CHAN_CTRL + c * STRIDE)], TRAILING_EDGE);
-                assert_eq!(f.regs[&(base(n) + CHAN_RANGE + c * STRIDE)], DEFAULT_PERIOD);
+                assert_eq!(
+                    f.regs[&(base(n) + CHAN_RANGE + c * STRIDE)],
+                    DEFAULT_PERIOD - 1
+                );
                 assert_eq!(f.regs[&(base(n) + CHAN_DUTY + c * STRIDE)], 0);
                 assert_eq!(f.regs[&(base(n) + CHAN_PHASE + c * STRIDE)], 0);
             }
@@ -794,7 +801,7 @@ mod tests {
     #[test]
     fn typed_configuration_rounding_and_full_range() {
         let ns = |n| Config::from_period(NanosDurationU64::from_ticks(n));
-        for (config, range) in [
+        for (config, ticks) in [
             (Config::from_frequency(HertzU32::from_raw(XOSC_HZ)), 1),
             (Config::from_frequency(HertzU32::from_raw(1_000)), 50_000),
             (Config::from_frequency(HertzU32::from_raw(20_000_000)), 3),
@@ -813,9 +820,10 @@ mod tests {
             let mut f = Fake::running(0);
             let actual = configure(&mut f, 0, 0, config).unwrap();
             assert_eq!(actual.clock().raw(), XOSC_HZ);
+            let range = ticks - 1;
             assert_eq!(actual.range_ticks(), range);
-            assert_eq!(actual.cycle_ticks(), u64::from(range));
-            assert_eq!(actual.period().ticks(), u64::from(range) * 20);
+            assert_eq!(actual.cycle_ticks(), u64::from(ticks));
+            assert_eq!(actual.period().ticks(), u64::from(ticks) * 20);
             assert_eq!(
                 f.writes,
                 [
@@ -855,7 +863,7 @@ mod tests {
             assert_eq!(configure(&mut f, 0, 1, config), Err(Error::Invalid));
         }
         assert!(f.writes.is_empty());
-        assert_eq!(f.regs[&(base(0) + CHAN_RANGE + STRIDE)], DEFAULT_PERIOD);
+        assert_eq!(f.regs[&(base(0) + CHAN_RANGE + STRIDE)], DEFAULT_PERIOD - 1);
     }
 
     #[test]
@@ -923,7 +931,7 @@ mod tests {
                 let (channel, _pin): (Channel<0, 0>, Pin<12>) = output.abort_with(&mut f);
                 channel
             };
-            assert_eq!(channel.actual().range_ticks(), DEFAULT_PERIOD);
+            assert_eq!(channel.actual().range_ticks(), DEFAULT_PERIOD - 1);
             assert_eq!(f.regs[&base(0)] & 0xf, 0b10);
             assert_eq!(
                 f.writes,
@@ -961,14 +969,14 @@ mod tests {
         configure(&mut f, 0, 0, Config::from_ticks(100)).unwrap();
         set_duty(&mut f, 0, 0, 100, 50).unwrap();
         set_enabled(&mut f, 0, 0, true).unwrap();
-        assert_eq!(f.regs[&(base(0) + CHAN_RANGE)], 100);
+        assert_eq!(f.regs[&(base(0) + CHAN_RANGE)], 99);
         assert_eq!(f.regs[&(base(0) + CHAN_DUTY)], 50);
         assert_eq!(f.regs[&base(0)], UPDATE | 1);
         let updates = f.writes.iter().filter(|&&w| w == (base(0) + SET, UPDATE));
         assert_eq!(updates.count(), 3);
     }
     /// Every configure error is returned before a register write, so the
-    /// cached period (assigned only on Ok) always matches RANGE.
+    /// cached period (assigned only on Ok) always matches RANGE+1.
     #[test]
     fn configure_errors_precede_writes() {
         let mut f = Fake::running(0);
@@ -988,7 +996,7 @@ mod tests {
             Err(Error::Precondition)
         );
         assert!(f.writes.is_empty());
-        assert_eq!(f.regs[&(base(0) + CHAN_RANGE + STRIDE)], DEFAULT_PERIOD);
+        assert_eq!(f.regs[&(base(0) + CHAN_RANGE + STRIDE)], DEFAULT_PERIOD - 1);
     }
     /// Review minor 3: freeing an output disables the channel and clears MODE like Linux's
     /// rp1_pwm_free, without touching sibling channels; enabling again restores the mode.
@@ -1044,6 +1052,7 @@ mod tests {
     }
     #[test]
     fn normalized_duty_includes_both_endpoints_without_overflow() {
+        assert_eq!(scale_duty(50_000, 32_768), 25_000);
         for period in [1, 2, 65535, 50_000_000, u32::MAX] {
             assert_eq!(scale_duty(period, 0), 0);
             assert_eq!(scale_duty(period, u16::MAX), period);

@@ -21,18 +21,18 @@ def verify(capture):
     nonce, = row(r"PWM_BOOT nonce=([0-9a-f]{8}) PLAT_INIT ok=1(?: .*)?")
     if nonce in ("00000000", "ffffffff"):
         raise ValueError("invalid boot nonce")
-    row(fr"MOTOR_API_START run={nonce} updates=100000 range=50000")
+    row(fr"MOTOR_API_START run={nonce} updates=100000 range=49999")
     clock_fields = r"([0-9a-f]+,\d+,[0-9a-f]+,\d+,\d+)"
     before, after = row(fr"MOTOR_API_CLOCK run={nonce} before={clock_fields} after={clock_fields}")
     ctrl, divider, pwm_ctrl, pwm_int, pwm_frac = before.split(",")
     shared = (before == after and int(ctrl, 16) & 3 == 3 and int(divider) == 50
               and int(pwm_ctrl, 16) & 0xBE0 == 0x840 and int(pwm_int) == 1 and int(pwm_frac) == 0)
     span, minimum, maximum, reported_shared = map(int, row(
-        fr"MOTOR_API_CONVENTION run={nonce} cycles=200000 span_us=(\d+)"
+        fr"MOTOR_API_CONVENTION run={nonce} cycles=200000 range=2500 span_us=(\d+)"
         r" min_period_us=(\d+) max_period_us=(\d+) shared=([01]) stopped=1"
     ))
     if reported_shared != shared or (shared and not (
-            40 <= minimum <= maximum <= 60 and abs(span - 10_000_000) <= 100)):
+            40 <= minimum <= maximum <= 60 and abs(span - 10_004_000) <= 100)):
         raise ValueError(f"invalid RANGE convention observation: {span} us")
 
     def waveform(phase, duty, start, end):
@@ -80,7 +80,7 @@ def verify(capture):
         r" max_late_us=(\d+) max_call_us=(\d+) max_call_upper_us=(\d+) invalid=100"
         r" invalid_native=100 register_changes=0 elapsed_us=(\d+) stopped=1 result=PASS"
     ))
-    if not (late < 1_000 and upper == raw + 1 and upper <= 10
+    if not (late < 1_000 and upper == raw + 1 and upper <= 2
             and 100_000_000 <= elapsed <= 120_000_000):
         raise ValueError("update cadence or latency outside bounds")
     if next(rows, None) is not None:
@@ -97,7 +97,7 @@ def main():
     except ValueError as exc:
         print(f"MOTOR_API_VERDICT=FAIL {exc}")
         return 1
-    convention = "RANGE" if shared else "NOT_VERIFIED"
+    convention = "RANGE+1" if shared else "NOT_VERIFIED"
     print(f"MOTOR_API_VERDICT=PASS run={nonce} updates=100000 sweep_updates=1100")
     print(f"MOTOR_API_CYCLE_TICKS={convention}")
     return 0

@@ -1,9 +1,9 @@
 # RP1 PWM driver
 
 `rp1_hal::pwm` owns PWM0 or PWM1 as a whole, with four trailing-edge channels,
-independent 32-bit periods and compares, and optional owned GPIO outputs. This implementation
-has static gates (2026-11-27) and the historical PWM0 loopback results below. PWM1, exact
-update timing and one-tick period conventions remain **HW 未検証**.
+independent 32-bit counters and compares, and optional owned GPIO outputs. This implementation
+has static gates (2026-11-27) and the PWM0 hardware results below. PWM1 and exact
+update timing remain **HW 未検証**.
 
 ## PWM0 loopback results (HW, 2026-11-05)
 
@@ -22,8 +22,8 @@ with no Linux PWM probe. These are GPIO-polling observations, not oscilloscope m
 Duty observations start after a 3 ms settling delay and reperiod observations after 5 ms.
 They establish settled behavior, but do not distinguish immediate from overflow latching
 after SET_UPDATE. The 100 ms edge-count windows and microsecond timer cannot resolve
-RANGE versus RANGE+1 at these periods (one tick is 20 ns). Those questions, PWM1 and the
-additional routes/periods in the extended plan remain unverified.
+RANGE versus RANGE+1 at these periods (one tick is 20 ns). The longer measurement
+below resolves that difference for PWM0 trailing-edge mode.
 
 ## Use and ownership
 
@@ -44,7 +44,7 @@ bundles, callers attach each PWM pin explicitly:
 fn output(token: Token<0>, pin: Pin<12>, clocks: &Clocks) -> Result<(), Error> {
     let mut channels = token.init(clocks)?;
     let actual = channels.channel0.configure(Config::from_frequency(1.kHz()))?;
-    let duty = DutyTicks::new(actual.range_ticks() / 4);
+    let duty = DutyTicks::new((actual.cycle_ticks() / 4) as u32);
     let output = channels.channel0.output(pin);
     let mut output = output.enable().map_err(|e| *e.error())?;
     output.try_set_duty_ticks(duty)?;
@@ -59,31 +59,37 @@ fn output(token: Token<0>, pin: Pin<12>, clocks: &Clocks) -> Result<(), Error> {
 ### Period and duty
 
 **STATIC · 2026-11-27.** Initialization selects XOSC / 1 = 50 MHz, disables all channels,
-DMA requests and interrupts, and programs period 65535, duty zero and phase zero.
+DMA requests and interrupts, and programs a 65,535-tick cycle, duty zero and phase zero.
 While disabled, use `Config::from_frequency(HertzU32)`, `Config::from_period(NanosDurationU64)`
-or exact `Config::from_ticks` for register-level work. Frequency accepts 1–50,000,000 Hz,
-period accepts 20–85,899,345,900 ns, and native RANGE accepts 1..=u32::MAX. Configuration
-rounds to the nearest cycle length with ties toward the longer period, then writes RANGE
-and resets duty to zero. Invalid requests, a stopped or changed PWM clock, and a channel
-still enabled in hardware all fail before any configuration write. Configure before routing
-the pin to defer pin drive until configuration succeeds. Normal trailing-edge polarity is fixed.
+or exact `Config::from_ticks` for cycle lengths. Frequency accepts 1–50,000,000 Hz,
+period accepts 20–85,899,345,900 ns, and exact cycle lengths accept 1..=u32::MAX.
+Configuration rounds to the nearest cycle length with ties toward the longer period,
+then writes RANGE = cycle ticks − 1 and resets duty to zero. The largest admitted RANGE
+is u32::MAX − 1 so the full-high compare still fits in the 32-bit DUTY register. Invalid
+requests, a stopped or changed PWM clock, and a channel still enabled in hardware all
+fail before any configuration write. Configure before routing to defer pin drive until
+configuration succeeds. Normal trailing-edge polarity is fixed.
 
-`Actual` reports the programmed `range_ticks()`, `cycle_ticks()`, and `clock()`. The
-programmed frequency is the exact ratio `clock().raw() / cycle_ticks()`, with the cycle
-count taken as RANGE under the trailing-edge convention. `period()` reports the resulting
-nanoseconds. `frequency_hz()` rounds to the nearest whole Hz with ties up. It returns zero
-for sub-half-Hz values such as the longest supported period. The one-tick endpoint convention
-remains **HW 未検証**.
+`Actual::range_ticks()` reports the programmed counter limit. `Actual::cycle_ticks()`
+reports RANGE+1, the denominator of the exact ratio `clock().raw() / cycle_ticks()`.
+`period()` reports the resulting nanoseconds and `frequency_hz()` rounds to the nearest
+whole Hz with ties up. Sub-half-Hz values round to zero.
 
-`try_set_duty_ticks(DutyTicks)` accepts 0..=RANGE in either state. Under the declared,
-held PWM clock it checks a single 32-bit bound and issues two ordered MMIO writes. The
-Cortex-M3 disassembly gate checks this call path in the `motor-api` release build for
-one load from the channel, the exact store addresses, and the absence of calls, loops,
-sleep, allocation, logging, and division. The stores use the normal RP1 MMIO barriers,
-so bus service time contributes to call latency. For general use, embedded-hal
-`SetDutyCycle` retains the clock check and normalized 0..=65535 conversion rounded down
-to native ticks. 65535 maps to RANGE even above 65535 ticks. Small periods have coarse
-resolution.
+**HW · 2026-11-27.** PWM0 at RANGE=2,500 took 10,004,000 µs across 200,000 cycles
+against the RP1 timer. The shared XOSC clock readbacks imply 2,501 PWM clock ticks per
+cycle. **DOC · checked 2026-11-27.** The RP1 datasheet §3.4.4.1 describes counting from
+zero to RANGE and driving high while COUNT < DUTY. The regdb describes RANGE as the
+counter limit and DUTY as the compare.
+
+`try_set_duty_ticks(DutyTicks)` accepts 0..=cycle_ticks in either state. Zero drives
+low and cycle_ticks drives continuously high. Under the declared, held PWM clock the
+setter checks a single 32-bit bound and issues two ordered MMIO writes. The Cortex-M3
+disassembly gate checks the `motor-api` release build for one load from the channel,
+the exact store addresses, and the absence of calls, loops, sleep, allocation, logging,
+and division. The stores use the normal RP1 MMIO barriers, so bus service time
+contributes to call latency. The embedded-hal `SetDutyCycle` checks the clock and
+scales normalized duty by cycle_ticks / 65535, rounding the result down. Both
+endpoints are exact. Small periods have coarse resolution.
 
 Use `check_clock()` in a slow supervisor loop, for example at 10–100 Hz. It
 returns `Error::Precondition` when the clock is disabled or its selected rate has
@@ -155,7 +161,7 @@ does not constitute a HW test of this implementation.
 | GLOBAL_CTRL +0x00 | EN[3:0], SET_UPDATE[31], self-clearing | same, `global_ctrl`; peripheral aliases SET +0x2000, CLR +0x3000 |
 | FIFO_CTRL +0x04 | written zero: DREQ_EN[31] off, FLUSH[5] not asserted (the FIFO is unused) | same, `fifo_ctrl`; no FIFO data access |
 | CHAN0..3_CTRL +0x14 + C*0x10 | MODE=1, FIFO_POP_MASK[8]=1; BIND/USEFIFO/SDM/INVERT clear | same, `chanN_ctrl` |
-| CHAN0..3_RANGE +0x18 + C*0x10 | unsigned 32-bit period | same, `chanN_range` |
+| CHAN0..3_RANGE +0x18 + C*0x10 | unsigned 32-bit counter limit | same, `chanN_range` |
 | CHAN0..3_PHASE +0x1c + C*0x10 | zero phase | same, `chanN_phase` |
 | CHAN0..3_DUTY +0x20 + C*0x10 | unsigned 32-bit compare | same, `chanN_duty` |
 | INTE +0x58; INTF +0x5c | zero masks interrupts and clears forced sources | same, `inte`, `intf` |
@@ -174,8 +180,9 @@ and all four channels against fake MMIO. These tests cannot verify clock-domain 
 DOC sources: [RP1 peripherals datasheet](https://datasheets.raspberrypi.com/rp1/rp1-peripherals.pdf)
 (2023-11-07, §2.4, Table 4, §3.4, Tables 24–50) specifies the bases, aliases, routing, mode
 and update semantics. [Raspberry Pi Linux PWM driver](https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/pwm/pwm-rp1.c)
-confirms the period-to-range convention and channel setup. They are register references;
-the HAL does not depend on Linux kernel internal APIs.
+uses the same channel setup and writes the rounded period directly to RANGE in
+`rpi-6.12.y`. The HAL follows the measured RANGE+1 convention above and has no dependency
+on Linux kernel internal APIs.
 
 ## Host checks and example
 
@@ -216,14 +223,14 @@ against 990–1010 µs and ±1 percentage point. The 0% and 100% windows each ne
 sweep needs 1,000 or more complete cycles at 990–1010 µs, at least 400 high times
 in each of 250 ±10 µs and 750 ±10 µs, and zero outside these bands.
 The verifier also checks 100 rejected configurations, 100 rejected native compares,
-and a 10 µs latency bound with a 1 µs timer quantization allowance.
+and a 2 µs latency bound with a 1 µs timer quantization allowance.
 
 With ALARM1 off, the fixture counts 200,000 cycles at RANGE=2,500. The RP1
 [datasheet](https://datasheets.raspberrypi.com/rp1/rp1-peripherals.pdf) §3.8 describes
 the timer tick source as `clk_ref` at nominal XOSC frequency. The fixture records
 the running timer's divider of 50 and PWM0's XOSC / 1 configuration alongside the
-span. The RANGE convention predicts 10,000,000 ±100 µs on that timebase, and
-RANGE+1 predicts 10,004,000 µs. If the common clock basis cannot be established,
+span and a RANGE readback of 2,500. The RANGE+1 gate expects
+10,004,000 ±100 µs on that timebase. If the common clock basis cannot be established,
 the convention result is unverified. Absolute frequency, exact latch timing and
 pulses shorter than the GPIO sampling interval require separate instrumentation.
 

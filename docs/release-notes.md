@@ -227,7 +227,7 @@ and has a separate native compare path. Import `pwm::{Config, DutyTicks}` and
 | Before | After |
 | --- | --- |
 | `output.set_period_ticks(50_000)?` | `let actual = output.configure(Config::from_frequency(1.kHz()))?` while disabled |
-| `output.period_ticks()` | `output.actual().range_ticks()` |
+| `output.period_ticks()` | `output.actual().cycle_ticks()` |
 | `output.set_duty_ticks(12_500)?` | `output.try_set_duty_ticks(DutyTicks::new(12_500))?` |
 | `output.enable()?` | `let mut output = output.enable().map_err(\|e\| *e.error())?` to return a plain `pwm::Error` |
 | `output.disable()?` | Match `output.disable()`. On error, recover the running owner and retry or call `e.into_driver().abort()`. |

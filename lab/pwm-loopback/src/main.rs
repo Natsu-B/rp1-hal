@@ -129,7 +129,7 @@ fn regression(mut p: rp1::Proc1Resources, clocks: &rp1_hal::clocks::Clocks) {
         let mut stopped = a.disable().unwrap();
         let actual = stopped.configure(Config::from_frequency(500.Hz())).unwrap();
         stopped
-            .try_set_duty_ticks(DutyTicks::new(actual.range_ticks() / 4))
+            .try_set_duty_ticks(DutyTicks::new((actual.cycle_ticks() / 4) as u32))
             .unwrap();
         a = stopped.enable().unwrap();
         timer.delay_ms(5);

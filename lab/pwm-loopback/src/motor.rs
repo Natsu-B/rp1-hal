@@ -58,7 +58,7 @@ struct Control {
 
 static CONTROL: Slot<Option<Control>, 1, PRIORITY> = Slot::empty();
 
-// The same call runs in the ISR and is disassembled by CI, with a runtime duty and range.
+// The same call runs in the ISR and is disassembled by CI, with a runtime duty and cycle length.
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub extern "C" fn motor_native_duty(output: &mut Drive, ticks: u32) -> bool {
@@ -115,7 +115,8 @@ pub fn run(mut p: rp1::Proc1Resources, clocks: &Clocks) {
     let config = Config::from_frequency(1.kHz());
     let actual = channels.channel0.configure(config).unwrap();
     channels.channel1.configure(config).unwrap();
-    let quarter = actual.range_ticks() / 4;
+    let ticks = actual.cycle_ticks() as u32;
+    let quarter = ticks / 4;
     let mut a = channels.channel0.output(p.pins.gpio12);
     let mut b = channels.channel1.output(p.pins.gpio13);
     b.try_set_duty_ticks(DutyTicks::new(2 * quarter)).unwrap();
@@ -138,8 +139,7 @@ pub fn run(mut p: rp1::Proc1Resources, clocks: &Clocks) {
             };
             invalid += u32::from(a.configure(config) == Err(Error::Invalid));
             invalid_native += u32::from(
-                b.try_set_duty_ticks(DutyTicks::new(actual.range_ticks() + 1 + i))
-                    == Err(Error::Invalid),
+                b.try_set_duty_ticks(DutyTicks::new(ticks + 1 + i)) == Err(Error::Invalid),
             );
             register_changes += u32::from(a.actual() != actual || channel_registers(0) != expected);
         },
@@ -280,7 +280,7 @@ pub fn run(mut p: rp1::Proc1Resources, clocks: &Clocks) {
         && !control.missed
         && control.errors == 0
         && control.max_late_us < STEP_US
-        && max_call_upper_us <= 10
+        && max_call_upper_us <= 2
         && (100_000_000..=120_000_000).contains(&elapsed)
         && stop_ok;
     let result = if passed { "PASS" } else { "FAIL" };
@@ -420,12 +420,13 @@ fn convention(
     nonce: u32,
 ) -> bool {
     const RANGE: u32 = 2_500;
-    output.configure(Config::from_ticks(RANGE)).unwrap();
+    let actual = output.configure(Config::from_ticks(RANGE + 1)).unwrap();
     output
-        .try_set_duty_ticks(DutyTicks::new(RANGE / 2))
+        .try_set_duty_ticks(DutyTicks::new((actual.cycle_ticks() / 2) as u32))
         .unwrap();
     let output = output.enable().unwrap();
     wait.delay(3.millis()).unwrap();
+    let range = channel_registers(0)[2];
     let before = convention_clocks();
     let (mut min_period_us, mut max_period_us) = (u32::MAX, 0);
     let (first, last) = cycles(
@@ -463,11 +464,12 @@ fn convention(
         after[4]
     )
     .unwrap();
-    log!("MOTOR_API_CONVENTION run={nonce:08x} cycles={CONVENTION_CYCLES} span_us={span_us} min_period_us={min_period_us} max_period_us={max_period_us} shared={} stopped={}\n",
+    log!("MOTOR_API_CONVENTION run={nonce:08x} cycles={CONVENTION_CYCLES} range={range} span_us={span_us} min_period_us={min_period_us} max_period_us={max_period_us} shared={} stopped={}\n",
         u8::from(shared), u8::from(stopped)).unwrap();
     stopped
+        && range == RANGE
         && (!shared
-            || (min_period_us >= 40 && max_period_us <= 60 && span_us.abs_diff(10_000_000) <= 100))
+            || (min_period_us >= 40 && max_period_us <= 60 && span_us.abs_diff(10_004_000) <= 100))
 }
 
 fn convention_clocks() -> [u32; 5] {

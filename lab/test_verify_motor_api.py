@@ -10,9 +10,9 @@ spec.loader.exec_module(motor)
 def capture():
     nonce = "3badbeef"
     rows = [f"PWM_BOOT nonce={nonce} PLAT_INIT ok=1",
-            f"MOTOR_API_START run={nonce} updates=100000 range=50000",
+            f"MOTOR_API_START run={nonce} updates=100000 range=49999",
             f"MOTOR_API_CLOCK run={nonce} before=3,50,840,1,0 after=3,50,840,1,0",
-            f"MOTOR_API_CONVENTION run={nonce} cycles=200000 span_us=10000000"
+            f"MOTOR_API_CONVENTION run={nonce} cycles=200000 range=2500 span_us=10004000"
             " min_period_us=49 max_period_us=51 shared=1 stopped=1"]
 
     def waveform(phase, duty, start):
@@ -31,7 +31,7 @@ def capture():
     rows.append(f"MOTOR_API_SWEEP run={nonce} cycles=1050 low25=525 high75=525 other=0"
                 " min_period_us=990 max_period_us=1010 start_us=100000100 end_us=101050100")
     rows.append(f"MOTOR_API_END run={nonce} updates=100000 sweep_updates=1100 missed=0 errors=0 arm_failed=0"
-                " max_late_us=4 max_call_us=9 max_call_upper_us=10 invalid=100 invalid_native=100"
+                " max_late_us=4 max_call_us=1 max_call_upper_us=2 invalid=100 invalid_native=100"
                 " register_changes=0 elapsed_us=111111000 stopped=1 result=PASS")
     return "\n".join(rows)
 
@@ -42,7 +42,7 @@ class VerifyMotor(unittest.TestCase):
 
     def test_clock_source_unverified_does_not_fail_other_gates(self):
         changed = capture().replace("3,50,840,1,0", "3,49,840,1,0")
-        changed = changed.replace("shared=1", "shared=0").replace("span_us=10000000", "span_us=10004000")
+        changed = changed.replace("shared=1", "shared=0").replace("span_us=10004000", "span_us=10000000")
         self.assertEqual(motor.verify(changed), ("3badbeef", False))
 
     def test_missing_and_duplicate_markers(self):
@@ -70,11 +70,13 @@ class VerifyMotor(unittest.TestCase):
             ("high75=525 other=0", "high75=524 other=1"),
             ("min_period_us=990", "min_period_us=989"),
             ("max_period_us=1010", "max_period_us=1011"),
-            ("span_us=10000000", "span_us=10000101"),
-            ("span_us=10000000", "span_us=10004000"),
+            ("span_us=10004000", "span_us=10004101"),
+            ("span_us=10004000", "span_us=10003899"),
+            ("span_us=10004000", "span_us=10000000"),
+            ("range=2500", "range=2499"),
             ("shared=1", "shared=0"),
             ("invalid=100", "invalid=99"),
-            ("max_call_us=9 max_call_upper_us=10", "max_call_us=10 max_call_upper_us=11"),
+            ("max_call_us=1 max_call_upper_us=2", "max_call_us=2 max_call_upper_us=3"),
             ("elapsed_us=111111000", "elapsed_us=120000001"),
         ]:
             with self.subTest(after=after), self.assertRaises(ValueError):

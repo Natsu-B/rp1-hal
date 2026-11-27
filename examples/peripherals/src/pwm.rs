@@ -27,7 +27,7 @@ pub fn run(
         .map_err(|_| "PWM period setup failed")?;
     let mut output = channels.channel0.output(output);
     output
-        .try_set_duty_ticks(DutyTicks::new(actual.range_ticks() / 2))
+        .try_set_duty_ticks(DutyTicks::new((actual.cycle_ticks() / 2) as u32))
         .map_err(|_| "PWM duty setup failed")?;
     let output = output.enable().map_err(|_| "PWM enable failed")?;
     timer.delay_ms(3); // Let the range and duty latch at overflow.
