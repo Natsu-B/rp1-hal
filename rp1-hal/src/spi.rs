@@ -247,10 +247,17 @@ pub struct Token<const N: u8> {
     _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 /// The SPI controller role.
-pub struct Controller;
+pub struct Controller {
+    _private: (),
+}
 
 /// A configured controller. Use [`Spi::polling`] to run the synchronous engine.
-/// Dropping it leaves the controller enabled and the pins muxed.
+/// Each polling `SpiBus` call checks once that clk_sys still matches, before any
+/// FIFO access. This includes a whole `transfer_in_place` buffer. A [`Device`]
+/// checks once for an entire transaction.
+///
+/// Dropping the driver leaves the controller enabled and the pins muxed. Recover
+/// the token with [`Spi::try_free`] when you need to initialize it again.
 pub struct Spi<const N: u8, P: CompletePins<N>, Role = Controller> {
     pins: P::Active,
     clocks: Clocks,
@@ -266,7 +273,8 @@ pub struct Spi<const N: u8, P: CompletePins<N>, Role = Controller> {
 }
 
 /// The initialization error retains the block and its pins during recovery.
-pub type InitError<const N: u8, P> = crate::InitError<Parts<N, P>, Error, Parts<N, P>>;
+pub type InitError<const N: u8, P> =
+    crate::InitError<Parts<N, P>, Error, crate::Recovery<Parts<N, P>>>;
 
 /// Explicit polling access to the SPI bus.
 pub struct Polling<'a, const N: u8, P: CompletePins<N>>(&'a mut Spi<N, P>);
@@ -326,8 +334,25 @@ where
     /// the raw microsecond timer must already run. [`Clocks::wait_from_proc0`] provides
     /// the clock description for proc1.
     ///
-    /// A stale clock or impossible configuration is rejected before releasing reset
-    /// where possible. Pins are muxed only on success.
+    /// A stale clock, invalid frequency or frame size outside 4–32 bits fails before
+    /// reset is released. The probe checks the instance's frame limit with SSI
+    /// disabled. Pins are muxed only on success.
+    ///
+    /// Retry with 8-bit frames if the hardware rejects the desired frame width:
+    ///
+    /// ```no_run
+    /// # use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, spi};
+    /// # type Pins = (Pin<11>, Pin<10>, Pin<9>);
+    /// fn start(parts: spi::Parts<0, Pins>, clocks: &Clocks)
+    ///     -> Result<spi::Spi<0, Pins>, spi::InitError<0, Pins>>
+    /// {
+    ///     let config = spi::Config::new(1.MHz(), embedded_hal::spi::MODE_0);
+    ///     match parts.init(clocks, config.with_frame_bits(32)) {
+    ///         Ok(bus) => Ok(bus),
+    ///         Err(error) => error.try_into_parts()?.init(clocks, config.with_frame_bits(8)),
+    ///     }
+    /// }
+    /// ```
     pub fn init(
         self,
         clocks: &Clocks,
@@ -370,6 +395,8 @@ where
         let Some((depth, dfs32)) = probe(io) else {
             return Err(InitError::recovering(Error::Precondition, self));
         };
+        // If width detection rejects the configuration, probe has left SSI disabled
+        // with reset released, the same safe state as try_free.
         let cr0 = match control(config.mode, config.frame_bits, dfs32) {
             Ok(cr0) => cr0,
             Err(error) => return Err(InitError::new(error, self)),
@@ -710,29 +737,44 @@ impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
     /// can run with CS asserted. Mixing interrupt-driven and polling use of one controller is
     /// unsupported.
     pub fn enable_interrupt(&mut self, mask: u32) {
-        enable_interrupt(&mut self.io(), mask);
+        if !self.stopping {
+            enable_interrupt(&mut self.io(), mask);
+        }
     }
     pub fn disable_interrupt(&mut self, mask: u32) {
-        let mut io = self.io();
-        let masked = io.read(IMR) & !mask;
-        io.write(IMR, masked);
+        if !self.stopping {
+            let mut io = self.io();
+            let masked = io.read(IMR) & !mask;
+            io.write(IMR, masked);
+        }
     }
     /// Pending unmasked interrupts (ISR).
     pub fn interrupt_status(&self) -> u32 {
-        self.io().read(ISR)
+        if self.stopping {
+            0
+        } else {
+            self.io().read(ISR)
+        }
     }
     /// Clears the overflow, underflow and multi-master interrupts. TXEI and RXFI follow the
     /// FIFO levels instead.
     pub fn clear_interrupt(&mut self) {
-        self.io().read(ICR);
+        if !self.stopping {
+            self.io().read(ICR);
+        }
     }
 }
 impl<const N: u8, P: CompletePins<N>> Spi<N, P> {
-    /// Mask interrupts and request stop. Disabling flushes both FIFOs and can truncate
-    /// a frame on the wire. Collect the parts with [`Self::try_free`] once stopped.
+    /// Mask interrupts and request stop. Unsent and unread FIFO frames are discarded.
+    /// Disabling can truncate a frame on the wire. On success, SCK has stopped toggling.
+    /// Collect the parts with [`Self::try_free`] once stopped.
     pub fn try_cancel(&mut self) -> Result<(), Error> {
+        self.cancel_with(&mut self.io())
+    }
+
+    fn cancel_with(&mut self, io: &mut impl Io) -> Result<(), Error> {
         self.stopping = true;
-        stop(&mut self.io())
+        stop(io)
     }
 }
 
@@ -743,6 +785,10 @@ where
     Pin<MISO>: Miso<N>,
 {
     /// Return the parts after checking wire idle and disabling the controller.
+    /// If the bus is still busy, [`Error::Busy`] returns the unchanged driver
+    /// (or [`Error::Timeout`] from [`Self::free_polling`]). Retry or call
+    /// [`Self::try_cancel`] before trying again. If stop has already been
+    /// requested, `try_free` retries disable until it can confirm stop.
     /// The pins stay muxed and reset stays released. The NVIC line is separately owned:
     /// disable and unpend it first, or ensure its handler accepts the controller being gone.
     pub fn try_free(
@@ -782,7 +828,7 @@ where
             Token {
                 _private: PhantomData,
             },
-            Pins((sck.release(), mosi.release(), miso.release())),
+            Pins::from_required((sck.release(), mosi.release(), miso.release())),
         ))
     }
 }
@@ -1215,10 +1261,35 @@ mod tests {
         );
         assert!(m.writes.is_empty());
         assert_timed_out(m.tick, u32::MAX - 50);
-        // `abort` is the old `free`: no look at the bus.
+        // `try_cancel` requests stop without waiting for wire idle.
         let before = m.tick;
         assert_eq!(stop(&mut m), Err(Error::Busy));
         assert_eq!((m.tick, m.writes.as_slice()), (before, &stopped[..]));
+    }
+
+    #[test]
+    fn cancel_gates_interrupts_and_polling_until_release() {
+        let mut model = Model::new(8);
+        let mut bus = init_model(
+            unsafe { Token::new() },
+            &mut model,
+            pins(),
+            Config::new(1.MHz(), embedded_hal::spi::MODE_0),
+            &mut false,
+        )
+        .unwrap();
+        model.stalled = true;
+        assert_eq!(bus.cancel_with(&mut model), Err(Error::Busy));
+        bus.enable_interrupt(int::RXFI);
+        bus.disable_interrupt(int::RXFI);
+        bus.clear_interrupt();
+        assert_eq!(bus.interrupt_status(), 0);
+        assert_eq!(bus.polling().write(&[0u8]), Err(Error::Busy));
+        assert_eq!(bus.polling().set_frequency(2.MHz()), Err(Error::Busy));
+
+        model.stalled = false;
+        assert_eq!(bus.cancel_with(&mut model), Ok(()));
+        assert_eq!(bus.polling().write(&[0u8]), Err(Error::Busy));
     }
 
     #[test]
@@ -1444,10 +1515,15 @@ mod tests {
         config: Config,
         routed: &mut bool,
     ) -> Result<Spi<0, PinTuple<11, 10, 9>>, InitError<0, PinTuple<11, 10, 9>>> {
-        Parts::new(token, Pins(pins)).init_on(m, &CLOCKS, config, |(sck, mosi, miso)| {
-            *routed = true;
-            (sck.assume(), mosi.assume(), miso.assume())
-        })
+        Parts::new(token, Pins::from_required(pins)).init_on(
+            m,
+            &CLOCKS,
+            config,
+            |(sck, mosi, miso)| {
+                *routed = true;
+                (sck.assume(), mosi.assume(), miso.assume())
+            },
+        )
     }
 
     /// Review 7: a stale clk_sys or a configuration no instance takes fails before the reset

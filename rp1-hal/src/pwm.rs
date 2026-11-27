@@ -134,7 +134,7 @@ impl<const N: u8> Channels<N> {
     /// ```no_run
     /// # use rp1_hal::pwm::{Channels, Token};
     /// fn release(channels: Channels<0>) -> Token<0> {
-    ///     channels.free().unwrap_or_else(|e| e.into_parts().0.abort())
+    ///     channels.free().unwrap_or_else(|e| e.into_driver().abort())
     /// }
     /// ```
     pub fn free(self) -> Result<Token<N>, crate::FreeError<Self, Error>> {

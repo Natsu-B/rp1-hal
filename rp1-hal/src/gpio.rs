@@ -191,12 +191,33 @@ pub struct Pin<const N: u8, Mode = Unconfigured> {
     _mode: PhantomData<(Mode, core::cell::Cell<()>)>,
 }
 /// An owned bank-0 pin with a runtime number and a statically known mode.
+///
+/// ```
+/// # use rp1_hal::gpio::Pin;
+/// # fn restore(pin: Pin<6>) {
+/// let erased = pin.erase();
+/// let Err(erased) = erased.try_into_pin::<7>() else { unreachable!() };
+/// assert_eq!(erased.number(), 6);
+/// let Ok(_pin) = erased.try_into_pin::<6>() else { unreachable!() };
+/// # }
+/// ```
 pub struct ErasedPin<Mode = Unconfigured> {
     number: u8,
     _mode: PhantomData<(Mode, core::cell::Cell<()>)>,
 }
 
 impl<M> ErasedPin<M> {
+    /// Reads the pad's current electrical settings.
+    pub fn pad_config(&self) -> PadConfig {
+        PadConfig::from_bits(read(pad(self.number)))
+    }
+
+    /// Changes the electrical settings while preserving the pin's direction, mux and IRQs.
+    /// Configure these settings after routing the pin, which applies the new mode's defaults.
+    pub fn set_pad_config(&mut self, config: PadConfig) {
+        set_pad_config(&mut Mmio, self.number, config);
+    }
+
     /// The bank-0 GPIO number.
     pub const fn number(&self) -> u8 {
         self.number

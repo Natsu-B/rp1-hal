@@ -20,9 +20,21 @@ macro_rules! pac_offsets {
 macro_rules! pin_builder {
     ($pin:ident, []) => {
         /// The selected routes for one peripheral instance.
-        pub struct Pins<const N: u8, P = ()>(P);
+        pub struct Pins<const N: u8, P = ()>(
+            P,
+            // Host fixture for extending a route set without changing the required tuple.
+            #[cfg(test)] Option<crate::gpio::ErasedPin>,
+        );
 
         impl<const N: u8, P> Pins<N, P> {
+            const fn from_required(pins: P) -> Self {
+                Self(
+                    pins,
+                    #[cfg(test)]
+                    None,
+                )
+            }
+
             /// Return the selected pins in signal order.
             pub fn into_pins(self) -> P {
                 self.0
@@ -34,7 +46,7 @@ macro_rules! pin_builder {
             /// I²C: sda, then scl; SPI: sck, then mosi, then miso).
             /// Each call accepts only a pin routed to that signal of instance N.
             pub const fn builder() -> Self {
-                Self(())
+                Self::from_required(())
             }
         }
     };
@@ -46,7 +58,11 @@ macro_rules! pin_builder {
                 $pin<$new>: $route<N>,
             {
                 let ($($arg,)*) = self.0;
-                Pins(($($arg,)* $next,))
+                Pins(
+                    ($($arg,)* $next,),
+                    #[cfg(test)]
+                    self.1,
+                )
             }
         }
     };
@@ -93,23 +109,25 @@ pub mod uart;
 
 /// Failed initialization. Parts are available once the peripheral can be initialized again.
 /// If recovery is pending, this error retains ownership of the peripheral and its pins.
+///
+/// UART, SPI and I²C return their `Parts` once ready and retain them while recovery is
+/// pending. There is deliberately no conversion to the bare driver error. To use `?`,
+/// return the initialization error itself or wrap it in an error that keeps ownership.
+/// PWM, ADC and DMA return their token. Those initialization errors convert to the
+/// driver's error with `?` because the attempted initialization left no work running.
 pub struct InitError<R, E, H = core::convert::Infallible> {
     error: E,
     state: Result<R, H>,
 }
+
+/// Parts retained by an initialization error until the driver confirms a safe state.
+pub struct Recovery<R>(R);
 
 impl<R, E, H> InitError<R, E, H> {
     pub(crate) fn new(error: E, parts: R) -> Self {
         Self {
             error,
             state: Ok(parts),
-        }
-    }
-
-    pub(crate) fn recovering(error: E, owner: H) -> Self {
-        Self {
-            error,
-            state: Err(owner),
         }
     }
 
@@ -127,11 +145,18 @@ impl<R, E, H> InitError<R, E, H> {
     }
 }
 
-impl<R, E> InitError<R, E, R> {
+impl<R, E> InitError<R, E, Recovery<R>> {
+    pub(crate) fn recovering(error: E, parts: R) -> Self {
+        Self {
+            error,
+            state: Err(Recovery(parts)),
+        }
+    }
+
     pub(crate) fn recover(self, stopped: impl FnOnce() -> bool) -> Result<R, Self> {
         match self.state {
             Ok(parts) => Ok(parts),
-            Err(parts) if stopped() => Ok(parts),
+            Err(Recovery(parts)) if stopped() => Ok(parts),
             Err(_) => Err(self),
         }
     }
@@ -163,6 +188,8 @@ impl<R, E: core::fmt::Debug, H> core::fmt::Debug for InitError<R, E, H> {
 }
 
 /// Failed release. The driver still owns the peripheral. `Debug` prints only the error.
+///
+/// There is deliberately no `From` for the error: `?` would drop a driver that still owns running hardware.
 pub struct FreeError<D, E> {
     driver: D,
     error: E,
@@ -172,6 +199,11 @@ impl<D, E> FreeError<D, E> {
     /// The error that prevented release.
     pub fn error(&self) -> &E {
         &self.error
+    }
+
+    /// Recover the driver when the caller only needs to retry or cancel.
+    pub fn into_driver(self) -> D {
+        self.driver
     }
 
     /// Recover the driver and the error to continue using or releasing the peripheral.
@@ -184,6 +216,19 @@ impl<D, E: core::fmt::Debug> core::fmt::Debug for FreeError<D, E> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.error.fmt(f)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn free_error_debug_prints_only_the_error() {
+    extern crate std;
+
+    struct Driver;
+    let failure = FreeError {
+        driver: Driver,
+        error: Error::Timeout,
+    };
+    assert_eq!(std::format!("{failure:?}"), "Timeout");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

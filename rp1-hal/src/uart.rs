@@ -131,9 +131,12 @@ pub struct Token<const N: u8> {
     _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 /// The UART's serial role.
-pub struct Serial;
+pub struct Serial {
+    _private: (),
+}
 
-/// A configured UART. Immediate byte operations do not wait; use [`Uart::polling`]
+/// A configured UART that owns its TX and RX pins.
+/// Immediate byte operations do not wait; use [`Uart::polling`]
 /// for the legacy synchronous engine.
 pub struct Uart<const N: u8, P: CompletePins<N>, Role = Serial> {
     halves: P::Active,
@@ -141,7 +144,8 @@ pub struct Uart<const N: u8, P: CompletePins<N>, Role = Serial> {
 }
 
 /// The initialization error retains the block and its pins during recovery.
-pub type InitError<const N: u8, P> = crate::InitError<Parts<N, P>, Error, Parts<N, P>>;
+pub type InitError<const N: u8, P> =
+    crate::InitError<Parts<N, P>, Error, crate::Recovery<Parts<N, P>>>;
 
 /// Explicit polling access for a UART or either half.
 pub struct Polling<'a, T>(&'a mut T);
@@ -152,8 +156,15 @@ pub struct Config {
     baud: HertzU32,
 }
 impl Config {
+    /// Select a baud rate for 8N1 with FIFOs enabled.
     pub const fn new(baud: HertzU32) -> Self {
         Self { baud }
+    }
+}
+
+impl From<HertzU32> for Config {
+    fn from(baud: HertzU32) -> Self {
+        Self::new(baud)
     }
 }
 
@@ -165,6 +176,8 @@ pub struct Tx<const N: u8, const PIN: u8> {
     pin: Pin<PIN, Alternate>,
     bound_us: u32,
     resetting: bool,
+    #[cfg(test)]
+    cts: Option<crate::gpio::ErasedPin>,
 }
 
 /// The receiver and routed RX pin of UART N.
@@ -207,6 +220,19 @@ pub struct Parts<const N: u8, P: CompletePins<N>> {
 }
 impl<const N: u8, P: CompletePins<N>> Parts<N, P> {
     /// Assemble the owned block and the routed pin bundle.
+    ///
+    /// ```no_run
+    /// use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, uart};
+    ///
+    /// fn setup(token: uart::Token<2>, tx: Pin<4>, rx: Pin<5>, clocks: &Clocks)
+    ///     -> Result<(), uart::InitError<2, (Pin<4>, Pin<5>)>>
+    /// {
+    ///     let pins = uart::Pins::<2>::builder().tx(tx).rx(rx);
+    ///     let uart = uart::Parts::new(token, pins).init(clocks, 115_200.Hz())?;
+    ///     let (_tx, _rx) = uart.split();
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn new(token: Token<N>, pins: Pins<N, P>) -> Self {
         Self { token, pins }
     }
@@ -225,31 +251,71 @@ where
     /// The pins are muxed only after setup succeeds.
     ///
     /// ```no_run
-    /// # use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, uart::{Config, Parts}};
+    /// # use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, uart::Parts};
     /// fn hello(uart2: Parts<2, (Pin<4>, Pin<5>)>, clocks: &Clocks) {
-    ///     let mut uart = uart2.init(clocks, Config::new(115_200.Hz())).unwrap();
+    ///     let mut uart = uart2.init(clocks, 115_200.Hz()).unwrap();
     ///     embedded_io::Write::write_all(&mut uart.polling(), b"hello").unwrap();
+    /// }
+    /// ```
+    ///
+    /// Retry with another baud rate. If reset has not been confirmed, the
+    /// initialization error still owns the parts for a later recovery attempt.
+    ///
+    /// ```no_run
+    /// # use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, uart};
+    /// # type Pins = (Pin<4>, Pin<5>);
+    /// fn start(parts: uart::Parts<2, Pins>, clocks: &Clocks)
+    ///     -> Result<uart::Uart<2, Pins>, uart::InitError<2, Pins>>
+    /// {
+    ///     match parts.init(clocks, 1_000_000.Hz()) {
+    ///         Ok(uart) => Ok(uart),
+    ///         Err(error) => {
+    ///             let parts = match error.try_into_parts() {
+    ///                 Ok(parts) => parts,
+    ///                 Err(recovery) => recovery.try_recover()?,
+    ///             };
+    ///             parts.init(clocks, 115_200.Hz())
+    ///         }
+    ///     }
     /// }
     /// ```
     pub fn init(
         self,
         clocks: &Clocks,
-        config: Config,
+        config: impl Into<Config>,
     ) -> Result<Uart<N, PinTuple<TX, RX>>, InitError<N, PinTuple<TX, RX>>> {
         if !clocks.still_current() {
             return Err(InitError::new(Error::Precondition, self));
         }
-        match start(&mut Mmio, N, clocks.uart(), config.baud) {
+        self.init_on(&mut Mmio, clocks.uart(), config.into(), |tx, rx| {
+            (
+                tx.into_alternate(<Pin<TX> as TxPin<N>>::FUNC, IDLE_PAD, TX_PAD),
+                rx.into_alternate(<Pin<RX> as RxPin<N>>::FUNC, IDLE_PAD, IDLE_PAD),
+            )
+        })
+    }
+
+    fn init_on(
+        self,
+        io: &mut impl Hardware,
+        clock: HertzU32,
+        config: Config,
+        route: impl FnOnce(Pin<TX>, Pin<RX>) -> (Pin<TX, Alternate>, Pin<RX, Alternate>),
+    ) -> Result<Uart<N, PinTuple<TX, RX>>, InitError<N, PinTuple<TX, RX>>> {
+        match start(io, N, clock, config.baud) {
             Ok(()) => {
-                let Pins((tx, rx)) = self.pins;
+                let (tx, rx) = self.pins.0;
+                let (tx, rx) = route(tx, rx);
                 Ok(Uart::join(
                     Tx {
-                        pin: tx.into_alternate(<Pin<TX> as TxPin<N>>::FUNC, IDLE_PAD, TX_PAD),
+                        pin: tx,
                         bound_us: tx_bound_us(config.baud),
                         resetting: false,
+                        #[cfg(test)]
+                        cts: self.pins.1,
                     },
                     Rx {
-                        pin: rx.into_alternate(<Pin<RX> as RxPin<N>>::FUNC, IDLE_PAD, IDLE_PAD),
+                        pin: rx,
                         timeout: DEFAULT_READ_TIMEOUT,
                         resetting: false,
                     },
@@ -421,14 +487,20 @@ impl<const N: u8, const PIN: u8> Tx<N, PIN> {
         Polling(self)
     }
 
-    /// Queues one byte if the FIFO has room.
-    pub fn try_write_byte(&mut self, byte: u8) -> bool {
-        !self.resetting && try_write_byte(&mut Mmio, N, byte)
+    /// Queues one byte if the FIFO has room. Returns [`Error::Busy`] after a stop request.
+    pub fn try_write_byte(&mut self, byte: u8) -> Result<bool, Error> {
+        if self.resetting {
+            return Err(Error::Busy);
+        }
+        Ok(try_write_byte(&mut Mmio, N, byte))
     }
 
-    /// Whether all queued bytes have left the wire.
-    pub fn try_flush(&mut self) -> bool {
-        !self.resetting && Mmio.read(base(N) + FR) & FR_BUSY == 0
+    /// Whether all queued bytes have left the wire. Returns [`Error::Busy`] after a stop request.
+    pub fn try_flush(&mut self) -> Result<bool, Error> {
+        if self.resetting {
+            return Err(Error::Busy);
+        }
+        Ok(Mmio.read(base(N) + FR) & FR_BUSY == 0)
     }
 
     /// Unmasks the TX FIFO threshold interrupt. The NVIC line is `irq.UARTn`.
@@ -580,7 +652,7 @@ where
     }
 
     /// See [`Tx::try_write_byte`].
-    pub fn try_write_byte(&mut self, byte: u8) -> bool {
+    pub fn try_write_byte(&mut self, byte: u8) -> Result<bool, Error> {
         self.halves.0.try_write_byte(byte)
     }
 
@@ -590,7 +662,7 @@ where
     }
 
     /// See [`Tx::try_flush`].
-    pub fn try_flush(&mut self) -> bool {
+    pub fn try_flush(&mut self) -> Result<bool, Error> {
         self.halves.0.try_flush()
     }
 
@@ -639,9 +711,23 @@ where
 {
     /// Return the parts once the transmitter is idle and UART reset is confirmed.
     /// Unread or incoming characters are discarded.
+    /// A busy transmitter returns the unchanged UART with [`Error::Busy`] (or
+    /// [`Error::Timeout`] from [`Self::free_polling`]). Retry or request cancellation.
+    /// If reset has already been requested, retry `try_free` to confirm it.
     ///
     /// Disable and unpend the separately owned NVIC line first, or ensure its handler
     /// accepts the UART being gone. Reset masks the device sources but does not unpend NVIC.
+    ///
+    /// ```no_run
+    /// # use rp1_hal::{FreeError, gpio::Pin, uart::{Error, Parts, Uart}};
+    /// # type Pins = (Pin<4>, Pin<5>);
+    /// fn cancel_and_release(mut uart: Uart<2, Pins>)
+    ///     -> Result<Parts<2, Pins>, FreeError<Uart<2, Pins>, Error>>
+    /// {
+    ///     let _ = uart.try_cancel(); // try_free checks reset again and retains the UART if pending.
+    ///     uart.try_free()
+    /// }
+    /// ```
     pub fn try_free(self) -> Result<Parts<N, (Pin<TX>, Pin<RX>)>, crate::FreeError<Self, Error>> {
         self.try_free_with(&mut Mmio, false)
     }
@@ -681,6 +767,8 @@ where
     /// Request reset even while transmission is in progress. A truncated frame may
     /// look like a framing error to the peer. Once requested, use [`Self::try_free`]
     /// to collect the parts. The TX pin remains muxed to UART.
+    /// Queued TX characters are discarded, as are unread RX characters. The TX pin
+    /// is expected to be idle (high) while held in reset (HYP, 2026-11-27).
     pub fn try_cancel(&mut self) -> Result<(), Error> {
         self.cancel_with(&mut Mmio)
     }
@@ -701,13 +789,18 @@ where
             Token {
                 _private: PhantomData,
             },
-            Pins((tx.pin.release(), rx.pin.release())),
+            Pins(
+                (tx.pin.release(), rx.pin.release()),
+                #[cfg(test)]
+                tx.cts,
+            ),
         )
     }
 }
 
 impl<const N: u8, const PIN: u8> Polling<'_, Rx<N, PIN>> {
-    /// Sets the receive wait, initially [`DEFAULT_READ_TIMEOUT`].
+    /// Sets the receive wait, initially [`DEFAULT_READ_TIMEOUT`]. The setting persists on the
+    /// receiver across `polling()` borrows.
     pub fn set_read_timeout(&mut self, timeout: MicrosDurationU32) {
         self.0.timeout = timeout;
     }
@@ -761,7 +854,8 @@ where
     Pin<TX>: TxPin<N>,
     Pin<RX>: RxPin<N>,
 {
-    /// Sets the receive wait, initially [`DEFAULT_READ_TIMEOUT`].
+    /// Sets the receive wait, initially [`DEFAULT_READ_TIMEOUT`]. The setting persists on the
+    /// receiver across `polling()` borrows.
     pub fn set_read_timeout(&mut self, timeout: MicrosDurationU32) {
         self.0.halves.1.polling().set_read_timeout(timeout);
     }
@@ -791,6 +885,9 @@ where
 }
 
 #[cfg(test)]
+mod optional_pin;
+
+#[cfg(test)]
 mod tests {
     extern crate std;
     use super::*;
@@ -805,7 +902,7 @@ mod tests {
     /// block ignores writes and reads as its reset values, and every such access is counted,
     /// so a test sees a driver that keeps using a UART it released. DONE1 drops on the
     /// assert and returns on the release unless `reset_stuck`.
-    struct Fake {
+    pub(super) struct Fake {
         regs: BTreeMap<usize, u32>,
         writes: Vec<(usize, u32)>,
         rx: VecDeque<u32>,
@@ -828,7 +925,7 @@ mod tests {
         elapsed_us: u64,
     }
     impl Fake {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self {
                 regs: [(RESETS_DONE1, reset_bit(N))].into(),
                 writes: Vec::new(),
@@ -1061,10 +1158,10 @@ mod tests {
         f.rx_later = Some((0, DR_FE));
         assert_eq!(read_wait(&mut f, N, 30_000), Err(Error::Framing));
     }
-    /// A transmitter that does not drain in time is not cut off by `free`: nothing is written
+    /// A transmitter that does not drain in time is not cut off by `free_polling`: nothing is written
     /// and the error is reported, so the caller still has the UART. A reset does not wait for TX.
     #[test]
-    fn free_refuses_a_busy_transmitter_and_abort_does_not_wait() {
+    fn free_polling_refuses_a_busy_transmitter_and_cancel_does_not_wait() {
         let stopped = [(RESETS_SET1, 1 << 28)];
         let mut f = Fake::new();
         f.busy = true;
@@ -1072,6 +1169,7 @@ mod tests {
             pin: unsafe { Pin::<4>::new() }.assume(),
             bound_us: 5_000,
             resetting: false,
+            cts: None,
         };
         let rx = Rx {
             pin: unsafe { Pin::<5>::new() }.assume(),
@@ -1104,6 +1202,7 @@ mod tests {
             pin: unsafe { Pin::<4>::new() }.assume(),
             bound_us: 5000,
             resetting: false,
+            cts: None,
         };
         let rx = Rx {
             pin: unsafe { Pin::<5>::new() }.assume(),
@@ -1114,10 +1213,13 @@ mod tests {
             .try_free_with(&mut io, false)
             .err()
             .expect("reset is still pending");
-        let (uart, error) = error.into_parts();
+        let (mut uart, error) = error.into_parts();
         assert_eq!(error, Error::Busy);
+        assert_eq!(uart.try_write_byte(0x41), Err(Error::Busy));
+        assert_eq!(uart.try_flush(), Err(Error::Busy));
         let (mut tx, mut rx) = uart.split();
-        assert!(!tx.try_write_byte(0x41));
+        assert_eq!(tx.try_write_byte(0x41), Err(Error::Busy));
+        assert_eq!(tx.try_flush(), Err(Error::Busy));
         assert_eq!(rx.try_read_byte(), Err(Error::Busy));
         io.reset_assert_stuck = false;
         assert!(Uart::join(tx, rx).try_free_with(&mut io, false).is_ok());

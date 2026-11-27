@@ -5,7 +5,10 @@
 use crate::{
     clocks::Clocks,
     gpio::{Alternate, Pin},
-    read, write,
+    linux_blocks::Mmio as ResetMmio,
+    read,
+    scmi::Registers,
+    write,
 };
 use core::marker::PhantomData;
 use embedded_hal::i2c::{ErrorKind, NoAcknowledgeSource, Operation};
@@ -30,6 +33,7 @@ const COMP_TYPE: u32 = 0x4457_0140;
 const TIMEOUT_US: u32 = 100_000;
 // RESETS CTRL0 bits 7..13 are I2C0..6 (rp1-regdb resets.toml); CTRL1 bit 8 is SDIO0.
 const RESETS: usize = 0x4001_4000;
+const RESETS_SET0: usize = RESETS + 0x2000; // atomic set alias of CTRL0
 const RESETS_CLR0: usize = RESETS + 0x3000; // atomic clear alias of CTRL0
 const RESETS_DONE0: usize = RESETS + 0x18;
 const fn reset_bit(n: u8) -> u32 {
@@ -55,7 +59,7 @@ pub enum Error {
     Precondition,
     Abort(u32),
     Fifo,
-    /// The controller has not stopped.
+    /// The controller has not stopped, or this handle is being released after cancellation.
     Busy,
 }
 /// Controller bus speed.
@@ -64,8 +68,15 @@ pub struct Config {
     speed: Speed,
 }
 impl Config {
+    /// Select the controller bus speed.
     pub const fn new(speed: Speed) -> Self {
         Self { speed }
+    }
+}
+
+impl From<Speed> for Config {
+    fn from(speed: Speed) -> Self {
+        Self::new(speed)
     }
 }
 
@@ -73,12 +84,23 @@ impl Config {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Address7(u8);
 impl Address7 {
+    /// Rejects addresses of 0x80 and above with [`Error::Invalid`].
     pub const fn new(address: u8) -> Result<Self, Error> {
         if address < 128 {
             Ok(Self(address))
         } else {
             Err(Error::Invalid)
         }
+    }
+
+    /// Constructs a seven-bit address with compile-time validation.
+    ///
+    /// ```compile_fail,E0080
+    /// const BAD: rp1_hal::i2c::Address7 = rp1_hal::i2c::Address7::new_const::<0x80>();
+    /// ```
+    pub const fn new_const<const ADDRESS: u8>() -> Self {
+        const { assert!(ADDRESS < 128) };
+        Self(ADDRESS)
     }
 }
 
@@ -126,19 +148,39 @@ pub struct Token<const N: u8> {
     _private: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 /// The I²C controller role.
-pub struct Controller;
+pub struct Controller {
+    _private: (),
+}
+
+#[derive(Clone, Copy)]
+enum State {
+    Ready,
+    Poisoned,
+    Stopping,
+}
+
+impl State {
+    fn ready(self) -> Result<(), Error> {
+        match self {
+            Self::Ready => Ok(()),
+            Self::Poisoned => Err(Error::Precondition),
+            Self::Stopping => Err(Error::Busy),
+        }
+    }
+}
 
 /// Initialized controller. Select [`I2c::polling`] for embedded-hal transactions.
 pub struct I2c<const N: u8, P: CompletePins<N>, Role = Controller> {
     pins: P::Active,
     rx_depth: usize,
-    usable: bool,
+    state: State,
     clocks: Clocks,
     _role: PhantomData<Role>,
 }
 
 /// The initialization error retains the block and its pins during recovery.
-pub type InitError<const N: u8, P> = crate::InitError<Parts<N, P>, Error, Parts<N, P>>;
+pub type InitError<const N: u8, P> =
+    crate::InitError<Parts<N, P>, Error, crate::Recovery<Parts<N, P>>>;
 
 /// Explicit polling access to the I²C controller.
 pub struct Polling<'a, const N: u8, P: CompletePins<N>>(&'a mut I2c<N, P>);
@@ -187,17 +229,37 @@ where
     /// Checks clk_sys and the bus speed before releasing only this controller's reset.
     /// GPIO bank 0 and the raw microsecond timer must already be running.
     /// The pins are muxed only after configuration succeeds.
+    ///
+    /// Retry with Standard mode if the requested Fast mode timing is invalid:
+    ///
+    /// ```no_run
+    /// # use rp1_hal::{clocks::Clocks, gpio::Pin, i2c::{self, Speed}};
+    /// # type Pins = (Pin<2>, Pin<3>);
+    /// fn start(parts: i2c::Parts<1, Pins>, clocks: &Clocks)
+    ///     -> Result<i2c::I2c<1, Pins>, i2c::InitError<1, Pins>>
+    /// {
+    ///     match parts.init(clocks, Speed::Fast) {
+    ///         Ok(bus) => Ok(bus),
+    ///         Err(error) => error.try_into_parts()?.init(clocks, Speed::Standard),
+    ///     }
+    /// }
+    /// ```
     pub fn init(
         self,
         clocks: &Clocks,
-        config: Config,
+        config: impl Into<Config>,
     ) -> Result<I2c<N, PinTuple<SDA, SCL>>, InitError<N, PinTuple<SDA, SCL>>> {
-        self.init_on(&mut Mmio::new(N), clocks, config.speed, |(sda, scl)| {
-            (
-                sda.into_alternate(<Pin<SDA> as Sda<N>>::FUNC, PAD, PAD),
-                scl.into_alternate(<Pin<SCL> as Scl<N>>::FUNC, PAD, PAD),
-            )
-        })
+        self.init_on(
+            &mut Mmio::new(N),
+            clocks,
+            config.into().speed,
+            |(sda, scl)| {
+                (
+                    sda.into_alternate(<Pin<SDA> as Sda<N>>::FUNC, PAD, PAD),
+                    scl.into_alternate(<Pin<SCL> as Scl<N>>::FUNC, PAD, PAD),
+                )
+            },
+        )
     }
 
     fn init_on(
@@ -231,7 +293,7 @@ where
         Ok(I2c {
             pins: route(self.pins.0),
             rx_depth: ((io.read(PARAM) >> 8) & 255) as usize + 1,
-            usable: true,
+            state: State::Ready,
             clocks: *clocks,
             _role: PhantomData,
         })
@@ -239,18 +301,17 @@ where
 }
 
 impl<const N: u8, P: CompletePins<N>> InitError<N, P> {
-    /// Repeat the disable request once reset is released. Return the parts only once
-    /// the controller is disabled and idle, including after clock stretching.
+    /// Request I²C reset and return the parts once reset is confirmed.
     pub fn try_recover(self) -> Result<Parts<N, P>, Self> {
+        self.try_recover_with(&mut ResetMmio)
+    }
+
+    fn try_recover_with(self, io: &mut impl Registers) -> Result<Parts<N, P>, Self> {
         self.recover(|| {
-            if read(RESETS_DONE0) & reset_bit(N) == 0 {
-                return false;
-            }
-            let mut io = Mmio::new(N);
-            if io.read(TYPE) != COMP_TYPE {
-                return false;
-            }
-            cancel(&mut io).is_ok()
+            // Init has not muxed the pins. Holding reset also works when the controller
+            // registers are inaccessible or a target is holding SCL.
+            io.write(RESETS_SET0, reset_bit(N));
+            io.read(RESETS_DONE0) & reset_bit(N) == 0
         })
     }
 }
@@ -396,7 +457,8 @@ fn release_polling(io: &mut impl Io) -> Result<(), Error> {
 }
 
 /// Outside a transaction IC_ENABLE.ENABLE is already 0: the transaction error path
-/// requested ABORT while ENABLE was still set. Setting both here would enable it again.
+/// requested ABORT while ENABLE was still set. ABORT is ignored unless ENABLE is set
+/// (DOC: DW_apb_i2c IC_ENABLE). Setting both here would enable it again.
 fn cancel(io: &mut impl Io) -> Result<(), Error> {
     io.write(ENABLE, 0);
     mask_interrupts(io);
@@ -500,17 +562,22 @@ impl<const N: u8, P: CompletePins<N>> I2c<N, P> {
     }
 
     /// Poll a transaction using a checked seven-bit address.
+    /// Use [`Self::polling`] for the embedded-hal transaction API.
     pub fn transaction_polling(
         &mut self,
         address: Address7,
         ops: &mut [Operation<'_>],
     ) -> Result<(), Error> {
+        self.poll_transaction(address.0, ops)
+    }
+
+    fn poll_transaction(&mut self, address: u8, ops: &mut [Operation<'_>]) -> Result<(), Error> {
         let (clocks, depth) = (self.clocks, self.rx_depth);
         run(
             &mut self.io(),
             &clocks,
-            &mut self.usable,
-            address.0,
+            &mut self.state,
+            address,
             ops,
             depth,
         )
@@ -519,8 +586,12 @@ impl<const N: u8, P: CompletePins<N>> I2c<N, P> {
     /// Repeat the disable request without waiting. If a target holds SCL the
     /// controller can stay active. Collect the parts with [`Self::try_free`].
     pub fn try_cancel(&mut self) -> Result<(), Error> {
-        self.usable = false;
-        cancel(&mut self.io())
+        self.cancel_with(&mut self.io())
+    }
+
+    fn cancel_with(&mut self, io: &mut impl Io) -> Result<(), Error> {
+        self.state = State::Stopping;
+        cancel(io)
     }
 
     /// Unmasks the [`intr`](crate::pac::dw_i2c::intr) bits in `mask` and opens the RP1 wrapper
@@ -528,21 +599,31 @@ impl<const N: u8, P: CompletePins<N>> I2c<N, P> {
     /// `irq` resources. Polling transactions mask every interrupt while they run and restore
     /// the mask afterwards.
     pub fn enable_interrupt(&mut self, mask: u32) {
-        enable_interrupt(&mut self.io(), mask);
+        if !matches!(self.state, State::Stopping) {
+            enable_interrupt(&mut self.io(), mask);
+        }
     }
     pub fn disable_interrupt(&mut self, mask: u32) {
-        let mut io = self.io();
-        let masked = io.read(MASK) & !mask;
-        io.write(MASK, masked);
+        if !matches!(self.state, State::Stopping) {
+            let mut io = self.io();
+            let masked = io.read(MASK) & !mask;
+            io.write(MASK, masked);
+        }
     }
     /// Pending unmasked interrupts (INTR_STAT).
     pub fn interrupt_status(&self) -> u32 {
-        self.io().read(INTR_STAT)
+        if matches!(self.state, State::Stopping) {
+            0
+        } else {
+            self.io().read(INTR_STAT)
+        }
     }
     /// Clears the interrupts that software can clear. RX_FULL and TX_EMPTY follow the FIFO
     /// levels instead. Reading CLR_INTR also clears TX_ABRT_SOURCE: read the abort source first.
     pub fn clear_interrupt(&mut self) {
-        self.io().read(CLEAR);
+        if !matches!(self.state, State::Stopping) {
+            self.io().read(CLEAR);
+        }
     }
 }
 impl<const N: u8, const SDA: u8, const SCL: u8> I2c<N, PinTuple<SDA, SCL>>
@@ -551,6 +632,10 @@ where
     Pin<SCL>: Scl<N>,
 {
     /// Return the parts only once the controller is disabled and idle.
+    /// The controller is normally disabled between transactions. After a disable
+    /// timeout (for example, a target holding SCL), this returns [`Error::Busy`]
+    /// until the controller stops.
+    ///
     /// Masks interrupts and closes the RP1 wrapper. Reset stays released and the pins
     /// stay muxed. Disable and unpend the separately owned NVIC line first, or ensure
     /// its handler accepts the controller being gone.
@@ -573,7 +658,9 @@ where
         match release_polling(&mut self.io()) {
             Ok(()) => Ok(self.into_parts()),
             Err(error) => {
-                self.usable = false;
+                if !matches!(self.state, State::Stopping) {
+                    self.state = State::Poisoned;
+                }
                 Err(crate::FreeError {
                     driver: self,
                     error,
@@ -588,7 +675,7 @@ where
             Token {
                 _private: PhantomData,
             },
-            Pins((sda.release(), scl.release())),
+            Pins::from_required((sda.release(), scl.release())),
         )
     }
 }
@@ -596,7 +683,7 @@ impl<const N: u8, P: CompletePins<N>> Polling<'_, N, P> {
     /// Sets the bus speed after confirming disable.
     pub fn set_speed(&mut self, speed: Speed) -> Result<(), Error> {
         let clocks = self.0.clocks;
-        set_speed(&mut self.0.io(), &clocks, &mut self.0.usable, speed)
+        set_speed(&mut self.0.io(), &clocks, &mut self.0.state, speed)
     }
 }
 impl<const N: u8, P: CompletePins<N>> embedded_hal::i2c::ErrorType for Polling<'_, N, P> {
@@ -605,10 +692,12 @@ impl<const N: u8, P: CompletePins<N>> embedded_hal::i2c::ErrorType for Polling<'
 impl<const N: u8, P: CompletePins<N>> embedded_hal::i2c::I2c for Polling<'_, N, P> {
     /// Empty operations are skipped. Adjacent operations in the same direction continue
     /// without a restart. Direction changes restart, and only the final byte gets STOP.
-    /// A 100 ms interval without progress times out. If disable also fails, collect
-    /// the parts once the controller stops and initialize it again.
+    /// A 100 ms interval without progress times out. A failed disable poisons this
+    /// handle. Further transactions return [`Error::Precondition`]. Use
+    /// [`I2c::try_free`] to collect the parts once stopped and initialize again.
+    /// A cancelled handle returns [`Error::Busy`].
     fn transaction(&mut self, address: u8, ops: &mut [Operation<'_>]) -> Result<(), Error> {
-        self.0.transaction_polling(Address7::new(address)?, ops)
+        self.0.poll_transaction(address, ops)
     }
 }
 
@@ -616,17 +705,18 @@ impl<const N: u8, P: CompletePins<N>> embedded_hal::i2c::I2c for Polling<'_, N, 
 fn set_speed(
     io: &mut impl Io,
     clocks: &Clocks,
-    usable: &mut bool,
+    state: &mut State,
     speed: Speed,
 ) -> Result<(), Error> {
-    if !*usable || !io.sys_current_strict(clocks) {
+    state.ready()?;
+    if !io.sys_current_strict(clocks) {
         return Err(Error::Precondition);
     }
     let counts = timing(clocks.sys().raw(), speed)?;
-    *usable = false;
+    *state = State::Poisoned;
     disable(io)?;
     configure(io, counts);
-    *usable = true;
+    *state = State::Ready;
     Ok(())
 }
 
@@ -636,15 +726,18 @@ fn set_speed(
 fn run(
     io: &mut impl Io,
     clocks: &Clocks,
-    usable: &mut bool,
+    state: &mut State,
     address: u8,
     ops: &mut [Operation<'_>],
     depth: usize,
 ) -> Result<(), Error> {
-    if address >= 128 {
-        return Err(Error::Invalid);
+    match *state {
+        State::Stopping => return Err(Error::Busy),
+        _ if address >= 128 => return Err(Error::Invalid),
+        State::Poisoned => return Err(Error::Precondition),
+        State::Ready => {}
     }
-    if !*usable || !io.sys_current(clocks) {
+    if !io.sys_current(clocks) {
         return Err(Error::Precondition);
     }
     if ops.iter().all(|op| operation_len(op) == 0) {
@@ -653,19 +746,19 @@ fn run(
     // A handler would race the transfer loop for the FIFO and the status it polls.
     let mask = io.read(MASK);
     io.write(MASK, 0);
-    let result = transact(io, usable, address, ops, depth);
+    let result = transact(io, state, address, ops, depth);
     io.write(MASK, mask);
     result
 }
 
 fn transact(
     io: &mut impl Io,
-    usable: &mut bool,
+    state: &mut State,
     address: u8,
     ops: &mut [Operation<'_>],
     depth: usize,
 ) -> Result<(), Error> {
-    *usable = false;
+    *state = State::Poisoned;
     disable(io)?;
     io.read(CLEAR);
     io.write(TAR, u32::from(address));
@@ -676,7 +769,9 @@ fn transact(
         io.write(ENABLE, 3);
     }
     let cleanup = disable(io);
-    *usable = cleanup.is_ok();
+    if cleanup.is_ok() {
+        *state = State::Ready;
+    }
     io.read(CLEAR);
     result.and(cleanup)
 }
@@ -716,6 +811,10 @@ mod tests {
         fast: u32,
         strict: u32,
         resets: Vec<u32>,
+        reset_writes: Vec<(usize, u32)>,
+        reset_release_stuck: bool,
+        reset_assert_stuck: bool,
+        component_type: u32,
         mask: u32,
         wrap: u32,
         /// Writes to MASK and IRQ_WRAP, in order.
@@ -743,6 +842,10 @@ mod tests {
                 fast: 0,
                 strict: 0,
                 resets: Vec::new(),
+                reset_writes: Vec::new(),
+                reset_release_stuck: false,
+                reset_assert_stuck: false,
+                component_type: COMP_TYPE,
                 mask: 0,
                 wrap: 0,
                 interrupt_writes: Vec::new(),
@@ -771,7 +874,7 @@ mod tests {
                     }
                 }
                 DATA => u32::from(self.rx.pop_front().expect("RX underflow")),
-                TYPE => 0x4457_0140,
+                TYPE => self.component_type,
                 MASK => self.mask,
                 IRQ_WRAP => self.wrap,
                 ENABLE_STATUS => u32::from(self.stuck_enabled),
@@ -822,7 +925,31 @@ mod tests {
         }
         fn release_reset(&mut self, bit: u32) -> Result<(), Error> {
             self.resets.push(bit);
-            Ok(())
+            if self.reset_release_stuck {
+                Err(Error::Timeout)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    impl Registers for Model {
+        fn read(&mut self, address: usize) -> u32 {
+            assert_eq!(address, RESETS_DONE0);
+            // Simulate an unrelated controller staying out of reset.
+            reset_bit(2)
+                | if self.reset_assert_stuck {
+                    reset_bit(1)
+                } else {
+                    0
+                }
+        }
+        fn write(&mut self, address: usize, value: u32) {
+            assert_eq!((address, value), (RESETS_SET0, reset_bit(1)));
+            self.reset_writes.push((address, value));
+            if !self.reset_assert_stuck {
+                self.stuck_enabled = false;
+                self.master_active = false;
+            }
         }
     }
     const CLOCKS: crate::clocks::Clocks = crate::clocks::Clocks::for_test(200_000_000, 50_000_000);
@@ -834,33 +961,33 @@ mod tests {
         m.sys = Some(50_000_000);
         // Review 8: transactions use the fast check only; the strict one would fail here.
         m.strict_stale = true;
-        let mut usable = true;
+        let mut state = State::Ready;
         assert_eq!(
             run(
                 &mut m,
                 &CLOCKS,
-                &mut usable,
+                &mut state,
                 0x2d,
                 &mut [Operation::Write(&[1])],
                 2
             ),
             Err(Error::Precondition)
         );
-        assert!(usable && m.writes == 0 && m.commands.is_empty());
+        assert!(state.ready().is_ok() && m.writes == 0 && m.commands.is_empty());
         assert_eq!((m.fast, m.strict), (1, 0));
         m.sys = Some(200_000_000);
         assert_eq!(
             run(
                 &mut m,
                 &CLOCKS,
-                &mut usable,
+                &mut state,
                 0x2d,
                 &mut [Operation::Write(&[1])],
                 2
             ),
             Ok(())
         );
-        assert!(usable);
+        assert!(state.ready().is_ok());
         assert_eq!(m.commands, [1 | STOP]);
         // One check for the whole transaction, however many operations it has.
         let checks = m.fast;
@@ -868,7 +995,7 @@ mod tests {
         run(
             &mut m,
             &CLOCKS,
-            &mut usable,
+            &mut state,
             0x2d,
             &mut [
                 Operation::Write(&[1, 2]),
@@ -879,13 +1006,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!((m.fast, m.strict), (checks + 1, 0));
-        let mut poisoned = false;
+        let mut poisoned = State::Poisoned;
         assert_eq!(
             run(&mut m, &CLOCKS, &mut poisoned, 0x2d, &mut [], 2),
             Err(Error::Precondition)
         );
         assert_eq!(
-            run(&mut m, &CLOCKS, &mut usable, 0x80, &mut [], 2),
+            run(&mut m, &CLOCKS, &mut state, 0x80, &mut [], 2),
             Err(Error::Invalid)
         );
     }
@@ -898,7 +1025,7 @@ mod tests {
         speed: Speed,
         routed: &mut bool,
     ) -> Result<I2c<1, Pins1>, InitError<1, Pins1>> {
-        Parts::new(token, Pins(pins)).init_on(m, clocks, speed, |(sda, scl)| {
+        Parts::new(token, Pins::from_required(pins)).init_on(m, clocks, speed, |(sda, scl)| {
             *routed = true;
             (sda.assume(), scl.assume())
         })
@@ -932,7 +1059,7 @@ mod tests {
         let mut routed = false;
         let i2c =
             init_model(token, &mut m, pins, &CLOCKS, Speed::Fast, &mut routed).expect("retry");
-        assert!(routed && i2c.usable);
+        assert!(routed && i2c.state.ready().is_ok());
         assert_eq!(
             (m.resets.as_slice(), i2c.rx_depth, m.strict, m.fast),
             (&[reset_bit(1)][..], 16, 1, 0)
@@ -946,47 +1073,90 @@ mod tests {
     }
 
     #[test]
-    fn init_timeout_keeps_pins_until_disable_and_bus_idle() {
-        let mut model = Model::new(2);
-        model.stuck_enabled = true;
-        let mut routed = false;
-        let pins: Pins1 = unsafe { (Pin::new(), Pin::new()) };
-        let error = init_model(
-            unsafe { Token::new() },
-            &mut model,
-            pins,
-            &CLOCKS,
-            Speed::Standard,
-            &mut routed,
-        )
-        .err()
-        .expect("disable timed out");
-        assert_eq!(*error.error(), Error::Timeout);
-        assert!(!routed);
-        let error = error.try_into_parts().err().expect("pins are still owned");
-        model.stuck_enabled = false;
-        model.master_active = true;
-        let error = error
-            .recover(|| cancel(&mut model).is_ok())
-            .err()
-            .expect("bus is still active");
-        model.master_active = false;
-        let (token, pins) = error
-            .recover(|| cancel(&mut model).is_ok())
-            .unwrap()
-            .into_parts();
-        assert!(
-            init_model(
-                token,
+    fn init_failures_keep_pins_until_reset_is_confirmed() {
+        for (release_stuck, component_type, enable_stuck, cause) in [
+            (true, COMP_TYPE, false, Error::Timeout),
+            (false, 0, false, Error::Precondition),
+            (false, COMP_TYPE, true, Error::Timeout),
+        ] {
+            let mut model = Model::new(2);
+            model.reset_release_stuck = release_stuck;
+            model.component_type = component_type;
+            model.stuck_enabled = enable_stuck;
+            let mut routed = false;
+            let pins: Pins1 = unsafe { (Pin::new(), Pin::new()) };
+            let error = init_model(
+                unsafe { Token::new() },
                 &mut model,
-                pins.into_pins(),
+                pins,
                 &CLOCKS,
                 Speed::Standard,
-                &mut routed
+                &mut routed,
             )
-            .is_ok()
+            .err()
+            .expect("init must fail");
+            assert_eq!(*error.error(), cause);
+            assert!(!routed);
+            let error = error.try_into_parts().err().expect("pins are still owned");
+
+            model.reset_assert_stuck = true;
+            let error = error
+                .try_recover_with(&mut model)
+                .err()
+                .expect("reset is still pending");
+            model.reset_assert_stuck = false;
+            let (token, pins) = error.try_recover_with(&mut model).unwrap().into_parts();
+            assert_eq!(model.reset_writes, [(RESETS_SET0, reset_bit(1)); 2]);
+
+            model.reset_release_stuck = false;
+            model.component_type = COMP_TYPE;
+            assert!(
+                init_model(
+                    token,
+                    &mut model,
+                    pins.into_pins(),
+                    &CLOCKS,
+                    Speed::Standard,
+                    &mut routed
+                )
+                .is_ok()
+            );
+            assert!(routed);
+        }
+    }
+
+    #[test]
+    fn cancel_gates_interrupts_and_polling_until_release() {
+        let mut model = Model::new(2);
+        let mut bus = init_model(
+            unsafe { Token::new() },
+            &mut model,
+            unsafe { (Pin::new(), Pin::new()) },
+            &CLOCKS,
+            Speed::Standard,
+            &mut false,
+        )
+        .unwrap();
+        // ENABLE_STATUS alone cannot show that the bus has stopped.
+        model.master_active = true;
+        assert_eq!(bus.cancel_with(&mut model), Err(Error::Busy));
+        bus.enable_interrupt(crate::pac::dw_i2c::intr::TX_EMPTY);
+        bus.disable_interrupt(crate::pac::dw_i2c::intr::TX_EMPTY);
+        bus.clear_interrupt();
+        assert_eq!(bus.interrupt_status(), 0);
+        assert_eq!(
+            bus.transaction_polling(Address7::new_const::<0x2d>(), &mut []),
+            Err(Error::Busy)
         );
-        assert!(routed);
+        assert_eq!(
+            embedded_hal::i2c::I2c::transaction(&mut bus.polling(), 0x2d, &mut []),
+            Err(Error::Busy)
+        );
+        assert_eq!(bus.polling().set_speed(Speed::Fast), Err(Error::Busy));
+
+        model.master_active = false;
+        assert_eq!(bus.cancel_with(&mut model), Ok(()));
+        assert_eq!(bus.polling().set_speed(Speed::Fast), Err(Error::Busy));
     }
 
     /// Review 8: init and set_speed use the strict check only. clk_sys drifted in a way only
@@ -1016,19 +1186,19 @@ mod tests {
 
         let mut m = Model::new(16);
         m.strict_stale = true;
-        let mut usable = true;
+        let mut state = State::Ready;
         assert_eq!(
-            set_speed(&mut m, &CLOCKS, &mut usable, Speed::Standard),
+            set_speed(&mut m, &CLOCKS, &mut state, Speed::Standard),
             Err(Error::Precondition)
         );
-        assert!(usable && m.writes == 0);
+        assert!(state.ready().is_ok() && m.writes == 0);
         assert_eq!((m.strict, m.fast), (1, 0));
         m.strict_stale = false;
         assert_eq!(
-            set_speed(&mut m, &CLOCKS, &mut usable, Speed::Standard),
+            set_speed(&mut m, &CLOCKS, &mut state, Speed::Standard),
             Ok(())
         );
-        assert!(usable && m.writes > 0);
+        assert!(state.ready().is_ok() && m.writes > 0);
         assert_eq!((m.strict, m.fast), (2, 0));
     }
 
@@ -1057,7 +1227,7 @@ mod tests {
         );
         m.interrupt_writes.clear();
         let ops = &mut [Operation::Write(&[1])];
-        run(&mut m, &CLOCKS, &mut i2c.usable, 0x2d, ops, 2).unwrap();
+        run(&mut m, &CLOCKS, &mut i2c.state, 0x2d, ops, 2).unwrap();
         assert_eq!(m.interrupt_writes, [(MASK, 0), (MASK, STOP_DET | TX_ABRT)]);
     }
 
@@ -1194,6 +1364,7 @@ mod tests {
         use embedded_hal::i2c::Error as _;
         assert_eq!(reset_bit(1), 1 << 8);
         // CTRL1's clear alias 0x4001_7004 is used by cold bring-up; CTRL0's is one word below.
+        assert_eq!(RESETS_SET0, 0x4001_6000);
         assert_eq!(RESETS_CLR0, 0x4001_7000);
         assert_eq!(RESETS_DONE0, 0x4001_4018);
         assert_eq!(reset_bit(6), 1 << 13);
