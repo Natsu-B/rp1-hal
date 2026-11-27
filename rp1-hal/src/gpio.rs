@@ -104,6 +104,7 @@ pub enum SlewRate {
 
 /// Electrical settings of a bank-0 pad.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PadConfig {
     /// Pull resistor or bus keeper setting.
     pub pull: Pull,
@@ -128,6 +129,30 @@ impl PadConfig {
         drive: DriveStrength::Ma4,
         ..Self::INPUT_DEFAULT
     };
+
+    /// Selects the pull resistor or bus keeper.
+    pub const fn with_pull(mut self, pull: Pull) -> Self {
+        self.pull = pull;
+        self
+    }
+
+    /// Selects the output drive strength.
+    pub const fn with_drive(mut self, drive: DriveStrength) -> Self {
+        self.drive = drive;
+        self
+    }
+
+    /// Selects the output slew rate.
+    pub const fn with_slew(mut self, slew: SlewRate) -> Self {
+        self.slew = slew;
+        self
+    }
+
+    /// Enables or disables Schmitt-trigger input hysteresis.
+    pub const fn with_schmitt(mut self, schmitt: bool) -> Self {
+        self.schmitt = schmitt;
+        self
+    }
 
     fn bits(self) -> u32 {
         self.pull as u32 | (self.drive as u32) << 4 | (self.schmitt as u32) << 1 | self.slew as u32
@@ -165,7 +190,37 @@ pub struct Alternate;
 pub struct Pin<const N: u8, Mode = Unconfigured> {
     _mode: PhantomData<(Mode, core::cell::Cell<()>)>,
 }
+/// An owned bank-0 pin with a runtime number and a statically known mode.
+pub struct ErasedPin<Mode = Unconfigured> {
+    number: u8,
+    _mode: PhantomData<(Mode, core::cell::Cell<()>)>,
+}
+
+impl<M> ErasedPin<M> {
+    /// The bank-0 GPIO number.
+    pub const fn number(&self) -> u8 {
+        self.number
+    }
+
+    /// Restore the typed pin. A number mismatch returns the original owner.
+    pub fn try_into_pin<const N: u8>(self) -> Result<Pin<N, M>, Self> {
+        if self.number == N {
+            Ok(Pin { _mode: PhantomData })
+        } else {
+            Err(self)
+        }
+    }
+}
+
 impl<const N: u8, M> Pin<N, M> {
+    /// Move ownership into a pin with a runtime GPIO number, preserving its mode.
+    pub const fn erase(self) -> ErasedPin<M> {
+        ErasedPin {
+            number: N,
+            _mode: PhantomData,
+        }
+    }
+
     /// Reads the pad's current electrical settings.
     pub fn pad_config(&self) -> PadConfig {
         PadConfig::from_bits(read(pad(N)))
@@ -250,33 +305,75 @@ fn set_pad_config(io: &mut impl Registers, n: u8, config: PadConfig) {
     let current = io.read(pad(n));
     io.write(pad(n), (current & !0x3f) | config.bits());
 }
+fn set_output(n: u8, high: bool) {
+    write(if high { 0x400e_2000 } else { 0x400e_3000 }, 1 << n);
+}
+
+fn output_high(n: u8) -> bool {
+    read(0x400e_0000) & (1 << n) != 0
+}
+
+fn input_high(n: u8) -> bool {
+    read(0x400e_0008) & (1 << n) != 0
+}
+
 impl<const N: u8, M> ErrorType for Pin<N, M> {
     type Error = Infallible;
 }
 impl<const N: u8> OutputPin for Pin<N, Output> {
     fn set_low(&mut self) -> Result<(), Self::Error> {
-        write(0x400e_3000, 1 << N);
+        set_output(N, false);
         Ok(())
     }
     fn set_high(&mut self) -> Result<(), Self::Error> {
-        write(0x400e_2000, 1 << N);
+        set_output(N, true);
         Ok(())
     }
 }
 impl<const N: u8> StatefulOutputPin for Pin<N, Output> {
     fn is_set_high(&mut self) -> Result<bool, Self::Error> {
-        Ok(read(0x400e_0000) & (1 << N) != 0)
+        Ok(output_high(N))
     }
     fn is_set_low(&mut self) -> Result<bool, Self::Error> {
-        self.is_set_high().map(|v| !v)
+        Ok(!output_high(N))
     }
 }
 impl<const N: u8> InputPin for Pin<N, Input> {
     fn is_high(&mut self) -> Result<bool, Self::Error> {
-        Ok(read(0x400e_0008) & (1 << N) != 0)
+        Ok(input_high(N))
     }
     fn is_low(&mut self) -> Result<bool, Self::Error> {
-        self.is_high().map(|v| !v)
+        Ok(!input_high(N))
+    }
+}
+
+impl<M> ErrorType for ErasedPin<M> {
+    type Error = Infallible;
+}
+impl OutputPin for ErasedPin<Output> {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        set_output(self.number, false);
+        Ok(())
+    }
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        set_output(self.number, true);
+        Ok(())
+    }
+}
+impl StatefulOutputPin for ErasedPin<Output> {
+    fn is_set_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(output_high(self.number))
+    }
+    fn is_set_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(!output_high(self.number))
+    }
+}
+impl InputPin for ErasedPin<Input> {
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(input_high(self.number))
+    }
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(!input_high(self.number))
     }
 }
 
@@ -298,6 +395,18 @@ mod tests {
             self.regs.insert(address, value);
             self.writes.push((address, value));
         }
+    }
+
+    #[test]
+    fn erasure_preserves_mode_and_returns_owner_on_number_mismatch() {
+        let pin: Pin<22, Input> = unsafe { Pin::<22>::new() }.assume();
+        let pin = pin
+            .erase()
+            .try_into_pin::<23>()
+            .err()
+            .expect("number mismatch");
+        assert_eq!(pin.number(), 22);
+        let _: Pin<22, Input> = pin.try_into_pin().ok().expect("original pin");
     }
 
     #[test]

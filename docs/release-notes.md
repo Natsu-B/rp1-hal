@@ -51,6 +51,10 @@ through `.polling()`. The controller types and `Parts` name the required pin tup
 | `token.init(tx, rx, &clocks, baud)` | `uart::Parts::new(token, uart::Pins::builder().tx(tx).rx(rx)).init(&clocks, uart::Config::new(baud))` |
 | `driver.free()` and `driver.abort()` | `driver.try_free()` for an immediate check or `driver.free_polling()` for the bounded wait. Use `driver.try_cancel()` to request stop before collecting parts. |
 | `e.resources` and `e.driver` | `e.try_into_parts()` or `e.try_recover()` on a peripheral initialization error. `e.into_parts()` returns the driver and cause on a release error. |
+| `PadConfig { pull: Pull::Up, ..PadConfig::INPUT_DEFAULT }` | `PadConfig::INPUT_DEFAULT.with_pull(Pull::Up)` |
 
 Propagate UART, SPI and I²C initialization errors with an outer error that
 retains the owner, or explicitly handle recovery.
+
+`Pin::erase()` moves ownership to an `ErasedPin` of the same mode. A failed
+number match in `try_into_pin` returns that owner.

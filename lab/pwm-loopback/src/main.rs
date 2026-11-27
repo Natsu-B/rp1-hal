@@ -70,10 +70,10 @@ fn main1(core: Proc1, mut p: rp1::Proc1Resources) -> ! {
     let mut a = channels.channel0.output(p.pins.gpio12);
     let mut b = channels.channel1.output(p.pins.gpio13);
     let nonce = unsafe { status_nonce::WORD.read_volatile() };
-    let mut in_a = p.pins.gpio22.into_input_with_pad(PadConfig {
-        pull: Pull::Up,
-        ..PadConfig::INPUT_DEFAULT
-    });
+    let mut in_a = p
+        .pins
+        .gpio22
+        .into_input_with_pad(PadConfig::INPUT_DEFAULT.with_pull(Pull::Up));
     check_pull(&in_a, nonce, Pull::Up, 0x08);
     in_a.set_pad_config(PadConfig::INPUT_DEFAULT);
     check_pull(&in_a, nonce, Pull::Down, 0x04);
