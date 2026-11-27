@@ -309,7 +309,7 @@ FEN を落として FIFO を空ける方法は使わない。SPI の通常解放
 | `I2c::try_free` / `free_polling` | ENABLE_STATUS=0 かつ MASTER_ACTIVITY=0（即時の `Busy`、または disable を要求して 100 ms で `Timeout`） | 転送の失敗時に ABORT を要求済み | 割り込みをマスクし、停止確認後に `Parts` を返す |
 | `I2c::try_cancel` | disable を再要求し、ENABLE_STATUS=0 かつ MASTER_ACTIVITY=0 を確認（停止未確認なら `Busy`） | 転送の失敗時に ABORT を要求済み | 割り込みをマスクする。ターゲットが SCL を保持している間は停止確認が遅れうる |
 | `I2c` の初期化エラーの `try_recover` | RESETS_DONE0 の自分のビットがクリア | 初期化時はピンを切り替えていない | I²C をリセット保持して `Parts` を返す |
-| `pwm::Channels::free` / `Output::free` | clk_pwm が 50 MHz で動作中（`Precondition`） | — | 停止を書き、ブロックの token または `(Channel, Pin)` を返す |
+| `pwm::Channels::free` / `Output::try_free` | clk_pwm が 50 MHz で動作中（`Precondition`） | — | 停止を書き、ブロックの token または `(Channel, Pin)` を返す |
 | `dma::Transfer::cancel` | DMAC がバッファに触れなくなるまで待つ（上限なし） | ブロックの残り | チャネルを停止する。[DMA の所有権](dma.md) |
 | 失敗しない解放（`Adc::free` / `spi::Device::free`、旧 `Dma::free`） | 待機なし | — | ADC は電源断を書いて token を返す。Device はバスと非選択状態の CS を返す。旧 DMA 解放はチャネルをすべて戻してから token を回収していた |
 

@@ -6,6 +6,7 @@
 //! [`Channels`] must not be distributed between cores. GPIO routes are checked by [`PinRoute`].
 use crate::{
     clocks::{Clocks, XOSC_HZ},
+    fugit::{HertzU32, NanosDurationU64},
     gpio::{Alternate, Pin},
     linux_blocks::{Hardware, Mmio},
     scmi::{Generator, Kind, PhysicalState, RP1_CLOCKS, Round, id},
@@ -31,6 +32,8 @@ const RESETS_CLR1: usize = 0x4001_7004;
 const RESETS_DONE1: usize = 0x4001_401c;
 const TIMEOUT_US: u32 = 10_000;
 const DEFAULT_PERIOD: u32 = u16::MAX as u32;
+const NS_PER_TICK: u64 = 1_000_000_000 / XOSC_HZ as u64;
+const MAX_PERIOD_NS: u64 = u32::MAX as u64 * NS_PER_TICK;
 
 const fn base(n: u8) -> usize {
     0x4009_8000 + n as usize * 0x4000
@@ -43,10 +46,11 @@ fn generator(n: u8) -> Generator {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
-    /// Zero period, or duty greater than period.
+    /// The requested frequency, period or duty is outside the supported range.
     Invalid,
-    /// The channel must be disabled before changing its period.
+    /// Hardware still reports the channel enabled.
     Enabled,
     /// Stale `Clocks`, or clk_pwm is no longer enabled at 50 MHz.
     Precondition,
@@ -112,7 +116,8 @@ impl<const N: u8> Token<N> {
 }
 /// Four channels from one declared block. Restore any moved channels before [`Self::free`]
 /// or [`Self::abort`].
-/// Channels are deliberately neither Send nor Sync: a block cannot be split between cores.
+/// Channels are exclusive resources. They can move into a core-local interrupt slot,
+/// and cannot be shared or sent through the inter-core link.
 #[derive(Debug)]
 pub struct Channels<const N: u8> {
     pub channel0: Channel<N, 0>,
@@ -159,48 +164,152 @@ impl<const N: u8> Channels<N> {
         }
     }
 }
-/// One channel, initially disabled, with a 32-bit period and compare. Dropping this value
-/// leaves hardware as configured; use [`Self::disable`] before abandoning a running output.
+/// A channel that may be configured, routed or enabled.
 #[derive(Debug)]
-pub struct Channel<const N: u8, const C: u8> {
-    period: u32,
+pub struct Disabled;
+
+/// A channel whose period and pin routing are fixed.
+#[derive(Debug)]
+pub struct Running;
+
+/// A failed state transition, retaining the original owner.
+pub type TransitionError<D> = crate::FreeError<D, Error>;
+
+/// Native compare ticks. The channel checks the value against its programmed range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DutyTicks(u32);
+
+impl DutyTicks {
+    pub const fn new(ticks: u32) -> Self {
+        Self(ticks)
+    }
+
+    pub const fn ticks(self) -> u32 {
+        self.0
+    }
+}
+
+/// A trailing-edge PWM period request. Rounds to the nearest cycle length,
+/// choosing the longer cycle on a tie. Requests outside the supported interval fail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Config(Period);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Period {
+    Frequency(HertzU32),
+    Nanoseconds(NanosDurationU64),
+    Ticks(u32),
+}
+
+impl Config {
+    pub const fn from_frequency(rate: HertzU32) -> Self {
+        Self(Period::Frequency(rate))
+    }
+
+    pub const fn from_period(period: NanosDurationU64) -> Self {
+        Self(Period::Nanoseconds(period))
+    }
+
+    /// An exact native period, primarily for register-level diagnostics.
+    pub const fn from_ticks(ticks: u32) -> Self {
+        Self(Period::Ticks(ticks))
+    }
+
+    fn resolve(self) -> Result<Actual, Error> {
+        let ticks = match self.0 {
+            Period::Frequency(rate) if (1..=XOSC_HZ).contains(&rate.raw()) => {
+                round_nearest(u64::from(XOSC_HZ), u64::from(rate.raw()))
+            }
+            Period::Nanoseconds(period)
+                if (NS_PER_TICK..=MAX_PERIOD_NS).contains(&period.ticks()) =>
+            {
+                round_nearest(period.ticks(), NS_PER_TICK)
+            }
+            Period::Ticks(ticks) if ticks != 0 => u64::from(ticks),
+            _ => return Err(Error::Invalid),
+        };
+        let range = u32::try_from(ticks).map_err(|_| Error::Invalid)?;
+        Ok(Actual { range })
+    }
+}
+
+// All callers bound the numerator and denominator before rounding.
+fn round_nearest(numerator: u64, denominator: u64) -> u64 {
+    (numerator + denominator / 2) / denominator
+}
+
+/// Effective values calculated from the programmed registers, using the
+/// trailing-edge RANGE convention. These are calculated, not measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Actual {
+    range: u32,
+}
+
+impl Actual {
+    pub const fn clock(self) -> HertzU32 {
+        HertzU32::from_raw(XOSC_HZ)
+    }
+
+    /// Denominator of the exact programmed frequency, `clock() / cycle_ticks()`.
+    pub const fn cycle_ticks(self) -> u64 {
+        self.range as u64
+    }
+
+    pub const fn range_ticks(self) -> u32 {
+        self.range
+    }
+
+    pub const fn period(self) -> NanosDurationU64 {
+        NanosDurationU64::from_ticks(self.cycle_ticks() * NS_PER_TICK)
+    }
+
+    /// Whole-Hz display, rounded to nearest with ties up. May be zero for long periods.
+    pub fn frequency_hz(self) -> HertzU32 {
+        HertzU32::from_raw(round_nearest(u64::from(XOSC_HZ), self.cycle_ticks()) as u32)
+    }
+}
+
+/// One channel with a 32-bit period and compare. Dropping either state leaves hardware
+/// as configured; explicitly disable a running channel or output before dropping it.
+#[derive(Debug)]
+pub struct Channel<const N: u8, const C: u8, State = Disabled> {
+    actual: Actual,
+    _state: core::marker::PhantomData<State>,
     _core: core::marker::PhantomData<core::cell::Cell<()>>,
 }
-impl<const N: u8, const C: u8> Channel<N, C> {
+
+impl<const N: u8, const C: u8> Channel<N, C, Disabled> {
     fn new() -> Self {
         Self {
-            period: DEFAULT_PERIOD,
+            actual: Actual {
+                range: DEFAULT_PERIOD,
+            },
+            _state: core::marker::PhantomData,
             _core: core::marker::PhantomData,
         }
     }
-    pub const fn period_ticks(&self) -> u32 {
-        self.period
+
+    /// Programs a period and resets duty to zero. On error neither the cached configuration
+    /// nor any register is changed. Configure the channel before routing to defer pin drive.
+    ///
+    /// ```compile_fail,E0599
+    /// use rp1_hal::pwm::{Channel, Config, Running};
+    /// fn reconfigure(channel: &mut Channel<0, 0, Running>) {
+    ///     channel.configure(Config::from_ticks(50_000)).unwrap();
+    /// }
+    /// ```
+    pub fn configure(&mut self, config: Config) -> Result<Actual, Error> {
+        let actual = configure(&mut Mmio, N, C, config)?;
+        self.actual = actual;
+        Ok(actual)
     }
-    /// Period in 20 ns ticks. Only while disabled; resets duty to zero. A period of P gives
-    /// frequency 50 MHz / P (STATIC, Linux RP1 PWM range convention; HW: not verified).
-    /// Every error is reported before any register write, so on error both the hardware and
-    /// [`Self::period_ticks`] keep the previous period.
-    pub fn set_period_ticks(&mut self, period: u32) -> Result<(), Error> {
-        set_period(&mut Mmio, N, C, period)?;
-        self.period = period;
-        Ok(())
+
+    /// Transitions to running after checking clk_pwm.
+    pub fn enable(self) -> Result<Channel<N, C, Running>, TransitionError<Self>> {
+        self.transition(true)
     }
-    /// Native 32-bit compare, 0..=period: zero is low, period is continuously high in normal
-    /// polarity. DUTY has its own write strobe and, per the datasheet (Table 26),
-    /// takes effect at the next counter overflow of a running channel (HW: not verified). SET_UPDATE is
-    /// still written like the Linux driver, which does not wait for it either; its completion
-    /// does not mean the compare has been applied, so it may appear only after the current
-    /// period ends, not necessarily before return.
-    pub fn set_duty_ticks(&mut self, duty: u32) -> Result<(), Error> {
-        set_duty(&mut Mmio, N, C, self.period, duty)
-    }
-    pub fn enable(&mut self) -> Result<(), Error> {
-        set_enabled(&mut Mmio, N, C, true)
-    }
-    pub fn disable(&mut self) -> Result<(), Error> {
-        set_enabled(&mut Mmio, N, C, false)
-    }
-    /// Routes and retains an owned pin. If already enabled, the waveform appears immediately.
+
+    /// Routes and retains an owned pin while the channel is disabled.
     pub fn output<const P: u8>(self, pin: Pin<P>) -> Output<N, C, P>
     where
         Pin<P>: PinRoute<N, C>,
@@ -211,63 +320,138 @@ impl<const N: u8, const C: u8> Channel<N, C> {
         }
     }
 }
-/// A channel and its pin, implementing embedded-hal 1.0 PWM. [`core::ops::DerefMut`] exposes
-/// the channel's period, native duty and enable/disable operations.
-pub struct Output<const N: u8, const C: u8, const P: u8> {
-    channel: Channel<N, C>,
+
+impl<const N: u8, const C: u8> Channel<N, C, Running> {
+    /// Requests disable after checking clk_pwm. The pin transition is asynchronous.
+    pub fn disable(self) -> Result<Channel<N, C>, TransitionError<Self>> {
+        self.transition(false)
+    }
+}
+
+impl<const N: u8, const C: u8, State> Channel<N, C, State> {
+    pub const fn actual(&self) -> Actual {
+        self.actual
+    }
+
+    /// Native 32-bit compare, 0..=range. Zero is low and range is continuously high
+    /// in normal polarity. DUTY has its own strobe and, per the datasheet (Table 26),
+    /// takes effect at the next overflow of a running channel (HW: not verified).
+    /// SET_UPDATE is still written as in the Linux driver. Return means the writes
+    /// were issued, with waveform application at a later hardware boundary.
+    ///
+    /// This path relies on the PWM clock held by the declaration and checked during
+    /// setup. It performs one range check followed by two ordered MMIO writes.
+    #[inline(always)]
+    pub fn try_set_duty_ticks(&mut self, duty: DutyTicks) -> Result<(), Error> {
+        set_duty(&mut Mmio, N, C, self.actual.range, duty.ticks())
+    }
+
+    fn transition<Next>(self, enabled: bool) -> Result<Channel<N, C, Next>, TransitionError<Self>> {
+        match set_enabled(&mut Mmio, N, C, enabled) {
+            Ok(()) => Ok(Channel {
+                actual: self.actual,
+                _state: core::marker::PhantomData,
+                _core: core::marker::PhantomData,
+            }),
+            Err(error) => Err(TransitionError::new(self, error)),
+        }
+    }
+}
+
+/// A channel and its owned pin, implementing embedded-hal 1.0 PWM. Dereferencing
+/// exposes the channel's configuration and duty operations for its current state.
+///
+/// ```compile_fail,E0599
+/// use rp1_hal::pwm::{Config, Output, Running};
+/// fn reconfigure(output: &mut Output<0, 0, 12, Running>) {
+///     output.configure(Config::from_ticks(50_000)).unwrap();
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use rp1_hal::pwm::{Output, Running};
+/// fn change_pad(output: &mut Output<0, 0, 12, Running>) {
+///     let _ = output.pin_mut();
+/// }
+/// ```
+pub struct Output<const N: u8, const C: u8, const P: u8, State = Disabled> {
+    channel: Channel<N, C, State>,
     pin: Pin<P, Alternate>,
 }
-impl<const N: u8, const C: u8, const P: u8> Output<N, C, P> {
+impl<const N: u8, const C: u8, const P: u8> Output<N, C, P, Disabled> {
     /// Borrows the routed pin to configure its pad before enabling PWM.
     pub fn pin_mut(&mut self) -> &mut Pin<P, Alternate> {
         &mut self.pin
     }
 
-    /// Disables the channel and clears its MODE (generate 0), as Linux's `pwm-rp1` free does,
-    /// then returns channel and unconfigured pin. The pad stays muxed to the channel, which
-    /// then outputs a constant low (DOC/STATIC; HW: not verified). [`Channel::enable`] restores the
-    /// trailing-edge mode. On failure (clock no longer 50 MHz) nothing is written and the
-    /// output comes back with the error, as in [`Channels::free`].
-    pub fn free(self) -> Result<(Channel<N, C>, Pin<P>), crate::FreeError<Self, Error>> {
-        match release_channel(&mut Mmio, N, C) {
-            Ok(()) => Ok((self.channel, self.pin.release())),
-            Err(error) => Err(crate::FreeError {
-                driver: self,
-                error,
-            }),
+    pub fn enable(self) -> Result<Output<N, C, P, Running>, TransitionError<Self>> {
+        let Self { channel, pin } = self;
+        match channel.enable() {
+            Ok(channel) => Ok(Output { channel, pin }),
+            Err(e) => {
+                let (channel, error) = e.into_parts();
+                Err(TransitionError::new(Output { channel, pin }, error))
+            }
         }
     }
-    /// [`Self::free`] without the clock check, with the limits of [`Channels::abort`]: the
-    /// pad stays muxed to a channel that may not have stopped. Reconfiguring the returned
-    /// pin (for example [`Pin::into_input`]) takes the pad away from it.
+
+    /// Disables the channel and clears its MODE (generate 0), as Linux's `pwm-rp1` free does,
+    /// then returns channel and unconfigured pin. The pad stays muxed to the channel, which
+    /// then outputs a constant low (DOC/STATIC; HW: not verified). [`Self::enable`] restores the
+    /// trailing-edge mode. If the clock check fails, the error retains the output.
+    pub fn try_free(self) -> Result<(Channel<N, C>, Pin<P>), crate::FreeError<Self, Error>> {
+        match release_channel(&mut Mmio, N, C) {
+            Ok(()) => Ok((self.channel, self.pin.release())),
+            Err(error) => Err(crate::FreeError::new(self, error)),
+        }
+    }
+
+    /// [`Self::try_free`] without the clock check, with the limits of [`Channels::abort`].
+    /// Reconfiguring the returned pin (for example [`Pin::into_input`]) takes it off PWM.
     pub fn abort(self) -> (Channel<N, C>, Pin<P>) {
         stop_channel(&mut Mmio, N, C);
         (self.channel, self.pin.release())
     }
 }
-impl<const N: u8, const C: u8, const P: u8> core::ops::Deref for Output<N, C, P> {
-    type Target = Channel<N, C>;
+impl<const N: u8, const C: u8, const P: u8> Output<N, C, P, Running> {
+    pub fn disable(self) -> Result<Output<N, C, P>, TransitionError<Self>> {
+        let Self { channel, pin } = self;
+        match channel.disable() {
+            Ok(channel) => Ok(Output { channel, pin }),
+            Err(e) => {
+                let (channel, error) = e.into_parts();
+                Err(TransitionError::new(Output { channel, pin }, error))
+            }
+        }
+    }
+}
+impl<const N: u8, const C: u8, const P: u8, State> core::ops::Deref for Output<N, C, P, State> {
+    type Target = Channel<N, C, State>;
+
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         &self.channel
     }
 }
-impl<const N: u8, const C: u8, const P: u8> core::ops::DerefMut for Output<N, C, P> {
+impl<const N: u8, const C: u8, const P: u8, State> core::ops::DerefMut for Output<N, C, P, State> {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.channel
     }
 }
-impl<const N: u8, const C: u8, const P: u8> ErrorType for Output<N, C, P> {
+impl<const N: u8, const C: u8, const P: u8, State> ErrorType for Output<N, C, P, State> {
     type Error = Error;
 }
-impl<const N: u8, const C: u8, const P: u8> SetDutyCycle for Output<N, C, P> {
+impl<const N: u8, const C: u8, const P: u8, State> SetDutyCycle for Output<N, C, P, State> {
     /// Normalized duty: 65535 means 100%, independent of the 32-bit period. Rounded down to
     /// native ticks, so small periods quantize the requested fraction. Does not enable output.
     fn max_duty_cycle(&self) -> u16 {
         u16::MAX
     }
     fn set_duty_cycle(&mut self, duty: u16) -> Result<(), Error> {
-        self.channel
-            .set_duty_ticks(scale_duty(self.channel.period, duty))
+        clock_current(&mut Mmio, N)?;
+        let ticks = scale_duty(self.actual().range, duty);
+        self.try_set_duty_ticks(DutyTicks::new(ticks))
     }
 }
 fn scale_duty(period: u32, duty: u16) -> u32 {
@@ -306,13 +490,14 @@ fn clock_current(io: &mut impl Hardware, n: u8) -> Result<(), Error> {
 /// happens at the end of the running period, a wait would have to last up to
 /// u32::MAX × 20 ns (about 86 s). A second request while one is pending is what Linux does
 /// as well. When the new values take effect is not verified on hardware.
+#[inline(always)]
 fn update(io: &mut impl Hardware, n: u8) {
     io.write(base(n) + GLOBAL_CTRL + SET, UPDATE);
 }
 fn set_enabled(io: &mut impl Hardware, n: u8, c: u8, enabled: bool) -> Result<(), Error> {
     clock_current(io, n)?;
     if enabled {
-        // Output::free leaves MODE = 0; restore the mode Linux's request() writes.
+        // Output::try_free leaves MODE = 0; restore the mode Linux's request() writes.
         io.write(base(n) + CHAN_CTRL + c as usize * STRIDE, TRAILING_EDGE);
     }
     io.write(
@@ -344,24 +529,23 @@ fn stop_block(io: &mut impl Hardware, n: u8) {
     io.write(base(n) + GLOBAL_CTRL + CLR, 0xf);
     update(io, n);
 }
-fn set_period(io: &mut impl Hardware, n: u8, c: u8, period: u32) -> Result<(), Error> {
-    if period == 0 {
-        return Err(Error::Invalid);
-    }
+fn configure(io: &mut impl Hardware, n: u8, c: u8, config: Config) -> Result<Actual, Error> {
+    let actual = config.resolve()?;
     clock_current(io, n)?;
     if io.read(base(n) + GLOBAL_CTRL) & (1 << c) != 0 {
         return Err(Error::Enabled);
     }
     io.write(base(n) + CHAN_DUTY + c as usize * STRIDE, 0);
-    io.write(base(n) + CHAN_RANGE + c as usize * STRIDE, period);
+    io.write(base(n) + CHAN_RANGE + c as usize * STRIDE, actual.range);
     update(io, n);
-    Ok(())
+    Ok(actual)
 }
-fn set_duty(io: &mut impl Hardware, n: u8, c: u8, period: u32, duty: u32) -> Result<(), Error> {
-    if duty > period {
+
+#[inline(always)]
+fn set_duty(io: &mut impl Hardware, n: u8, c: u8, range: u32, duty: u32) -> Result<(), Error> {
+    if duty > range {
         return Err(Error::Invalid);
     }
-    clock_current(io, n)?;
     io.write(base(n) + CHAN_DUTY + c as usize * STRIDE, duty);
     update(io, n);
     Ok(())
@@ -521,12 +705,15 @@ mod tests {
         for n in 0..2 {
             let mut f = Fake::running(n);
             for c in 0..4 {
-                set_period(&mut f, n, c, u32::MAX).unwrap();
+                configure(&mut f, n, c, Config::from_ticks(u32::MAX)).unwrap();
                 set_duty(&mut f, n, c, u32::MAX, u32::MAX).unwrap();
                 set_enabled(&mut f, n, c, true).unwrap();
                 assert_eq!(f.regs[&base(n)], (1 << (c + 1)) - 1);
                 let writes = f.writes.len();
-                assert_eq!(set_period(&mut f, n, c, 1), Err(Error::Enabled));
+                assert_eq!(
+                    configure(&mut f, n, c, Config::from_ticks(1)),
+                    Err(Error::Enabled)
+                );
                 assert_eq!(f.writes.len(), writes);
             }
             set_enabled(&mut f, n, 1, false).unwrap();
@@ -535,14 +722,106 @@ mod tests {
         }
     }
     #[test]
+    fn typed_configuration_rounding_and_full_range() {
+        let ns = |n| Config::from_period(NanosDurationU64::from_ticks(n));
+        for (config, range) in [
+            (Config::from_frequency(HertzU32::from_raw(XOSC_HZ)), 1),
+            (Config::from_frequency(HertzU32::from_raw(1_000)), 50_000),
+            (Config::from_frequency(HertzU32::from_raw(20_000_000)), 3),
+            (Config::from_frequency(HertzU32::from_raw(20_000_001)), 2),
+            (Config::from_frequency(HertzU32::from_raw(19_999_999)), 3),
+            (Config::from_frequency(HertzU32::from_raw(1)), 50_000_000),
+            (ns(20), 1),
+            (ns(29), 1),
+            (ns(30), 2),
+            (ns(31), 2),
+            (ns(MAX_PERIOD_NS - 10), u32::MAX),
+            (ns(MAX_PERIOD_NS - 11), u32::MAX - 1),
+            (ns(MAX_PERIOD_NS), u32::MAX),
+            (Config::from_ticks(u32::MAX), u32::MAX),
+        ] {
+            let mut f = Fake::running(0);
+            let actual = configure(&mut f, 0, 0, config).unwrap();
+            assert_eq!(actual.clock().raw(), XOSC_HZ);
+            assert_eq!(actual.range_ticks(), range);
+            assert_eq!(actual.cycle_ticks(), u64::from(range));
+            assert_eq!(actual.period().ticks(), u64::from(range) * 20);
+            assert_eq!(
+                f.writes,
+                [
+                    (base(0) + CHAN_DUTY, 0),
+                    (base(0) + CHAN_RANGE, range),
+                    (base(0) + SET, UPDATE)
+                ]
+            );
+        }
+        assert_eq!(
+            Config::from_ticks(256)
+                .resolve()
+                .unwrap()
+                .frequency_hz()
+                .raw(),
+            195_313
+        );
+        assert_eq!(ns(MAX_PERIOD_NS).resolve().unwrap().frequency_hz().raw(), 0);
+    }
+
+    #[test]
+    fn invalid_typed_requests_leave_hardware_intact() {
+        let mut f = Fake::running(0);
+        for rate in [0, XOSC_HZ + 1, u32::MAX] {
+            assert_eq!(
+                configure(
+                    &mut f,
+                    0,
+                    1,
+                    Config::from_frequency(HertzU32::from_raw(rate))
+                ),
+                Err(Error::Invalid)
+            );
+        }
+        for period in [0, 1, 19, MAX_PERIOD_NS + 1, u64::MAX] {
+            let config = Config::from_period(NanosDurationU64::from_ticks(period));
+            assert_eq!(configure(&mut f, 0, 1, config), Err(Error::Invalid));
+        }
+        assert!(f.writes.is_empty());
+        assert_eq!(f.regs[&(base(0) + CHAN_RANGE + STRIDE)], DEFAULT_PERIOD);
+    }
+
+    #[test]
+    fn native_update_uses_only_two_writes_after_range_check() {
+        let mut f = Fake::new(1);
+        for duty in [0, 3, 7] {
+            f.writes.clear();
+            set_duty(&mut f, 1, 2, 7, duty).unwrap();
+            assert_eq!(
+                f.writes,
+                [
+                    (base(1) + CHAN_DUTY + 2 * STRIDE, duty),
+                    (base(1) + SET, UPDATE)
+                ]
+            );
+        }
+        f.writes.clear();
+        assert_eq!(set_duty(&mut f, 1, 2, 7, 8), Err(Error::Invalid));
+        assert!(f.writes.is_empty());
+    }
+
+    #[test]
     fn invalid_settings_and_stopped_clock_write_nothing() {
         let mut f = Fake::running(0);
-        assert_eq!(set_period(&mut f, 0, 0, 0), Err(Error::Invalid));
+        assert_eq!(
+            configure(&mut f, 0, 0, Config::from_ticks(0)),
+            Err(Error::Invalid)
+        );
         assert_eq!(set_duty(&mut f, 0, 0, 100, 101), Err(Error::Invalid));
         assert!(f.writes.is_empty());
         f.regs.insert(generator(0).ctrl, 2 << 5);
-        assert_eq!(set_period(&mut f, 0, 0, 100), Err(Error::Precondition));
-        assert_eq!(set_duty(&mut f, 0, 0, 100, 50), Err(Error::Precondition));
+        assert_eq!(
+            configure(&mut f, 0, 0, Config::from_ticks(100)),
+            Err(Error::Precondition)
+        );
+        assert_eq!(set_enabled(&mut f, 0, 0, false), Err(Error::Precondition));
         assert_eq!(set_enabled(&mut f, 0, 0, true), Err(Error::Precondition));
         assert!(f.writes.is_empty());
     }
@@ -569,7 +848,7 @@ mod tests {
         let mut f = Fake::running(0);
         f.stuck_update = true;
         f.regs.insert(base(0), UPDATE);
-        set_period(&mut f, 0, 0, 100).unwrap();
+        configure(&mut f, 0, 0, Config::from_ticks(100)).unwrap();
         set_duty(&mut f, 0, 0, 100, 50).unwrap();
         set_enabled(&mut f, 0, 0, true).unwrap();
         assert_eq!(f.regs[&(base(0) + CHAN_RANGE)], 100);
@@ -578,17 +857,26 @@ mod tests {
         let updates = f.writes.iter().filter(|&&w| w == (base(0) + SET, UPDATE));
         assert_eq!(updates.count(), 3);
     }
-    /// Review minor 1: every set_period error is returned before a register write, so the
+    /// Every configure error is returned before a register write, so the
     /// cached period (assigned only on Ok) always matches RANGE.
     #[test]
-    fn set_period_errors_precede_writes() {
+    fn configure_errors_precede_writes() {
         let mut f = Fake::running(0);
         set_enabled(&mut f, 0, 1, true).unwrap();
         f.writes.clear();
-        assert_eq!(set_period(&mut f, 0, 1, 7), Err(Error::Enabled));
-        assert_eq!(set_period(&mut f, 0, 0, 0), Err(Error::Invalid));
+        assert_eq!(
+            configure(&mut f, 0, 1, Config::from_ticks(7)),
+            Err(Error::Enabled)
+        );
+        assert_eq!(
+            configure(&mut f, 0, 0, Config::from_ticks(0)),
+            Err(Error::Invalid)
+        );
         f.regs.insert(generator(0).ctrl, 2 << 5);
-        assert_eq!(set_period(&mut f, 0, 0, 7), Err(Error::Precondition));
+        assert_eq!(
+            configure(&mut f, 0, 0, Config::from_ticks(7)),
+            Err(Error::Precondition)
+        );
         assert!(f.writes.is_empty());
         assert_eq!(f.regs[&(base(0) + CHAN_RANGE + STRIDE)], DEFAULT_PERIOD);
     }
@@ -661,6 +949,7 @@ mod tests {
     fn public_traits_and_bank0_routes() {
         fn pwm<T: SetDutyCycle<Error = Error>>() {}
         pwm::<Output<0, 0, 12>>();
+        pwm::<Output<0, 0, 12, Running>>();
         assert_eq!(<Pin<12> as PinRoute<0, 0>>::FUNC, 0);
         assert_eq!(<Pin<13> as PinRoute<0, 1>>::FUNC, 0);
         assert_eq!(<Pin<14> as PinRoute<0, 2>>::FUNC, 0);

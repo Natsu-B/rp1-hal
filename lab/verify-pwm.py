@@ -24,9 +24,9 @@ def verify(uart0):
     uart0 = ANSI.sub("", uart0).replace("\r", "").replace("\0", "")
     if re.search(r"\b(?:PWM_FAIL|panic|panicked|hardfault|RP1_FAULT)\b", uart0, re.I):
         return "firmware reported a failure"
-    rows = re.findall(r"\b(PWM_[A-Z]+)\b[ \t]*(.*)", uart0)
+    rows = re.findall(r"\b(PWM_[A-Z]+)\b[ \t]*(.*)", uart0, re.M)
     round_markers = ["PWM_SAMPLE"] * len(DUTIES) + ["PWM_REPERIOD", "PWM_DISABLED"]
-    if [name for name, _ in rows] != ["PWM_BOOT"] + ["PWM_PAD"] * 3 + round_markers * ROUNDS + ["PWM_DONE"]:
+    if [name for name, _ in rows] != ["PWM_BOOT"] + ["PWM_PAD"] * 3 + round_markers * ROUNDS + ["PWM_REINIT", "PWM_DONE"]:
         return "wrong count or order of PWM markers"
     boot = re.fullmatch(r"nonce=([0-9a-f]{8}) PLAT_INIT ok=1(?: .*)?", rows[0][1].strip())
     if not boot or int(boot[1], 16) in (0, 0xffffffff):
@@ -36,7 +36,7 @@ def verify(uart0):
         if not pad or (pad[1], int(pad[2]), pad[3], int(pad[4], 16) & 0xcc) != (boot[1], pin, pull, bits):
             return f"invalid PWM_PAD for GPIO{pin} {pull}"
 
-    samples = iter(rows[4:-1])
+    samples = iter(rows[4:-2])
     for n in range(ROUNDS):
         for duty in (*DUTIES, None, None):
             marker, data = next(samples)
@@ -53,6 +53,13 @@ def verify(uart0):
                 ok = False
             if not ok:
                 return f"invalid {marker} waveform for round {n}: {data}"
+    try:
+        fields = {k: int(v) for k, v in re.findall(r"\b(\w+)=(\d+)(?=\s|$)", rows[-2][1])}
+        reinitialized = wave(fields, "a_", 1000, 50) and wave(fields, "b_", 500, 50)
+    except KeyError:
+        reinitialized = False
+    if not reinitialized:
+        return "invalid PWM_REINIT waveform"
     if rows[-1][1].strip() != "reinitialized=1":
         return "missing PWM reinitialization"
     return None

@@ -5,7 +5,7 @@ STATIC
 - Owned bank-0 GPIO pins expose `pad_config` and `set_pad_config` for pull, drive strength,
   slew rate and Schmitt trigger settings. Use `into_input_with_pad` or `into_output_with_pad`
   to supply a configuration at mode transition. PWM outputs expose the routed pin via
-  `pin_mut`.
+  `pin_mut` while disabled.
 - Firmware rates use `rp1_hal::fugit::HertzU32`. Import `fugit::RateExtU32` from the HAL for
   literals such as `10.MHz()` and `115_200.Hz()`. Read the platform rates with `Clocks::sys`
   and `Clocks::uart`, SPI SCLK with `Spi::frequency`, and the ADC and PWM clocks with
@@ -217,3 +217,23 @@ raw IRQ field. The temperature sensor is powered during setup.
 
 The synchronous IRQ and explicit polling methods reject handler or
 masked calls. Use `try_start` and `try_sample` for immediate I/O.
+
+## PWM migration
+
+**STATIC · 2026-11-27.** PWM configuration uses typed rates or nanosecond periods
+and has a separate native compare path. Import `pwm::{Config, DutyTicks}` and
+`fugit::RateExtU32` for the calls below.
+
+| Before | After |
+| --- | --- |
+| `output.set_period_ticks(50_000)?` | `let actual = output.configure(Config::from_frequency(1.kHz()))?` while disabled |
+| `output.period_ticks()` | `output.actual().range_ticks()` |
+| `output.set_duty_ticks(12_500)?` | `output.try_set_duty_ticks(DutyTicks::new(12_500))?` |
+| `output.enable()?` | `let mut output = output.enable()?` |
+| `output.disable()?` | `let mut output = output.disable()?` |
+| `output.free()?` | `let (channel, pin) = output.disable()?.try_free()?` in a function whose error can retain either owner |
+
+`enable` and `disable` return the original state through `TransitionError` on failure.
+Use `e.into_driver()` to retry, or `e.into_parts()` to recover the state and error.
+`Output` and `Channel` default to `Disabled`. Specify `Running` for an enabled one.
+The embedded-hal `SetDutyCycle` adapter works in either state.

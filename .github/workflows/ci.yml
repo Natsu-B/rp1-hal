@@ -62,6 +62,7 @@ jobs:
           - { package: dual-core, name: ping-poll, features: --features ping-poll }
           - { package: peripherals }
           - { package: pwm-loopback }
+          - { package: pwm-loopback, name: motor-api, features: --features motor-api }
           - { package: timer-parity }
           - { package: dma-parity }
           - { package: uart-parity }
@@ -93,6 +94,9 @@ jobs:
         run: cargo rp1 build --locked -p ${{ matrix.package }} --target thumbv7m-none-eabi --release ${{ matrix.features }}
       - name: cargo rp1 check
         run: cargo rp1 check target/thumbv7m-none-eabi/release/${{ matrix.package }} ${{ matrix.package == 'dual-core' && matrix.name != 'ping-poll' && '--require-link-irq' || '' }}
+      - name: Inspect the native PWM duty path
+        if: matrix.package == 'pwm-loopback' && matrix.name == 'motor-api'
+        run: python3 lab/check-pwm-native.py target/thumbv7m-none-eabi/release/pwm-loopback
       - name: Parse the v3 firmware with the loader
         if: matrix.package == 'link-wake-fixture'
         run: RP1BOOT_TEST_ELF="$PWD/target/thumbv7m-none-eabi/release/link-wake-fixture" cargo test --locked -p rp1boot real_firmware_image

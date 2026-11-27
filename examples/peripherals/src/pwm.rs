@@ -2,12 +2,12 @@
 //! Connect GPIO12 to GPIO22 through 1 kΩ and share ground. Sample the 1 kHz,
 //! 50% duty waveform and check that pulses cease when the channel is disabled.
 
-use embedded_hal::{delay::DelayNs, digital::InputPin, pwm::SetDutyCycle};
+use embedded_hal::{delay::DelayNs, digital::InputPin};
 use rp1_hal::{
     clocks::Clocks,
-    fugit::{ExtU32, HertzU32, RateExtU32},
+    fugit::{ExtU32, RateExtU32},
     gpio::{Input, Pin},
-    pwm::Token,
+    pwm::{Config, DutyTicks, Token},
     timer::{Timer, WaitTimer},
 };
 
@@ -20,20 +20,19 @@ pub fn run(
 ) -> Result<(), &'static str> {
     // The default pull-down holds the sense pin low if the jumper is missing.
     let mut input = input.into_input();
-    let channels = pwm.init(clocks).map_err(|_| "PWM0 init failed")?;
-    let frequency: HertzU32 = 1.kHz();
-    let period = channels.clock().raw() / frequency.raw();
+    let mut channels = pwm.init(clocks).map_err(|_| "PWM0 init failed")?;
+    let actual = channels
+        .channel0
+        .configure(Config::from_frequency(1.kHz()))
+        .map_err(|_| "PWM period setup failed")?;
     let mut output = channels.channel0.output(output);
     output
-        .set_period_ticks(period)
-        .map_err(|_| "PWM period setup failed")?;
-    output
-        .set_duty_cycle_percent(50)
+        .try_set_duty_ticks(DutyTicks::new(actual.range_ticks() / 2))
         .map_err(|_| "PWM duty setup failed")?;
-    output.enable().map_err(|_| "PWM enable failed")?;
+    let output = output.enable().map_err(|_| "PWM enable failed")?;
     timer.delay_ms(3); // Let the range and duty latch at overflow.
     let (rising, high, total) = sample(&mut input);
-    output.disable().map_err(|_| "PWM disable failed")?;
+    let _output = output.disable().map_err(|_| "PWM disable failed")?;
     if !(95..=105).contains(&rising) || !(45..=55).contains(&(100 * high / total)) {
         return Err("PWM frequency or duty out of range");
     }

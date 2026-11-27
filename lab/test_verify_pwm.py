@@ -24,6 +24,8 @@ def uart0():
             f"PWM_REPERIOD round={n} rise=50 high=25 total=100 us=100000",
             f"PWM_DISABLED round={n} rise=0 high=0 total=100",
         ])
+    rows.append("PWM_REINIT a_rise=100 a_high=50 a_total=100 a_us=100000 "
+                "b_rise=50 b_high=50 b_total=100 b_us=100000")
     return "\n".join([*rows, "PWM_DONE reinitialized=1", ""])
 
 

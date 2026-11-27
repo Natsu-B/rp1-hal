@@ -1,9 +1,9 @@
-# RP1 PWM driver — STATIC / PWM0 loopback HW
+# RP1 PWM driver
 
 `rp1_hal::pwm` owns PWM0 or PWM1 as a whole, with four trailing-edge channels,
 independent 32-bit periods and compares, and optional owned GPIO outputs. This implementation
-has host tests and the scoped PWM0 loopback results below. PWM1, exact update timing and
-one-tick period conventions remain **HW 未検証**.
+has static gates (2026-11-27) and the historical PWM0 loopback results below. PWM1, exact
+update timing and one-tick period conventions remain **HW 未検証**.
 
 ## PWM0 loopback results (HW, 2026-11-05)
 
@@ -40,60 +40,81 @@ The generated `p.pwm0` is a block `pwm::Token<0>`. Optional output pins stay in 
 bundles, callers attach each PWM pin explicitly:
 
 ```rust,no_run
-# use rp1_hal::{clocks::Clocks, gpio::Pin, pwm::{Error, Token}};
-# use embedded_hal::pwm::SetDutyCycle;
+# use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, pwm::{Config, DutyTicks, Error, Token}};
 fn output(token: Token<0>, pin: Pin<12>, clocks: &Clocks) -> Result<(), Error> {
     let mut channels = token.init(clocks)?;
-    let mut output = channels.channel0.output(pin);
-    output.set_period_ticks(50_000)?; // 50 MHz / 50000 = 1 kHz
-    output.set_duty_cycle_percent(25)?;
-    output.enable()?;
-    // Later, stop and return the output and pin before returning the whole block.
-    // A failed `free` hands the output (or the channels) back with the error.
-    let (channel, pin) = output.free().map_err(|e| *e.error())?;
+    let actual = channels.channel0.configure(Config::from_frequency(1.kHz()))?;
+    let duty = DutyTicks::new(actual.range_ticks() / 4);
+    let output = channels.channel0.output(pin);
+    let mut output = output.enable().map_err(|e| *e.error())?;
+    output.try_set_duty_ticks(duty)?;
+    let output = output.disable().map_err(|e| *e.error())?;
+    let (channel, _pin) = output.try_free().map_err(|e| *e.error())?;
     channels.channel0 = channel;
     let _token = channels.free().map_err(|e| *e.error())?;
-    let _pin = pin;
     Ok(())
 }
 ```
 
-STATIC: initialization selects XOSC / 1 = 50 MHz, disables all channels, DMA requests and
-interrupts, and initializes each channel to period 65535, duty zero, phase zero. Enable is
-explicit. One tick is 20 ns. `set_period_ticks` accepts 1..=u32::MAX only while disabled and
-resets duty to zero. `set_duty_ticks` accepts 0..=period. Embedded-hal `SetDutyCycle` uses
-normalized 0..=65535 fractions, rounded down to ticks; 65535 maps exactly to period, even
-for periods larger than 65535. Small periods have correspondingly coarse resolution.
+### Period and duty
 
-STATIC: enable/disable use peripheral SET/CLR aliases; every enable, disable, period and duty
-write is followed by SET_UPDATE (GLOBAL_CTRL bit 31, self-clearing), as the Linux driver does
-after its channel writes. Per the RP1 datasheet (Table 26) DUTY and RANGE have their own write
-strobes and take effect at the next counter overflow for a running channel; SET_UPDATE is
-still written for Linux compatibility, but its completion does not mean DUTY/RANGE have been
-applied. Like Linux (`rp1_pwm_apply_config`), nothing waits for the bit to clear, and a
-bounded wait would not help for long periods (u32::MAX ticks is about 86 s). The exact
-moment a new compare appears on a running channel is HW 未検証. No synchronous
-waveform-observation guarantee is implied by returning from a setter. Clock checks reject a changed rate or stopped clock before
-channel writes; every setter error (`Invalid`, `Enabled`, `Precondition`) is returned before
-any register write, so the cached period always matches RANGE. `Timeout` comes only from the
-reset DONE wait in `init`. `rp1_hal::InitError::into_parts()` returns the token. A reset failure may leave partial
-hardware state. `Channels::free` and `Output::free` check the clock first: on
-`Precondition` nothing is written and `FreeError::into_driver()` returns the driver for a
-retry once clk_pwm runs again. `abort` on either writes the same disable without the
-check and always returns the token (or channel and pin); with the clock stopped the disable
-may not latch (HW 未検証), and `Token::init` restarts the clock and disables all channels.
-`Output::free` disables the channel and clears its MODE (0 = generate 0), as Linux's
-`rp1_pwm_free` clears MODE; the pad stays muxed to the channel, so the pin should then read
-low (DOC/STATIC, HW 未検証). `enable` writes the trailing-edge CTRL value again, as Linux's
-`rp1_pwm_request` does. Dropping an output leaves its pin and channel configured; stop it
-explicitly first.
+**STATIC · 2026-11-27.** Initialization selects XOSC / 1 = 50 MHz, disables all channels,
+DMA requests and interrupts, and programs period 65535, duty zero and phase zero.
+While disabled, use `Config::from_frequency(HertzU32)`, `Config::from_period(NanosDurationU64)`
+or exact `Config::from_ticks` for register-level work. Frequency accepts 1–50,000,000 Hz,
+period accepts 20–85,899,345,900 ns, and native RANGE accepts 1..=u32::MAX. Configuration
+rounds to the nearest cycle length with ties toward the longer period, then writes RANGE
+and resets duty to zero. Invalid requests, a stopped or changed PWM clock, and a channel
+still enabled in hardware all fail before any configuration write. Configure before routing
+the pin to defer pin drive until configuration succeeds. Normal trailing-edge polarity is fixed.
+
+`Actual` reports the programmed `range_ticks()`, `cycle_ticks()`, and `clock()`. The
+programmed frequency is the exact ratio `clock().raw() / cycle_ticks()`, with the cycle
+count taken as RANGE under the trailing-edge convention. `period()` reports the resulting
+nanoseconds. `frequency_hz()` rounds to the nearest whole Hz with ties up. It returns zero
+for sub-half-Hz values such as the longest supported period. The one-tick endpoint convention
+remains **HW 未検証**.
+
+`try_set_duty_ticks(DutyTicks)` accepts 0..=RANGE in either state. Under the declared,
+held PWM clock it checks a single 32-bit bound and issues two ordered MMIO writes. The
+Cortex-M3 disassembly gate checks this call path for the absence of calls, loops, sleep,
+allocation, logging, and divide instructions. The stores use the normal RP1 MMIO barriers,
+so bus service time contributes to call latency. For general use, embedded-hal
+`SetDutyCycle` retains the clock check and normalized 0..=65535 conversion rounded down
+to native ticks. 65535 maps to RANGE even above 65535 ticks. Small periods have coarse
+resolution.
+
+### State transitions and release
+
+**STATIC · 2026-11-27.** `enable` consumes `Disabled` and returns `Running`.
+`disable` consumes `Running` and returns `Disabled`. Both check the PWM clock and return
+the original owner on error via `TransitionError::into_driver()`. Period configuration,
+pin routing and mutable pad access require `Disabled`.
+
+Enable/disable use peripheral SET/CLR aliases. Enable, disable, period and duty changes
+request SET_UPDATE (GLOBAL_CTRL bit 31, self-clearing), following the Linux driver.
+DUTY and RANGE have separate write strobes. The RP1 datasheet (Table 26) places their
+running-channel updates at counter overflow. The setter returns after issuing the writes.
+Waveform application occurs in hardware. Its precise timing is **HW 未検証**.
+
+Stop a running output with `disable` before `try_free`. The latter clears MODE
+(0 = generate 0) and returns the channel and pin. The pad stays muxed and is expected
+to read low (DOC/STATIC, HW 未検証). `enable` restores the trailing-edge CTRL value.
+`Channels::free` and `Output::try_free` check the clock first and return the owner on
+`Precondition`. On a disabled output or whole block, `abort` issues the stop without
+checking the clock. With the clock stopped the disable may fail to latch.
+`Token::init` starts the clock and disables all channels. Its bounded reset wait may
+return `Timeout` with partial initialization and the original token in `InitError`.
+Dropping a running output leaves the hardware configured. Fault handling that requires
+external de-energization needs a separate EN/BRAKE or watchdog path.
 
 STATIC: the declaration reserves one block ID (48 or 49), one reset and one clock, regardless
 of the number of output pins. It disables the Linux PWM node, excludes its reset from Linux
 bring-up, and holds its clock against SCMI rate/disable requests. Boot checks reject
 or disable Linux consumers of that owned block, including pinmux users, under the selected
 conflict policy. Linux and the other core cannot declare another channel of the same block.
-Channels are neither Send nor Sync, preventing their distribution between cores in safe Rust.
+Channels can move into an interrupt slot for their owner core. They implement neither
+`Sync` nor the RP1 link's `Message` trait.
 Reclaiming the token requires all four channels back. No shared-SRAM RMW atomics are used.
 
 STATIC: supported PWM0 routes are C0=GPIO12/a0, C1=GPIO13/a0, C2=GPIO14/a0 or GPIO18/a3,
@@ -158,13 +179,23 @@ selects feature arguments, with `SHM_FIRMWARE_FEATURES` retained as a compatibil
 On a memory-limited shared host, wait for any other cargo process before each invocation.
 The example keeps proc0 servicing SCMI/endpoint events while proc1 counts loopback samples.
 It exercises two channels, five duties, a disabled-only period change, pin return and whole
-block token reinitialization. It prints observations, not an automatic HW pass verdict.
+block token reinitialization. It prints observations for the hardware verifier.
 
 ## HW acceptance and extended checks
 
 STATIC: the loopback firmware reports GPIO22 pull-up, GPIO22 pull-down and GPIO23's
 default pull-down before enabling PWM. Run `python3 lab/verify-pwm.py --uart0 CAPTURE`
 to check the three readbacks against the boot nonce and verify the waveform sequence.
+
+**HYP · 2026-11-27.** Build the same package with `--features motor-api` for the M6 campaign.
+ALARM1 schedules 100,000 native updates at 1 ms intervals across five duty plateaus.
+GPIO22 and GPIO23 are inputs on the 1 kΩ loopbacks. Use
+`python3 lab/verify-motor-api.py --uart0 CAPTURE` to check each 25%, 50%, and 75% cycle
+against 990–1010 µs and ±1 percentage point, the constant 0% and 100% levels, and
+100 rejected configurations and 100 rejected native compares. The latency bound is
+10 µs including a 1 µs timer quantization allowance. The relative measurement uses
+the RP1 timer. Absolute frequency against an independent timebase, a 20 ns discrepancy
+and edges shorter than the GPIO sampling interval require separate instrumentation.
 
 The results above cover the two-channel loopback subset. The remaining checks below are
 an extended plan, not a claim that all routes, periods or PWM1 have been verified.
@@ -181,8 +212,8 @@ an extended plan, not a claim that all routes, periods or PWM1 have been verifie
    and timing, and investigate aliasing before judging a marginal result.
 4. `PWM_REPERIOD` should show A at 500 Hz, 25%. `PWM_DISABLED` must have no continuing
    edges. The example repeats 60 rounds (~90 s) across Linux startup and `clk_disable_unused`,
-   then prints `PWM_DONE reinitialized=1`; measure the final A=1 kHz/B=500 Hz 50% outputs
-   again. In each cold boot, run `lab/check-core-status.sh pwm "$NONCE"` from Linux
+   then reports the final A=1 kHz/B=500 Hz 50% outputs in `PWM_REINIT`
+   followed by `PWM_DONE reinitialized=1`. In each cold boot, run `lab/check-core-status.sh pwm "$NONCE"` from Linux
    after `PWM_DONE`, with the nonce from `PWM_BOOT` and the
    [matching Linux status client](../lab/README.md#linux-status-client) staged.
    Require both cores to report `Running` and the matching `LAB_FINAL_END` to report
