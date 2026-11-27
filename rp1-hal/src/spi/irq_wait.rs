@@ -312,25 +312,46 @@ fn flush<const CORE: u8>(
     } else {
         io.now_low()
     };
-    // Anchor the first check to TX empty so waiter retirement does not extend
-    // the estimated frame. Start a bit early and let BUSY decide when to return.
+    if wire_idle(io)? {
+        return Ok(());
+    }
+    flush_tail(timer, io, end, bits, hz, empty)
+}
+
+#[rp1_rt::isram]
+fn flush_tail(
+    timer: &mut WaitTimer,
+    io: &mut Mmio,
+    end: Deadline,
+    bits: u8,
+    hz: u32,
+    empty: u32,
+) -> Result<(), Error> {
+    let mut context = timer.thread_context()?;
+    // BUSY has no IRQ. Bound late detection with a short alarm cadence.
     let frame = frame_delay(bits - 1, hz).ticks();
-    let bit = frame_delay(1, hz);
+    let step = frame_delay(1, hz).min(Duration::from_ticks(3));
     let mut first = true;
     loop {
-        error(io.read(RISR))?;
-        if io.read(SR) & IDLE == sr::TFE {
-            return Ok(());
-        }
         let now = io.now();
         end.check(now)?;
         let delay = if core::mem::take(&mut first) {
             tail_delay(frame, empty, now.ticks() as u32)
         } else {
-            bit
+            step
         };
-        timer.delay_until((now + delay).min(end.instant()))?;
+        if delay.ticks() != 0 {
+            context.delay_accepted(Deadline::at((now + delay).min(end.instant())))?;
+        }
+        if wire_idle(io)? {
+            return Ok(());
+        }
     }
+}
+
+fn wire_idle(io: &mut impl Io) -> Result<bool, Error> {
+    error(io.read(RISR))?;
+    Ok(io.read(SR) & IDLE == sr::TFE)
 }
 
 fn tail_delay(frame: u32, empty: u32, now: u32) -> Duration {

@@ -1,6 +1,6 @@
 //! Core-local delivery for generator-owned synchronous device IRQs.
 
-use crate::timer::{self, Deadline, Duration, Timer, WaitTimer};
+use crate::timer::{self, Deadline, Timer, WaitTimer};
 use rp1_rt::interrupt::{Line, Priority, Slot};
 
 const CEILING: u8 = 4;
@@ -13,7 +13,7 @@ pub(crate) enum Error {
 
 pub(crate) enum Limit {
     Absolute(Deadline),
-    Relative(Duration),
+    Relative(Deadline),
 }
 
 pub(crate) trait Source<I> {
@@ -124,13 +124,13 @@ impl<S: Instance<IRQ>, const IRQ: u8> PerCore<S, IRQ> {
     {
         let mut context = wait.thread_context()?;
         Self::check::<CORE>()?;
-        let now = Timer::new().now();
         let end = match limit {
             Limit::Absolute(end) => {
-                end.check(now)?;
+                end.check(Timer::new().now())?;
                 end
             }
-            Limit::Relative(duration) => Deadline::after_ticks(now, duration.ticks())?,
+            // Relative calls already checked the deadline at their entry tick.
+            Limit::Relative(end) => end,
         };
         let mut active = false;
         let mut post_alarm_probe = true;

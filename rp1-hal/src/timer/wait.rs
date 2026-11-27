@@ -200,7 +200,8 @@ impl<'timer> WaitContext<'timer> {
         })
     }
 
-    fn delay_accepted(&mut self, end: Deadline) -> Result<(), Error> {
+    // The caller has bounded the target against a full counter sample.
+    pub(crate) fn delay_accepted(&mut self, end: Deadline) -> Result<(), Error> {
         match self.wait_accepted(end, |_| None::<()>) {
             Err(Error::Timeout) => Ok(()),
             result => result,
@@ -293,6 +294,9 @@ pub(crate) trait WaitAlarm {
     fn elapsed_after_arm(&self, end: Deadline) -> bool {
         self.elapsed(end)
     }
+    fn deadline_signaled(&self) -> bool {
+        false
+    }
     fn sleep(&mut self);
 }
 
@@ -311,6 +315,11 @@ pub(crate) fn wait<T>(
     if !alarm.elapsed_after_arm(end) {
         loop {
             alarm.sleep();
+            // A retained alarm IRQ goes straight to the final probe. A device
+            // wake can still succeed without reading the timer.
+            if alarm.deadline_signaled() {
+                break;
+            }
             if let Some(value) = probe(false) {
                 return Ok(value);
             }
@@ -436,6 +445,10 @@ impl WaitAlarm for ActiveAlarm<'_> {
                 .ticks()
                 .wrapping_sub(end.instant().ticks() as u32) as i32)
                 >= 0
+    }
+
+    fn deadline_signaled(&self) -> bool {
+        self.timer.event.fired(self.timer.generation)
     }
 
     fn elapsed_after_arm(&self, end: Deadline) -> bool {
@@ -630,6 +643,37 @@ mod tests {
             wait(&mut MissedCompare, end, |_| None::<()>),
             Err(Error::Timeout)
         );
+    }
+
+    #[test]
+    fn an_alarm_irq_goes_directly_to_the_final_probe() {
+        #[derive(Default)]
+        struct DeadlineIrq(bool);
+        impl WaitAlarm for DeadlineIrq {
+            fn arm(&mut self, _: Deadline) -> Result<(), Error> {
+                Ok(())
+            }
+            fn elapsed(&self, _: Deadline) -> bool {
+                assert!(!self.0);
+                false
+            }
+            fn deadline_signaled(&self) -> bool {
+                self.0
+            }
+            fn sleep(&mut self) {
+                self.0 = true;
+            }
+        }
+        let mut calls = 0;
+        let end = Deadline::at(Instant::from_ticks(1));
+        assert_eq!(
+            wait(&mut DeadlineIrq::default(), end, |final_probe| {
+                calls += 1;
+                final_probe.then_some(42)
+            }),
+            Ok(42)
+        );
+        assert_eq!(calls, 3);
     }
 
     #[test]

@@ -171,22 +171,23 @@ impl<const CORE: u8> Blocking<'_, CORE> {
     }
 
     /// Convert one sample with the configured timeout.
-    pub fn read(&mut self, channel: impl Channel) -> Result<u16, Error> {
-        self.read_with(channel, Limit::Relative(self.config.timeout_or(TIMEOUT)))
+    pub fn read<C: Channel>(&mut self, _channel: C) -> Result<u16, Error> {
+        let end = Deadline::after(self.config.timeout_or(TIMEOUT))?;
+        self.read_with(C::SELECT, Limit::Relative(end))
     }
 
     /// Convert one sample by an absolute deadline. A timeout retires the IRQ
     /// and attempts to discard the sample. Check [`Adc::is_recovering`] to see
     /// whether [`Adc::try_cancel`] still needs to run.
-    pub fn read_until<C: Channel>(&mut self, channel: C, end: Deadline) -> Result<u16, Error> {
-        self.read_with(channel, Limit::Absolute(end))
+    pub fn read_until<C: Channel>(&mut self, _channel: C, end: Deadline) -> Result<u16, Error> {
+        self.read_with(C::SELECT, Limit::Absolute(end))
     }
 
     #[rp1_rt::isram]
-    fn read_with<C: Channel>(&mut self, _channel: C, limit: Limit) -> Result<u16, Error> {
+    fn read_with(&mut self, channel: u8, limit: Limit) -> Result<u16, Error> {
         let mut io = WaitIo {
             regs: Mmio,
-            request: Some((&mut self.adc.state, C::SELECT)),
+            request: Some((&mut self.adc.state, channel)),
             prepared: false,
         };
         let result =
