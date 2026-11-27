@@ -140,7 +140,7 @@ note: required because it appears within the type `Proc0Pins`
 note: required because it appears within the type `Proc0Resources`
    --> $GENERATED:120:12
     |
-120 | pub struct Proc0Resources { _private: (), pub pins: Proc0Pins, pub irq: Proc0Irq,
+120 | pub struct Proc0Resources { pub pins: Proc0Pins, pub irq: Proc0Irq,
     |            ^^^^^^^^^^^^^^
 note: required by a bound in `sync`
    --> $CASE:6:12

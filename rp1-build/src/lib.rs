@@ -340,7 +340,7 @@ fn resources(
         }
         s.push_str("}\n#[allow(non_snake_case)]\n");
         s.push_str(&format!(
-            "#[non_exhaustive]\npub struct {ty} {{ _private: (), pub pins: Proc{index}Pins, pub irq: Proc{index}Irq,\n"
+            "#[non_exhaustive]\npub struct {ty} {{ pub pins: Proc{index}Pins, pub irq: Proc{index}Irq,\n"
         ));
         for alarm in &c.timer {
             let p = format!("TIMER.{alarm}");
@@ -367,7 +367,7 @@ fn resources(
                 s.push_str("pub platform: ::rp1_hal::platform::Token,\n");
             }
         }
-        s.push_str(&format!("}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub(crate) unsafe fn new() -> Self {{ Self {{ _private: (), pins: Proc{index}Pins {{\n_private: ::core::marker::PhantomData,\n"));
+        s.push_str(&format!("_core: ::core::marker::PhantomData<::rp1_rt::Proc{index}>,\n}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub(crate) unsafe fn new() -> Self {{ Self {{ _core: ::core::marker::PhantomData, pins: Proc{index}Pins {{\n_private: ::core::marker::PhantomData,\n"));
         for pin in &pins {
             s.push_str(&format!(
                 "gpio{pin}: unsafe {{ ::rp1_hal::gpio::Pin::new() }},\n"

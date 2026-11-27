@@ -4,7 +4,7 @@
 //! Handlers run from ISRAM by default; `sram` keeps the handler in shared SRAM, including
 //! when using automatic ISRAM placement. `PCIE_OUT`, `PROC_MISC`, and `CLOCKS_DEFAULT`
 //! are reserved for system services. A handler needs a declared line on that core.
-//! Duplicate definitions on one core fail to link.
+//! Each core can bind a declared line once.
 //!
 //! ```
 //! use core::cell::Cell;
@@ -12,6 +12,7 @@
 //! static TICKS: Mutex<Cell<u32>> = Mutex::new(Cell::new(0));
 //!
 //! # mod rp1 { pub mod __irq_proc1 { pub trait Handler {} #[allow(non_camel_case_types)] pub enum TIMER_1 {} } }
+//! # fn main() {}
 //! #[rp1_rt::interrupt(proc1)]
 //! fn TIMER_1() {
 //!     free(|cs| TICKS.borrow(cs).set(TICKS.borrow(cs).get() + 1));
