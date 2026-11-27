@@ -205,6 +205,25 @@ fn check_status_epoch(link: &Mapping, epoch: BootEpoch) -> Result<()> {
     }
 }
 
+pub(crate) fn retire_rpc_wait(session: &Session, ctrl: usize) -> Result<()> {
+    let offset = ctrl + proto::shm::wake::RX_WAIT;
+    let link = &session.link;
+    let arm = link.read(offset);
+    if arm == u32::MAX {
+        return Err(Error::PeerDown(crate::PeerDown::LinkDown));
+    }
+    if arm & 1 != 0 {
+        // The reply mapping is exclusive. Retire an exited client's arm
+        // before the request writer forces any inherited work.
+        session.check()?;
+        session.check_link_generation()?;
+        link.write(offset, arm + 1);
+        let _ = link.read(offset);
+        barrier();
+    }
+    Ok(())
+}
+
 pub(crate) fn ring_waiter(
     session: &Session,
     data: &Mapping,

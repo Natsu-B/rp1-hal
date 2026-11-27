@@ -35,8 +35,7 @@ impl Firmware {
         let (down, up) = pair::<Tx, Rx>(Note::parse(&self.note)?, name, rpc)?;
         let up_map = map(&up)?;
         let down_map = map(&down)?;
-        let mut rx = Self::attach_rx(up, up_map, session.clone())?;
-        // Attaching the writer notifies for any request that the previous owner left pending.
+
         let direct_rpc = rpc
             && down.notify_irq
             && up.notify_irq
@@ -44,6 +43,10 @@ impl Firmware {
                 .strict
                 .as_ref()
                 .is_some_and(|strict| strict.rpc_reply_wake);
+        if direct_rpc {
+            crate::strict::retire_rpc_wait(&session, up.sram_offset as usize)?;
+        }
+        let mut rx = Self::attach_rx(up, up_map, session.clone())?;
         let tx = self.attach_tx(down, down_map, session, direct_rpc)?;
         if !rpc && up.notify_irq && !up.overwrite {
             rx.space_doorbell.clone_from(&tx.doorbell);

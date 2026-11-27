@@ -526,8 +526,21 @@ mod direct {
             Err(Error::PeerDown(PeerDown::Restarted))
         ));
         assert_eq!(direct.page.read(DOORBELL), 0);
+        direct.link().write(UP + RX_WAIT, 7);
+        direct.link().write(UP + RPC_WAIT_HEAD, 1);
+        assert!(matches!(
+            direct.open(),
+            Err(Error::PeerDown(PeerDown::Restarted))
+        ));
+        assert_eq!(direct.page.read(DOORBELL), 0);
+        assert_eq!(direct.link().read(UP + RX_WAIT), 7);
         direct.link().write(link::SHM_GENERATION, 2);
+        fake_doorbell::hook({
+            let link = direct.link();
+            move || assert_eq!(link.read(UP + RX_WAIT), 8)
+        });
         let _client = direct.open().unwrap();
+        fake_doorbell::clear_hook();
         assert_eq!(direct.page.read(DOORBELL), 1 << 27);
     }
 }

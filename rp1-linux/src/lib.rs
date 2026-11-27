@@ -254,6 +254,18 @@ impl Session {
             SessionHeader::V3(header) => Ok(header.session()?.generation()),
         }
     }
+
+    fn check_link_generation(&self) -> Result<()> {
+        let generation = self.generation()?;
+        barrier();
+        match self.link.read(proto::link::SHM_GENERATION) {
+            u32::MAX => return Err(Error::PeerDown(PeerDown::LinkDown)),
+            live if live != generation => return Err(Error::PeerDown(PeerDown::Restarted)),
+            _ => {}
+        }
+        barrier();
+        Ok(())
+    }
 }
 
 /// The firmware the boot DT's note describes, reached through `rp1:link`.
@@ -964,16 +976,8 @@ pub struct RingTx<T> {
 }
 impl<T: Message> RingTx<T> {
     fn force_request(&self, doorbell: &Doorbell) -> Result<()> {
-        let generation = self.session.generation()?;
-        // Complete the posted head through its BAR2 SRAM window and verify
-        // the generation with the same read before forcing the doorbell.
-        barrier();
-        match self.session.link.read(proto::link::SHM_GENERATION) {
-            u32::MAX => return Err(Error::PeerDown(PeerDown::LinkDown)),
-            live if live != generation => return Err(Error::PeerDown(PeerDown::Restarted)),
-            _ => {}
-        }
-        barrier();
+        // The BAR2 generation read also completes the posted request head.
+        self.session.check_link_generation()?;
         doorbell.ring_flushed();
         Ok(())
     }
