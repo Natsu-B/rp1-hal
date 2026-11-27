@@ -8,14 +8,27 @@ SCMI clocks served by rp1-hal. The stock RP1 mailbox service and clock provider 
 result. **NOT_CHECKED** means a function was outside the test. **HYP** marks a possible
 explanation or path that still needs a test.
 
-The stock comparison and P0-3 retest used stock Linux `6.12.75+rpt-rpi-2712` (Debian
-`1:6.12.75-1+rpt1`). The realos v2 and P1-9 B runs used the same kernel with an NFS root.
-P1-9 C used the lab kernel `6.12.75-v8-16k`. The V7 B/C cold boots used the stock 2712 kernel
-over TFTP/NFS. Linux probe, bus scan, transfer and waveform results have different scopes.
+## Evidence runs
+
+Stock 2712 means Linux `6.12.75+rpt-rpi-2712` (Debian `1:6.12.75-1+rpt1`). The runs below
+are **HW** observations. Linux probe, bus scan, transfer and waveform results have different scopes.
+
+| Run | Date | RP1 firmware | Linux kernel | Root | Tested |
+| --- | --- | --- | --- | --- | --- |
+| P0-2 | 2026-11-17 | Stock vs `bd6859d` | Stock 2712 | NFS | Linux device comparison |
+| P0-3 | 2026-11-17 | `91292ee` | Stock 2712 | NFS | Linux device retest after the IRQ gate fix |
+| P0-4 | 2026-11-17 | `91292ee` | Stock 2712 | SD (ext4) | Boot and SCMI without a Linux initramfs |
+| realos v2 | 2026-11-24 | `fc75c24` | Stock 2712 | NFS | Linux device probes, including combined SPI1/PWM0 overlay |
+| P1-9 B | 2026-11-27 | `e961f78` | Stock 2712 | NFS | Linux device probes and 1,000 template polling RPC replies |
+| P1-9 C | 2026-11-27 | `e961f78` | `6.12.75-v8-16k` | Initramfs | RP1 PWM loopback and Linux UART1 |
+| V7 B | 2026-11-27 | `aa6fe43` | Stock 2712 | NFS | RP1 peripheral examples |
+| V7 C | 2026-11-27 | `c5ec941` | Stock 2712 | NFS | IRQ RPC, named polling channel and both-core health |
+
+V7 B and C used TFTP and EEPROM bootloader `9cd61c53` (2026-04-14).
 
 | Function | Stock RP1 firmware | Kept by Linux with rp1-hal | Assigned to RP1 or limited by the implementation | Evidence and conditions |
 | --- | --- | --- | --- | --- |
-| I2C2 and I2C6 | Full bus scans completed with IRQs. | Full scans completed after the IRQ gate fix. P1-9 B short scans each raised the controller IRQ count by 16. I2C6 was Linux bus 10. | Linux loses a declared bus. B's RP1-owned I2C1 peer exchange is a separate test. The Linux scan leaves device-specific transactions **NOT_CHECKED**. | **HW · 2026-11-17** · P0-2 `bd6859d`: probes succeeded, short scans timed out, IRQ delta 0. P0-3 `91292ee`: both scans completed. **HW · 2026-11-27** · P1-9 B `e961f78`, GPIO4/5 and GPIO38/39. V7 B `aa6fe43`, GPIO2/3 with a known I2C peer. [IRQ gates](../rp1-hal/src/linux_blocks.rs) · [I2C example](../examples/peripherals/README.md) |
+| I2C2 and I2C6 | Full bus scans completed with IRQs. | Full scans completed after the IRQ gate fix. P1-9 B short scans each raised the controller IRQ count by 16. I2C6 was Linux bus 10. | Linux loses a declared bus. V7 B's RP1-owned I2C1 peer exchange is a separate test. The Linux scan leaves device-specific transactions **NOT_CHECKED**. | **HW · 2026-11-17** · P0-2 `bd6859d`: probes succeeded, short scans timed out, IRQ delta 0. P0-3 `91292ee`: both scans completed. **HW · 2026-11-27** · P1-9 B `e961f78`, GPIO4/5 and GPIO38/39. V7 B `aa6fe43`, GPIO2/3 with a known I2C peer. [IRQ gates](../rp1-hal/src/linux_blocks.rs) · [I2C example](../examples/peripherals/README.md) |
 | SPI1 | 16 B controller IRQ and 4,096 B DMA transfer completed. | 16 B transfer completed after the fix. P1-9 B `spidev1.0` completed both lengths with controller IRQ +2 and shared DMA IRQ +2 respectively. | Linux loses a declared controller. V7 B tested RP1-owned SPI0 internal loopback. External SPI device data integrity is **NOT_CHECKED**. | **HW · 2026-11-17** · P0-2 `bd6859d`: 16 B timeout with IRQ 0, 4,096 B still completed via DMA. P0-3 `91292ee`: 16 B IRQ +2. **HW · 2026-11-27** · P1-9 B `e961f78`, SPI1 on GPIO18–21. V7 B `aa6fe43`, SPI0 loopback. [IRQ gates](../rp1-hal/src/linux_blocks.rs) · [Linux probe](../lab/realos/check-linux-devices.sh) |
 | PWM0 | Channel 0 register and pin function checked at GPIO12. | Channel 0 configured and read back via sysfs, with PWM routed to GPIO12 alongside SPI1. | Linux loses a declared PWM block. V7 B measured the RP1-owned PWM0 ch0 waveform with a GPIO12 → GPIO22 loopback. | **HW · 2026-11-17** · P0-2 stock and `bd6859d`. **HW · 2026-11-24/27** · realos v2 `fc75c24` and P1-9 B `e961f78`, sysfs. **HW · 2026-11-27** · V7 B `aa6fe43`, 1 kΩ loopback. [Combined overlay](../lab/realos/overlays/linux-spi1-pwm0.dts) · [PWM example](../examples/peripherals/README.md) |
 | Fan on PWM1 | Cooling state and PWM read back. Tach read 0. | Cooling state and PWM changed. Tach read 0 and the realos v2 fan probe failed. | Tach function is **NOT_CHECKED** with a known tach signal. **HYP** · the bench may lack a routed tach signal. | **HW · 2026-11-17/24** · P0-2 stock and `bd6859d`, realos v2 `fc75c24`. PWM1 ch3, GPIO45. [Fan probe](../lab/realos/check-linux-devices.sh) |
