@@ -1,5 +1,5 @@
 error[E0451]: field `_private` of struct `HostIrq` is private
  --> tests/ui-notify/host_irq_not_forgeable.rs:4:15
   |
-4 |     HostIrq { _private: () }
+4 |     HostIrq { _private: core::marker::PhantomData }
   |               ^^^^^^^^ private field
