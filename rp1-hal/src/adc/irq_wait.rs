@@ -77,6 +77,21 @@ impl<I: Registers> WaitIo<'_, I> {
         }
     }
 }
+
+// The waiter has masked INTE. READY and an empty FIFO qualify the retired
+// generation; the next launch programs its own channel.
+fn retire_idle_timeout(state: &mut State, io: &mut impl Registers) -> bool {
+    let cs = io.read(CS);
+    if cs & (CS_POWERED | CS_IDLE_MASK | CS_ERR_STICKY) != CS_POWERED | CS_READY
+        || io.read(INTF) & FIFO_IRQ != 0
+        || io.read(FCS) & (FCS_LEVEL | FCS_FLAGS | FCS_EMPTY) != FCS_EMPTY
+    {
+        return false;
+    }
+    *state = State::Idle;
+    true
+}
+
 impl<I: Registers> Source<WaitIo<'_, I>> for FifoSource {
     type Error = Error;
 
@@ -192,7 +207,11 @@ impl<const CORE: u8> Blocking<'_, CORE> {
         };
         let result =
             StateSlots::wait_for::<CORE, _, _>(&mut io, self.timer, limit, FIFO_IRQ, WaitIo::probe);
-        if io.prepared && matches!(self.adc.state, State::Converting(_)) {
+        if io.prepared
+            && matches!(self.adc.state, State::Converting(_))
+            && (result != Err(Error::Timeout)
+                || !retire_idle_timeout(&mut self.adc.state, &mut Mmio))
+        {
             let _ = self.adc.try_cancel();
         }
         result

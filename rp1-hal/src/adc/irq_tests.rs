@@ -5,6 +5,36 @@ use crate::{
 };
 use core::cell::RefCell;
 
+#[test]
+fn timeout_retires_only_an_idle_clean_conversion_without_reset() {
+    for problem in 0..6 {
+        let mut io = FakeAdc::default();
+        let mut state = State::Idle;
+        state.start(&mut io, 4).unwrap();
+        if problem != 1 {
+            io.complete(42);
+        }
+        if problem != 2 {
+            io.samples.clear();
+        }
+        if problem == 3 {
+            io.flags = FCS_OVER;
+        }
+        if problem == 4 {
+            io.intf = FIFO_IRQ;
+        }
+        if problem == 5 {
+            io.cs |= CS_ERR_STICKY;
+        }
+        assert_eq!(retire_idle_timeout(&mut state, &mut io), problem == 0);
+        assert!(matches!(
+            (problem, state),
+            (0, State::Idle) | (1..=5, State::Converting(4))
+        ));
+        assert_eq!(io.fifo_reads, 0);
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Arrival {
     DuringArm,

@@ -428,6 +428,7 @@ fn ready(cs: u32) -> bool {
     cs & (CS_EN | CS_IDLE_MASK) == CS_EN | CS_READY
 }
 
+#[rp1_rt::cold]
 fn clean(io: &mut impl Registers) -> bool {
     io.write_relaxed(INTE, 0);
     io.write_relaxed(INTF, 0);

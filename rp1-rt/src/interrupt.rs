@@ -185,26 +185,27 @@ impl<const IRQ: u8> Line<IRQ> {
 /// An owned NVIC line with its number erased.
 #[doc(hidden)]
 pub struct OwnedLine {
-    irq: u8,
+    bank_offset: usize,
+    bit: u32,
     _core: core::marker::PhantomData<*mut ()>,
 }
 
 impl OwnedLine {
     #[doc(hidden)]
     pub fn is_enabled(&self) -> bool {
-        Nvic(Hardware).is_enabled(self.irq)
+        Hardware.read(ISER + self.bank_offset) & self.bit != 0
     }
 
     pub fn disable(&mut self) {
-        Nvic(Hardware).disable(self.irq);
+        Hardware.write(ICER + self.bank_offset, self.bit);
     }
 
     pub fn enable(&mut self) {
-        Nvic(Hardware).enable(self.irq);
+        Hardware.write(ISER + self.bank_offset, self.bit);
     }
 
     pub fn unpend(&mut self) {
-        Nvic(Hardware).unpend(self.irq);
+        Hardware.write(ICPR + self.bank_offset, self.bit);
     }
 }
 
@@ -235,7 +236,8 @@ impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
     #[doc(hidden)]
     pub fn into_owned_line(self) -> OwnedLine {
         OwnedLine {
-            irq: IRQ,
+            bank_offset: irq_bank_offset(IRQ),
+            bit: irq_bit(IRQ),
             _core: core::marker::PhantomData,
         }
     }
@@ -310,7 +312,10 @@ impl ThreadGuard {
 
     #[doc(hidden)]
     pub fn check_owned_line(&self, line: &OwnedLine) -> Result<(), ContextError> {
-        self.check_number(line.irq)
+        check_thread()?;
+        line.is_enabled()
+            .then_some(())
+            .ok_or(ContextError::IrqUnavailable)
     }
 
     fn check_number(&self, irq: u8) -> Result<(), ContextError> {
@@ -373,6 +378,14 @@ const ISPR: usize = 0xe000_e200;
 const ICPR: usize = 0xe000_e280;
 const IPR: usize = 0xe000_e400;
 
+const fn irq_bank_offset(irq: u8) -> usize {
+    (irq / 32) as usize * 4
+}
+
+const fn irq_bit(irq: u8) -> u32 {
+    1 << (irq % 32)
+}
+
 trait Registers {
     fn read(&self, address: usize) -> u32;
     fn write(&self, address: usize, value: u32);
@@ -411,11 +424,10 @@ impl<R: Registers> Nvic<R> {
     }
 
     fn write_bit(&self, base: usize, irq: u8) {
-        self.0
-            .write(base + usize::from(irq / 32) * 4, 1 << (irq % 32));
+        self.0.write(base + irq_bank_offset(irq), irq_bit(irq));
     }
     fn read_bit(&self, base: usize, irq: u8) -> bool {
-        self.0.read(base + usize::from(irq / 32) * 4) & (1 << (irq % 32)) != 0
+        self.0.read(base + irq_bank_offset(irq)) & irq_bit(irq) != 0
     }
     fn enable(&self, irq: u8) {
         self.write_bit(ISER, irq);
@@ -452,6 +464,14 @@ mod tests {
     use super::*;
     use core::cell::RefCell;
     use std::{collections::BTreeMap, vec::Vec};
+
+    #[test]
+    fn owned_line_remembers_the_nvic_bank_and_bit() {
+        let low = unsafe { Binding::<(), 31, 0>::new() }.into_owned_line();
+        let high = unsafe { Binding::<(), 32, 0>::new() }.into_owned_line();
+        assert_eq!((low.bank_offset, low.bit), (0, 1 << 31));
+        assert_eq!((high.bank_offset, high.bit), (4, 1));
+    }
 
     #[test]
     fn waiting_requires_unmasked_thread_mode_and_an_enabled_line() {
