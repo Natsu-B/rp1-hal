@@ -210,11 +210,14 @@ impl Bench<'_> {
             for (j, value) in data.iter_mut().enumerate() {
                 *value = byte(i as usize * TX_SAMPLE + j, run);
             }
-            let filled = data
-                .iter()
-                .position(|&value| !tx.try_write_byte(value).unwrap())
+            // Queue the initial FIFO in one burst. Per-byte accounting across
+            // the entire prefill can consume the first frame and reopen space
+            // between the full-FIFO try and the start of the wait.
+            let prefill_start = now();
+            tx.blocking(self.wait).write_all(&data[..32]).unwrap();
+            let filled = (32..TX_SAMPLE)
+                .find(|&i| !tx.try_write_byte(data[i]).unwrap())
                 .unwrap();
-            assert!((32..=33).contains(&filled));
 
             let started = timer.now_32();
             let full = tx.try_write_byte(data[filled]);
@@ -224,18 +227,29 @@ impl Bench<'_> {
 
             let before = counts();
             probe::arm(int::TX);
+            let prefill_us = now().wrapping_sub(prefill_start);
+            let before_write = registers().fr.read().bits();
             let mut output = tx.blocking(self.wait);
             output.write_all(&data[filled..]).unwrap();
-            assert_eq!(
-                counts(),
-                Counts {
-                    tx: before.tx + 1,
-                    ..before
-                }
-            );
+            let delta = counts().since(before);
+            if delta
+                != (Counts {
+                    tx: 1,
+                    ..Counts::default()
+                })
+            {
+                let _ = log!(
+                    "UART_PARITY_TX_FAIL run={run} i={i} delta={delta:?} filled={filled} prefill_us={prefill_us} fr={before_write}\n"
+                );
+                panic!("expected one TX IRQ");
+            }
             let begin = now();
-            output.flush().unwrap();
+            let result = output.flush();
             let end = now();
+            if let Err(error) = result {
+                let _ = log!("UART_PARITY_TX_FAIL run={run} i={i} flush={error:?}\n");
+                panic!("TX flush failed");
+            }
             let fr = registers().fr.read().bits();
             let edges = probe::finish();
             self.send(tx, &[filled as u8]);

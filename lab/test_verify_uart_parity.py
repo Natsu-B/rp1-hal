@@ -27,7 +27,7 @@ TX = dict(low=100, high=101, entry=102, ris=32, fr=8, serviced=32,
 
 
 def capture():
-    lines = ["UART_PARITY_CLOCK timer_hz=1000000 uart_hz=50000000 divisor=1736", "UART_PARITY_READY"]
+    lines = ["\0\0UART_PARITY_CLOCK timer_hz=1000000 uart_hz=50000000 divisor=1736", "UART_PARITY_READY"]
     for kind, source in [("rx", 0x50), ("rt", 0x40), ("tx", 0x20)]:
         data = TX if kind == "tx" else {
             **dict.fromkeys(TX, 0),

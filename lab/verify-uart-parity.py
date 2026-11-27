@@ -145,7 +145,7 @@ def verify(uart0, peer):
     run, occupied = metadata["run"], metadata["prefill"]
     require(re.fullmatch(r"[0-9a-f]{8}", run), "invalid nonce")
     require(len(occupied) == TRIALS and all(n in (32, 33) for n in occupied), "invalid TX prefill")
-    text = uart0.read_text(errors="replace").replace("\r", "")
+    text = uart0.read_text(errors="replace").replace("\r", "").replace("\0", "")
     require(text.splitlines().count("UART_PARITY_READY") == 1, "UART_PARITY_READY missing or duplicate")
     single(text, "UART_PARITY_CLOCK", timer_hz=1_000_000, uart_hz=CLOCK_HZ, divisor=DIVISOR)
     stream_counts = markers(text, run)
