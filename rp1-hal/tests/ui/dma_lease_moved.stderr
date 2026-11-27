@@ -1,0 +1,9 @@
+error[E0382]: borrow of moved value: `destination`
+ --> tests/ui/dma_lease_moved.rs:5:5
+  |
+3 | fn moved(channel: &mut Channel<2>, source: Lease<'_>, mut destination: Lease<'_>) {
+  |                                                       --------------- move occurs because `destination` has type `Lease<'_>`, which does not implement the `Copy` trait
+4 |     let _transfer = channel.try_start(source, destination).unwrap();
+  |                                               ----------- value moved here
+5 |     destination.as_mut_slice()[0] = 0;
+  |     ^^^^^^^^^^^ value borrowed here after move

@@ -1,8 +1,7 @@
 # RP1 DMA driver
 
 `rp1_hal::dma` drives the RP1 DMA controller, a Synopsys DW AXI DMAC (1.02a-lp02, eight
-channels, one 128-bit AXI master). v1 does single-block memory-to-memory transfers with polled
-completion. Evidence strength: **HW** measured, **STATIC** code/tests, **DOC** datasheet or
+channels, one 128-bit AXI master). The v0.2 API does single-block memory-to-memory transfers. Evidence strength: **HW** measured, **STATIC** code/tests, **DOC** datasheet or
 Linux source, **HYP** hypothesis.
 
 ## Ownership
@@ -41,18 +40,27 @@ dma = { channels = [0, 2] }
   soft-resets the DMAC and leaves all channels disabled with interrupts masked. The returned
   channel set has one field per selected channel (`ch0` and `ch2` above). On failure,
   `InitError::resources` returns the declaration's controller token for a retry.
-- `Channel<N>::copy(&[u8], &mut [u8], timeout: MicrosDurationU32)`: safe, blocking.
-  Both slices must be contiguous DMAC-visible memory in shared SRAM or the outbound window.
-  Use `start` for peripheral registers. `copy` splits the transfer into blocks and stops a
-  timed-out or failed block before returning (see Cancellation). The channel can no longer
-  access the buffers when `copy` returns.
-- `unsafe Channel<N>::start(src: BusAddr, dst: BusAddr, len) -> Transfer`: one block,
-  `Transfer::poll()` / `wait(timeout: MicrosDurationU32)` / `cancel() -> Stopped`.
-  Dropping an unfinished transfer stops it the same way. The caller guarantees the memory
-  (a leaked `Transfer` keeps the DMA running).
-- Errors: `Bus(CH_INTSTATUS)` on decode/slave errors, `Timeout`, `Busy`, `Invalid`,
-  `NotDmaVisible`, `Precondition` (clk_dma not 100 MHz). With `Bus` and `Timeout` the channel
-  has already been stopped.
+- **BREAKING**, STATIC, 2026-11-27. Safe copies consume two equal-length leases from
+  `Pool`, which takes exclusive ownership of a reserved static shared-SRAM allocation.
+  A slot has a fixed capacity and its lease selects a prefix. Safe admission excludes
+  ISRAM, DSRAM, peripherals, stack and the outbound window. A raw slice cannot encode
+  retention beyond timeout or `mem::forget`.
+- `Channel::try_start(src, dst)` returns both leases in `InitError::resources` if admission
+  fails. The transfer exclusively holds the channel and owns both leases while active.
+  `try_complete` observes once. `try_reclaim` returns `Completed` with the outcome and both
+  leases after quiescence and ACK. A failed or cancelled destination may contain a prefix.
+- `Channel::polling().copy(src, dst, timeout)` returns both leases on success. An error
+  returns proven-idle slots to their pools and leaves uncertain slots claimed. Polling is
+  explicit because RP1 IRQ40 delivery is unverified. `Transfer::wait_polling(end)` uses an
+  absolute `Deadline`. Completion already visible at that deadline wins.
+- `unsafe Channel::start_raw(src, dst, len)` accepts caller-managed bus addresses.
+  Its caller owns the entire lifetime of both ranges, including a lost handle. A graceful
+  stop proves local engine quiescence. Remote write drain, outbound window stability and
+  publish ordering need independent proof. Retire the remote mapping for the epoch if
+  that proof is unavailable.
+- `Bus(CH_INTSTATUS)` reports a bus fault. `Timeout` reports an elapsed transfer deadline.
+  If stop remains uncertain, polling reports `Recovering`; an external forced abort
+  reports `Aborted`. `try_recover` checks the retained channel state before reuse.
 - Programming (DOC, Linux `dw-axi-dmac` with the RP1 DT properties): 8-channel register map
   (`CHEN` write enables at bit 8), `CFG2` layout (`snps,dma-targets = <64>`), contiguous
   source/destination, memory-to-memory with DMAC flow control, priority = channel, MSIZE 4,
@@ -64,7 +72,7 @@ dma = { channels = [0, 2] }
   that. `HS_SEL_SRC/DST = 1` (software) where Linux leaves 0; for memory-to-memory with DMAC
   flow control no handshake is used either way (HW: both copy correctly). Single-block contiguous mode
   (no LLI) is not what Linux uses; it works on RP1 (HW below).
-- Not in v1: linked lists, interrupts (the line is RP1 IRQ 40, unused), peripheral handshakes.
+- Deferred capabilities are linked lists, IRQ40 delivery and peripheral handshakes.
 - Ring producer: `rp1_link::ring_dma::RingDma`, feature `rp1-link/unstable-ring-dma`
   (below, "DMA ring producer").
 
@@ -82,20 +90,20 @@ layout (the Synopsys databook as cited in review; not read here) `CH_ABORT`/`CH_
 `DMAC_CHABORTREG` (0x028) belongs to the >8-channel map. The first version wrote 0x028, which
 on RP1 does not request an abort (that path was never exercised on HW).
 
-The driver now stops a channel with: `CH_SUSP` and up to 10 ms for `CH_SUSPENDED`; `CH_EN = 0`
-and up to 10 ms for the enable bit to clear; only then `CH_ABORT` (0x01C) and another 10 ms. If
-the channel is still enabled it spins without a deadline: a safe API must not end the buffer
-borrows while the DMAC can still access them, and spinning is sound under any panic strategy
-(a panic could unwind on a host target). A wedged DMAC therefore hangs the calling core. The
-suspend request is cleared afterwards so the next enable runs. This applies to `wait`/`copy`
-timeouts, bus errors, `Transfer::cancel` and `Drop for Transfer`. STATIC: unit tests with a
-fake DMAC whose disable, abort, or both take effect late (the call returns only after the
-enable bit cleared). HW: lab abort proof below.
+**DOC · 2026-11-27.** The [Synopsys DW_axi_dmac Databook 1.02a, §2.15.4 and
+§2.16.3](https://picture.iczhiku.com/resource/eetop/wyKEEOUFJDggQnvB.pdf#page=91) describes
+graceful disable and error handling. The channel-enable register descriptions explicitly
+allow an abnormal abort to leave AXI operations outstanding.
 
-Compared with the release contract of the other drivers (`free` waits and can hand the
-driver back with an error, `abort` stops at once): `Transfer::cancel` is the forced stop, but
-it is deliberately not bounded, and no call returns the buffers of a block the DMAC may
-still be accessing.
+**STATIC · 2026-11-27.** `try_cancel` masks the channel signal, requests graceful disable
+through its write-enable bit and observes the result once. The handle can be kept and
+retried when the result is `Recovering`. `cancel_until` uses a dedicated timer IRQ in
+thread mode and caps the recheck deadline at 999 µs from admission. Drop performs a fixed
+number of MMIO accesses. An unconfirmed stop leaves both slots claimed for the rest of the
+firmware epoch. Forgetting a transfer leaves both claims live even if the channel eventually
+drains. Reuse requires the cleared enable bit, a terminal status and a confirmed W1C ACK.
+The driver treats `CH_ABORTED` as an unproven stop. The 1 ms real-time bound, including any
+preemption and MMIO stalls, is a hardware acceptance criterion.
 
 ## Address map
 
@@ -110,8 +118,8 @@ Peripherals §2.2 table 1, §2.3.1). `BusAddr::from_proc` translates:
 | host physical `p` (`BusAddr::host_phys`) | `0x10_0000_0000 + p` (direct-mapped PCIe) | DOC (RP1 `dma-ranges`); HW: works without any ATU region |
 | ISRAM / DSRAM `0x1000_0000..`, ROM | not visible | DOC (processor-local); `NotDmaVisible` |
 
-Consequences: stacks and ordinary `static`s (DSRAM) cannot be DMA buffers; use a
-`#[unsafe(link_section = ".shared")]` buffer or shm memory. The PCIe AXI APB peripherals at
+Safe lease storage uses a `#[unsafe(link_section = ".shared")]` reservation issued once
+by the owning core. Outbound shm uses the experimental raw path. The PCIe AXI APB peripherals at
 processor `0x4040_0000` map to bus `0xC0_4020_0000` and are not translated (rejected).
 
 ## Ordering and caches
@@ -133,8 +141,8 @@ processor `0x4040_0000` map to bus `0xC0_4020_0000` and are not translated (reje
 - DOC cross-check: [CVITEK datasheet, pp. 152–153](https://github.com/milkv-duo/duo-files/blob/main/duo/datasheet/CV1800B-CV1801B-Preliminary-Datasheet-full-en.pdf)
   documents AW_CACHE[29:26] and bit30 synchronizing completion with the last write in another
   DW AXI DMAC integration. This supports the field interpretation, not RP1's internal wiring.
-- Error/cancellation stops the engine accessing the source; accepted outbound writes can
-  still be in flight. A barrier after cancellation is not a remote drain.
+- Even after graceful disable establishes local engine quiescence, accepted outbound writes
+  can remain in flight. A CPU barrier orders CPU accesses and cannot drain the DMA's PCIe writes.
 
 ## HW results (2026-11-05, lab `shm-firmware --no-default-features --features dma`, clk_sys 200 MHz)
 
@@ -191,24 +199,27 @@ same (STATIC: rp1-proto tests).
 #[unsafe(link_section = ".shared")]
 static STAGE: Stage = Stage(UnsafeCell::new([0; 4096])); // 8-byte aligned, shared SRAM
 let mut ring_dma = RingDma::new(unsafe { &mut *STAGE.0.get() })?;
-let n = tx.send_slice_dma(&mut ring_dma, &mut dma.ch1, &batch)?;
+// scratch is a separate, 16-byte-aligned Pool<1> with room for the batch plus 15 bytes.
+let mut copy = unsafe { dma.ch1.experimental_ring_dma(&scratch) };
+let n = tx.send_slice_dma(&mut ring_dma, &mut copy, &batch)?;
 ```
 
-- `RingTx::send_slice_dma(&mut ring_dma, &mut channel, values)` returns
+- `RingTx::send_slice_dma(&mut ring_dma, &mut copy, values)` returns
   `Result<usize, Staged<C::Error>>`: batches of at least the threshold
   (`DEFAULT_THRESHOLD` = 256 staged bytes, `RingDma::set_threshold`) go by DMA, smaller ones by
   the CPU (`RingTx::push_slice`). Then it wakes the reader as `send_slice` does (on a
   `notify = "irq"` endpoint; also after an error or a full ring, since the reader may have
   armed meanwhile). `push_slice_dma` is the same without the wake (follow with `flush`).
-  The copier is lent per call (`C: SlotCopy`, normally `&mut Channel<N>` of the declared
-  controller, `dma = {}`). Wrappers can implement the same blocking contract, so lab timing
+  The copier is lent per call (`C: SlotCopy`). Wrappers can implement the same contract, so lab timing
   needs no HAL diagnostics. One channel can serve several rings; nothing else may use it
   during the call. A lost shm window (PERSTn) gives `Staged::Reset` before any access.
-- DMA path (`rp1_proto::shm::RingTx::push_slice_staged` with the `SlotCopy` the channel
-  implements): stage whole slot images (`seq`, length, payload, zero padding) in the shared-SRAM
+- DMA path (`rp1_proto::shm::RingTx::push_slice_staged` with the experimental `SlotCopy`
+  adapter): stage whole slot images (`seq`, length, payload, zero padding) in the shared-SRAM
   stage, copy them in one block, or two when the batch wraps around the end of the ring
-  (blocking, `dma::RING_TIMEOUT_US` per block, a failed block is stopped before return), then the
-  barrier, then `head`. The batch is bounded by `RingTx::writable()` and stage capacity;
+  (explicit polling with a 10 ms deadline per copy). The experimental adapter copies the CPU
+  stage into its own SRAM scratch lease before enabling DMA. A failed stop quarantines the
+  scratch so the CPU stage is reusable on every return. Success is followed by the barrier
+  and publication of `head`. The batch is bounded by `RingTx::writable()` and stage capacity;
   the threshold uses that actual writable count, including when only one slot is free.
   The CPU path takes the full input slice: reject rings stop at the writable capacity,
   while overwrite rings process every input, even beyond the ring depth (STATIC: host tests).
@@ -216,7 +227,7 @@ let n = tx.send_slice_dma(&mut ring_dma, &mut dma.ch1, &batch)?;
   at threshold 0. `usize::MAX` always selects the CPU path.
 - `unsafe trait SlotCopy`: on success ALL copied bytes must reach the ordering point shared
   with subsequent CPU stores to the same mapping; no such store may overtake them. Source
-  access must stop on every return. The Channel implementation relies on the HYP chain above.
+  access must stop on every return. The experimental adapter relies on the HYP chain above.
   Value comparison is not an ordering guarantee, including repeated tails and zero padding;
   the former last-word guard and its errors/counters/unguarded API have been removed.
 - `Staged::Invalid` publishes nothing. `Staged::Copy` also fences that writer permanently:
@@ -228,7 +239,9 @@ let n = tx.send_slice_dma(&mut ring_dma, &mut dma.ch1, &batch)?;
 ### Direct generation (STATIC)
 
 ```rust
-let n = tx.send_with_dma(&mut ring_dma, &mut dma.ch1, count, |offset, payload| {
+// Requires a pinned outbound mapping and the ordering proof described above.
+let mut copy = unsafe { dma.ch1.experimental_ring_dma(&scratch) };
+let n = tx.send_with_dma(&mut ring_dma, &mut copy, count, |offset, payload| {
     fill_message(first + offset as u32, payload)
 })?;
 // Retry from first + n, using the remaining count.
@@ -244,8 +257,7 @@ conditions as `send_slice_dma`.
 The callback follows the contract in `rp1-proto`'s `RingTx::push_with`. Payloads aligned
 up to 8 bytes are generated directly in ordinary stage memory; higher alignments use one
 aligned temporary. All callbacks finish before the shared commit routine copies the one
-or two physical blocks, fences on error, then barriers and publishes head. The Channel
-implementation's **HYP** ordering qualification above still applies.
+or two physical blocks, fences on error, then barriers and publishes head. The adapter's **HYP** ordering qualification above still applies.
 
 Measured (HW, 2026-11-11): generate-DMA achieved 1.07–1.53× slice-DMA; generate-CPU was
 slower at 23/26 conditions, worst 0.82×. Slice paths were at least baseline at every batch.
@@ -305,7 +317,7 @@ not the stale/corrupt breakdown. The 16 B `events` payload ends in constant
 `0x5250_3148`; the 64/256 B payloads have word 0 = `i`, intermediate words
 `i ^ k * 0x9e37_79b9`, final word = `!i`. Seq alone cannot detect delayed interior payload.
 
-Mode 1 is the production Channel path. Mode 3 deliberately publishes head BEFORE DMA enable
+Mode 1 is the experimental ring adapter path. Mode 3 deliberately publishes head BEFORE DMA enable
 and delays 100 µs, with bit30=1, as a positive control; it MUST produce a violation for every
 size or the experiment is insensitive. Mode 4 uses the same lab register-copy path with
 bit30=0, AW_CACHE=0 and normal publication after DONE, as a comparison. These deliberate

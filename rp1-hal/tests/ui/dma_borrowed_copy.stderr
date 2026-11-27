@@ -1,0 +1,13 @@
+error[E0308]: arguments to this method are incorrect
+ --> tests/ui/dma_borrowed_copy.rs:4:31
+  |
+4 |     let _ = channel.polling().copy(src, dst, Duration::millis(1));
+  |                               ^^^^ ---  --- expected `Lease<'_>`, found `&mut [u8]`
+  |                                    |
+  |                                    expected `Lease<'_>`, found `&[u8]`
+  |
+note: method defined here
+ --> src/dma.rs
+  |
+  |     pub fn copy<'p>(
+  |            ^^^^

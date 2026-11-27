@@ -1,0 +1,12 @@
+error[E0597]: `memory` does not live long enough
+ --> tests/ui/dma_pool_needs_static.rs:5:28
+  |
+4 |     let mut memory = [0; 16];
+  |         ---------- binding `memory` declared here
+5 |     let _ = Pool::<2>::new(&mut memory);
+  |             ---------------^^^^^^^^^^^-
+  |             |              |
+  |             |              borrowed value does not live long enough
+  |             argument requires that `memory` is borrowed for `'static`
+6 | }
+  | - `memory` dropped here while still borrowed

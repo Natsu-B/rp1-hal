@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 eh02-adc = ["dep:embedded-hal-0-2", "dep:nb"]
-# DMA ring producer's `SlotCopy` implementation for `dma::Channel`. Unstable: the DMA
+# DMA ring producer's `SlotCopy` adapter on `dma::Channel`. Unstable: the DMA
 # ordering chain is a hypothesis and the last hardware campaign failed (docs/dma.md).
 unstable-ring-dma = ["rp1-proto/unstable-ring-dma"]
 

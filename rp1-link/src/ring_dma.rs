@@ -202,6 +202,15 @@ mod tests {
         }
     }
 
+    struct MustNotCopy;
+    // SAFETY: performs no reads or writes. The test only exercises paths that bypass DMA.
+    unsafe impl SlotCopy for MustNotCopy {
+        type Error = ();
+        unsafe fn copy_to_remote(&mut self, _: &[u8], _: *mut u8) -> Result<(), ()> {
+            panic!("CPU fallback invoked DMA")
+        }
+    }
+
     #[test]
     fn dma_threshold_uses_only_writable_slots() {
         let (mut data, mut ctrl, mut stage) = (Mem::zeroed(), Mem::zeroed(), Mem::zeroed());
@@ -243,8 +252,6 @@ mod tests {
     fn cpu_fallback_progresses_without_staging_capacity() {
         #[repr(align(8))]
         struct Mem([u8; 2048]);
-        // Channel contains only (). The CPU path must not access DMA registers.
-        let mut channel = unsafe { core::mem::zeroed::<dma::Channel<1>>() };
         for (stage_len, threshold) in [
             (256, RingDma::DEFAULT_THRESHOLD), // smaller than one 264-byte slot
             (256, 0),                          // even "always DMA" must make progress
@@ -269,7 +276,10 @@ mod tests {
                     threshold,
                 };
                 let values = [[42; 64]; 3];
-                assert_eq!(helper.push_slice(&mut ring, &mut channel, &values), Ok(3));
+                assert_eq!(
+                    helper.push_slice(&mut ring, &mut MustNotCopy, &values),
+                    Ok(3)
+                );
             }
         }
     }
@@ -295,15 +305,14 @@ mod tests {
             threshold: RingDma::DEFAULT_THRESHOLD,
         };
         // Overwrite must use the CPU even when one staged slot reaches the DMA threshold.
-        let mut channel = unsafe { core::mem::zeroed::<dma::Channel<1>>() };
         assert_eq!(
-            helper.push_slice(&mut ring, &mut channel, &[[42; 64]; 3]),
+            helper.push_slice(&mut ring, &mut MustNotCopy, &[[42; 64]; 3]),
             Ok(3)
         );
         assert_eq!(ring.head(), 3);
         // An overwrite CPU batch may also exceed the ring depth.
         assert_eq!(
-            helper.push_slice(&mut ring, &mut channel, &[[43; 64]; 7]),
+            helper.push_slice(&mut ring, &mut MustNotCopy, &[[43; 64]; 7]),
             Ok(7)
         );
         assert_eq!(ring.head(), 10);

@@ -15,8 +15,8 @@ i2c = ["dep:embedded-hal"]
 adc = []
 spi = ["dep:embedded-hal"]
 sram-profile = []
-# DMA proof (command 16). Its raw ring copies call `SlotCopy`, hence the unstable feature.
-dma = ["rp1-link/unstable-ring-dma"]
+# DMA proof (command 16). The DDR checks use the lab raw path.
+dma = []
 # DMA ring producer proof (command 17); a focused image: `--no-default-features --features ring-dma`.
 ring-dma = ["rp1-link/unstable-ring-dma"]
 
@@ -48,7 +48,7 @@ i2c1 = { sda = 2, scl = 3 }
 [package.metadata.rp1.proc1]
 gpio = [8] # SPI0 chip select
 doorbell = 27
-timer = ["ALARM1"]
+wait_timer = { alarm = "ALARM1", feature = "dma" }
 adc = {}
 spi0 = { sck = 11, mosi = 10, miso = 9 }
 dma = { channels = [0, 1, 2] } # owns the whole controller; issues channels 0–2 (Linux rp1_dma is disabled)

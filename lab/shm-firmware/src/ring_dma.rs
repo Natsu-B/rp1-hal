@@ -78,28 +78,33 @@ pub struct Run<'a> {
 pub fn stream<const W: usize, const B: usize>(
     tx: &mut RingTx<W>,
     dma: &mut Dma,
+    scratch: &Pool<1>,
     message: fn(&mut [u32; W], u32),
     run: Run<'_>,
 ) -> Out {
     match run.p.mode {
-        CPU | DMA | AUTO | EARLY_HEAD | BIT30_ZERO => slice_stream::<W, B>(tx, dma, message, run),
-        _ => run_stream(tx, dma, message, run, &mut []),
+        CPU | DMA | AUTO | EARLY_HEAD | BIT30_ZERO => {
+            slice_stream::<W, B>(tx, dma, scratch, message, run)
+        }
+        _ => run_stream(tx, dma, scratch, message, run, &mut []),
     }
 }
 #[inline(never)]
 fn slice_stream<const W: usize, const B: usize>(
     tx: &mut RingTx<W>,
     dma: &mut Dma,
+    scratch: &Pool<1>,
     message: fn(&mut [u32; W], u32),
     run: Run<'_>,
 ) -> Out {
     let mut buf = [[0u32; W]; B];
-    run_stream(tx, dma, message, run, &mut buf)
+    run_stream(tx, dma, scratch, message, run, &mut buf)
 }
 
 fn run_stream<const W: usize>(
     tx: &mut RingTx<W>,
     dma: &mut Dma,
+    scratch: &Pool<1>,
     message: fn(&mut [u32; W], u32),
     run: Run<'_>,
     buf: &mut [[u32; W]],
@@ -125,6 +130,7 @@ fn run_stream<const W: usize>(
     let depth = if W == 64 { 128 } else { 256 };
     let engine = if matches!(p.mode, EARLY_HEAD | BIT30_ZERO) {
         LabCopy::Experiment(ExperimentCopy {
+            scratch,
             early: false,
             nonposted: p.mode == EARLY_HEAD,
             head: 0,
@@ -133,7 +139,9 @@ fn run_stream<const W: usize>(
             slot: rp1_proto::shm::slot_size(4 * W),
         })
     } else {
-        LabCopy::Production(&mut dma.ch1)
+        // SAFETY: command 17 keeps this lab mapping fixed for the experiment. Any copy error
+        // permanently fences this writer; the HW test checks the hypothesized ordering.
+        LabCopy::Production(unsafe { dma.ch1.experimental_ring_dma(scratch) })
     };
     let mut producer = TypedProducer {
         tx,
@@ -299,8 +307,8 @@ fn run_batches(producer: &mut dyn Producer, run: Run<'_>, batch: usize, depth: u
 }
 
 enum LabCopy<'a> {
-    Production(&'a mut rp1_hal::dma::Channel<1>),
-    Experiment(ExperimentCopy),
+    Production(ExperimentalRingDma<'a, 1>),
+    Experiment(ExperimentCopy<'a>),
 }
 // SAFETY: production delegates the blocking contract; controls deliberately violate ordering
 // only in this lab image, under the same sole stage/channel ownership as ExperimentCopy.
@@ -315,13 +323,18 @@ unsafe impl SlotCopy for LabCopy<'_> {
     }
 }
 
-use rp1_hal::dma::{BusAddr, Error};
+use core::mem::ManuallyDrop;
 use rp1_hal::pac::dw_axi_dmac::{
     BASE, CHANNEL_BASE, CHANNEL_STRIDE, cfg2, ch, common, ctl_h, ctl_l, int,
 };
+use rp1_hal::{
+    dma::{BusAddr, Error, ExperimentalRingDma, Pool},
+    timer::{Deadline, Duration, Timer},
+};
 const CH: usize = BASE + CHANNEL_BASE + CHANNEL_STRIDE;
 const CTL: usize = CH + ch::CTL_L;
-struct ExperimentCopy {
+struct ExperimentCopy<'a> {
+    scratch: &'a Pool<1>,
     early: bool,
     nonposted: bool,
     head: u32,
@@ -330,13 +343,16 @@ struct ExperimentCopy {
     slot: usize,
 }
 // Deliberately violates SlotCopy ordering for controls; only used by this lab command.
-unsafe impl rp1_proto::shm::SlotCopy for ExperimentCopy {
+unsafe impl rp1_proto::shm::SlotCopy for ExperimentCopy<'_> {
     type Error = Error;
     // Not a throughput path: keep it out of the ISRAM that the measured loop needs.
     #[rp1_rt::cold]
     unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Error> {
         use core::ptr::{read_volatile as rd, write_volatile as wr};
-        let s = BusAddr::from_proc(src.as_ptr() as usize)?.0;
+        let offset = src.as_ptr() as usize & 15;
+        let mut scratch = self.scratch.lease(0, offset + src.len())?;
+        scratch.as_mut_slice()[offset..].copy_from_slice(src);
+        let s = BusAddr::from_proc(scratch.as_slice().as_ptr() as usize + offset)?.0;
         let d = BusAddr::from_proc(dst as usize)?.0;
         let w = rp1_hal::dma::width_log2(s, d, src.len() as u32);
         unsafe {
@@ -396,37 +412,38 @@ unsafe impl rp1_proto::shm::SlotCopy for ExperimentCopy {
                 (CH + ch::INTSTATUS_ENA) as *mut u32,
                 int::DMA_TFR_DONE | int::ALL_ERR,
             );
+            let end = Deadline::after(Duration::millis(10))?;
+            let timer = Timer::new();
+            let mut scratch = ManuallyDrop::new(scratch);
             rp1_proto::barrier();
             wr(
                 (BASE + common::CHEN) as *mut u32,
                 2 | (2 << common::CHEN_WE_SHIFT),
             );
-            let t = now();
             loop {
                 let status = rd((CH + ch::INTSTATUS) as *const u32);
                 let enabled = rd((BASE + common::CHEN) as *const u32) & 2 != 0;
-                if status & int::ALL_ERR != 0 || now().wrapping_sub(t) > 10_000 {
+                if status & int::ALL_ERR != 0 {
                     wr(
                         (BASE + common::CHEN) as *mut u32,
                         2 << common::CHEN_WE_SHIFT,
                     );
-                    // Never release stage while the engine can read it.
-                    while rd((BASE + common::CHEN) as *const u32) & 2 != 0 {
-                        core::hint::spin_loop();
-                    }
-                    rp1_proto::barrier();
-                    return Err(if status & int::ALL_ERR != 0 {
-                        Error::Bus(status)
-                    } else {
-                        Error::Timeout
-                    });
+                    return Err(Error::Bus(status));
                 }
                 if status & int::DMA_TFR_DONE != 0 && !enabled {
-                    break;
+                    rp1_proto::barrier();
+                    ManuallyDrop::drop(&mut scratch);
+                    return Ok(());
                 }
+                if timer.now() >= end.instant() {
+                    wr(
+                        (BASE + common::CHEN) as *mut u32,
+                        2 << common::CHEN_WE_SHIFT,
+                    );
+                    return Err(Error::Timeout);
+                }
+                core::hint::spin_loop();
             }
-            rp1_proto::barrier();
         }
-        Ok(())
     }
 }

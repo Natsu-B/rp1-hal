@@ -252,14 +252,17 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     #[allow(unused_mut)]
     let mut dma = {
         let dma = clocks.ok().and_then(|c| dma_proof::init(p.dma, &c));
-        #[allow(unused_mut)]
-        let mut dma = dma;
         #[cfg(feature = "dma")]
-        if let Some(d) = dma.as_mut() {
-            dma_proof::sram(d);
-        }
+        let dma = dma.and_then(|mut dma| dma_proof::sram(&mut dma).ok().map(|()| dma));
         dma
     };
+    #[cfg(feature = "dma")]
+    let mut dma_wait = p.wait_timer;
+    #[cfg(feature = "dma")]
+    let mut bulk_quarantined = false;
+    #[cfg(feature = "ring-dma")]
+    // SAFETY: proc1 starts once and exclusively owns this separate DMA scratch reservation.
+    let ring_scratch = unsafe { dma_proof::ring_scratch() };
     VALUES.producer(&mut core).push(42).unwrap();
     let doorbell = p.doorbell;
     // Linux may ask for an ADC burst before it enables the shm area.
@@ -359,6 +362,8 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     }
                 }
             }
+            #[cfg(feature = "dma")]
+            3 | 4 | 5 | 9 | 16 if bulk_quarantined => errors = 1,
             3 => {
                 // Handshake transfers the sole-writer role to RP1 until the response is published.
                 let mut writer = unsafe { bulk.begin_write() };
@@ -431,19 +436,27 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             11 | 13 => errors = down_batch(&mut down, count, start),
             #[cfg(feature = "dma")]
             16 => {
-                // RP1 holds the bulk writer role; DMA and CPU write the DDR block (dma_proof).
-                let mut writer = unsafe { bulk.begin_write() };
-                let data = unsafe { writer.as_ptr() };
-                let phys = rp1_proto::SHM_PHYS + (data as u64 - u64::from(rp1_proto::SHM_WINDOW));
+                // RP1 holds the bulk writer role until all diagnostic writes are verified.
                 match dma.as_mut() {
                     Some(d) => {
-                        let (e, out) = dma_proof::ddr(d, data, phys, seed);
+                        let mut writer = unsafe { bulk.begin_write() };
+                        let data = unsafe { writer.as_ptr() };
+                        let phys =
+                            rp1_proto::SHM_PHYS + (data as u64 - u64::from(rp1_proto::SHM_WINDOW));
+                        let (e, out) = dma_proof::ddr(d, &mut dma_wait, data, phys, seed);
+                        if e == 0 {
+                            writer.commit();
+                        } else {
+                            // Leave the sequence odd and fence every future use of this mapping.
+                            core::mem::forget(writer);
+                            bulk_quarantined = true;
+                            dma = None;
+                        }
                         errors = e;
                         request[8..16].copy_from_slice(&out);
                     }
                     None => errors = 1,
                 }
-                writer.commit();
             }
             // RP1 -> Linux ring stream written by the CPU or by DMA (ring_dma); request words
             // 8..14 = ring, mode, notify, batch, gap_us, timed; results replace words 8..15.
@@ -464,21 +477,36 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     start,
                 };
                 let o = match (dma.as_mut(), request[8]) {
-                    (Some(d), 0) => {
-                        stream::<4, { BATCH_CAPACITY[0] }>(&mut events, d, sample_into, run)
-                    }
-                    (Some(d), 1) => {
-                        stream::<16, { BATCH_CAPACITY[1] }>(&mut wide64, d, wide::<16>, run)
-                    }
-                    (Some(d), 2) => {
-                        stream::<64, { BATCH_CAPACITY[2] }>(&mut wide256, d, wide::<64>, run)
-                    }
+                    (Some(d), 0) => stream::<4, { BATCH_CAPACITY[0] }>(
+                        &mut events,
+                        d,
+                        &ring_scratch,
+                        sample_into,
+                        run,
+                    ),
+                    (Some(d), 1) => stream::<16, { BATCH_CAPACITY[1] }>(
+                        &mut wide64,
+                        d,
+                        &ring_scratch,
+                        wide::<16>,
+                        run,
+                    ),
+                    (Some(d), 2) => stream::<64, { BATCH_CAPACITY[2] }>(
+                        &mut wide256,
+                        d,
+                        &ring_scratch,
+                        wide::<64>,
+                        run,
+                    ),
                     _ => ring_dma::Out {
                         errors: 1,
                         ..Default::default()
                     },
                 };
                 errors = o.errors;
+                if errors != 0 {
+                    dma = None;
+                }
                 last_ring_perf = o.perf;
                 extra = o.pulses;
                 request[8..15].copy_from_slice(&[

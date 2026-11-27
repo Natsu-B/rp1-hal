@@ -19,12 +19,12 @@
 use crate::rp1;
 use crate::rp1::Proc1DmaChannels as Dma;
 use core::cell::UnsafeCell;
+#[cfg(feature = "dma")]
+use rp1_hal::timer::{Deadline, Duration, Timer, WaitTimer};
 use rp1_hal::{
-    dma::{BusAddr, Channel, Error, Stopped},
+    dma::{BusAddr, Channel, Error, Pool},
     log,
 };
-#[cfg(feature = "dma")]
-use rp1_link::ring_dma::SlotCopy;
 
 #[cfg(feature = "dma")]
 pub const WORDS: usize = 256;
@@ -41,7 +41,12 @@ unsafe impl Sync for Buf {}
 static SRC: Buf = Buf(UnsafeCell::new([0; WORDS]));
 #[cfg(feature = "dma")]
 #[unsafe(link_section = ".shared")]
-static DST: Buf = Buf(UnsafeCell::new([0; WORDS]));
+static LOCAL: Local = Local(UnsafeCell::new([0; 2 * WORDS * 4]));
+#[cfg(feature = "dma")]
+#[repr(align(16))]
+struct Local(UnsafeCell<[u8; 2 * WORDS * 4]>);
+#[cfg(feature = "dma")]
+unsafe impl Sync for Local {}
 
 #[cfg(feature = "ring-dma")]
 const BIG_BYTES: usize = crate::ring_dma_protocol::STAGE_BYTES;
@@ -54,11 +59,26 @@ unsafe impl Sync for Big {}
 #[unsafe(link_section = ".shared")]
 static BIG: Big = Big(UnsafeCell::new([0; BIG_BYTES]));
 
-/// The cancellation proof's source buffer, lent to the DMA ring proof (command 17) as its
-/// stage.
-///
+/// The CPU stage stays reusable on every return from SlotCopy. The DMA engine reads a
+/// separate scratch pool whose claim can survive a wedged DMAC.
+#[cfg(feature = "ring-dma")]
+#[unsafe(link_section = ".shared")]
+static RING_SCRATCH: Scratch = Scratch(UnsafeCell::new([0; BIG_BYTES + 15]));
+#[cfg(feature = "ring-dma")]
+#[repr(align(16))]
+struct Scratch(UnsafeCell<[u8; BIG_BYTES + 15]>);
+#[cfg(feature = "ring-dma")]
+unsafe impl Sync for Scratch {}
+
 /// # Safety
-/// Only between commands (command 16 is not running) and only one borrow at a time.
+/// Call once on proc1. No code may independently access RING_SCRATCH during this epoch.
+#[cfg(feature = "ring-dma")]
+pub unsafe fn ring_scratch() -> Pool<1> {
+    Pool::new(unsafe { &mut *RING_SCRATCH.0.get() }).unwrap()
+}
+
+/// # Safety
+/// Only between commands, with no surviving borrow or DMA access to BIG.
 #[cfg(feature = "ring-dma")]
 pub unsafe fn ring_stage() -> &'static mut [u8] {
     unsafe { &mut *BIG.0.get() }
@@ -74,10 +94,6 @@ pub const fn pattern(i: usize, seed: u32) -> u32 {
 #[cfg(feature = "dma")]
 fn src() -> *mut u32 {
     SRC.0.get().cast()
-}
-#[cfg(feature = "dma")]
-fn dst() -> *mut u32 {
-    DST.0.get().cast()
 }
 #[cfg(feature = "dma")]
 fn fill(p: *mut u32, seed: u32) {
@@ -106,6 +122,11 @@ fn code(r: Result<(), Error>) -> u32 {
         Err(Error::Timeout) => 4,
         Err(Error::Busy) => 5,
         Err(Error::Bus(s)) => 0x8000_0000 | s,
+        Err(Error::Recovering) => 6,
+        Err(Error::Aborted) => 7,
+        Err(Error::Cancelled) => 8,
+        Err(Error::Wait(_)) => 9,
+        Err(_) => u32::MAX,
     }
 }
 
@@ -113,46 +134,72 @@ fn code(r: Result<(), Error>) -> u32 {
 /// Logs `DMA_SRAM_PASS` when every size copied exactly.
 #[cfg(feature = "dma")]
 #[inline(never)]
-pub fn sram(dma: &mut Dma) {
+pub fn sram(dma: &mut Dma) -> Result<(), Error> {
+    // SAFETY: the boot proof is the sole owner of this reservation, and runs exactly once.
+    let pool = Pool::<2>::new(unsafe { &mut *LOCAL.0.get() })?;
+    let mut source = pool.lease(0, WORDS * 4)?;
+    let mut destination = pool.lease(1, WORDS * 4)?;
     let mut ok = true;
-    let (s8, d8) = (src().cast::<u8>(), dst().cast::<u8>());
     for (k, bytes) in [4usize, 12, 16, 64, 1000, 1024].into_iter().enumerate() {
-        fill(src(), 0x5a5a_0000 + k as u32);
-        fill(dst(), 0);
-        let r = code(dma.ch0.copy(
-            unsafe { core::slice::from_raw_parts(s8, bytes) },
-            unsafe { core::slice::from_raw_parts_mut(d8, bytes) },
-            TIMEOUT,
-        ));
+        source.set_len(WORDS * 4)?;
+        destination.set_len(WORDS * 4)?;
+        for (i, (s, d)) in source
+            .as_mut_slice()
+            .chunks_exact_mut(4)
+            .zip(destination.as_mut_slice().chunks_exact_mut(4))
+            .enumerate()
+        {
+            s.copy_from_slice(&pattern(i, 0x5a5a_0000 + k as u32).to_le_bytes());
+            d.copy_from_slice(&pattern(i, 0).to_le_bytes());
+        }
+        source.set_len(bytes)?;
+        destination.set_len(bytes)?;
+        let result = dma.ch0.polling().copy(source, destination, TIMEOUT);
+        let rc = code(result.as_ref().map(|_| ()).map_err(|e| *e));
+        (source, destination) = match result {
+            Ok(buffers) => buffers,
+            Err(error) => {
+                log!(
+                    "DMA_SRAM bytes={} rc=0x{:x} bad_bytes=0\nDMA_SRAM_FAIL\n",
+                    bytes,
+                    rc
+                )
+                .unwrap();
+                return Err(error);
+            }
+        };
+        destination.set_len(WORDS * 4)?;
         let mut bad = 0;
-        for i in 0..WORDS * 4 {
-            let got = unsafe { d8.add(i).read_volatile() };
-            // The tail keeps fill(dst, 0): byte i % 4 of pattern(i / 4, 0).
+        for (i, &got) in destination.as_slice().iter().enumerate() {
             let want = if i < bytes {
-                unsafe { s8.add(i).read_volatile() }
+                source.as_slice()[i]
             } else {
                 pattern(i / 4, 0).to_le_bytes()[i % 4]
             };
             bad += u32::from(got != want);
         }
-        ok &= r == 0 && bad == 0;
-        log!("DMA_SRAM bytes={} rc=0x{:x} bad_bytes={}\n", bytes, r, bad).unwrap();
+        ok &= bad == 0;
+        log!("DMA_SRAM bytes={} rc=0x{:x} bad_bytes={}\n", bytes, rc, bad).unwrap();
     }
-    // Throughput: 1 KiB SRAM -> SRAM, 1000 copies on channel 0 (8-beat FIFO) and 2 (4-beat),
-    // against a CPU word copy (code in shared SRAM).
-    // The slices are created per copy, so no `&mut` to DST is live during the CPU loop.
-    let s = || unsafe { core::slice::from_raw_parts(s8, 1024) };
-    let d = || unsafe { core::slice::from_raw_parts_mut(d8, 1024) };
+    // Throughput: 1 KiB SRAM -> SRAM, 1000 copies on channel 0 (8-beat FIFO) and 2
+    // (4-beat FIFO), against a CPU word copy from code in shared SRAM.
     let mut us = [0u32; 3];
     for (slot, u) in us.iter_mut().enumerate() {
         let t = now();
         for _ in 0..1000 {
             match slot {
-                0 => ok &= dma.ch0.copy(s(), d(), TIMEOUT).is_ok(),
-                1 => ok &= dma.ch2.copy(s(), d(), TIMEOUT).is_ok(),
+                0 => {
+                    (source, destination) = dma.ch0.polling().copy(source, destination, TIMEOUT)?
+                }
+                1 => {
+                    (source, destination) = dma.ch2.polling().copy(source, destination, TIMEOUT)?
+                }
                 _ => {
+                    let s = source.as_slice().as_ptr().cast::<u32>();
+                    let d = destination.as_mut_slice().as_mut_ptr().cast::<u32>();
                     for i in 0..WORDS {
-                        unsafe { dst().add(i).write_volatile(src().add(i).read_volatile()) };
+                        // SAFETY: the aligned pool slots each hold 1024 bytes.
+                        unsafe { d.add(i).write_volatile(s.add(i).read_volatile()) };
                     }
                 }
             }
@@ -167,6 +214,7 @@ pub fn sram(dma: &mut Dma) {
     )
     .unwrap();
     log!("{}\n", if ok { "DMA_SRAM_PASS" } else { "DMA_SRAM_FAIL" }).unwrap();
+    if ok { Ok(()) } else { Err(Error::Invalid) }
 }
 
 /// One block of `bytes` from SRC to `dst` on `ch`, `n` times; elapsed µs or the first error.
@@ -180,9 +228,23 @@ fn repeat<const N: u8>(
     let s = BusAddr::from_proc(src() as usize)?;
     let t = now();
     for _ in 0..n {
-        unsafe { ch.start(s, dst, bytes) }?.wait(TIMEOUT)?;
+        let end = Deadline::after(TIMEOUT)?;
+        unsafe { ch.start_raw(s, dst, bytes) }?.wait_polling(end)?;
     }
     Ok(now().wrapping_sub(t))
+}
+
+#[cfg(feature = "dma")]
+fn raw_copy<const N: u8>(
+    channel: &mut Channel<N>,
+    src: BusAddr,
+    dst: BusAddr,
+    len: u32,
+) -> Result<(), Error> {
+    let end = Deadline::after(TIMEOUT)?;
+    // SAFETY: command 16 owns the SRAM sources and outbound reservation. It fences all
+    // subsequent DMA commands on error. Successful readback is the experiment's remote check.
+    unsafe { channel.start_raw(src, dst, len) }?.wait_polling(end)
 }
 
 /// Pre-generated single-block control for the ring batch sizes, on the same channel 1.
@@ -190,24 +252,35 @@ fn repeat<const N: u8>(
 #[cfg(feature = "dma")]
 fn ring_raw(dma: &mut Dma, data: *mut u32) -> bool {
     // SAFETY: command 16 exclusively owns BIG and the bulk block until its response.
-    let src = unsafe { &mut *BIG.0.get() };
-    for (i, b) in src.iter_mut().enumerate() {
-        *b = (i as u8).wrapping_mul(7);
+    let src = BIG.0.get().cast::<u8>();
+    for i in 0..BIG_BYTES {
+        unsafe { src.add(i).write_volatile((i as u8).wrapping_mul(7)) };
     }
     let dst = ((data as usize + 15) & !15) as *mut u8;
     for bytes in [768usize, 2304, 2112, 3072, 4032, 3960, 4080] {
         for offset in [0, 8] {
-            let source = &src[offset..offset + bytes];
+            let source = unsafe { src.add(offset) };
             let destination = unsafe { dst.add(offset) };
+            let (Ok(s), Ok(d)) = (
+                BusAddr::from_proc(source as usize),
+                BusAddr::from_proc(destination as usize),
+            ) else {
+                return false;
+            };
+            let expected = |i: usize| {
+                u32::from_le_bytes(core::array::from_fn(|j| {
+                    ((offset + i + j) as u8).wrapping_mul(7)
+                }))
+            };
             // Every word differs from its expected value, even after a preceding condition.
             for i in (0..bytes).step_by(4) {
-                let expected = u32::from_le_bytes(source[i..i + 4].try_into().unwrap());
+                let expected = expected(i);
                 unsafe { destination.add(i).cast::<u32>().write_volatile(!expected) };
             }
             rp1_link::flush_window();
             let t = now();
             for _ in 0..1000 {
-                if unsafe { dma.ch1.copy_to_remote(source, destination) }.is_err() {
+                if raw_copy(&mut dma.ch1, s, d, bytes as u32).is_err() {
                     return false;
                 }
             }
@@ -215,17 +288,13 @@ fn ring_raw(dma: &mut Dma, data: *mut u32) -> bool {
             rp1_link::flush_window();
             let mut bad = 0;
             for i in (0..bytes).step_by(4) {
-                let expected = u32::from_le_bytes(source[i..i + 4].try_into().unwrap());
+                let expected = expected(i);
                 if unsafe { destination.add(i).cast::<u32>().read_volatile() } != expected {
                     bad += 1;
                 }
             }
-            let width = 1
-                << rp1_hal::dma::width_log2(
-                    source.as_ptr() as u64,
-                    destination as u64,
-                    bytes as u32,
-                );
+            let width =
+                1 << rp1_hal::dma::width_log2(source as u64, destination as u64, bytes as u32);
             log!(
                 "RINGDMA_RAW bytes={} width={} count=1000 total_us={} bad={}\n",
                 bytes,
@@ -246,9 +315,14 @@ fn ring_raw(dma: &mut Dma, data: *mut u32) -> bool {
 /// its host physical address. Returns (errors, results for request[8..16]).
 #[cfg(feature = "dma")]
 #[inline(never)]
-pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8]) {
+pub fn ddr(
+    dma: &mut Dma,
+    wait: &mut WaitTimer,
+    data: *mut u32,
+    phys: u64,
+    seed: u32,
+) -> (u32, [u32; 8]) {
     let mut out = [0u32; 8];
-    let mut errors = 0;
     let atu = match BusAddr::from_proc(data as usize) {
         Ok(a) => a,
         Err(_) => return (1, out),
@@ -263,13 +337,13 @@ pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8
         match repeat(&mut dma.ch0, atu, bytes, 1000) {
             Ok(us) => out[slot] = us,
             Err(e) => {
-                errors += 1;
                 log!(
                     "DMA_DDR_ERR small bytes={} rc=0x{:x}\n",
                     bytes,
                     code(Err(e))
                 )
                 .unwrap();
+                return (1, out);
             }
         }
     }
@@ -289,25 +363,22 @@ pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8
     for (slot, base) in [(6usize, atu), (7, direct)] {
         let t = now();
         for k in 0..8u64 {
-            let r = unsafe {
-                dma.ch0.start(
-                    BusAddr(BusAddr::SRAM),
-                    BusAddr(base.0 + k * 0x1_0000),
-                    0x1_0000,
-                )
-            }
-            .and_then(|x| x.wait(TIMEOUT));
+            let r = raw_copy(
+                &mut dma.ch0,
+                BusAddr(BusAddr::SRAM),
+                BusAddr(base.0 + k * 0x1_0000),
+                0x1_0000,
+            );
             if let Err(e) = r {
-                errors += 1;
                 log!("DMA_DDR_ERR large slot={} rc=0x{:x}\n", slot, code(Err(e))).unwrap();
-                break;
+                return (1, out);
             }
         }
         out[slot] = now().wrapping_sub(t);
     }
     // Cancellation proof in the first 4 KiB of the block (overwritten by the layout below).
-    if !abort(dma, data, atu) {
-        errors += 1;
+    if !abort(dma, wait, data, atu) {
+        return (1, out);
     }
     // 512 KiB per path in 1 KiB blocks, copy k carries k in word 0.
     for (half, base) in [(0usize, atu), (1, direct)] {
@@ -323,8 +394,8 @@ pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8
         }
         out[3 + half] = now().wrapping_sub(t);
         if let Some(e) = failed {
-            errors += 1;
             log!("DMA_DDR_ERR half={} rc=0x{:x}\n", half, code(Err(e))).unwrap();
+            return (1, out);
         }
     }
     unsafe { src().write_volatile(pattern(0, seed)) };
@@ -342,7 +413,7 @@ pub fn ddr(dma: &mut Dma, data: *mut u32, phys: u64, seed: u32) -> (u32, [u32; 8
         }
     }
     out[5] = bad;
-    errors += u32::from(bad != 0);
+    let errors = u32::from(bad != 0);
     log!(
         "DMA_DDR small16_n1000_us={} small512_n1000_us={} cpu_512k_us={} atu_512k_us={} direct_512k_us={} readback_bad={} atu_64k_x8_us={} direct_64k_x8_us={} errors={}\n",
         out[0],
@@ -400,22 +471,11 @@ fn inspect(data: *mut u32) -> (u32, u32, u32, u32) {
 fn chen() -> u32 {
     unsafe { (0x4018_8018 as *const u32).read_volatile() }
 }
-#[cfg(feature = "dma")]
-fn stopped_code(s: Stopped) -> u32 {
-    match s {
-        Stopped::Finished(_) => 0,
-        Stopped::Disabled { suspended: false } => 1,
-        Stopped::Disabled { suspended: true } => 2,
-        Stopped::Aborted => 3,
-        Stopped::Late => 4,
-    }
-}
-
 /// Cancellation proof on channel 2 (4-beat FIFO): byte-wide SRAM -> DDR (ATU window), so the
 /// block is slow enough to be cancelled mid-way. Logs `DMA_ABORT_PASS` or `DMA_ABORT_FAIL`.
 #[cfg(feature = "dma")]
 #[inline(never)]
-fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
+fn abort(dma: &mut Dma, wait: &mut WaitTimer, data: *mut u32, atu: BusAddr) -> bool {
     let b = BIG.0.get().cast::<u8>();
     for i in 0..BIG_BYTES {
         unsafe { b.add(i).write_volatile(big(i)) };
@@ -429,7 +489,7 @@ fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
     let full = |dma: &mut Dma| {
         canary(data);
         let t = now();
-        let r = code(unsafe { dma.ch2.start(src, dst, len) }.and_then(|x| x.wait(TIMEOUT)));
+        let r = code(raw_copy(&mut dma.ch2, src, dst, len));
         let us = now().wrapping_sub(t);
         let (copied, tail_bad, guard_bad, _) = inspect(data);
         (
@@ -449,27 +509,39 @@ fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
         ok as u32
     )
     .unwrap();
+    if !ok {
+        return false;
+    }
     let mut midway = 0;
     for quarter in 1..4u32 {
         canary(data);
         let delay = full_us * quarter / 4;
         let t = now();
-        let how = match unsafe { dma.ch2.start(src, dst, len) } {
-            Ok(x) => {
-                while now().wrapping_sub(t) < delay {}
-                x.cancel()
+        let cancelled = (|| {
+            let mut x = unsafe { dma.ch2.start_raw(src, dst, len) }?;
+            // Explicit polling is used for this mid-transfer control's stimulus time.
+            Timer::new().delay_polling(Duration::micros(delay))?;
+            x.cancel_until(wait, Deadline::after(Duration::micros(200))?)?;
+            Ok::<_, Error>(x.try_complete() == Some(Err(Error::Cancelled)))
+        })();
+        let how = match cancelled {
+            Ok(true) => 1,
+            Ok(false) => 0,
+            Err(error) => {
+                log!("DMA_ABORT_FAIL q={} rc={}\n", quarter, code(Err(error))).unwrap();
+                return false;
             }
-            Err(e) => Stopped::Finished(Err(e)),
         };
         let elapsed = now().wrapping_sub(t);
         let en = chen() & (1 << 2);
         let (copied, tail_bad, guard_bad, hash) = inspect(data);
         // Nothing may change after cancel() returned.
-        let t2 = now();
-        while now().wrapping_sub(t2) < 2 * full_us + 100 {}
+        if wait.delay(Duration::micros(2 * full_us + 100)).is_err() {
+            return false;
+        }
         let (_, _, _, hash2) = inspect(data);
         let late_change = u32::from(hash != hash2);
-        let good = !matches!(how, Stopped::Finished(_))
+        let good = how != 0
             && en == 0
             && copied < len
             && tail_bad == 0
@@ -480,7 +552,7 @@ fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
             "DMA_ABORT q={} delay_us={} how={} chen_after={} copied={} len={} tail_bad={} guard_bad={} late_change={} elapsed_us={} ok={}\n",
             quarter,
             delay,
-            stopped_code(how),
+            how,
             en,
             copied,
             len,
@@ -502,10 +574,12 @@ fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
             reuse_ok as u32
         )
         .unwrap();
-        ok &= good && reuse_ok;
+        if !good || !reuse_ok {
+            return false;
+        }
     }
     ok &= midway > 0;
-    ok &= raw_abort(dma, data, src, dst, len, full_us);
+    ok &= raw_abort(dma, wait, data, src, dst, len, full_us);
     log!(
         "{} midway={}\n",
         if ok {
@@ -524,6 +598,7 @@ fn abort(dma: &mut Dma, data: *mut u32, atu: BusAddr) -> bool {
 #[cfg(feature = "dma")]
 fn raw_abort(
     dma: &mut Dma,
+    wait: &mut WaitTimer,
     data: *mut u32,
     src: BusAddr,
     dst: BusAddr,
@@ -534,21 +609,52 @@ fn raw_abort(
     const CH2_INTSTATUS: usize = 0x4018_8000 + 0x100 + 2 * 0x100 + 0x88;
     canary(data);
     let (mut en, mut clear_us, mut status) = (1, 0, 0);
-    if let Ok(x) = unsafe { dma.ch2.start(src, dst, len) } {
-        let t = now();
-        while now().wrapping_sub(t) < full_us / 2 {}
+    if let Ok(mut x) = unsafe { dma.ch2.start_raw(src, dst, len) } {
+        if Timer::new()
+            .delay_polling(Duration::micros(full_us / 2))
+            .is_err()
+        {
+            return false;
+        }
         unsafe { (CHEN_H as *mut u32).write_volatile((1 << 2) | (1 << 10)) };
         let t = now();
-        while chen() & (1 << 2) != 0 && now().wrapping_sub(t) < 10_000 {}
+        // Raw register control. Its result is never used by the safe DMA admission path.
+        while chen() & (1 << 2) != 0 && now().wrapping_sub(t) < 200 {
+            core::hint::spin_loop();
+        }
         clear_us = now().wrapping_sub(t);
         en = chen() & (1 << 2);
         status = unsafe { (CH2_INTSTATUS as *const u32).read_volatile() };
-        drop(x);
+        let _ = x.try_complete();
+    }
+    if en != 0 || status & (1 << 31) == 0 {
+        log!(
+            "DMA_ABORT_RAW reg=0x01c chen_after={} clear_us={} intstatus=0x{:08x} ok=0\n",
+            en,
+            clear_us,
+            status
+        )
+        .unwrap();
+        return false;
+    }
+    // Experimental legacy control: use only in the reserved DDR test region. Settling and
+    // checking a stable observed copy are evidence for the lab's reuse, not a safe HAL proof.
+    if wait.delay(Duration::micros(2 * full_us + 100)).is_err() {
+        return false;
+    }
+    let before = inspect(data).3;
+    if wait.delay(Duration::micros(2 * full_us + 100)).is_err() || inspect(data).3 != before {
+        return false;
+    }
+    // SAFETY: the raw-only lab assumes the previous readback and settle drained this dedicated
+    // test range. It may not use this assumption to reclaim safe pool leases or user memory.
+    if unsafe { dma.ch2.acknowledge_external_abort() }.is_err() {
+        return false;
     }
     let (copied, tail_bad, guard_bad, _) = inspect(data);
     let (r, _, reuse_ok, _) = {
         canary(data);
-        let r = code(unsafe { dma.ch2.start(src, dst, len) }.and_then(|x| x.wait(TIMEOUT)));
+        let r = code(raw_copy(&mut dma.ch2, src, dst, len));
         let (c, t, g, _) = inspect(data);
         (r, 0, r == 0 && c == len && t == 0 && g == 0, c)
     };

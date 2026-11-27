@@ -64,7 +64,7 @@ impl Deadline {
         self.0
     }
 
-    fn after_ticks(now: Instant, timeout: u32) -> Result<Self, Error> {
+    pub(crate) fn after_ticks(now: Instant, timeout: u32) -> Result<Self, Error> {
         let end = Self(Instant::from_ticks(
             now.ticks()
                 .checked_add(u64::from(timeout))
@@ -74,7 +74,7 @@ impl Deadline {
         Ok(end)
     }
 
-    fn check(self, now: Instant) -> Result<(), Error> {
+    pub(crate) fn check(self, now: Instant) -> Result<(), Error> {
         match self.0.ticks().checked_sub(now.ticks()) {
             None | Some(0) => Err(Error::Timeout),
             Some(delta) if delta > u64::from(MAX_ARM) => Err(Error::InvalidDeadline),
@@ -119,7 +119,7 @@ impl Timer {
     }
 }
 
-fn read_instant(io: &mut impl Registers) -> Instant {
+pub(crate) fn read_instant(io: &mut impl Registers) -> Instant {
     loop {
         let hi = io.read(RAWH);
         let lo = io.read(RAWL);
