@@ -4,7 +4,10 @@ use rp1_linux::{
     Waitable,
 };
 use rp1_proto::note::{LINK, Link, Note, SHM_REGION, ShmRegion};
-use std::time::{Duration, Instant};
+use std::{
+    io::Read,
+    time::{Duration, Instant},
+};
 
 #[path = "commands.rs"]
 mod commands;
@@ -14,7 +17,7 @@ const ROUNDS: u32 = 5_000;
 pub fn run(args: &[String]) -> Result<()> {
     let [mode, step] = args else {
         return Err(
-            "usage: linux-ping --test irq|poll|wake ready|rtt|late|panic|stop|fault|proc0-panic|idle|idle60|drop|backpressure"
+            "usage: linux-ping --test irq|poll|wake ready|rtt|late|panic|stop|fault|proc0-panic|idle|idle60|drop|backpressure|reopen|status"
                 .into(),
         );
     };
@@ -25,7 +28,13 @@ pub fn run(args: &[String]) -> Result<()> {
         _ => return Err("expected irq, poll or wake".into()),
     };
     check_note(irq, strict)?;
+    let opened = Instant::now();
     let fw = Firmware::open()?;
+    if step == "status" {
+        let status = fw.status()?;
+        println!("PING_STATUS pcie={:?} shm={:?}", status.pcie, status.shm);
+        return Ok(());
+    }
     let generation = fw.wait_ready(Duration::from_secs(10))?;
     if step == "ready" {
         let status = fw.status()?;
@@ -51,6 +60,19 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     let mut client = fw.client("ping")?;
     match step.as_str() {
+        "reopen" if strict => {
+            let mut bytes = [0; 4];
+            std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+            let nonce = u32::from_ne_bytes(bytes) & !commands::DELAY;
+            echo(&mut client, nonce)?;
+            let elapsed_ns = opened.elapsed().as_nanos();
+            println!(
+                "PING_REOPEN generation={generation} nonce={nonce:#010x} elapsed_ns={elapsed_ns} ok=1"
+            );
+            if elapsed_ns > 1_000_000_000 {
+                return Err(format!("reopened nonce took {elapsed_ns} ns").into());
+            }
+        }
         "rtt" if strict => strict_rtt(&mut client)?,
         "reference" if !strict => strict_rtt(&mut client)?,
         "rtt" => rtt(&mut client, ROUNDS, &format!(" mode={mode}"))?,

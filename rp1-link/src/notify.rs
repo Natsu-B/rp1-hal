@@ -440,6 +440,12 @@ impl<const PIN: u8, const CORE: u8> sealed::Wake for TicketDoorbell<PIN, CORE> {
                     return Ok(Progress::More);
                 }
             }
+            if self.armed && self.ticket.pending().map_err(reset)? {
+                // A pulse with no observed work can still consume this ticket.
+                // Re-arm and rescan so a subsequent publication can notify us.
+                self.ticket.cancel().map_err(reset)?;
+                self.armed = false;
+            }
             if !self.armed {
                 self.ticket.arm().map_err(reset)?;
                 self.armed = true;
@@ -694,6 +700,48 @@ mod tests {
         assert!(sealed::Notify::wake(&mut irq, sealed::Token(()), &mut ring));
         assert!(!irq.retry());
         assert_eq!(irq.pulse_failures(), 1);
+    }
+
+    #[test]
+    fn v3_empty_doorbell_with_a_consumed_ticket_rearms_without_ack() {
+        use crate::mmio::fake;
+        use rp1_proto::{LINK_START, link};
+
+        let window = LINK_START as usize;
+        fake::set(window + link::SHM_STATUS, link::SHM_READY);
+        fake::set(window + link::SHM_GENERATION, 2);
+        fake::set(window + mailbox::BOOT_EPOCH, 2);
+        let mut data = [0u64; 64];
+        let mut ctrl = [0u64; 16];
+        let mut ring = unsafe {
+            shm::RingRx::<u32>::attach(
+                data.as_ptr().cast(),
+                512,
+                ctrl.as_mut_ptr().cast(),
+                128,
+                4,
+                shm::Overflow::Reject,
+            )
+        }
+        .unwrap();
+        let mut bell = unsafe {
+            TicketDoorbell::<27, 1>::attach(data.as_mut_ptr().cast(), ctrl.as_mut_ptr().cast())
+        }
+        .unwrap();
+        sealed::Wake::opened(&mut bell, sealed::Token(()), &mut ring);
+        unsafe {
+            data.as_mut_ptr()
+                .cast::<u32>()
+                .add(shm::wake::RX_SEQ / 4)
+                .write_volatile(1);
+        }
+        assert_eq!(
+            sealed::Wake::try_drain(&mut bell, sealed::Token(()), &mut ring, 4, |_| panic!(
+                "empty receiver"
+            ),),
+            Ok(Progress::Idle)
+        );
+        assert_eq!(ctrl[shm::wake::RX_WAIT / 8], 3);
     }
 
     #[test]

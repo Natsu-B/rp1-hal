@@ -485,13 +485,22 @@ impl Firmware {
             _map: map,
             session,
         };
-        if let Some(publisher) = &tx.publisher
-            && tx.inner.free() != r.depth
-            && publisher.recover()?
-        {
-            tx.doorbell.as_ref().unwrap().ring_flushed();
+        if let Some(publisher) = &tx.publisher {
+            // Publishing a seq for an empty ring would consume the receiver's
+            // current ticket without any work to service.
+            if tx.inner.free() != r.depth {
+                if publisher.recover()? {
+                    tx.doorbell
+                        .as_ref()
+                        .expect("strict publisher owns a doorbell")
+                        .ring_flushed();
+                } else {
+                    tx.wake()?;
+                }
+            }
+        } else {
+            tx.wake()?;
         }
-        tx.wake()?;
         Ok(tx)
     }
     /// The doorbell of `core` (0 = proc0) that the note's LINK record declares.
