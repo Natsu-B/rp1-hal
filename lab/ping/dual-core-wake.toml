@@ -1,0 +1,38 @@
+[package]
+name = "dual-core"
+version.workspace = true
+
+[package.metadata.rp1]
+schema = 2
+link_wake = "experimental"
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+log = { sink = "uart0", baudrate = 115200 }
+
+[package.metadata.rp1.proc0]
+gpio = [8, 22] # 8 = SPI0 chip select driven as GPIO
+timer = ["ALARM0", "ALARM1"]
+heartbeat = { period_ms = 1000 } # TIMER_0 beats once per tick
+spi0 = { sck = 11, mosi = 10, miso = 9 }
+
+[package.metadata.rp1.proc1]
+doorbell = 27
+host_irq = true
+adc = {}
+i2c1 = { sda = 2, scl = 3 }
+
+[[package.metadata.rp1.shm]]
+name = "ping"
+kind = "rpc"
+core = "proc1"
+message = "Ping"
+reply = "Pong"
+depth = 8
+
+[[package.metadata.rp1.shm]]
+name = "channel"
+kind = "channel"
+core = "proc1"
+message = "Nonce"
+reply = "Nonce"
+depth = 8

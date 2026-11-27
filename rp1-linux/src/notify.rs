@@ -1,6 +1,6 @@
 //! How a `notify = "irq"` endpoint and RP1 notify each other: the `rp1:irq` interrupt
 //! (RP1 -> Linux) and the `rp1:doorbell` force bit (Linux -> RP1). Both nodes are shared:
-//! every irq endpoint opens its own handle.
+//! v2 endpoints open individual handles; v3 uses one exclusive listener.
 use super::{Access, Mapping, Result, dev_path, find_uio, open_read_write};
 use rp1_proto::uio;
 use std::{fs::File, os::fd::AsRawFd, rc::Rc, time::Duration};
@@ -19,29 +19,13 @@ impl Irq {
         let irq = Self {
             file: open_read_write(&dev)?,
         };
-        irq.enable()?;
+        enable(&irq.file)?;
         Ok(irq)
     }
     /// An `Irq` on any file, e.g. a socket standing in for the UIO node.
     #[cfg(test)]
     pub(crate) fn from_file(file: File) -> Self {
         Self { file }
-    }
-    fn enable(&self) -> std::io::Result<()> {
-        let one = 1u32.to_ne_bytes();
-        loop {
-            let n = unsafe { libc::write(self.file.as_raw_fd(), one.as_ptr().cast(), 4) };
-            match n {
-                4 => return Ok(()),
-                0..=3 => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero)),
-                _ => {
-                    let e = std::io::Error::last_os_error();
-                    if e.kind() != std::io::ErrorKind::Interrupted {
-                        return Err(e);
-                    }
-                }
-            }
-        }
     }
     /// Sleep up to `timeout` (rounded up to whole ms) for an interrupt. Returns whether one
     /// arrived; it is consumed and the line re-enabled before returning, so an edge from then
@@ -83,11 +67,29 @@ impl Irq {
                 format!("rp1:irq read returned {n} bytes"),
             ));
         }
-        self.enable()?;
+        enable(&self.file)?;
         Ok(true)
     }
 }
 
+pub(crate) mod listener;
+
+fn enable(file: &File) -> std::io::Result<()> {
+    let one = 1u32.to_ne_bytes();
+    loop {
+        let n = unsafe { libc::write(file.as_raw_fd(), one.as_ptr().cast(), 4) };
+        match n {
+            4 => return Ok(()),
+            0..=3 => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero)),
+            _ => {
+                let e = std::io::Error::last_os_error();
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
 /// Physical address of `rp1:doorbell`: RP1 `IO_BANK0`, one 16 KiB page.
 const DOORBELL_PHYS: u64 = 0x1f_000d_0000;
 const DOORBELL_LEN: usize = 0x4000;
@@ -124,6 +126,13 @@ impl Doorbell {
     /// Set the force bit (one posted write).
     pub(crate) fn ring(&self) {
         self.page.write(self.offset, self.bit);
+    }
+    /// Complete the SET through the same bank. The ISR may have cleared it by
+    /// the time this returns, so the readback value need not contain the bit.
+    pub(crate) fn ring_flushed(&self) {
+        self.ring();
+        let _ = self.page.read(self.offset - 0x2000);
+        rp1_proto::barrier();
     }
 }
 

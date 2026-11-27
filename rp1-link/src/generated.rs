@@ -229,7 +229,9 @@ pub(crate) fn read_status() -> u32 {
 /// Generated `try_open` only, once per region, while the window is Ready: the region comes
 /// from this firmware's validated declaration and its notifier's resource was made.
 #[inline(always)]
-pub unsafe fn ring_tx<T: Message, N: Notify>(r: ShmRegion<'_>) -> Result<RingTx<T, N>, Error> {
+pub unsafe fn ring_tx<T: Message, N: Notify + crate::notify::sealed::Claim>(
+    r: ShmRegion<'_>,
+) -> Result<RingTx<T, N>, Error> {
     let ring = unsafe {
         shm::RingTx::attach(
             ddr(r),
@@ -248,7 +250,9 @@ pub unsafe fn ring_tx<T: Message, N: Notify>(r: ShmRegion<'_>) -> Result<RingTx<
 /// # Safety
 /// As [`ring_tx`].
 #[inline(always)]
-pub unsafe fn ring_rx<T: Message, W: Wake>(r: ShmRegion<'_>) -> Result<RingRx<T, W>, Error> {
+pub unsafe fn ring_rx<T: Message, W: Wake + crate::notify::sealed::Claim>(
+    r: ShmRegion<'_>,
+) -> Result<RingRx<T, W>, Error> {
     let ring = unsafe {
         shm::RingRx::attach(
             sram(r),
@@ -303,6 +307,123 @@ const fn overflow(region: ShmRegion<'_>) -> Overflow {
     } else {
         Overflow::Reject
     }
+}
+
+use rp1_proto::wake::{BootEpoch, Request, Session, SessionError, mailbox};
+
+/// B2 uses the existing startup timer with the v3 request/result envelope.
+///
+/// # Safety
+/// As for [`try_enable`]. The complete v3 layout and caps must come from the NOTE.
+pub unsafe fn try_enable_v3(
+    pcie: &mut Pcie,
+    area: ShmArea,
+    regions: &[ShmRegion<'_>],
+    digest: &[u8; 32],
+) -> Result<u32, EnableError> {
+    let offered = rp1_proto::wake::LATCHED_WAKE;
+    let epoch = read_link(rp1_proto::status::EPOCH);
+    let boot = BootEpoch::new(epoch).map_err(|_| EnableError::NotReady)?;
+    if read_link(mailbox::BOOT_EPOCH) != epoch {
+        write(LINK_START as usize + mailbox::OFFERED_CAPS, offered);
+        barrier();
+        write(LINK_START as usize + mailbox::BOOT_EPOCH, epoch);
+        barrier();
+    }
+    if read_link(link::SHM_REQUEST) != mailbox::REQUEST_OPCODE {
+        return Err(EnableError::NotRequested);
+    }
+    barrier();
+    let request = Request {
+        epoch: read_link(mailbox::REQUEST_EPOCH),
+        seq: read_link(mailbox::REQUEST_SEQ),
+        required_caps: read_link(mailbox::REQUIRED_CAPS),
+    };
+    let caps = request
+        .accept(mailbox::REQUEST_OPCODE, epoch, offered)
+        .map_err(|_| EnableError::Mismatch)?;
+    let generation = unsafe {
+        pcie.__publish_shm_checked(area.phys, area.size, || {
+            let base = SHM_WINDOW as *mut u8;
+            let header = HeaderInit::begin_v2(base, boot).map_err(|_| EnableError::Mismatch)?;
+            for offset in (HEADER_SIZE..area.size as usize).step_by(4) {
+                write(SHM_WINDOW as usize + offset, 0);
+            }
+            for region in regions {
+                let start = LINK_START as usize + usize::from(region.sram_offset);
+                for offset in (0..usize::from(region.sram_len)).step_by(4) {
+                    write(start + offset, 0);
+                }
+            }
+            flush_mapped_window();
+            let session = header
+                .publish_v2(
+                    LINK_START as *mut u8,
+                    regions,
+                    digest,
+                    read(0x400a_c028),
+                    caps,
+                )
+                .map_err(|_| EnableError::Mismatch)?;
+            write(LINK_START as usize + mailbox::ACCEPTED_CAPS, caps);
+            write(LINK_START as usize + mailbox::RESULT_SEQ, request.seq);
+            barrier();
+            Ok(session.generation())
+        })
+    }?;
+    rp1_rt::send_event();
+    Ok(generation)
+}
+
+pub(crate) fn wake_session() -> Result<Session, SessionError> {
+    if read_status() != link::SHM_READY {
+        return Err(SessionError::Restarted);
+    }
+    barrier();
+    Session::new(
+        read_link(mailbox::BOOT_EPOCH),
+        read_link(link::SHM_GENERATION),
+    )
+}
+
+/// # Safety
+/// As for [`ring_tx`]. Called only for the v3 IRQ owner's ring.
+#[inline(always)]
+pub unsafe fn ring_tx_v3<T: Message>(
+    r: ShmRegion<'_>,
+) -> Result<RingTx<T, crate::notify::TicketIrq>, Error> {
+    let ring = unsafe {
+        shm::RingTx::attach(
+            ddr(r),
+            r.ddr_len as usize,
+            sram(r),
+            r.sram_len as usize,
+            r.depth,
+            overflow(r),
+        )
+    }?;
+    let notify = unsafe { crate::notify::TicketIrq::attach(ddr(r), sram(r)) }?;
+    Ok(RingTx::new(ring, notify))
+}
+
+/// # Safety
+/// As for [`ring_rx`]. The doorbell belongs to the declared v3 reader.
+#[inline(always)]
+pub unsafe fn ring_rx_v3<T: Message, const PIN: u8, const CORE: u8>(
+    r: ShmRegion<'_>,
+) -> Result<RingRx<T, crate::notify::TicketDoorbell<PIN, CORE>>, Error> {
+    let ring = unsafe {
+        shm::RingRx::attach(
+            sram(r),
+            r.sram_len as usize,
+            ddr(r),
+            r.ddr_len as usize,
+            r.depth,
+            overflow(r),
+        )
+    }?;
+    let wake = unsafe { crate::notify::TicketDoorbell::attach(sram(r), ddr(r)) }?;
+    Ok(RingRx::open(ring, wake))
 }
 
 #[cfg(test)]

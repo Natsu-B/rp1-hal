@@ -93,7 +93,7 @@ impl<'s> RingDma<'s> {
     }
 }
 
-impl<T: Message, N: Notify> RingTx<T, N> {
+impl<T: Message, N: Notify + crate::notify::sealed::Claim> RingTx<T, N> {
     /// Publish up to `values.len()` messages like [`RingTx::push_slice`] (returns how many):
     /// by `copy` when the batch reaches `dma`'s threshold (then at most
     /// [`shm::RingTx::staged_capacity`] of the stage), otherwise by the CPU. On error nothing

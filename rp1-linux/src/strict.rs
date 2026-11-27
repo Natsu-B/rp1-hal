@@ -1,0 +1,234 @@
+use crate::{Error, Firmware, Mapping, Result, Session, SessionHeader, notify::listener::Listener};
+use rp1_proto::{
+    self as proto, barrier, link,
+    note::LinkWake,
+    shm::wake::Words,
+    wake::{self, BootEpoch, Request, SessionError, mailbox},
+};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::{Duration, Instant},
+};
+
+type Live<S> = Box<dyn Fn() -> std::result::Result<S, SessionError>>;
+pub(crate) type Ticket<S> = proto::shm::wake::Waiter<S, Live<S>>;
+
+pub(crate) struct Profile {
+    config: LinkWake,
+    pub(crate) listener: Rc<Listener>,
+    epoch: Cell<Option<BootEpoch>>,
+}
+
+impl Profile {
+    pub(crate) fn open(config: LinkWake) -> Result<Self> {
+        if config.required_caps & !wake::LATCHED_WAKE != 0 {
+            return Err(Error::Unsupported);
+        }
+        Ok(Self {
+            config,
+            listener: Rc::new(Listener::open()?),
+            epoch: Cell::new(None),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_listener(listener: Listener) -> Self {
+        Self {
+            config: LinkWake {
+                required_caps: wake::LATCHED_WAKE,
+                offered_caps: wake::LATCHED_WAKE,
+                owner: 1,
+                startup_doorbell: None,
+            },
+            listener: Rc::new(listener),
+            epoch: Cell::new(None),
+        }
+    }
+
+    pub(crate) fn ready(&self, fw: &Firmware, timeout: Duration) -> Result<Session> {
+        let end = Instant::now()
+            .checked_add(timeout)
+            .ok_or(Error::InvalidDeadline)?;
+        let epoch = loop {
+            let word = fw.link.read(mailbox::BOOT_EPOCH);
+            if word == u32::MAX {
+                return Err(Error::LinkDown);
+            }
+            if let Ok(epoch) = BootEpoch::new(word) {
+                break epoch;
+            }
+            startup_pause(end)?;
+        };
+        if self.epoch.get().is_some_and(|old| old != epoch) {
+            return Err(Error::PeerDown(crate::PeerDown::Restarted));
+        }
+        self.epoch.set(Some(epoch));
+        barrier();
+        let offered = fw.link.read(mailbox::OFFERED_CAPS);
+        if offered != self.config.offered_caps || offered & wake::LATCHED_WAKE == 0 {
+            return Err(Error::Unsupported);
+        }
+        check_epoch(&fw.link, epoch)?;
+        check_status_epoch(&fw.link, epoch)?;
+        let request = Request {
+            epoch: epoch.word(),
+            seq: 1,
+            required_caps: wake::LATCHED_WAKE,
+        };
+        // One request identity per boot. A same-boot reopen reads the committed
+        // result, including when the initial requester exited before Ready.
+        if fw.link.read(link::SHM_REQUEST) != mailbox::REQUEST_OPCODE
+            && fw.link.read(link::SHM_STATUS) == 0
+        {
+            fw.link.write(mailbox::REQUEST_EPOCH, request.epoch);
+            fw.link.write(mailbox::REQUEST_SEQ, request.seq);
+            fw.link.write(mailbox::REQUIRED_CAPS, request.required_caps);
+            fw.link.write(link::SHM_REQUEST, mailbox::REQUEST_OPCODE);
+            let _ = fw.link.read(link::SHM_REQUEST);
+            fw.signal_enable_request();
+        }
+        loop {
+            check_epoch(&fw.link, epoch)?;
+            crate::Peer::check_core(&fw.link, self.config.owner)?;
+            if self.config.owner != 0 {
+                crate::Peer::check_core(&fw.link, 0)?;
+            }
+            match fw.link.read(link::SHM_STATUS) {
+                link::SHM_READY => break,
+                link::SHM_WINDOW_LOST | u32::MAX => return Err(Error::LinkDown),
+                0 => startup_pause(end)?,
+                _ => return Err(Error::Unsupported),
+            }
+        }
+        barrier();
+        let caps = fw.link.read(mailbox::ACCEPTED_CAPS);
+        request
+            .check_result(
+                epoch.word(),
+                fw.link.read(mailbox::RESULT_SEQ),
+                caps,
+                offered,
+            )
+            .map_err(|error| match error {
+                SessionError::NotReady => Error::from(proto::Error::Mismatch),
+                error => Error::from(error),
+            })?;
+        let scope = wake::Session::new(epoch.word(), fw.link.read(link::SHM_GENERATION))?;
+        let session = Session::open(&fw.note, &fw.area, &fw.link, Some((scope, caps, self)))?;
+        session.check()?;
+        check_epoch(&fw.link, epoch)?;
+        Ok(session)
+    }
+
+    pub(crate) fn session(
+        &self,
+        link: &Rc<Mapping>,
+        scope: wake::Session,
+    ) -> Result<StrictSession> {
+        let epoch = BootEpoch::new(scope.epoch())?;
+        let live_link = link.clone();
+        let live: Box<dyn Fn() -> _> =
+            Box::new(move || BootEpoch::new(live_link.read(mailbox::BOOT_EPOCH)));
+        let mailbox = unsafe { Words::link(link.ptr()).waiter(epoch, live) }?;
+        Ok(StrictSession {
+            listener: self.listener.clone(),
+            busy: Cell::new(false),
+            mailbox: RefCell::new(mailbox),
+            epoch,
+        })
+    }
+}
+
+pub(crate) struct StrictSession {
+    pub(crate) listener: Rc<Listener>,
+    pub(crate) busy: Cell<bool>,
+    pub(crate) mailbox: RefCell<Ticket<BootEpoch>>,
+    epoch: BootEpoch,
+}
+
+impl StrictSession {
+    pub(crate) fn check_terminal_epoch(&self, link: &Mapping) -> Result<()> {
+        check_status_epoch(link, self.epoch)
+    }
+
+    pub(crate) fn check_link(&self, link: &Mapping) -> Result<()> {
+        check_epoch(link, self.epoch)?;
+        match link.read(proto::link::SHM_STATUS) {
+            proto::link::SHM_READY => Ok(()),
+            proto::link::SHM_WINDOW_LOST | u32::MAX => {
+                Err(Error::PeerDown(crate::PeerDown::LinkDown))
+            }
+            _ => Err(Error::PeerDown(crate::PeerDown::Restarted)),
+        }
+    }
+}
+
+fn check_epoch(link: &Mapping, epoch: BootEpoch) -> Result<()> {
+    match link.read(mailbox::BOOT_EPOCH) {
+        u32::MAX => Err(Error::PeerDown(crate::PeerDown::LinkDown)),
+        word if word != epoch.word() => Err(Error::PeerDown(crate::PeerDown::Restarted)),
+        _ => Ok(()),
+    }
+}
+
+fn check_status_epoch(link: &Mapping, epoch: BootEpoch) -> Result<()> {
+    use proto::status::{ABI, ABI_VALUE, EPOCH};
+    match (link.read(ABI), link.read(EPOCH)) {
+        (u32::MAX, _) | (_, u32::MAX) => Err(Error::PeerDown(crate::PeerDown::LinkDown)),
+        (ABI_VALUE, word) if word == epoch.word() => Ok(()),
+        _ => Err(Error::PeerDown(crate::PeerDown::Restarted)),
+    }
+}
+
+pub(crate) fn ring_waiter(
+    session: &Session,
+    data: &Mapping,
+    offset: usize,
+) -> Result<Ticket<wake::Session>> {
+    let SessionHeader::V3(header) = session.header else {
+        return Err(Error::Unsupported);
+    };
+    let scope = header.session()?;
+    let live: Box<dyn Fn() -> _> = Box::new(move || header.session());
+    let words = unsafe { Words::rx(data.ptr(), session.link.ptr().add(offset)) };
+    Ok(unsafe { words.waiter(scope, live) }?)
+}
+
+pub(crate) struct RingPublisher {
+    publisher: proto::shm::wake::Publisher<wake::Session, Live<wake::Session>>,
+    head: usize,
+}
+
+impl RingPublisher {
+    pub(crate) fn new(session: &Session, ctrl: &Mapping, head: usize) -> Result<Self> {
+        let SessionHeader::V3(header) = session.header else {
+            return Err(Error::Unsupported);
+        };
+        let scope = header.session()?;
+        let live: Box<dyn Fn() -> _> = Box::new(move || header.session());
+        let words = unsafe { Words::rx(session.link.ptr().add(head), ctrl.ptr()) };
+        let publisher = unsafe { words.publisher(scope, live) }?;
+        Ok(Self { publisher, head })
+    }
+
+    pub(crate) fn publish(&mut self, link: &Mapping) -> Result<bool> {
+        Ok(self.publisher.publish(|| {
+            let _ = link.read(self.head);
+        })?)
+    }
+
+    pub(crate) fn recover(&self) -> Result<bool> {
+        Ok(self.publisher.needs_recovery_kick()?)
+    }
+}
+
+fn startup_pause(end: Instant) -> Result<()> {
+    // B2 retains the compatibility startup retry until the startup doorbell PR.
+    let delay = end.saturating_duration_since(Instant::now());
+    if delay.is_zero() {
+        return Err(Error::Timeout);
+    }
+    std::thread::sleep(delay.min(Duration::from_millis(1)));
+    Ok(())
+}

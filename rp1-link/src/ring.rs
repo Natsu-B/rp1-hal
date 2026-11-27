@@ -128,7 +128,7 @@ pub struct RingRx<T, W = Poll> {
 
 impl<T: Message, W: Wake> RingRx<T, W> {
     /// Attach the endpoint to a ring just attached and make it notifiable.
-    pub(crate) fn open(mut ring: shm::RingRx<T>, wake: W) -> Self {
+    pub(crate) fn open(mut ring: shm::RingRx<T>, mut wake: W) -> Self {
         wake.opened(Token(()), &mut ring);
         Self { ring, wake }
     }
@@ -217,7 +217,7 @@ mod tests {
                 ctrl: Mem([0; 512]),
             }
         }
-        fn tx<N: Notify>(&mut self) -> RingTx<Word, N> {
+        fn tx<N: Notify + crate::notify::sealed::Claim>(&mut self) -> RingTx<Word, N> {
             let ring = unsafe {
                 shm::RingTx::attach(
                     self.data.0.as_mut_ptr(),
@@ -244,7 +244,7 @@ mod tests {
             }
             .unwrap()
         }
-        fn rx<W: Wake>(&mut self) -> RingRx<Word, W> {
+        fn rx<W: Wake + crate::notify::sealed::Claim>(&mut self) -> RingRx<Word, W> {
             let ring = unsafe {
                 shm::RingRx::attach(
                     self.data.0.as_ptr(),

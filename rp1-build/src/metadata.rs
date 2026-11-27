@@ -531,7 +531,7 @@ impl Declaration {
             if r.linux_map.as_deref().is_some_and(|m| m != "uncached") {
                 return Err("cached mmap is not supported in v0.1".into());
             }
-            let regions = r.expand()?;
+            let regions = self.expand_regions(r)?;
             region_count += regions.len();
             if region_count > 64 {
                 return Err("v0.1 supports at most 64 shm regions".into());
@@ -551,6 +551,18 @@ impl Declaration {
         }
         Ok(())
     }
+    fn expand_regions<'a>(&self, endpoint: &'a Shm) -> Result<Vec<Cow<'a, Shm>>> {
+        let mut regions = endpoint.expand()?;
+        if self.link_wake.is_some() {
+            for r in &mut regions {
+                if r.kind == "ring" && r.notify.is_none() {
+                    r.to_mut().notify = Some(Directional::Shared("irq".into()));
+                }
+            }
+        }
+        Ok(regions)
+    }
+
     fn validate_region(&self, r: &Shm) -> Result<()> {
         match r.kind.as_str() {
             "ring" => {
@@ -661,7 +673,7 @@ impl Declaration {
                 first: regions.len(),
                 pair: logical.pair(),
             });
-            for r in logical.expand()? {
+            for r in self.expand_regions(logical)? {
                 let name = r.message.as_ref().or(r.block_type.as_ref()).unwrap();
                 let ty=*self.types.get(name).ok_or_else(||format!("type {name} missing: use configure_with_types and register TypeInfo::of::<T>() in build.rs"))?;
                 if ty.size == 0

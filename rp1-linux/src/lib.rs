@@ -18,10 +18,13 @@ mod error;
 mod named;
 mod notify;
 mod status;
-pub use error::{Error, Result};
+mod strict;
+mod wait_set;
+pub use error::{Error, PeerDown, Result};
 pub use named::{Channel, Client};
 use notify::{Doorbell, Irq};
 pub use status::{CoreState, CoreStatus, Health, Monitor, PcieState, ScmiState, ShmState, Status};
+pub use wait_set::{WaitSet, WaitState};
 
 /// The firmware's note as the loader put it in the boot DT.
 const NOTE: &str = "/sys/firmware/devicetree/base/rp1-firmware/rp1,note";
@@ -139,6 +142,10 @@ fn open_read_write(dev: &Path) -> Result<File> {
 /// file holds it, also one of this process.
 fn open_exclusive(dev: &Path) -> Result<File> {
     let file = open_read_write(dev)?;
+    lock_exclusive(&file)?;
+    Ok(file)
+}
+fn lock_exclusive(file: &File) -> Result<()> {
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         let e = std::io::Error::last_os_error();
         return Err(if e.kind() == std::io::ErrorKind::WouldBlock {
@@ -147,7 +154,7 @@ fn open_exclusive(dev: &Path) -> Result<File> {
             e.into()
         });
     }
-    Ok(file)
+    Ok(())
 }
 impl Drop for Mapping {
     fn drop(&mut self) {
@@ -159,13 +166,23 @@ impl Drop for Mapping {
 
 /// One enabled shared memory: its header, checked against the note.
 struct Session {
-    header: shm::Header,
+    header: SessionHeader,
+    strict: Option<strict::StrictSession>,
     _map: Rc<Mapping>,
     link: Rc<Mapping>,
 }
+enum SessionHeader {
+    V2(shm::Header),
+    V3(shm::HeaderV2),
+}
 impl Session {
     /// Map `rp1:header` and check it against the note and the link page.
-    fn open(note: &[u8], area: &ShmArea, link: &Rc<Mapping>) -> Result<Self> {
+    fn open(
+        note: &[u8],
+        area: &ShmArea,
+        link: &Rc<Mapping>,
+        v3: Option<(proto::wake::Session, u32, &strict::Profile)>,
+    ) -> Result<Self> {
         let map = Mapping::open(
             &format!("rp1:{}", uio::HEADER),
             area.phys,
@@ -173,40 +190,84 @@ impl Session {
             Access::Shared,
         )?;
         let digest: [u8; 32] = Sha256::digest(note).into();
-        let header = unsafe { shm::Header::open(map.ptr(), &digest) }?;
+        let (header, strict, generation, actual_regions) = if let Some((scope, caps, profile)) = v3
+        {
+            let header = unsafe { shm::Header::open_v2(map.ptr(), &digest, scope, caps) }?;
+            (
+                SessionHeader::V3(header),
+                Some(profile.session(link, scope)?),
+                scope.generation(),
+                header.regions(),
+            )
+        } else {
+            let header = unsafe { shm::Header::open(map.ptr(), &digest) }?;
+            (
+                SessionHeader::V2(header),
+                None,
+                header.generation(),
+                header.regions(),
+            )
+        };
         let regions = Note::parse(note)?
             .records()
             .filter_map(std::result::Result::ok)
             .filter(|r| r.kind == SHM_REGION)
             .count() as u32;
-        if header.generation() != link.read(proto::link::SHM_GENERATION)
-            || header.regions() != regions
-        {
+        if generation != link.read(proto::link::SHM_GENERATION) || actual_regions != regions {
             return Err(proto::Error::Mismatch.into());
         }
         Ok(Self {
             header,
+            strict,
             _map: map,
             link: link.clone(),
         })
     }
     /// The shared memory is still the one this session opened.
     fn check(&self) -> Result<()> {
-        Ok(self.header.check()?)
+        if let Some(strict) = &self.strict {
+            strict.check_link(&self.link)?;
+        }
+        self.check_header()
+    }
+    fn check_header(&self) -> Result<()> {
+        match self.header {
+            SessionHeader::V2(header) => Ok(header.check()?),
+            SessionHeader::V3(header) => Ok(header.session().map(|_| ())?),
+        }
+    }
+    fn check_peer(&self, core: u8) -> Result<()> {
+        match (Peer::check_core(&self.link, core), &self.strict) {
+            (Err(Error::LinkDown), Some(_)) => Err(Error::PeerDown(PeerDown::LinkDown)),
+            (Err(error @ Error::PeerDown(PeerDown::Terminal { .. })), Some(strict)) => {
+                strict.check_terminal_epoch(&self.link)?;
+                Err(error)
+            }
+            (result, _) => result,
+        }
+    }
+
+    fn generation(&self) -> Result<u32> {
+        match self.header {
+            SessionHeader::V2(header) => Ok(header.generation()),
+            SessionHeader::V3(header) => Ok(header.session()?.generation()),
+        }
     }
 }
 
 /// The firmware the boot DT's note describes, reached through `rp1:link`.
 ///
-/// Shared: any number of processes may open it at once. Each endpoint has one owner, the
-/// holder of its UIO node's `flock`; opening a held endpoint is `Err(Busy)`, also within one
-/// process. Endpoints keep their mappings after the `Firmware` is dropped.
+/// In schema 2 the firmware handle is shared. In v3 it owns the one exclusive
+/// link interrupt listener. Each endpoint also has one owner, the holder of
+/// its UIO node's `flock`. Endpoints keep their mappings and v3 listener
+/// alive after the `Firmware` is dropped.
 pub struct Firmware {
     note: Vec<u8>,
     area: ShmArea,
     link: Rc<Mapping>,
     monitor: Monitor,
     session: RefCell<Option<Rc<Session>>>,
+    strict: Option<strict::Profile>,
 }
 impl Firmware {
     /// Map `rp1:link` and check the loader's handoff against the boot DT's note. Does not
@@ -215,11 +276,10 @@ impl Firmware {
     pub fn open() -> Result<Self> {
         let note = fs::read(NOTE)?;
         let parsed = Note::parse(&note)?;
-        if parsed.version() != proto::note::VERSION_V2 {
-            return Err(Error::setup(
-                "experimental link-wake NOTE requires a link-wake client",
-            ));
-        }
+        let strict = parsed
+            .get(proto::note::LINK_WAKE)
+            .map(|record| strict::Profile::open(proto::note::LinkWake::parse(record.value)?))
+            .transpose()?;
         let area = ShmArea::parse(parsed.get(SHM_AREA).ok_or(proto::Error::Invalid)?.value)?;
         let link = Mapping::link(Access::Shared)?;
         let magic = link.read(proto::link::HANDOFF_MAGIC);
@@ -239,6 +299,7 @@ impl Firmware {
             area,
             link,
             session: RefCell::new(None),
+            strict,
         })
     }
     /// Ask RP1 to enable shared memory, wait up to `timeout` until it is ready, and return
@@ -246,10 +307,20 @@ impl Firmware {
     /// calls only check that the shared memory is still the same, and open it again after
     /// the firmware re-initialized it.
     pub fn wait_ready(&self, timeout: Duration) -> Result<u32> {
+        if let Some(profile) = &self.strict {
+            if let Some(session) = self.session.borrow().as_ref() {
+                session.strict.as_ref().unwrap().check_link(&self.link)?;
+                return session.generation();
+            }
+            let session = profile.ready(self, timeout)?;
+            let generation = session.generation()?;
+            *self.session.borrow_mut() = Some(Rc::new(session));
+            return Ok(generation);
+        }
         if let Some(session) = self.session.borrow().as_ref()
             && session.check().is_ok()
         {
-            return Ok(session.header.generation());
+            return session.generation();
         }
         self.link.write(proto::link::SHM_REQUEST, 1);
         if self.link.read(proto::link::SHM_STATUS) == 0 {
@@ -264,8 +335,8 @@ impl Firmware {
                 _ => std::thread::sleep(Duration::from_millis(1)),
             }
         }
-        let session = Session::open(&self.note, &self.area, &self.link)?;
-        let generation = session.header.generation();
+        let session = Session::open(&self.note, &self.area, &self.link, None)?;
+        let generation = session.generation()?;
         *self.session.borrow_mut() = Some(Rc::new(session));
         Ok(generation)
     }
@@ -354,8 +425,14 @@ impl Firmware {
         }?;
         Ok(RingRx {
             inner,
-            irq: r.notify_irq.then(Irq::open).transpose()?,
+            irq: (r.notify_irq && session.strict.is_none())
+                .then(Irq::open)
+                .transpose()?,
+            ticket: (r.notify_irq && session.strict.is_some())
+                .then(|| strict::ring_waiter(&session, &map, r.sram_offset as usize))
+                .transpose()?,
             space_doorbell: None,
+            ctrl_offset: r.sram_offset as usize,
             peer: Peer {
                 link: session.link.clone(),
                 core: r.core - 1,
@@ -393,7 +470,23 @@ impl Firmware {
             .notify_irq
             .then(|| self.doorbell(r.core - 1))
             .transpose()?;
-        Ok(RingTx::open(inner, doorbell, map, session))
+        let mut tx = RingTx {
+            publisher: (doorbell.is_some() && session.strict.is_some())
+                .then(|| strict::RingPublisher::new(&session, &map, r.sram_offset as usize))
+                .transpose()?,
+            inner,
+            doorbell,
+            _map: map,
+            session,
+        };
+        if let Some(publisher) = &tx.publisher
+            && tx.inner.free() != r.depth
+            && publisher.recover()?
+        {
+            tx.doorbell.as_ref().unwrap().ring_flushed();
+        }
+        tx.wake()?;
+        Ok(tx)
     }
     /// The doorbell of `core` (0 = proc0) that the note's LINK record declares.
     fn doorbell(&self, core: u8) -> Result<Doorbell> {
@@ -424,11 +517,19 @@ impl Firmware {
     /// once: on `rp1:irq` up to [`RECHECK`] when all are irq rings, at most [`POLL`] when one
     /// is a poll ring. The caller then receives from every endpoint. No spin, and
     /// [`RingRx::wait_stats`] is not updated. `Err(PeerDown)` once a serving core is down.
-    pub fn wait_any(
+    pub fn wait_any_for(
         &self,
         endpoints: &mut [&mut dyn Waitable],
         timeout: Option<Duration>,
     ) -> Result<bool> {
+        if self.strict.is_some() {
+            let end = deadline(timeout).ok_or(Error::InvalidDeadline)?;
+            return match self.wait_any(endpoints, end) {
+                Ok(_) => Ok(true),
+                Err(Error::Timeout) => Ok(false),
+                Err(error) => Err(error),
+            };
+        }
         let deadline = deadline(timeout);
         loop {
             for endpoint in endpoints.iter() {
@@ -509,8 +610,11 @@ impl Peer {
     /// `Err(PeerDown)` once the core stopped, panicked or faulted (one link-page read while it
     /// runs), `Err(LinkDown)` when its state reads all ones.
     fn check(&self) -> Result<()> {
-        let block = proto::status::BLOCKS[self.core as usize];
-        let word = self.link.read(block + proto::status::STATE);
+        Self::check_core(&self.link, self.core)
+    }
+    fn check_core(link: &Mapping, core: u8) -> Result<()> {
+        let block = proto::status::BLOCKS[core as usize];
+        let word = link.read(block + proto::status::STATE);
         if word == u32::MAX {
             return Err(Error::LinkDown);
         }
@@ -520,11 +624,11 @@ impl Peer {
         }
         // The core wrote the reason before the terminal state.
         barrier();
-        Err(Error::PeerDown {
-            core: self.core,
+        Err(Error::PeerDown(PeerDown::Terminal {
+            core,
             state,
-            reason: self.link.read(block + proto::status::REASON),
-        })
+            reason: link.read(block + proto::status::REASON),
+        }))
     }
 }
 
@@ -552,6 +656,8 @@ pub struct WaitStats {
     /// rather than a wake (a lost, merged-away or slower-than-`RECHECK` notification, or any
     /// message of a poll ring).
     pub late: u64,
+    /// Final scans at the absolute deadline in v3.
+    pub deadline_checks: u64,
 }
 
 /// The reading end of an RP1 -> Linux ring. A `notify = "irq"` ring sleeps on `rp1:irq`
@@ -560,8 +666,10 @@ pub struct RingRx<T> {
     inner: shm::RingRx<T>,
     /// `notify = "irq"`: the interrupt its writer raises.
     irq: Option<Irq>,
+    ticket: Option<strict::Ticket<proto::wake::Session>>,
     /// Named IRQ channel: notify the writer when the reader releases reply slots.
     space_doorbell: Option<Doorbell>,
+    ctrl_offset: usize,
     peer: Peer,
     spin: Duration,
     stats: WaitStats,
@@ -636,7 +744,12 @@ impl<T: Message> RingRx<T> {
         if let Some(doorbell) = &self.space_doorbell {
             // Order the posted tail store before setting the force bit.
             barrier();
-            doorbell.ring();
+            if self.session.strict.is_some() {
+                let _ = self.session.link.read(self.ctrl_offset + shm::TAIL);
+                doorbell.ring_flushed();
+            } else {
+                doorbell.ring();
+            }
         }
     }
     /// Newest published slot and its index, without consuming it (reject rings only).
@@ -664,10 +777,17 @@ impl<T: Message> RingRx<T> {
     /// drains `head` before it samples the counter (protocol.md §2.3); each sleep is bounded
     /// by [`RECHECK`] because a wake is only a hint. Before each sleep it reads the serving
     /// core's state: `Err(PeerDown)` once that core is down.
-    pub fn wait(&mut self, timeout: Option<Duration>) -> Result<bool> {
+    pub fn wait_for(&mut self, timeout: Option<Duration>) -> Result<bool> {
         self.wait_until(deadline(timeout))
     }
     fn wait_until(&mut self, deadline: Option<Instant>) -> Result<bool> {
+        if self.session.strict.is_some() && self.ticket.is_some() {
+            return match self.wait(deadline.ok_or(Error::InvalidDeadline)?) {
+                Ok(()) => Ok(true),
+                Err(Error::Timeout) => Ok(false),
+                Err(error) => Err(error),
+            };
+        }
         self.session.check()?;
         if self.spin_until(deadline)? {
             return Ok(true);
@@ -675,6 +795,9 @@ impl<T: Message> RingRx<T> {
         loop {
             self.session.check()?;
             if deadline.is_some_and(|d| Instant::now() >= d) {
+                if self.session.strict.is_some() {
+                    self.session.check_peer(self.peer.core)?;
+                }
                 return Ok(self.inner.available() != 0);
             }
             self.peer.check()?;
@@ -728,7 +851,7 @@ impl<T: Message> RingRx<T> {
         }
         Ok(false)
     }
-    /// Poll for up to `spin` (never past the wait's deadline) before each wait sleeps
+    /// For legacy and declared-poll endpoints, poll for up to `spin` before sleeping
     /// (default zero).
     /// With a producer that publishes a message every few µs, arming right away is mostly
     /// cancelled by the re-check, yet RP1 may still see the odd counter and pulse (one PCIe
@@ -749,6 +872,13 @@ mod sealed {
         fn check(&self) -> crate::Result<()>;
         /// The ring's wait handle and, for an irq ring, its interrupt.
         fn parts(&mut self) -> (&mut dyn Waiter, Option<&mut crate::notify::Irq>);
+        fn strict_receiver(&self, session: *const ()) -> bool;
+        fn core(&self) -> u8;
+        fn available(&self) -> u32;
+        fn arm(&mut self) -> crate::Result<()>;
+        fn acknowledge(&mut self) -> crate::Result<()>;
+        fn cancel(&mut self) -> crate::Result<()>;
+        fn stats(&mut self) -> &mut crate::WaitStats;
     }
 }
 /// An endpoint [`Firmware::wait_any`] waits on: a [`RingRx`] of any message type.
@@ -762,6 +892,29 @@ impl<T: Message> sealed::Waitable for RingRx<T> {
     fn parts(&mut self) -> (&mut dyn shm::Waiter, Option<&mut Irq>) {
         (&mut self.inner, self.irq.as_mut())
     }
+    fn strict_receiver(&self, session: *const ()) -> bool {
+        self.ticket.is_some() && Rc::as_ptr(&self.session).cast() == session
+    }
+    fn core(&self) -> u8 {
+        self.peer.core
+    }
+    fn available(&self) -> u32 {
+        self.inner.available()
+    }
+    fn arm(&mut self) -> Result<()> {
+        Ok(self.ticket.as_mut().unwrap().arm()?)
+    }
+    fn acknowledge(&mut self) -> Result<()> {
+        self.ticket.as_mut().unwrap().acknowledge()?;
+        Ok(())
+    }
+    fn cancel(&mut self) -> Result<()> {
+        self.ticket.as_mut().unwrap().cancel()?;
+        Ok(())
+    }
+    fn stats(&mut self) -> &mut WaitStats {
+        &mut self.stats
+    }
 }
 
 /// The writing end of a Linux -> RP1 ring. On a `notify = "irq"` ring every send that finds
@@ -770,43 +923,30 @@ pub struct RingTx<T> {
     inner: shm::RingTx<T>,
     /// `notify = "irq"`: the reader's doorbell.
     doorbell: Option<Doorbell>,
+    publisher: Option<strict::RingPublisher>,
     _map: Rc<Mapping>,
     session: Rc<Session>,
 }
 impl<T: Message> RingTx<T> {
-    /// The writer over an attached ring. Rings the doorbell once if the reader already
-    /// sleeps: a previous writer may have published `head` and ended before it rang.
-    fn open(
-        inner: shm::RingTx<T>,
-        doorbell: Option<Doorbell>,
-        map: Rc<Mapping>,
-        session: Rc<Session>,
-    ) -> Self {
-        let tx = Self {
-            inner,
-            doorbell,
-            _map: map,
-            session,
-        };
-        tx.wake();
-        tx
-    }
-    /// Ring the doorbell if the reader sleeps. `reader_asleep` first reads `head` back, so
-    /// what was sent has reached RP1 before the doorbell does.
-    fn wake(&self) {
-        if let Some(doorbell) = &self.doorbell
-            && self.inner.reader_asleep()
-        {
-            doorbell.ring();
+    /// Complete the head through its own window before ringing a sleeping reader.
+    fn wake(&mut self) -> Result<()> {
+        if let Some(doorbell) = &self.doorbell {
+            if let Some(publisher) = &mut self.publisher {
+                if publisher.publish(&self.session.link)? {
+                    doorbell.ring_flushed();
+                }
+            } else if self.inner.reader_asleep() {
+                doorbell.ring();
+            }
         }
+        Ok(())
     }
     /// Publish one message and wake the reader if it sleeps. `Err(Proto(Full))`: no room
     /// (counted in [`RingTx::dropped`]).
     pub fn send(&mut self, value: &T) -> Result<()> {
         self.session.check()?;
         self.inner.push(value)?;
-        self.wake();
-        Ok(())
+        self.wake()
     }
     /// Publish as many of `values` as fit (one `head` store,
     /// `rp1_proto::shm::RingTx::push_slice`) and wake the reader if it sleeps.
@@ -814,7 +954,7 @@ impl<T: Message> RingTx<T> {
         self.session.check()?;
         let n = self.inner.push_slice(values);
         if n != 0 {
-            self.wake();
+            self.wake()?;
         }
         Ok(n)
     }
@@ -939,7 +1079,8 @@ mod tests {
         init.publish();
         let link = anon(LINK_PAGE);
         Rc::new(Session {
-            header: unsafe { shm::Header::open(header.ptr(), &sha) }.unwrap(),
+            header: SessionHeader::V2(unsafe { shm::Header::open(header.ptr(), &sha) }.unwrap()),
+            strict: None,
             _map: header,
             link,
         })
@@ -965,7 +1106,9 @@ mod tests {
         let rx = RingRx {
             inner: inner.unwrap(),
             irq,
+            ticket: None,
             space_doorbell: None,
+            ctrl_offset: UP_SRAM,
             peer: Peer {
                 link: link.clone(),
                 core: 1,
@@ -1028,7 +1171,15 @@ mod tests {
         let ow = shm::Overflow::Reject;
         let inner = unsafe { shm::RingTx::attach(sram, len, ddr.ptr(), 128, 4, ow) }.unwrap();
         let doorbell = page.map(|page| Doorbell::new(page.clone(), 1, 27));
-        RingTx::open(inner, doorbell, ddr.clone(), r.session.clone())
+        let mut tx = RingTx {
+            inner,
+            doorbell,
+            publisher: None,
+            _map: ddr.clone(),
+            session: r.session.clone(),
+        };
+        tx.wake().unwrap();
+        tx
     }
 
     /// A valid note with an SHM area, a LINK record (doorbells as given) and these regions,
@@ -1118,6 +1269,7 @@ mod tests {
             note,
             link,
             session: RefCell::new(session),
+            strict: None,
         }
     }
 
@@ -1187,10 +1339,10 @@ mod tests {
         let mut r = rig(true);
         r.rx.set_spin(Duration::from_secs(60));
         let t = Instant::now();
-        assert!(!r.rx.wait(Some(Duration::from_millis(1))).unwrap());
+        assert!(!r.rx.wait_for(Some(Duration::from_millis(1))).unwrap());
         assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
         // Zero timeout: no spin, no sleep.
-        assert!(!r.rx.wait(Some(Duration::ZERO)).unwrap());
+        assert!(!r.rx.wait_for(Some(Duration::ZERO)).unwrap());
         assert_eq!(r.rx.wait_stats().sleeps, 0);
     }
 
@@ -1249,11 +1401,11 @@ mod tests {
         assert!(
             matches!(
                 e,
-                Error::PeerDown {
+                Error::PeerDown(PeerDown::Terminal {
                     core: 1,
                     state: CoreState::Panicked,
                     reason: 7
-                }
+                })
             ),
             "{e:?}"
         );
@@ -1261,8 +1413,11 @@ mod tests {
         r.tx.push(&1).unwrap();
         assert_eq!(r.rx.recv(None).unwrap(), Some(1));
         let fw = firmware(note([None; 2], &[]), None);
-        let e = fw.wait_any(&mut [&mut r.rx], None).unwrap_err();
-        assert!(matches!(e, Error::PeerDown { core: 1, .. }), "{e:?}");
+        let e = fw.wait_any_for(&mut [&mut r.rx], None).unwrap_err();
+        assert!(
+            matches!(e, Error::PeerDown(PeerDown::Terminal { core: 1, .. })),
+            "{e:?}"
+        );
         // BAR2 reads after the PCIe link went down.
         r.link.write(block + proto::status::STATE, u32::MAX);
         assert!(matches!(r.rx.recv(None), Err(Error::LinkDown)));
@@ -1382,10 +1537,13 @@ mod tests {
             let mut b = rig(irq);
             let t = Instant::now();
             let timeout = Some(Duration::from_millis(30));
-            assert!(!fw.wait_any(&mut [&mut a.rx, &mut b.rx], timeout).unwrap());
+            assert!(
+                !fw.wait_any_for(&mut [&mut a.rx, &mut b.rx], timeout)
+                    .unwrap()
+            );
             assert!(t.elapsed() >= Duration::from_millis(30));
             b.tx.push(&9).unwrap();
-            assert!(fw.wait_any(&mut [&mut a.rx, &mut b.rx], None).unwrap());
+            assert!(fw.wait_any_for(&mut [&mut a.rx, &mut b.rx], None).unwrap());
             assert_eq!(b.rx.try_recv().unwrap(), Some(9));
             // Both rings were disarmed again: no notification is due.
             assert!(!a.tx.wake_needed() && !b.tx.wake_needed());

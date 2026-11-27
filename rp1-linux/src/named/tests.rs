@@ -195,11 +195,11 @@ fn rpc_reports_capacity_timeout_and_peer_down() {
     );
     assert!(matches!(
         client.call(&9, Duration::ZERO),
-        Err(Error::PeerDown {
+        Err(Error::PeerDown(crate::PeerDown::Terminal {
             core: 1,
             state: CoreState::Panicked,
             ..
-        })
+        }))
     ));
 }
 
@@ -218,5 +218,5 @@ fn rpc_takes_the_reply_available_at_the_deadline() {
     for value in [7, 8] {
         replies.push(&value).unwrap();
     }
-    assert_eq!(client.wait_reply(1, Some(Instant::now())).unwrap(), 8);
+    assert_eq!(client.wait_reply(1, Instant::now()).unwrap(), 8);
 }

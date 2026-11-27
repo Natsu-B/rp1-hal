@@ -82,6 +82,20 @@ impl Pcie {
         size: u32,
         initialize: impl FnOnce() -> u32,
     ) -> Result<u32, EnableError> {
+        unsafe { self.__publish_shm_checked(phys, size, || Ok(initialize())) }
+    }
+
+    /// The v3 initialization can reject an exhausted generation before Ready.
+    ///
+    /// # Safety
+    /// As for [`Self::__publish_shm`].
+    #[doc(hidden)]
+    pub unsafe fn __publish_shm_checked(
+        &mut self,
+        phys: u64,
+        size: u32,
+        initialize: impl FnOnce() -> Result<u32, EnableError>,
+    ) -> Result<u32, EnableError> {
         publish(
             &mut Mmio,
             &mut self.shm_pinned,
@@ -117,10 +131,10 @@ fn publish<I: Io>(
     io: &mut I,
     pinned: &mut bool,
     window: Window,
-    initialize: impl FnOnce(&mut I) -> u32,
+    initialize: impl FnOnce(&mut I) -> Result<u32, EnableError>,
 ) -> Result<u32, EnableError> {
     map_window(io, pinned, window)?;
-    let generation = initialize(io);
+    let generation = initialize(io)?;
     // Section B. IRQ53 cannot run between these checks and the stores.
     io.masked(|io| {
         if io.detector() != PcieState::Up || io.read(PCIE_INTR) & PERSTN_EDGE != 0 {

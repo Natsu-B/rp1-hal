@@ -2,7 +2,13 @@ use rp1_build::metadata::TypeInfo;
 use std::path::Path;
 
 fn main() {
-    let manifest = if cfg!(feature = "ping-poll") {
+    let manifest = if cfg!(feature = "link-wake") {
+        assert!(
+            !cfg!(feature = "ping-poll"),
+            "link-wake and ping-poll are separate profiles"
+        );
+        "../../lab/ping/dual-core-wake.toml"
+    } else if cfg!(feature = "ping-poll") {
         "../../lab/ping/dual-core-poll.toml"
     } else {
         "Cargo.toml"

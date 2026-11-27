@@ -1,35 +1,27 @@
-error[E0061]: this function takes 1 argument but 0 arguments were supplied
- --> tests/ui-notify/notifier_not_claimable_through_bound.rs:4:5
+error[E0599]: no associated function or constant named `claim` found for type parameter `N` in the current scope
+ --> tests/ui-notify/notifier_not_claimable_through_bound.rs:4:8
   |
 3 | fn claim_notify<N: Notify>() -> N {
-  |                                 - this return type influences the call expression's return type
+  |                 - associated function or constant `claim` not found for this type parameter
 4 |     N::claim()
-  |     ^^^^^^^^-- argument #1 of type `notify::sealed::Token` is missing
+  |        ^^^^^ associated function or constant not found in `N`
   |
-note: associated function defined here
- --> src/notify.rs
+  = help: items from traits can only be used if the type parameter is bounded by the trait
+help: the following trait defines an item `claim`, perhaps you need to restrict type parameter `N` with it:
   |
-  |         fn claim(_: Token) -> Self;
-  |            ^^^^^
-help: provide the argument
-  |
-4 |     N::claim(/* Token */)
-  |              +++++++++++
+3 | fn claim_notify<N: Notify + notify::sealed::Claim>() -> N {
+  |                           +++++++++++++++++++++++
 
-error[E0061]: this function takes 1 argument but 0 arguments were supplied
- --> tests/ui-notify/notifier_not_claimable_through_bound.rs:7:5
+error[E0599]: no associated function or constant named `claim` found for type parameter `W` in the current scope
+ --> tests/ui-notify/notifier_not_claimable_through_bound.rs:7:8
   |
 6 | fn claim_wake<W: Wake>() -> W {
-  |                             - this return type influences the call expression's return type
+  |               - associated function or constant `claim` not found for this type parameter
 7 |     W::claim()
-  |     ^^^^^^^^-- argument #1 of type `notify::sealed::Token` is missing
+  |        ^^^^^ associated function or constant not found in `W`
   |
-note: associated function defined here
- --> src/notify.rs
+  = help: items from traits can only be used if the type parameter is bounded by the trait
+help: the following trait defines an item `claim`, perhaps you need to restrict type parameter `W` with it:
   |
-  |         fn claim(_: Token) -> Self;
-  |            ^^^^^
-help: provide the argument
-  |
-7 |     W::claim(/* Token */)
-  |              +++++++++++
+6 | fn claim_wake<W: Wake + notify::sealed::Claim>() -> W {
+  |                       +++++++++++++++++++++++

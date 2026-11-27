@@ -15,6 +15,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
 
 # rustup installs the toolchain in rust-toolchain.toml (channel, components, targets)
 # on the first cargo call, so no job names a Rust version itself.
@@ -58,6 +59,7 @@ jobs:
       matrix:
         include:
           - { package: dual-core }
+          - { package: dual-core, name: link-wake, features: --features link-wake }
           - { package: dual-core, name: ping-test, features: --features ping-test }
           - { package: dual-core, name: ping-poll, features: --features ping-poll }
           - { package: peripherals }

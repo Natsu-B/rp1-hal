@@ -413,7 +413,8 @@ MSI-X vector 29 の owner は 1 コア。v3 の `rp1-to-linux` ring で `notify 
 各語は aligned LE `u32` で、初期化後は単一 writer。proc0 の `rp1-rt::status` 初期化は
 `0xc0..0xff` をゼロ化する。proc0 は提供 caps を書いてから `BOOT_EPOCH` を公開する。
 `BOOT_EPOCH` は status の `EPOCH` のコピーで、mailbox と提供 caps の公開を示す。
-request/result は後続の startup 実装が使う。
+B2 は request/result を照合し、起動時は従来の 1 ms / 10 ms 再確認を使う。
+startup doorbell と Ready のイベント配送は後続の実装に残る。
 
 | Offset | Field | Writer | Commit |
 |---|---|---|---|
@@ -467,3 +468,18 @@ proc0 は新世代の直前の奇数を書いて readback する。その間に�
 arm/seq/ACK をゼロ化して各語を readback し、header を書き、最後に偶数世代を commit/readback
 する。Linux は Ready の status、NOTE digest、boot epoch、偶数世代、accepted caps を照合する。
 奇数世代、別の世代、別の boot epoch は既存の ring handle を失効させる。
+
+### 10.4 Linux のデータ待ち
+
+**STATIC · 2026-11-27.** v3 の Linux session は `rp1:irq` を排他 `flock` と
+`O_NONBLOCK` で開き、初回に 4 byte の `write(1)` を行う。WaitSet は
+対象の RX ticket と link ticket を arm/readback し、世代・終端・全 RX の
+head を再確認してから元の絶対期限まで `ppoll` する。4 byte の count を受けたら
+`write(1)` を完了してから再走査する。空振りでは同じ ticket と期限を使う。
+取消し時はその WaitSet の ticket を解除する。
+
+期限時も最初に未読 count を取り込む。可視の終端、世代の無効化、確認した PCIe
+断は `PeerDown`、count がなく ready を発見した場合は `NotifyLost`、無通信は
+`Timeout`。既知の再起動は host の旧 session と writer を明示的に破棄する。
+boot epoch が数値として再出現する場合、この識別には運用側での失効と排出が必要になる。
+owner の panic/fault から期限より早く起床するには独立した supervisor が必要。

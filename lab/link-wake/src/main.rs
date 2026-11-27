@@ -2,6 +2,7 @@
 #![no_std]
 #![no_main]
 
+use core::primitive::u32;
 use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use rp1_hal::platform::{self, PcieState};
 use rp1_proto::{

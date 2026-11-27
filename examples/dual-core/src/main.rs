@@ -163,7 +163,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     #[cfg(not(feature = "ping-poll"))]
     let mut channel = Some(link.channel);
     #[cfg(feature = "ping-test")]
-    let mut probe = ping_test::Probe::default();
+    let mut probe = ping_test::probe!(p);
     loop {
         let progress = ping
             .serve(8, |value| {

@@ -105,10 +105,53 @@ rp1-rt = { version = "0.1", features = ["experimental-link-wake"] }
 NOTE v3 uses ELF type `0x52503103`, DT `rp1,abi = <3>` and the critical
 `LINK_WAKE` TLV. It reserves link SRAM `0xc0..0xff` for the mailbox.
 Region allocation starts at `0x100`. Ring controls and slots keep their
-sizes and use reserved words for notification. The fixture gets a single
-`VectorOwner` and the raw generated layout. Application endpoints continue
-to use schema 2 without the opt-in. The v3 loader and firmware must travel
-together, and a v3 client requires the upcoming link-wake wait backend.
+sizes and use reserved words for notification. The opt-in generates typed endpoints and a single
+`VectorOwner`. Update the loader, firmware and Linux client as a set.
+Default manifests continue to generate the schema-2 wire profile.
+
+**STATIC · 2026-11-27.** The Linux receiver and RPC client share one
+exclusive nonblocking UIO listener for v3. A second opener returns `Busy`.
+A finite absolute deadline controls data waits. Legacy relative waits are
+available as `rx.wait_for(timeout)` and `fw.wait_any_for(endpoints, timeout)`.
+The legacy schema-2 IRQ path keeps its 10 ms recheck. V3 rings default to IRQ; use `notify = "poll"` to select polling.
+
+### Before
+
+```rust,ignore
+if rx.wait(Some(budget))? {
+    consume(&mut rx)?;
+}
+```
+
+### After
+
+```rust,ignore
+let end = Instant::now() + budget;
+rx.wait(end)?;
+consume(&mut rx)?;
+let index = fw.wait_any(&mut [&mut a, &mut b], end)?;
+```
+
+For a camera fd alongside the link, use `fw.wait_set(&mut endpoints)?`,
+`prepare(end)`, `as_fd()` and `dispatch(revents)`. Use level-triggered
+polling, dispatch the link after each poll return, and reuse the original
+deadline if it remains armed. An IRQ count is a hint to examine every
+receiver. RPC callers can share the same budget with `client.call_until`.
+
+When v3 reaches its deadline, `Timeout` means the scan found no work,
+`NotifyLost` means work was visible without a delivered hint, and
+`PeerDown` carries the terminal reason, a restart or verified link loss.
+Update matches on `Error::PeerDown { .. }` to
+`Error::PeerDown(PeerDown::Terminal { .. })`. A timeout or lost wake can
+leave an RPC request outstanding. A known reset requires dropping the old
+session and quiescing its writers before reopening.
+
+**HW / HYP · 2026-11-27.** The vector owner's panic or fault produced no
+pulse in the delivery characterization. The v3 data wait checks for a
+terminal record at its deadline. An earlier response requires an
+independent supervisor event. Startup still uses the compatibility
+retry, channel Full recovery still uses the reply-tail doorbell, and the
+strict DMA publication contract remains reserved for later work.
 
 **HYP · 2026-11-27.** Physical delivery through MSI-X/UIO and the posted
 window ordering still require hardware verification.

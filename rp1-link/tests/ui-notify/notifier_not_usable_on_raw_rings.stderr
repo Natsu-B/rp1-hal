@@ -7,7 +7,7 @@ error[E0061]: this method takes 2 arguments but 1 argument was supplied
 note: method defined here
  --> src/notify.rs
   |
-  |         fn wake<T: Message>(self, _: Token, ring: &mut shm::RingTx<T>) -> bool;
+  |         fn wake<T: Message>(&mut self, _: Token, ring: &mut shm::RingTx<T>) -> bool;
   |            ^^^^
 help: provide the argument
   |
@@ -23,7 +23,7 @@ error[E0061]: this method takes 2 arguments but 1 argument was supplied
 note: method defined here
  --> src/notify.rs
   |
-  |         fn opened<T: Message>(self, _: Token, ring: &mut shm::RingRx<T>);
+  |         fn opened<T: Message>(&mut self, _: Token, ring: &mut shm::RingRx<T>);
   |            ^^^^^^
 help: provide the argument
   |

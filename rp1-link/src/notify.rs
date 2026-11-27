@@ -39,7 +39,11 @@ use crate::mmio::{self, read, write};
 use rp1_proto::{
     Error, Message,
     irq::VECTOR,
-    shm::{self, Progress},
+    shm::{
+        self, Progress,
+        wake::{Publisher, Waiter, Words},
+    },
+    wake::{BootEpoch, Session, SessionError, mailbox},
 };
 
 /// PCIE_APBS MSIX_CFG(VECTOR), with the set and clear aliases.
@@ -74,19 +78,20 @@ pub(crate) mod sealed {
     /// outside code cannot call the methods, not even through a public `Notify` / `Wake` bound.
     pub struct Token(pub(crate) ());
 
-    pub trait Notify: Copy {
-        /// The endpoint's copy of a notifier whose resource the generated code made.
+    pub trait Claim {
         fn claim(_: Token) -> Self;
-        /// Wake the reader of `ring` if it sleeps. Returns whether it notified.
-        fn wake<T: Message>(self, _: Token, ring: &mut shm::RingTx<T>) -> bool;
     }
 
-    pub trait Wake: Copy {
-        fn claim(_: Token) -> Self;
+    pub trait Notify {
+        /// Wake the reader of `ring` if it sleeps. Returns whether it notified.
+        fn wake<T: Message>(&mut self, _: Token, ring: &mut shm::RingTx<T>) -> bool;
+    }
+
+    pub trait Wake {
         /// Make the ring just attached notifiable: the first message wakes this reader.
-        fn opened<T: Message>(self, _: Token, ring: &mut shm::RingRx<T>);
+        fn opened<T: Message>(&mut self, _: Token, ring: &mut shm::RingRx<T>);
         fn try_drain<T: Message>(
-            self,
+            &mut self,
             _: Token,
             ring: &mut shm::RingRx<T>,
             max: u32,
@@ -105,25 +110,24 @@ pub trait Wake: sealed::Wake {}
 pub struct Poll;
 
 impl Notify for Poll {}
-impl sealed::Notify for Poll {
+impl sealed::Claim for Poll {
     fn claim(_: sealed::Token) -> Self {
         Poll
     }
+}
+impl sealed::Notify for Poll {
     #[inline(always)]
-    fn wake<T: Message>(self, _: sealed::Token, _: &mut shm::RingTx<T>) -> bool {
+    fn wake<T: Message>(&mut self, _: sealed::Token, _: &mut shm::RingTx<T>) -> bool {
         false
     }
 }
 impl Wake for Poll {}
 impl sealed::Wake for Poll {
-    fn claim(_: sealed::Token) -> Self {
-        Poll
-    }
     #[inline(always)]
-    fn opened<T: Message>(self, _: sealed::Token, _: &mut shm::RingRx<T>) {}
+    fn opened<T: Message>(&mut self, _: sealed::Token, _: &mut shm::RingRx<T>) {}
     #[inline(always)]
     fn try_drain<T: Message>(
-        self,
+        &mut self,
         _: sealed::Token,
         ring: &mut shm::RingRx<T>,
         max: u32,
@@ -194,18 +198,20 @@ impl HostIrq {
 }
 
 impl Notify for HostIrq {}
-impl sealed::Notify for HostIrq {
+impl sealed::Claim for HostIrq {
     fn claim(_: sealed::Token) -> Self {
         Self {
             _private: core::marker::PhantomData,
         }
     }
+}
+impl sealed::Notify for HostIrq {
     /// [`shm::RingTx::wake_needed`] reads `head` back through the shm window (completing the
     /// posted slot and `head` writes), then reads the reader's sleep counter from the link page:
     /// it pulses only for a sleep not yet notified, so a reader that keeps up costs no
     /// interrupts and a sleeping one gets one (protocol.md §2.3). One PCIe round trip per call.
     #[inline(always)]
-    fn wake<T: Message>(self, _: sealed::Token, ring: &mut shm::RingTx<T>) -> bool {
+    fn wake<T: Message>(&mut self, _: sealed::Token, ring: &mut shm::RingTx<T>) -> bool {
         let asleep = ring.wake_needed();
         if asleep {
             self.pulse();
@@ -242,6 +248,10 @@ impl VectorOwner {
 
     /// Check the low baseline after takeover. Both reads complete at the respective banks.
     pub fn ready(&self) -> Result<(), VectorError> {
+        Self::check_source()
+    }
+
+    fn check_source() -> Result<(), VectorError> {
         if read(TIMER_INTS) & ALARM_BIT != 0 {
             return Err(VectorError::SourceHigh);
         }
@@ -254,8 +264,14 @@ impl VectorOwner {
     /// Pulse after the notification commit's same-window readback. A successful pulse
     /// confirms the local source went high and low. The listener may still miss the edge.
     pub fn pulse(&mut self) -> Result<(), VectorError> {
+        Self::pulse_owned()
+    }
+
+    // Generated v3 ring publishers execute on this same core. The section
+    // serializes all TEST pulses, including calls from a local interrupt.
+    fn pulse_owned() -> Result<(), VectorError> {
         mmio::section(|| {
-            self.ready()?;
+            Self::check_source()?;
             write(MSIX_CFG_SET, MSIX_CFG_TEST);
             let high = read(MSIX_CFG) & MSIX_CFG_TEST != 0;
             write(MSIX_CFG_CLR, MSIX_CFG_TEST);
@@ -272,7 +288,14 @@ impl VectorOwner {
     /// a local pulse failure leaves the record eligible on the next explicit call.
     /// The caller must have a live PCIe link. Only SRAM and the owned vector are accessed.
     pub fn pulse_terminals(&mut self) -> Result<bool, VectorError> {
-        self.pulse_observed_terminals(rp1_rt::status::terminal)
+        let epochs = self.terminal_epochs;
+        self.pulse_observed_terminals(|core| {
+            let terminal = rp1_rt::status::terminal(core)?;
+            if epochs[core as usize] != terminal.epoch {
+                publish_terminal_ticket();
+            }
+            Some(terminal)
+        })
     }
 
     fn pulse_observed_terminals(
@@ -291,6 +314,103 @@ impl VectorOwner {
         self.pulse()?;
         self.terminal_epochs = epochs;
         Ok(true)
+    }
+}
+
+fn publish_terminal_ticket() {
+    let link = rp1_proto::LINK_START as usize;
+    let live = || BootEpoch::new(read(link + mailbox::BOOT_EPOCH));
+    if let Ok(epoch) = live()
+        && let Ok(mut publisher) = unsafe { Words::link(link as *mut u8).publisher(epoch, live) }
+    {
+        let _ = publisher.publish(|| {
+            let _ = read(link + mailbox::BOOT_EPOCH);
+        });
+    }
+}
+
+type LiveSession = fn() -> Result<Session, SessionError>;
+
+/// The v3 RX ticket publisher, called only by the generated vector owner's rings.
+#[doc(hidden)]
+pub struct TicketIrq {
+    publisher: Publisher<Session, LiveSession>,
+    data: *mut u8,
+}
+
+impl TicketIrq {
+    pub(crate) unsafe fn attach(data: *mut u8, ctrl: *mut u8) -> Result<Self, Error> {
+        let live: LiveSession = crate::generated::wake_session;
+        let scope = live().map_err(|_| Error::Reset)?;
+        let publisher =
+            unsafe { Words::rx(data, ctrl).publisher(scope, live) }.map_err(|_| Error::Reset)?;
+        Ok(Self { publisher, data })
+    }
+}
+
+impl Notify for TicketIrq {}
+impl sealed::Notify for TicketIrq {
+    fn wake<T: Message>(&mut self, _: sealed::Token, _: &mut shm::RingTx<T>) -> bool {
+        self.publisher.publish(|| {
+            let _ = unsafe { self.data.cast::<u32>().read_volatile() };
+        }) == Ok(true)
+            && VectorOwner::pulse_owned().is_ok()
+    }
+}
+
+/// The v3 downlink reader pairs the existing force-level ISR with v3 RX tickets.
+#[doc(hidden)]
+pub struct TicketDoorbell<const PIN: u8, const CORE: u8> {
+    ticket: Waiter<Session, LiveSession>,
+}
+
+impl<const PIN: u8, const CORE: u8> TicketDoorbell<PIN, CORE> {
+    pub(crate) unsafe fn attach(data: *mut u8, ctrl: *mut u8) -> Result<Self, Error> {
+        let live: LiveSession = crate::generated::wake_session;
+        let scope = live().map_err(|_| Error::Reset)?;
+        let ticket =
+            unsafe { Words::rx(data, ctrl).waiter(scope, live) }.map_err(|_| Error::Reset)?;
+        Ok(Self { ticket })
+    }
+}
+
+impl<const PIN: u8, const CORE: u8> Wake for TicketDoorbell<PIN, CORE> {}
+impl<const PIN: u8, const CORE: u8> sealed::Wake for TicketDoorbell<PIN, CORE> {
+    fn opened<T: Message>(&mut self, _: sealed::Token, ring: &mut shm::RingRx<T>) {
+        if self.ticket.arm().is_ok() && ring.available() != 0 {
+            unsafe { Doorbell::<PIN, CORE>::new() }.raise();
+        }
+    }
+
+    fn try_drain<T: Message>(
+        &mut self,
+        _: sealed::Token,
+        ring: &mut shm::RingRx<T>,
+        max: u32,
+        mut handle: impl FnMut(T) -> Result<(), Error>,
+    ) -> Result<Progress, Error> {
+        let reset = |_| Error::Reset;
+        if ring.available() != 0 {
+            self.ticket.acknowledge().map_err(reset)?;
+        }
+        self.ticket.cancel().map_err(reset)?;
+        let mut budget = max.max(1);
+        loop {
+            while budget != 0 {
+                let Some(value) = ring.pop()? else { break };
+                handle(value)?;
+                budget -= 1;
+            }
+            if budget == 0 {
+                return Ok(Progress::More);
+            }
+            self.ticket.arm().map_err(reset)?;
+            if ring.available() == 0 {
+                return Ok(Progress::Idle);
+            }
+            self.ticket.acknowledge().map_err(reset)?;
+            self.ticket.cancel().map_err(reset)?;
+        }
     }
 }
 
@@ -358,20 +478,22 @@ impl<const PIN: u8, const CORE: u8> Doorbell<PIN, CORE> {
 }
 
 impl<const PIN: u8, const CORE: u8> Wake for Doorbell<PIN, CORE> {}
-impl<const PIN: u8, const CORE: u8> sealed::Wake for Doorbell<PIN, CORE> {
+impl<const PIN: u8, const CORE: u8> sealed::Claim for Doorbell<PIN, CORE> {
     fn claim(_: sealed::Token) -> Self {
         unsafe { Self::new() }
     }
+}
+impl<const PIN: u8, const CORE: u8> sealed::Wake for Doorbell<PIN, CORE> {
     /// Arm the ring. Messages that Linux sent before the arm are already there and rang no
     /// doorbell, so raise it for them: the handler drains them and arms again.
-    fn opened<T: Message>(self, _: sealed::Token, ring: &mut shm::RingRx<T>) {
+    fn opened<T: Message>(&mut self, _: sealed::Token, ring: &mut shm::RingRx<T>) {
         if !ring.prepare_wait() {
             self.raise();
         }
     }
     #[inline(always)]
     fn try_drain<T: Message>(
-        self,
+        &mut self,
         _: sealed::Token,
         ring: &mut shm::RingRx<T>,
         max: u32,
@@ -419,7 +541,7 @@ mod tests {
     fn a_pulse_is_set_then_clear_in_one_section() {
         use crate::mmio::fake::{self, Access};
         fake::take();
-        let irq = <HostIrq as sealed::Notify>::claim(sealed::Token(()));
+        let irq = <HostIrq as sealed::Claim>::claim(sealed::Token(()));
         irq.pulse_after_sram_write();
         assert_eq!(
             fake::take(),

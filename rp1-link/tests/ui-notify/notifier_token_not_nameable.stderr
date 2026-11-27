@@ -11,3 +11,17 @@ note: the module `sealed` is defined here
   |
   | pub(crate) mod sealed {
   | ^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `claim` found for type parameter `N` in the current scope
+ --> tests/ui-notify/notifier_token_not_nameable.rs:4:8
+  |
+3 | fn claim<N: Notify>() -> N {
+  |          - associated function or constant `claim` not found for this type parameter
+4 |     N::claim(rp1_link::notify::sealed::Token(()))
+  |        ^^^^^ associated function or constant not found in `N`
+  |
+  = help: items from traits can only be used if the type parameter is bounded by the trait
+help: the following trait defines an item `claim`, perhaps you need to restrict type parameter `N` with it:
+  |
+3 | fn claim<N: Notify + notify::sealed::Claim>() -> N {
+  |                    +++++++++++++++++++++++

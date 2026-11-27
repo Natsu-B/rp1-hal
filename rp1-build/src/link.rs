@@ -13,15 +13,12 @@ pub(crate) fn generate(
     note: &[u8],
     experimental_wake: bool,
 ) -> Result<String> {
-    let mut output = if experimental_wake {
-        let mut imports = String::from("use ::rp1_link::generated::{ShmArea, ShmRegion};\n");
-        if !shm.regions.is_empty() {
-            imports.push_str("use ::rp1_link::generated::ShmKind;\n");
-            if shm.regions.iter().any(|r| r.spec.kind == "block") {
-                imports.push_str("use ::rp1_link::generated;\n");
-            }
-        }
-        imports
+    let mut output = if experimental_wake && shm.regions.is_empty() {
+        String::from(
+            "use ::rp1_hal::platform::Pcie;\n\
+             use ::rp1_link::EnableError;\n\
+             use ::rp1_link::generated::{self, ShmArea, ShmRegion};\n",
+        )
     } else {
         String::from(
             "use ::rp1_hal::platform::Pcie;\n\
@@ -49,14 +46,11 @@ pub(crate) fn generate(
         write_region(&mut output, region)?;
     }
     output.push_str("];\n");
-    if experimental_wake {
-        // Raw layout for the B1 delivery fixture. Typed endpoint/wait integration follows B1.
-        return Ok(output);
-    }
-    // Only these pairs and the digest need to occupy firmware memory.
-    writeln!(
-        output,
-        "const SRAM_RANGES: [(u16, u16); {count}] = {{\n\
+    if !experimental_wake {
+        // Only these pairs and the digest need to occupy firmware memory.
+        writeln!(
+            output,
+            "const SRAM_RANGES: [(u16, u16); {count}] = {{\n\
          let mut ranges = [(0, 0); {count}];\n\
          let mut i = 0;\n\
          while i < {count} {{\n\
@@ -64,12 +58,19 @@ pub(crate) fn generate(
              i += 1;\n\
          }}\n\
          ranges\n}};"
-    )?;
+        )?;
+    }
     output.push_str(
         "/// Map and publish the declared reservation in response to Linux's request.\n\
-         pub fn try_enable(pcie: &mut Pcie) -> Result<u32, EnableError> {\n\
-             unsafe { generated::try_enable(pcie, AREA, &SRAM_RANGES, &DIGEST) }\n\
-         }\n\
+         pub fn try_enable(pcie: &mut Pcie) -> Result<u32, EnableError> {\n",
+    );
+    output.push_str(if experimental_wake {
+        "unsafe { generated::try_enable_v3(pcie, AREA, &REGIONS, &DIGEST) }\n"
+    } else {
+        "unsafe { generated::try_enable(pcie, AREA, &SRAM_RANGES, &DIGEST) }\n"
+    });
+    output.push_str(
+        "}\n\
          /// Wait for Linux's request and publish Ready. The alarm and its matching disabled\n\
          /// NVIC line must be idle. Call in thread mode with IRQs enabled. The alarm\n\
          /// rechecks requests from older clients every 10 ms until startup completes.\n\
@@ -100,8 +101,13 @@ pub(crate) fn generate(
     let aliases = aliases(&shm.endpoints)?;
     for (endpoint, alias) in shm.endpoints.iter().zip(&aliases) {
         let ty = match endpoint.pair {
-            Some(pair) => pair_type(pair, &regions[endpoint.first], &regions[endpoint.first + 1]),
-            None => endpoint_type(&regions[endpoint.first]),
+            Some(pair) => pair_type(
+                pair,
+                &regions[endpoint.first],
+                &regions[endpoint.first + 1],
+                experimental_wake,
+            ),
+            None => endpoint_type(&regions[endpoint.first], experimental_wake),
         };
         writeln!(output, "pub type {alias} = {ty};")?;
     }
@@ -117,7 +123,7 @@ pub(crate) fn generate(
                 .regions
                 .iter()
                 .any(|region| region.receives_doorbell(core));
-            write_core(&mut output, core, &regions, &owned, irq)?;
+            write_core(&mut output, core, &regions, &owned, irq, experimental_wake)?;
         }
     }
     Ok(output)
@@ -153,21 +159,21 @@ fn write_region(output: &mut String, r: &ShmRegion<'_>) -> Result<()> {
 }
 
 /// The endpoint type of `r`, with its notifier: what the field of `ProcNLink` holds.
-fn endpoint_type(r: &ShmRegion<'_>) -> String {
+fn endpoint_type(r: &ShmRegion<'_>, v3: bool) -> String {
     let ty = type_path(r.type_name);
     let core = r.core - 1;
     match (r.kind, r.notify_irq) {
         (ShmKind::RingToLinux, false) => format!("transport::RingTx<{ty}>"),
         (ShmKind::RingToLinux, true) => {
-            format!("transport::RingTx<{ty}, transport::notify::HostIrq>")
+            format!("transport::RingTx<{ty}, {}>", tx_notifier(v3))
         }
         (ShmKind::RingToRp1, false) => format!("transport::RingRx<{ty}>"),
-        (ShmKind::RingToRp1, true) => format!("transport::RingRx<{ty}, super::Doorbell{core}>"),
+        (ShmKind::RingToRp1, true) => format!("transport::RingRx<{ty}, {}>", rx_notifier(core, v3)),
         (ShmKind::Block { .. }, _) => format!("transport::Block<{ty}>"),
     }
 }
 
-fn pair_type(pair: Pair, down: &ShmRegion<'_>, up: &ShmRegion<'_>) -> String {
+fn pair_type(pair: Pair, down: &ShmRegion<'_>, up: &ShmRegion<'_>, v3: bool) -> String {
     let (kind, first, second) = match pair {
         Pair::Channel => ("Channel", up, down),
         Pair::Rpc => ("Server", down, up),
@@ -176,15 +182,41 @@ fn pair_type(pair: Pair, down: &ShmRegion<'_>, up: &ShmRegion<'_>) -> String {
     let peer = type_path(second.type_name);
     let mut args = format!("{ty}, {peer}");
     if up.notify_irq {
-        args.push_str(", transport::notify::HostIrq");
+        write!(args, ", {}", tx_notifier(v3)).unwrap();
     } else if down.notify_irq {
         args.push_str(", transport::notify::Poll");
     }
     if down.notify_irq {
         let core = down.core - 1;
-        args.push_str(&format!(", super::Doorbell{core}"));
+        write!(args, ", {}", rx_notifier(core, v3)).unwrap();
     }
     format!("transport::{kind}<{args}>")
+}
+
+fn tx_notifier(v3: bool) -> &'static str {
+    if v3 {
+        "transport::notify::TicketIrq"
+    } else {
+        "transport::notify::HostIrq"
+    }
+}
+
+fn rx_notifier(core: u8, v3: bool) -> String {
+    if v3 {
+        format!("super::WakeDoorbell{core}")
+    } else {
+        format!("super::Doorbell{core}")
+    }
+}
+
+fn attach_fn(r: &ShmRegion<'_>, v3: bool) -> &'static str {
+    match (r.kind, v3 && r.notify_irq) {
+        (ShmKind::RingToLinux, true) => "ring_tx_v3",
+        (ShmKind::RingToRp1, true) => "ring_rx_v3",
+        (ShmKind::RingToLinux, false) => "ring_tx",
+        (ShmKind::RingToRp1, false) => "ring_rx",
+        (ShmKind::Block { .. }, _) => "block",
+    }
 }
 
 /// Names the generated link module already uses, which an alias must not take.
@@ -242,6 +274,7 @@ fn write_core(
     regions: &[ShmRegion<'_>],
     endpoints: &[(&Endpoint<'_>, &String)],
     irq: bool,
+    v3: bool,
 ) -> Result<()> {
     writeln!(
         output,
@@ -305,17 +338,15 @@ fn write_core(
                     Pair::Rpc => "server",
                 };
                 let up = index + 1;
+                let tx = attach_fn(&regions[up], v3);
+                let rx = attach_fn(&regions[index], v3);
                 writeln!(
                     output,
-                    "{field}: generated::{constructor}(unsafe {{ generated::ring_tx(REGIONS[{up}]) }}?, unsafe {{ generated::ring_rx(REGIONS[{index}]) }}?),"
+                    "{field}: generated::{constructor}(unsafe {{ generated::{tx}(REGIONS[{up}]) }}?, unsafe {{ generated::{rx}(REGIONS[{index}]) }}?),"
                 )?;
             }
             None => {
-                let attach = match regions[index].kind {
-                    ShmKind::RingToLinux => "ring_tx",
-                    ShmKind::RingToRp1 => "ring_rx",
-                    ShmKind::Block { .. } => "block",
-                };
+                let attach = attach_fn(&regions[index], v3);
                 writeln!(
                     output,
                     "{field}: unsafe {{ generated::{attach}(REGIONS[{index}]) }}?,"

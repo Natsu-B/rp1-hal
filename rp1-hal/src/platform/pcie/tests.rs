@@ -78,7 +78,7 @@ fn enable(f: &mut Fake, pinned: &mut bool) -> Result<u32, EnableError> {
         for i in 0..FILL_WORDS {
             perstn::Io::write(f, FILL + 4 * i, 0);
         }
-        GENERATION
+        Ok(GENERATION)
     })
 }
 

@@ -142,7 +142,8 @@ pub fn mix(args: impl Iterator<Item = String>) -> Result<()> {
             break;
         }
         let t = Instant::now();
-        let ready = fw.wait_any(&mut [&mut events, &mut ticks], Some(Duration::from_secs(1)))?;
+        let ready =
+            fw.wait_any_for(&mut [&mut events, &mut ticks], Some(Duration::from_secs(1)))?;
         waits += 1;
         late += u32::from(ready && t.elapsed() >= RECHECK);
     }

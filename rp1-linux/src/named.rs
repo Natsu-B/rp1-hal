@@ -1,6 +1,6 @@
 use crate::{
     Error, Firmware, Mapping, Message, Note, Result, RingRx, RingTx, ShmKind, ShmRegion,
-    check_type, deadline, find_region, proto,
+    check_type, find_region, proto,
 };
 use rp1_proto::note::{RPC, rpc_name};
 use std::{
@@ -108,6 +108,11 @@ impl<Tx: Message, Rx: Message> Channel<Tx, Rx> {
         self.rx.recv(timeout)
     }
 
+    /// Wait for a reply or message until an absolute deadline.
+    pub fn wait(&mut self, end: Instant) -> Result<()> {
+        self.rx.wait(end)
+    }
+
     /// Receive a batch, waiting up to `timeout` for its first message.
     pub fn recv_into(&mut self, out: &mut [Rx], timeout: Option<Duration>) -> Result<usize> {
         self.rx.recv_into(out, timeout)
@@ -138,10 +143,36 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
     /// A timeout leaves the request outstanding. Later calls discard its reply when it
     /// arrives. The peer may already have acted on the request.
     pub fn call(&mut self, request: &Req, timeout: Duration) -> Result<Rep> {
-        self.rx.peer.check()?;
-        let end = deadline(Some(timeout));
+        let end = Instant::now()
+            .checked_add(timeout)
+            .ok_or(Error::InvalidDeadline)?;
+        let index = self.publish(request, (!timeout.is_zero()).then_some(end))?;
+        if timeout.is_zero() {
+            return Err(Error::Timeout);
+        }
+        self.wait_reply(index, end)
+    }
+
+    /// Publish and await a reply under a single absolute deadline.
+    pub fn call_until(&mut self, request: &Req, end: Instant) -> Result<Rep> {
+        let index = self.publish(request, Some(end))?;
+        self.wait_reply(index, end)
+    }
+
+    fn publish(&mut self, request: &Req, end: Option<Instant>) -> Result<u32> {
+        let check_deadline = || {
+            if end.is_some_and(|end| Instant::now() >= end) {
+                Err(Error::Timeout)
+            } else {
+                Ok(())
+            }
+        };
+        check_deadline()?;
+        self.rx.session.check_header()?;
+        self.rx.session.check_peer(self.rx.peer.core)?;
         let index = self.tx.inner.head();
         while self.rx.tail() != index {
+            check_deadline()?;
             if self.rx.try_recv()?.is_none() {
                 break;
             }
@@ -151,15 +182,20 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
         if index.wrapping_sub(self.rx.tail()) >= self.depth {
             return Err(Error::Busy);
         }
+        check_deadline()?;
         self.tx.send(request)?;
-        if timeout.is_zero() {
-            return Err(Error::Timeout);
-        }
-        self.wait_reply(index, end)
+        Ok(index)
     }
 
-    fn wait_reply(&mut self, index: u32, end: Option<Instant>) -> Result<Rep> {
-        while self.rx.wait_until(end)? {
+    fn wait_reply(&mut self, index: u32, end: Instant) -> Result<Rep> {
+        loop {
+            match self.rx.wait(end) {
+                Err(Error::Timeout) if self.rx.session.strict.is_none() => {
+                    self.rx.peer.check()?;
+                    return Err(Error::Timeout);
+                }
+                result => result?,
+            }
             let tail = self.rx.tail();
             if let Some(reply) = self.rx.try_recv()?
                 && tail == index
@@ -167,8 +203,6 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
                 return Ok(reply);
             }
         }
-        self.rx.peer.check()?;
-        Err(Error::Timeout)
     }
 }
 

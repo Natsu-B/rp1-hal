@@ -335,15 +335,20 @@ fn resources(
                 "/// proc{index}'s doorbell, which Linux rings (`doorbell = {pin}`).\n\
                  pub type Doorbell{index} = ::rp1_link::notify::Doorbell<{pin}, {index}>;\n"
             ));
+            if experimental_wake && shm.regions.iter().any(|r| r.receives_doorbell(index as u8)) {
+                writeln!(
+                    s,
+                    "pub type WakeDoorbell{index} = ::rp1_link::notify::TicketDoorbell<{pin}, {index}>;"
+                )?;
+            }
         }
     }
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
         let ty = format!("Proc{index}Resources");
-        let has_link = !experimental_wake
-            && shm
-                .regions
-                .iter()
-                .any(|r| usize::from(r.core()) == index + 1);
+        let has_link = shm
+            .regions
+            .iter()
+            .any(|r| usize::from(r.core()) == index + 1);
         let doorbell = !c.custom_doorbell_handler
             && shm.regions.iter().any(|r| r.receives_doorbell(index as u8));
         if doorbell {

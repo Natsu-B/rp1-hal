@@ -158,7 +158,7 @@ fn one<const W: usize>(
             got += 1;
         }
         if n == 0 && run.irq && stale == 0 {
-            rx.wait(Some(Duration::from_secs(1)))?;
+            rx.wait_for(Some(Duration::from_secs(1)))?;
         }
         if start.elapsed() > Duration::from_secs(180) {
             break;
