@@ -206,7 +206,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
         feature = "dma",
         feature = "ring-dma"
     ))]
-    log!("p1 clocks {:?}\n", clocks).unwrap();
+    log!("p1 clocks ready={}\n", u8::from(clocks.is_ok())).unwrap();
     #[cfg(any(feature = "adc", feature = "spi", feature = "dma"))]
     let mut wait_timer = p.wait_timer;
     #[cfg(feature = "adc")]
