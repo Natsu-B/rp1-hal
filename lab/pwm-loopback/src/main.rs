@@ -8,6 +8,8 @@ mod status_nonce;
 
 #[cfg(not(feature = "motor-api"))]
 use embedded_hal::{delay::DelayNs, digital::InputPin, pwm::SetDutyCycle};
+#[cfg(not(feature = "motor-api"))]
+use rp1_hal::timer::Timer;
 use rp1_hal::{
     fugit::ExtU32,
     gpio::{Input, PadConfig, Pin, Pull},
@@ -36,7 +38,7 @@ struct Samples {
 }
 #[cfg(not(feature = "motor-api"))]
 fn sample<const P: u8>(pin: &mut Pin<P, Input>) -> Samples {
-    let timer = rp1_hal::timer::Timer::new();
+    let timer = Timer::new();
     let start = timer.now().ticks();
     let mut previous = pin.is_high().unwrap();
     let mut s = Samples {
