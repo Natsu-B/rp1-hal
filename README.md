@@ -7,6 +7,7 @@
 Raspberry Pi CM5 の RP1 にある 2 つの Cortex-M3（proc0 / proc1）向けの rp-hal 風 Rust HAL です。
 BCM2712 上の Linux との AMP 連携と、RP1 ファームを載せる BCM2712 側の third stage loader（`rp1boot`）も含みます。
 
+- [導入手順（英語）](docs/getting-started.md) · [Linux 機能の制約（英語）](docs/linux-compatibility.md)
 - 各版の実装状況と実機での確認範囲: [Releases](https://github.com/Natsu-B/rp1-hal/releases)
 - 設計: [docs/design.md](docs/design.md)（§9 が決定の記録）
 - ローダー: [docs/loader.md](docs/loader.md)
@@ -24,6 +25,7 @@ HW の主張は、その時の固定の起動一式（boot set）と、そこで
 An rp-hal style Rust HAL for the two Cortex-M3 cores (proc0 / proc1) in the RP1 chip of the Raspberry Pi CM5.
 It also covers AMP with Linux on the BCM2712, and a BCM2712 third-stage loader (`rp1boot`) that loads the RP1 firmware.
 
+- [Getting started](docs/getting-started.md) · [What Linux loses](docs/linux-compatibility.md)
 - Status of each release and what was verified on hardware: [Releases](https://github.com/Natsu-B/rp1-hal/releases)
 - Design: [docs/design.md](docs/design.md) (§9 records the decisions)
 - Loader: [docs/loader.md](docs/loader.md)
