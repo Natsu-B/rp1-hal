@@ -134,7 +134,7 @@ mod wake_model;
 mod tests {
     use super::*;
     use crate::tests::anon;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::os::{fd::OwnedFd, unix::net::UnixStream};
 
     #[test]
@@ -148,6 +148,20 @@ mod tests {
         peer.write_all(&[1, 2]).unwrap();
         let e = irq.wait(Duration::from_secs(5)).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn zero_timeout_drains_an_already_readable_irq_and_reenables() {
+        let (a, mut peer) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let mut irq = Irq::from_file(File::from(OwnedFd::from(a)));
+        assert!(!irq.wait(Duration::ZERO).unwrap());
+        peer.write_all(&7u32.to_ne_bytes()).unwrap();
+        assert!(irq.wait(Duration::ZERO).unwrap());
+        let mut reenable = [0; 4];
+        peer.read_exact(&mut reenable).unwrap();
+        assert_eq!(u32::from_ne_bytes(reenable), 1);
+        assert!(!irq.wait(Duration::ZERO).unwrap());
     }
 
     /// The SET aliases of `PROC0_INTF` / `PROC1_INTF` (IO_BANK0 0x108 / 0x114, +0x2000).
