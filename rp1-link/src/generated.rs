@@ -79,6 +79,9 @@ pub fn enable<const N: u8, const IRQ: u8>(
     result
 }
 
+/// Wait for proc0 to publish the shared-memory window, then attach the endpoints.
+/// Sleep while the window is pending. Return immediately on [`OpenError::Reset`] or
+/// [`OpenError::Attach`].
 pub fn open<I, T>(
     mut init: I,
     mut try_open: impl FnMut(I) -> Result<T, OpenError<I>>,
