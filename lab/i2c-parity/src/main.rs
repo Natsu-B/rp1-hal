@@ -1,4 +1,4 @@
-//! I2C1 combined transfers, TX_ABRT and a deadline while SCL is held low.
+//! I2C1 FIFO, STOP, abort and held-SCL deadline parity.
 #![no_std]
 #![no_main]
 
@@ -18,6 +18,15 @@ const PEER: u8 = 0x2d;
 const TRIALS: u32 = 1_000;
 const FAULT_TRIALS: u32 = 100;
 const FRAME: [u8; 16] = *b"D1DR\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f";
+const LONG_FRAME: [u8; 96] = {
+    let mut frame = [0; 96];
+    let mut i = 0;
+    while i < frame.len() {
+        frame[i] = if i < 16 { FRAME[i] } else { i as u8 };
+        i += 1;
+    }
+    frame
+};
 const DEADLINE_US: u32 = 2_000;
 
 static RX: AtomicU32 = AtomicU32::new(0);
@@ -155,7 +164,7 @@ impl Stats {
         self.idle += u32::from(idle());
         self.min = self.min.min(elapsed);
         self.max = self.max.max(elapsed);
-        self.irq_bad += u32::from(!irq_ok);
+        self.irq_bad += u32::from(!irq_ok || STRAY.load(Relaxed) != 0 || OTHER.load(Relaxed) != 0);
         self.rx += RX.load(Relaxed);
         self.tx += TX.load(Relaxed);
         self.stop += STOP.load(Relaxed);
@@ -212,9 +221,24 @@ fn run(bus: &mut rp1::I2c1, timer: &mut WaitTimer) -> Result<(), Error> {
     }
     refill(&mut blocking)?;
     let _ = log!("I2C_PEER_READY addr=0x2d bytes=64\n");
+    // SAFETY: the fixture owns I2C1; COMP_PARAM_1 is read-only.
+    let block = unsafe { &*pac::I2C1::PTR.cast::<pac::dw_i2c::RegisterBlock>() };
+    let tx_depth = ((block.comp_param_1.read().bits() >> 16) & 0xff) + 1;
+    if tx_depth as usize >= LONG_FRAME.len() {
+        return Err(Error::Precondition);
+    }
+    let _ = log!(
+        "I2C_TX_FIFO depth={} frame={}\n",
+        tx_depth,
+        LONG_FRAME.len()
+    );
     let counts = [
         combined(bus, timer, Speed::Standard, 100_000)?,
         combined(bus, timer, Speed::Fast, 400_000)?,
+    ];
+    let tx_counts = [
+        tx_refill(bus, timer, Speed::Standard, 100_000)?,
+        tx_refill(bus, timer, Speed::Fast, 400_000)?,
     ];
     let mut blocking = bus.blocking(timer);
     blocking.set_speed(Speed::Standard)?;
@@ -227,10 +251,9 @@ fn run(bus: &mut rp1::I2c1, timer: &mut WaitTimer) -> Result<(), Error> {
             &mut [Operation::Write(&FRAME)],
             Deadline::at(start + 10_000.micros()),
         );
-        let irq_ok = STOP.load(Relaxed) == 1
-            && RX.load(Relaxed) == 0
+        let irq_ok = RX.load(Relaxed) == 0
             && TX.load(Relaxed) == 0
-            && ABORT.load(Relaxed) == 0;
+            && (result.is_err() || (STOP.load(Relaxed) == 1 && ABORT.load(Relaxed) == 0));
         stats.record(start.ticks(), result.is_ok(), irq_ok);
         refill(&mut blocking)?;
     }
@@ -250,7 +273,8 @@ fn run(bus: &mut rp1::I2c1, timer: &mut WaitTimer) -> Result<(), Error> {
             && RX.load(Relaxed) == 0
             && TX.load(Relaxed) == 0
             && STOP.load(Relaxed) == 0;
-        stats.record(start.ticks(), result == Err(Error::AddressNack), irq_ok);
+        let ok = result == Err(Error::AddressNack);
+        stats.record(start.ticks(), ok, !ok || irq_ok);
         reply.fill(0);
         rearm += u32::from(blocking.read(PEER, &mut reply).is_ok() && check(&reply) && idle());
         refill(&mut blocking)?;
@@ -280,7 +304,8 @@ fn run(bus: &mut rp1::I2c1, timer: &mut WaitTimer) -> Result<(), Error> {
             && ALARM.load(Relaxed) != 0
             && (DEADLINE_US..=DEADLINE_US + 100)
                 .contains(&FIRST_ALARM.load(Relaxed).wrapping_sub(start.ticks() as u32));
-        stats.record(start.ticks(), result == Err(Error::Timeout), irq_ok);
+        let ok = result == Err(Error::Timeout);
+        stats.record(start.ticks(), ok, !ok || irq_ok);
         held_low += u32::from(!scl_high());
         rejected += u32::from(matches!(
             bus.blocking(timer).read(PEER, &mut [0]),
@@ -307,8 +332,11 @@ fn run(bus: &mut rp1::I2c1, timer: &mut WaitTimer) -> Result<(), Error> {
         rejected,
         recovered
     );
-    let fast_plus = combined(bus, timer, Speed::FastPlus, 1_000_000)?;
-    if counts != [TRIALS; 2] || fast_plus != TRIALS || rearm != FAULT_TRIALS {
+    let _ = log!("I2C_FMP_BEGIN\n");
+    // Let the host snapshot peer counters before Fm+ traffic starts.
+    bus.blocking(timer).delay(3_000.millis())?;
+    combined(bus, timer, Speed::FastPlus, 1_000_000)?;
+    if counts != [TRIALS; 2] || tx_counts != [TRIALS; 2] || rearm != FAULT_TRIALS {
         return Err(Error::Precondition);
     }
     Ok(())
@@ -333,10 +361,11 @@ fn combined(
             Deadline::at(start + 10_000.micros()),
         );
         let ok = result.is_ok() && check(&reply);
-        let irq_ok = (1..=64).contains(&RX.load(Relaxed))
+        let irq_ok = RX.load(Relaxed) <= 64
             && TX.load(Relaxed) <= 17
             && STOP.load(Relaxed) <= 1
-            && ABORT.load(Relaxed) == 0;
+            && ABORT.load(Relaxed) <= 1
+            && (result.is_err() || (RX.load(Relaxed) != 0 && ABORT.load(Relaxed) == 0));
         stats.record(start.ticks(), ok, irq_ok);
         if !ok && stats.ok + 1 == stats.count {
             let _ = log!(
@@ -353,6 +382,40 @@ fn combined(
         refill(&mut bus.blocking(timer))?;
     }
     stats.report("combined", hz);
+    Ok(stats.ok)
+}
+
+fn tx_refill(
+    bus: &mut rp1::I2c1,
+    timer: &mut WaitTimer,
+    speed: Speed,
+    hz: u32,
+) -> Result<u32, Error> {
+    bus.blocking(timer).set_speed(speed)?;
+    let mut stats = Stats::new();
+    for _ in 0..TRIALS {
+        clear_observations();
+        let start = Timer::new().now();
+        let result = bus.blocking(timer).transaction_until(
+            Address7::new_const::<PEER>(),
+            &mut [Operation::Write(&LONG_FRAME)],
+            Deadline::at(start + 10_000.micros()),
+        );
+        let tx = TX.load(Relaxed);
+        let irq_ok = tx < LONG_FRAME.len() as u32
+            && RX.load(Relaxed) == 0
+            && STOP.load(Relaxed) <= 1
+            && ABORT.load(Relaxed) <= 1
+            && (result.is_err() || (tx != 0 && ABORT.load(Relaxed) == 0));
+        stats.record(start.ticks(), result.is_ok(), irq_ok);
+        if let Err(error) = result {
+            stats.report("tx_refill", hz);
+            return Err(error);
+        }
+        // Give the ESP32's receive callback time to validate this frame.
+        refill(&mut bus.blocking(timer))?;
+    }
+    stats.report("tx_refill", hz);
     Ok(stats.ok)
 }
 

@@ -882,6 +882,10 @@ with IRQ waits and explicit `.polling()`. The host verifier emits
 handler's accepted bits and times the transactions with the RP1 timer.
 The fixture uses the ESP32 peer at 0x2d on GPIO2/3 and sends read-only probes
 to 0x2e for NACK. A GPIO3 override holds SCL low during the timeout test
-and restores open-drain control before re-arm. Read the ESP32 counters
-before and after while CM5 is powered. Verify the UART0 and peer captures
-with `python3 lab/verify-i2c-parity.py UART0 PEER_BEFORE PEER_AFTER`.
+and restores open-drain control before re-arm. The 96-byte write phase
+exceeds the TX FIFO and needs ESP32 peer firmware 0.7.2 to validate every byte.
+Sample the ESP32 counters through one open capture descriptor before boot,
+within three seconds of `I2C_FMP_BEGIN`, and after `I2C_FIXTURE_END`. Keep CM5
+powered when opening the descriptor. Verify the UART0 and counter captures
+with `python3 lab/verify-i2c-parity.py UART0 PEER_BEFORE PEER_BEFORE_FMP PEER_AFTER`.
+The 1 MHz trials remain open pending an Fm+-capable data peer.

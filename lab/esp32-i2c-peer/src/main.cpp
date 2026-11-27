@@ -31,18 +31,16 @@ static void on_request() {
   preload();
 }
 static void on_receive(int) {
-  uint8_t frame[64]; size_t size = 0;
+  size_t size = 0;
+  bool valid = true;
   while (Wire.available()) {
     const uint8_t value = Wire.read();
-    if (size < sizeof(frame)) frame[size] = value;
+    const uint8_t expected = size < 4 ? uint8_t(0x52443144u >> (8 * size)) : uint8_t(size);
+    valid &= value == expected;
     ++size;
   }
-  // Every proof write is exactly the same 16-byte debug-mailbox frame.
-  bool valid = size == 16;
-  for (size_t i = 0; i < size && i < sizeof(frame); ++i) {
-    const uint8_t expected = i < 4 ? uint8_t(0x52443144u >> (8 * i)) : uint8_t(i);
-    valid &= frame[i] == expected;
-  }
+  // The 96-byte variant forces the RP1 controller to refill its TX FIFO.
+  valid &= size == 16 || size == 96;
   portENTER_CRITICAL(&mux);
   ++rx_count; rx_bytes += size; if (!valid) ++bad_frames;
   portEXIT_CRITICAL(&mux);
@@ -97,7 +95,7 @@ static void measure_status() {
 }
 static void handle(String line) {
   line.trim();
-  if (line == "version") Serial.println("firmware=cm5-control-trace version=0.7.1-rp1-hal-i2c-peer");
+  if (line == "version") Serial.println("firmware=cm5-control-trace version=0.7.2-rp1-hal-i2c-peer");
   else if (line == "status") status();
   else if (line == "pinmap") {
     Serial.println("GPIO18 nRPIBOOT NMOS gate; GPIO19 power NMOS gate");
