@@ -40,17 +40,20 @@ STATIC
 
 STATIC (2026-11-27). UART, SPI and I²C expose the existing synchronous engines
 through `.polling()`. The controller types and `Parts` name the required pin tuple.
+Declarations generate aliases such as `rp1::Uart1` and `rp1::Uart1Pins`.
+UART and I²C accept a baud rate or bus speed directly as well as a `Config`.
 
 | Before | After |
 | --- | --- |
-| `p.uart1.init(&clocks, 115_200.Hz())?` | `p.uart1.init(&clocks, uart::Config::new(115_200.Hz()))?` |
+| `p.uart1.init(&clocks, 115_200.Hz())?` | `p.uart1.init(&clocks, 115_200.Hz())?` (with an owner-preserving error type) |
 | `tx.write_all(bytes)?` and `rx.read_byte()?` | `tx.polling().write_all(bytes)?` and `rx.try_read_byte()?` |
+| `if tx.try_write_byte(byte)` and `if tx.try_flush()` | `if tx.try_write_byte(byte)?` and `if tx.try_flush()?` (`Busy` after cancellation) |
 | `spi::Device::new(bus, cs)` | `spi::Device::new(bus.polling(), cs)` |
-| `p.i2c1.init(&clocks, Speed::Standard)?` and `bus.write(addr, bytes)?` | `p.i2c1.init(&clocks, i2c::Config::new(Speed::Standard))?` and `bus.polling().write(addr, bytes)?` |
-| `spi::Parts<0, 11, 10, 9>` | `spi::Parts<0, (Pin<11>, Pin<10>, Pin<9>)>` |
-| `token.init(tx, rx, &clocks, baud)` | `uart::Parts::new(token, uart::Pins::builder().tx(tx).rx(rx)).init(&clocks, uart::Config::new(baud))` |
+| `p.i2c1.init(&clocks, Speed::Standard)?` and `bus.write(addr, bytes)?` | `p.i2c1.init(&clocks, Speed::Standard)?` and `bus.polling().write(addr, bytes)?` |
+| `spi::Parts<0, 11, 10, 9>` | `spi::Parts<0, rp1::Spi0Pins>` for a declared instance |
+| `token.init(tx, rx, &clocks, baud)` | `uart::Parts::new(token, uart::Pins::builder().tx(tx).rx(rx)).init(&clocks, baud)` |
 | `driver.free()` and `driver.abort()` | `driver.try_free()` for an immediate check or `driver.free_polling()` for the bounded wait. Use `driver.try_cancel()` to request stop before collecting parts. |
-| `e.resources` and `e.driver` | `e.try_into_parts()` or `e.try_recover()` on a peripheral initialization error. `e.into_parts()` returns the driver and cause on a release error. |
+| `e.resources` and `e.driver` | `e.try_into_parts()` or `e.try_recover()` on a peripheral initialization error. On a release error, `e.into_driver()` returns the driver and `e.into_parts()` returns it with the cause. |
 | `PadConfig { pull: Pull::Up, ..PadConfig::INPUT_DEFAULT }` | `PadConfig::INPUT_DEFAULT.with_pull(Pull::Up)` |
 
 Propagate UART, SPI and I²C initialization errors with an outer error that

@@ -22,7 +22,7 @@ let mut dev = rp1_hal::spi::Device::new(bus.polling(), p.pins.gpio8);
 dev.transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])?;
 ```
 
-`examples/peripherals` uses SPI0 on proc0 this way (compile-checked).
+`examples/dual-core` uses SPI0 on proc0 this way (STATIC, compile-checked).
 
 ## Which blocks
 
@@ -104,7 +104,8 @@ loopback) wait for the bus to be idle and reprogram the disabled controller.
 `init` checks clk_sys, the rate and the frame size before releasing reset. The controller's
 own frame limit is checked with SSI disabled after the probe. Use `error.try_into_parts()`
 to get the token and untouched pins when they are ready for reuse. If reset or the probe
-failed, `error.try_recover()` requests reset and returns the parts once confirmed.
+failed, `error.try_recover()` requests reset and returns the parts once its
+`RESETS_DONE1` bit clears. HYP (2026-11-27): when DONE clears after asserting reset.
 
 STATIC (host model). A stale clk_sys, a zero or too-low rate and 3- or 33-bit frames
 write no register and route no pin. A 32-bit frame on a 16-bit instance fails after the
@@ -115,8 +116,9 @@ is a `HertzU32`. Dropping the controller leaves it enabled and the pins muxed.
 `try_free()` checks TX FIFO empty and BUSY clear before disabling. `free_polling()`
 waits up to 100 ms for the same wire-idle condition. Both return the controller
 in `FreeError` until stop is confirmed. `try_cancel()` requests disable immediately.
-This can truncate a frame and discard both FIFOs. Collect the parts with `try_free()`
-after confirming stop.
+This can truncate a frame and discard both FIFOs. After cancellation, polling
+operations return `Busy` and interrupt controls cannot reopen the wrapper.
+Collect the parts with `try_free()` once stop is confirmed.
 
 `Device::free` returns the bus and the chip select as an unconfigured `Pin<CS>` (still driven
 high), so the same pin can make a new `Device` (STATIC: a host compile test).
@@ -140,7 +142,8 @@ The model keeps BUSY after the last frame is received, so `flush` must wait it o
 delay itself waits at least the requested time (the 1 MHz timer is read for `us + 1` steps,
 since the first step can come right after the start).
 
-The transfer engine uses polling. The controller
+The transfer engine uses polling. There is no interrupt-driven transfer, DMA, dual/quad
+mode, or slave support. The controller
 interrupt itself can be unmasked (`enable_interrupt`, which also opens the RP1 `+0x108` output
 enable) for a handler on the `SPIn` line; see `docs/interrupts.md`.
 

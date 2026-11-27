@@ -116,7 +116,7 @@ fn main(core: Proc0, p: rp1::Proc0Resources) -> ! {
     log!("proc0 up, clk_sys={}", clocks.sys());
 
     // 宣言 uart2 = { tx = 4, rx = 5 } の Parts（Token + Pin<4> + Pin<5>）。表に無い組は型が無い
-    let mut uart = p.uart2.init(&clocks, rp1_hal::uart::Config::new(115_200.Hz())).unwrap();
+    let mut uart = p.uart2.init(&clocks, 115_200.Hz()).unwrap();
 
     let samples = SAMPLES.consumer(&core);             // Proc0 トークンでしか取れない
     p.proc1.start();                                    // proc1 の #[entry(proc1)] を起動する
@@ -298,12 +298,36 @@ FEN を落として FIFO を空ける方法は使わない。SPI の通常解放
 送出中のフレームと両 FIFO を捨てうる。I2C は転送失敗時に ABORT を要求する。`try_cancel` は disable を再要求し、
 ターゲットが SCL を解放してコントローラが停止するまでピンを返さない。
 
-- `pwm::Channels` / `Output` の `free` は clk_pwm が動いていることを確認して停止を書き込む。周期終端での反映は
-  HW 未検証。PWM 出力は `(Channel, Pin)` を返す。
-- `Adc::free` は電源断を書き込む。変換停止までの挙動は HW 未検証。
-- DMA の `Transfer::cancel` は DMAC がバッファに触れなくなるまで戻らない。コントローラの回収は
-  [DMA の所有権](dma.md) を参照。
-- ADC・PWM・DMA の初期化失敗では `InitError::into_parts()` が token を返す。
+| 操作とドライバ | 確認・待機 | 破棄するもの | 成功時の状態 |
+|---|---|---|---|
+| `Uart::try_free` / `free_polling` | TX の BUSY=0（即時の `Busy`、または TX の上限時間で `Timeout`）。その後リセットを確認 | 受信中・未読の文字 | この UART のリセットを保持し、解放した `Parts` を返す |
+| `Uart::try_cancel` | RESETS_DONE1 の自分のビットがクリア（停止未確認なら `Busy`） | 未送信・未読の FIFO と送受信中の文字 | RESETS CTRL1 の自分のビットだけをセットする。他の UART や clk_uart には触れない。割り込みマスク・UART 無効・FIFO 空はリセット値による（DOC、PL011） |
+| `Uart` の初期化エラーの `try_recover` | RESETS_DONE1 の自分のビットがクリア | 初期化時はピンを切り替えていない | UART をリセット保持して `Parts` を返す |
+| `Spi::try_free` / `free_polling` | TFE=1 かつ BUSY=0（即時の `Busy`、または 100 ms で `Timeout`）。停止要求済みなら disable の確認を再試行 | 受信 FIFO の残り | 割り込みをマスクし、SSIENR=0 かつ BUSY=0 を確認して `Parts` を返す |
+| `Spi::try_cancel` | SSIENR=0 かつ BUSY=0 の即時確認（停止未確認なら `Busy`） | 両 FIFO と送出中のフレーム | 割り込みをマスクし、コントローラを無効にして SCK を止める |
+| `Spi` の初期化エラーの `try_recover` | RESETS_DONE1 の自分のビットがクリア | 初期化時はピンを切り替えていない | SPI をリセット保持して `Parts` を返す |
+| `I2c::try_free` / `free_polling` | ENABLE_STATUS=0 かつ MASTER_ACTIVITY=0（即時の `Busy`、または disable を要求して 100 ms で `Timeout`） | 転送の失敗時に ABORT を要求済み | 割り込みをマスクし、停止確認後に `Parts` を返す |
+| `I2c::try_cancel` | disable を再要求し、ENABLE_STATUS=0 かつ MASTER_ACTIVITY=0 を確認（停止未確認なら `Busy`） | 転送の失敗時に ABORT を要求済み | 割り込みをマスクする。ターゲットが SCL を保持している間は停止確認が遅れうる |
+| `I2c` の初期化エラーの `try_recover` | RESETS_DONE0 の自分のビットがクリア | 初期化時はピンを切り替えていない | I²C をリセット保持して `Parts` を返す |
+| `pwm::Channels::free` / `Output::free` | clk_pwm が 50 MHz で動作中（`Precondition`） | — | 停止を書き、ブロックの token または `(Channel, Pin)` を返す |
+| `dma::Transfer::cancel` | DMAC がバッファに触れなくなるまで待つ（上限なし） | ブロックの残り | チャネルを停止する。[DMA の所有権](dma.md) |
+| 失敗しない解放（`Adc::free` / `spi::Device::free`、旧 `Dma::free`） | 待機なし | — | ADC は電源断を書いて token を返す。Device はバスと非選択状態の CS を返す。旧 DMA 解放はチャネルをすべて戻してから token を回収していた |
+
+リセット要求から DONE がクリアされるまでの時間は UART・SPI・I²C ともに HYP（2026-11-27）。停止要求後は UART・SPI・I²C の
+データ操作が `Busy` を返し、割り込みの再有効化を受け付けない。
+
+STATIC（2026-11-27）。一般の契約（静止を待つ、割り込みをマスクする、停止する）との違い。
+
+- `Uart` が待つのは送信側の BUSY だけ。受信中の文字は待たず、リセット値で割り込みをマスクする。
+- `I2c::free_polling` は先に disable を要求する。`Timeout` のときも要求は残り、割り込みマスクは保持する。
+- `pwm::Channels` / `Output` は停止（GLOBAL_CTRL のクリアと UPDATE）が周期終端で反映されたかを確認せずに返る。
+  `abort` はクロックを確認せずに停止を書き、次の `Token::init` がクロックを起動し全チャネルを止める（反映時期は HYP）。
+- 旧 `Dma::free` は DMAC_CFG.DMAC_EN・クロック・リセット解除を維持していた。現行の生成チャネルセットは
+  コントローラを保持し、`Dma::free` は廃止済み。`Token::init` は DMAC をソフトリセットしてから設定する。
+- `Adc::read` が `Timeout` を返した後も変換が続いている可能性がある。`Adc::free` は CS=0（電源断）を書き、
+  変換の静止を確認せず戻る（電源断の効果は HYP）。
+- UART・SPI・I²C の初期化エラーは再利用できる場合に `try_into_parts()` で `Parts` を返す。
+  ADC・PWM・DMA は `InitError::into_parts()` で token を返す。
 
 GPIO の `Pin` と `timer::Alarm` はそれ自体が資源で、解放するドライバを持たない。
 
@@ -317,7 +341,7 @@ use rp1_hal::fugit::RateExtU32;
 
 // 送信が終わっていれば資源を回収し、新しい baud で初期化する。
 let parts = uart.try_free().unwrap();
-let mut uart = parts.init(&clocks, rp1_hal::uart::Config::new(9_600.Hz())).unwrap();
+let mut uart = parts.init(&clocks, 9_600.Hz()).unwrap();
 ```
 
 #### UART のエラーと timeout

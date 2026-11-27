@@ -50,9 +50,9 @@ fn output(token: Token<0>, pin: Pin<12>, clocks: &Clocks) -> Result<(), Error> {
     output.enable()?;
     // Later, stop and return the output and pin before returning the whole block.
     // A failed `free` hands the output (or the channels) back with the error.
-    let (channel, pin) = output.free().map_err(|e| e.error)?;
+    let (channel, pin) = output.free().map_err(|e| *e.error())?;
     channels.channel0 = channel;
-    let _token = channels.free().map_err(|e| e.error)?;
+    let _token = channels.free().map_err(|e| *e.error())?;
     let _pin = pin;
     Ok(())
 }
@@ -76,10 +76,10 @@ moment a new compare appears on a running channel is HW 未検証. No synchronou
 waveform-observation guarantee is implied by returning from a setter. Clock checks reject a changed rate or stopped clock before
 channel writes; every setter error (`Invalid`, `Enabled`, `Precondition`) is returned before
 any register write, so the cached period always matches RANGE. `Timeout` comes only from the
-reset DONE wait in `init`. `rp1_hal::InitError` returns the token as `resources`; a reset failure may leave partial
+reset DONE wait in `init`. `rp1_hal::InitError::into_parts()` returns the token. A reset failure may leave partial
 hardware state. `Channels::free` and `Output::free` check the clock first: on
-`Precondition` nothing is written and the value comes back as `FreeError { driver, error }`, so the caller
-can retry once clk_pwm runs again. `abort` on either writes the same disable without the
+`Precondition` nothing is written and `FreeError::into_driver()` returns the driver for a
+retry once clk_pwm runs again. `abort` on either writes the same disable without the
 check and always returns the token (or channel and pin); with the clock stopped the disable
 may not latch (HW 未検証), and `Token::init` restarts the clock and disables all channels.
 `Output::free` disables the channel and clears its MODE (0 = generate 0), as Linux's
