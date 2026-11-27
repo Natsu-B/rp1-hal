@@ -140,6 +140,50 @@ fn now() -> u32 {
 }
 
 #[cfg(feature = "link-wake")]
-pub fn proc0_panic_requested(value: u32) -> bool {
-    value == commands::PROC0_PANIC
+#[rp1_rt::isram]
+pub fn run_wake(link: rp1::link::Proc1Link, owner: rp1_link::notify::VectorOwner) -> ! {
+    use rp1_link::Progress;
+
+    let mut ping = link.ping;
+    let mut channel = Some(link.channel);
+    let (mut dropped_tx, mut dropped_rx) = link.dropped.split();
+    let mut probe = Probe::new(owner);
+    let mut pulse_failures = 0;
+    loop {
+        let progress = ping.serve(8, |value| probe.reply(value)).expect("ping serve failed");
+        let _ = probe.host_irq.pulse_terminals();
+        let drop_progress = dropped_rx
+            .drain(8, |value| {
+                if value == commands::PROC0_PANIC {
+                    probe.reply(value);
+                } else {
+                    dropped_tx.push(&value).expect("drop probe reply");
+                    rp1_link::flush_window();
+                }
+            })
+            .expect("drop probe drain");
+        if drop_progress == Progress::More {
+            continue;
+        }
+        if let Some(endpoint) = channel.as_mut() {
+            match endpoint.respond(8, |nonce| nonce) {
+                Ok(Progress::More) => continue,
+                Ok(Progress::Idle) => {}
+                Err(error) => {
+                    let _ = rp1_hal::log!("channel stopped: {error}\n");
+                    channel = None;
+                }
+            }
+        }
+        let failures = ping.pulse_failures();
+        if pulse_failures != failures {
+            pulse_failures = failures;
+            let _ = rp1_hal::log!("PING_PULSE_FAILURES count={}\n", failures);
+            let _ = ping.retry_notification();
+        }
+        // Endpoints share the doorbell. Check each one before sleeping.
+        if progress == Progress::Idle {
+            probe.sleep();
+        }
+    }
 }
