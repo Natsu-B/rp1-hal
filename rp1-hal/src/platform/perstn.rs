@@ -289,8 +289,12 @@ impl Handlers {
     }
 }
 
-#[rp1_rt::interrupt(proc0, __platform, sram)]
-fn PCIE_OUT() {
+#[unsafe(export_name = "__rp1_p0_PCIE_OUT")]
+#[cfg_attr(
+    all(target_arch = "arm", target_os = "none"),
+    unsafe(link_section = ".text.rp1_cold.__rp1_p0_PCIE_OUT")
+)]
+unsafe extern "C" fn pcie_out_handler() {
     handle(&mut Mmio);
     if matches!(pcie_state(), PcieState::Lost { .. }) {
         rp1_rt::send_event();

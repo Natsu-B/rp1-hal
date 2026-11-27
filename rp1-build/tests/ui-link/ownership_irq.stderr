@@ -1,0 +1,27 @@
+error[E0425]: cannot find type `TIMER_0` in module `crate::rp1::__irq_proc0`
+ --> $CASE:6:4
+  |
+6 | fn TIMER_0() {}
+  |    ^^^^^^^ not found in `crate::rp1::__irq_proc0`
+  |
+help: consider importing this enum
+  |
+2 + use crate::rp1::__irq_proc1::TIMER_0;
+  |
+
+error[E0425]: cannot find type `IO_BANK0` in module `crate::rp1::__irq_proc1`
+ --> $CASE:8:4
+  |
+8 | fn IO_BANK0() {}
+  |    ^^^^^^^^ not found in `crate::rp1::__irq_proc1`
+
+error[E0119]: conflicting implementations of trait `__irq_proc1::Handler` for type `__irq_proc1::TIMER_0`
+  --> $CASE:12:5
+   |
+ 9 | #[rp1_rt::interrupt(proc1)]
+   | --------------------------- first implementation here
+...
+12 |     #[rp1_rt::interrupt(proc1)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `__irq_proc1::TIMER_0`
+   |
+   = note: this error originates in the attribute macro `rp1_rt::interrupt` (in Nightly builds, run with -Z macro-backtrace for more info)

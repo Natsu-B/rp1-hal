@@ -157,6 +157,11 @@ fn check_arguments() {
         assert_eq!(c.dtb.as_deref(), Some(Path::new("b.dtb")));
         assert!(c.allow_boot_disable);
     }
+    assert!(
+        cargo_rp1::parse_check_args(&args(&["fw.elf", "--require-link-irq"]))
+            .unwrap()
+            .require_link_irq
+    );
     for bad in [
         &[][..],
         &["fw.elf", "--dtb"],

@@ -16,6 +16,38 @@ macro_rules! pac_offsets {
     }};
 }
 
+// Keep the pin tuple private so adding an optional signal does not change the required type.
+macro_rules! pin_builder {
+    ($pin:ident, []) => {
+        /// The selected routes for one peripheral instance.
+        pub struct Pins<const N: u8, P = ()>(P);
+
+        impl<const N: u8, P> Pins<N, P> {
+            /// Return the selected pins in signal order.
+            pub fn into_pins(self) -> P {
+                self.0
+            }
+        }
+
+        impl<const N: u8> Pins<N> {
+            pub const fn builder() -> Self {
+                Self(())
+            }
+        }
+    };
+    ($pin:ident, [$($arg:ident: $num:ident),*], $next:ident: $new:ident => $route:ident) => {
+        impl<const N: u8, $(const $num: u8,)*> Pins<N, ($($pin<$num>,)*)> {
+            pub fn $next<const $new: u8>(self, $next: $pin<$new>) -> Pins<N, ($($pin<$num>,)* $pin<$new>,)>
+            where
+                $pin<$new>: $route<N>,
+            {
+                let ($($arg,)*) = self.0;
+                Pins(($($arg,)* $next,))
+            }
+        }
+    };
+}
+
 pub mod adc;
 pub mod clocks;
 pub mod cold;

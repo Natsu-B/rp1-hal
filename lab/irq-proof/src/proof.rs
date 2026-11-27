@@ -1,31 +1,30 @@
 //! What both cores' proofs share. Ordinary statics have one copy per core (private DSRAM), so
 //! a counter here is the running core's own, and the same handler code serves either core.
-use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rp1_hal::{fugit::TimerInstantU32, gpio::PinIrq, timer::Alarm};
 use rp1_link::notify::Doorbell;
-use rp1_rt::interrupt::{Line, Mutex, free};
+use rp1_rt::interrupt::{Line, Slot};
 
 /// A driver object that main and a handler of the same core share.
-pub type Shared<T> = Mutex<RefCell<Option<T>>>;
-pub const fn shared<T>() -> Shared<T> {
-    Mutex::new(RefCell::new(None))
+pub type Shared<T, const CORE: u8> = Slot<Option<T>, CORE>;
+pub const fn shared<T, const CORE: u8>() -> Shared<T, CORE> {
+    Slot::new(None)
 }
-pub fn put<T>(slot: &Shared<T>, value: T) {
-    free(|cs| slot.borrow(cs).replace(Some(value)));
+pub fn put<T, const CORE: u8>(slot: &Shared<T, CORE>, value: T) {
+    slot.try_with(|slot| *slot = Some(value)).unwrap();
 }
 /// Runs `f` on the object in `slot`, if it holds one.
-pub fn with<T>(slot: &Shared<T>, f: impl FnOnce(&mut T)) {
-    free(|cs| {
-        if let Some(value) = slot.borrow_ref_mut(cs).as_mut() {
+pub fn with<T, const CORE: u8>(slot: &Shared<T, CORE>, f: impl FnOnce(&mut T)) {
+    slot.try_with(|slot| {
+        if let Some(value) = slot {
             f(value)
         }
     });
 }
 
 /// A copy of the object in `slot`, if it holds one (for the zero-sized doorbell).
-pub fn get<T: Copy>(slot: &Shared<T>) -> Option<T> {
-    free(|cs| *slot.borrow_ref(cs))
+pub fn get<T: Copy, const CORE: u8>(slot: &Shared<T, CORE>) -> Option<T> {
+    slot.try_with(|slot| *slot).flatten()
 }
 
 static NONCE: AtomicU32 = AtomicU32::new(0);
@@ -162,7 +161,11 @@ pub mod ticker {
     static RESYNCS: AtomicU32 = AtomicU32::new(0);
 
     /// Starts ticking every `period_us`; the handler stops by itself after `limit` ticks.
-    pub fn start<const N: u8>(alarm: &Shared<Alarm<N>>, period_us: u32, limit: u32) {
+    pub fn start<const N: u8, const CORE: u8>(
+        alarm: &Shared<Alarm<N>, CORE>,
+        period_us: u32,
+        limit: u32,
+    ) {
         TICKS.reset();
         LATE_MAX_US.store(0, Relaxed);
         RESYNCS.store(0, Relaxed);
@@ -176,7 +179,7 @@ pub mod ticker {
             alarm.enable_interrupt();
         });
     }
-    pub fn stop<const N: u8>(alarm: &Shared<Alarm<N>>) {
+    pub fn stop<const N: u8, const CORE: u8>(alarm: &Shared<Alarm<N>, CORE>) {
         with(alarm, |alarm| {
             alarm.disable_interrupt();
             alarm.cancel();
@@ -184,7 +187,7 @@ pub mod ticker {
         });
     }
     /// The alarm handler of the core that owns `alarm`.
-    pub fn on_alarm<const N: u8>(alarm: &Shared<Alarm<N>>, core: u32) {
+    pub fn on_alarm<const N: u8, const CORE: u8>(alarm: &Shared<Alarm<N>, CORE>, core: u32) {
         let entered = now();
         let late = entered.wrapping_sub(DEADLINE.load(Relaxed));
         if late > LATE_MAX_US.load(Relaxed) {
@@ -223,8 +226,8 @@ pub mod ticker {
 }
 
 /// `IRQ_Pc_TIMERn`: 1000 alarm interrupts at 1 kHz enter this core's handler and return.
-pub fn timer_test<const N: u8, const IRQ: u8>(
-    alarm: &Shared<Alarm<N>>,
+pub fn timer_test<const N: u8, const IRQ: u8, const CORE: u8>(
+    alarm: &Shared<Alarm<N>, CORE>,
     line: &mut Line<IRQ>,
     core: u32,
     idle: &mut dyn FnMut(),

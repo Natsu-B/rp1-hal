@@ -148,7 +148,7 @@ impl sealed::Wake for Poll {
 /// (PERSTn, SCMI) never pulse and cannot reach a `HostIrq`, which lives in user code.
 #[derive(Clone, Copy)]
 pub struct HostIrq {
-    _private: (),
+    _private: core::marker::PhantomData<*mut ()>,
 }
 
 impl HostIrq {
@@ -165,7 +165,9 @@ impl HostIrq {
         write(TIMER_INTE + ATOMIC_CLR, ALARM_BIT);
         write(TIMER_INTF + ATOMIC_CLR, ALARM_BIT);
         write(TIMER_INTR, ALARM_BIT);
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
 
     /// Wake Linux about data that is not in an endpoint and lives in RP1 SRAM only (the link
@@ -193,7 +195,9 @@ impl HostIrq {
 impl Notify for HostIrq {}
 impl sealed::Notify for HostIrq {
     fn claim(_: sealed::Token) -> Self {
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
     /// [`shm::RingTx::wake_needed`] reads `head` back through the shm window (completing the
     /// posted slot and `head` writes), then reads the reader's sleep counter from the link page:
@@ -214,7 +218,7 @@ impl sealed::Notify for HostIrq {
 /// it into the core's `notify = "irq"` linux-to-rp1 endpoints. The pin's pad stays unused.
 #[derive(Clone, Copy)]
 pub struct Doorbell<const PIN: u8, const CORE: u8> {
-    _private: (),
+    _private: core::marker::PhantomData<*mut ()>,
 }
 
 impl<const PIN: u8, const CORE: u8> Doorbell<PIN, CORE> {
@@ -234,7 +238,9 @@ impl<const PIN: u8, const CORE: u8> Doorbell<PIN, CORE> {
     /// Generated resources only: core CORE declares `doorbell = PIN`.
     pub const unsafe fn new() -> Self {
         let _ = Self::BIT;
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
     /// Whether the force bit is set (the doorbell rang and was not acknowledged yet).
     pub fn is_pending(self) -> bool {

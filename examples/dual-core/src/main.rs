@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use rp1_hal::{
     fugit::{ExtU32, RateExtU32, TimerInstantU32},
@@ -8,12 +7,7 @@ use rp1_hal::{
     timer::{Alarm, Timer},
 };
 use rp1_link::Progress;
-use rp1_rt::{
-    Proc0, Proc1, entry, interrupt,
-    interrupt::{Mutex, free},
-    isram, shared,
-    sync::Spsc,
-};
+use rp1_rt::{Proc0, Proc1, entry, interrupt, interrupt::Slot, isram, shared, sync::Spsc};
 rp1_rt::bind!();
 
 #[shared]
@@ -34,9 +28,8 @@ fn bss_check(marker: u32) -> u32 {
     seen
 }
 
-// Ordinary statics have one DSRAM copy per core: each is shared only between one core's main
-// and that core's handlers, so a core-local `Mutex` or a plain atomic is enough.
-static ALARM0: Mutex<RefCell<Option<Alarm<0>>>> = Mutex::new(RefCell::new(None));
+// Proc0 main installs the alarm before enabling the heartbeat IRQ.
+static ALARM0: Slot<Option<Alarm<0>>, 0> = Slot::new(None);
 static TICKS: AtomicU32 = AtomicU32::new(0);
 type Ping = u32;
 type Pong = u32;
@@ -49,8 +42,8 @@ mod ping_test;
 /// proc0's heartbeat: count the tick, tell Linux (the declared `heartbeat`), arm the next one.
 #[interrupt(proc0)]
 fn TIMER_0() {
-    free(|cs| {
-        if let Some(alarm) = ALARM0.borrow_ref_mut(cs).as_mut() {
+    ALARM0.try_with(|slot| {
+        if let Some(alarm) = slot {
             alarm.clear_interrupt();
             alarm.schedule(next_tick()).unwrap();
         }
@@ -109,7 +102,7 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let mut alarm = p.TIMER_ALARM0;
     alarm.enable_interrupt();
     alarm.schedule(next_tick()).unwrap();
-    free(|cs| ALARM0.borrow(cs).replace(Some(alarm)));
+    ALARM0.try_with(|slot| *slot = Some(alarm)).unwrap();
     p.irq.TIMER_0.enable();
 
     p.proc1.launch(&mut core).unwrap();

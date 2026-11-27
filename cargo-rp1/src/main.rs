@@ -4,7 +4,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if args.first().is_some_and(|s| s == "rp1") {
         args.remove(0);
     }
-    const USAGE: &str = "usage: cargo rp1 check <firmware.elf> [--dtb <base.dtb> [--allow-boot-disable]]\n       \
+    const USAGE: &str = "usage: cargo rp1 check <firmware.elf> [--dtb <base.dtb> [--allow-boot-disable]] [--require-link-irq]\n       \
         cargo rp1 bundle <firmware.elf> --kernel <Image[.gz]> [--initramfs <file>] \
         [--loader <rp1boot.img>] [--cmdline <args>] [--config-extra <line>]... --out <dir>\n       \
         cargo rp1 isram-plan <firmware.elf> [--out <plan.x>]\n       \
@@ -24,6 +24,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let check = cargo_rp1::parse_check_args(&args[1..]).map_err(|e| format!("{e}\n{USAGE}"))?;
     let objdump = std::env::var_os("RP1_OBJDUMP").unwrap_or_else(|| "arm-none-eabi-objdump".into());
     let report = cargo_rp1::check(&check.elf, Path::new(&objdump))?;
+    if check.require_link_irq && !report.link_irq {
+        return Err("ELF NOTE must declare IRQ notification for every link ring".into());
+    }
     if let Some(base) = &check.dtb {
         // Same code as the loader (rp1boot): apply, resolve, disable, recheck.
         for line in cargo_rp1::check_dtb(

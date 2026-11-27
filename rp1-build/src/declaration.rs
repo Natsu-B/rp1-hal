@@ -43,6 +43,22 @@ pub struct PwmPins {
     pub channel3: Option<u8>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct DmaChannels {
+    /// Omitted in legacy declarations, which grant all eight channels.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channels: Option<Vec<u8>>,
+}
+
+impl DmaChannels {
+    pub(crate) fn selected(&self) -> &[u8] {
+        self.channels
+            .as_deref()
+            .unwrap_or(&[0, 1, 2, 3, 4, 5, 6, 7])
+    }
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum Instance {
@@ -51,7 +67,7 @@ pub enum Instance {
     I2c(I2cPins),
     Spi(SpiPins),
     Adc {},
-    Dma {},
+    Dma(DmaChannels),
 }
 
 fn signal_name(signal: Signal) -> String {
@@ -144,15 +160,28 @@ impl Instance {
                 }
                 Self::Spi(parse_pin_table(value, &path)?)
             }
-            Kind::Adc | Kind::Dma => {
+            Kind::Adc => {
                 if value.as_table().is_none_or(|t| !t.is_empty()) {
                     return Err(format!("E0: {path} must be an empty table").into());
                 }
-                if info.kind == Kind::Adc {
-                    Self::Adc {}
-                } else {
-                    Self::Dma {}
+                Self::Adc {}
+            }
+            Kind::Dma => {
+                let dma: DmaChannels = parse_pin_table(value, &path)?;
+                if owner == "linux.keep" && dma.channels.is_some() {
+                    return Err(format!("E4: {path}: Linux owns the whole DMA controller").into());
                 }
+                let mut seen = 0u8;
+                for &channel in dma.selected() {
+                    if channel >= 8 || seen & (1 << channel) != 0 {
+                        return Err(format!(
+                            "E0: {path}.channels: channel {channel} is repeated or outside 0..7"
+                        )
+                        .into());
+                    }
+                    seen |= 1 << channel;
+                }
+                Self::Dma(dma)
             }
         })
     }
@@ -196,7 +225,7 @@ impl Instance {
                     Signal::Pwm(n, rp1_pinmux::PwmSignal::Channel3),
                 ),
             ],
-            Self::Adc {} | Self::Dma {} => vec![],
+            Self::Adc {} | Self::Dma(_) => vec![],
         }
     }
     fn required(&self) -> &'static [&'static str] {
@@ -204,7 +233,7 @@ impl Instance {
             Self::Uart(_) => &["tx", "rx"],
             Self::I2c(_) => &["sda", "scl"],
             Self::Spi(_) => &["sck", "mosi", "miso"],
-            Self::Adc {} | Self::Dma {} | Self::Pwm(_) => &[],
+            Self::Adc {} | Self::Dma(_) | Self::Pwm(_) => &[],
         }
     }
     fn number(name: &str) -> u8 {
@@ -274,6 +303,9 @@ pub struct Core {
     /// bank-0 pin N (note LINK). Claims the pin; it is not also a `gpio`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doorbell: Option<u8>,
+    /// Use the app's one IO_BANK0 dispatcher for this core's doorbell.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub custom_doorbell_handler: bool,
     /// `heartbeat = { period_ms = N }`: this core calls `rp1_rt::status::beat` at least every
     /// N ms, so Linux may judge it stalled (note LINK).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -308,6 +340,9 @@ impl Core {
         }
         if let Some(v) = values.remove("doorbell") {
             core.doorbell = Some(field(v, format!("{owner}.doorbell"))?);
+        }
+        if let Some(v) = values.remove("custom_doorbell_handler") {
+            core.custom_doorbell_handler = field(v, format!("{owner}.custom_doorbell_handler"))?;
         }
         if let Some(v) = values.remove("heartbeat") {
             let heartbeat: Heartbeat = field(v, format!("{owner}.heartbeat"))?;
@@ -436,6 +471,9 @@ impl Declaration {
                 validate_pin(*pin)?;
                 claim_pin(&mut pins, *pin, format!("{owner}.gpio"))?;
             }
+            if core.custom_doorbell_handler && core.doorbell.is_none() {
+                return Err(format!("E5: {owner}.custom_doorbell_handler needs doorbell").into());
+            }
             if let Some(pin) = core.doorbell {
                 validate_pin(pin)?;
                 claim_pin(&mut pins, pin, format!("{owner}.doorbell"))?;
@@ -454,6 +492,25 @@ impl Declaration {
                 for (role, pin) in instance.pins(name) {
                     claim_pin(&mut pins, pin, format!("{owner}.{name}.{role}"))?;
                 }
+            }
+        }
+        for path in &self.linux.dma_disable {
+            if !blocks
+                .get("dma")
+                .is_some_and(|owner| owner == "proc0" || owner == "proc1")
+                || path.strip_prefix('/').is_none_or(|rest| {
+                    rest.split('/').any(|part| {
+                        part.is_empty()
+                            || !part
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b",._+@-".contains(&b))
+                    })
+                })
+            {
+                return Err(format!(
+                    "E0: linux.dma_disable needs an RP1 DMA claim and absolute node paths: {path:?}"
+                )
+                .into());
             }
         }
         Ok(())

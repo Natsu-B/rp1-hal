@@ -3,11 +3,11 @@
 use crate::ring_dma_protocol::{
     AUTO, BIT30_ZERO, CPU, DMA, EARLY_HEAD, GENERATE_AUTO, GENERATE_CPU, GENERATE_DMA, Perf,
 };
+use crate::rp1::Proc1DmaChannels as Dma;
 use crate::{
     copy_stats::{CopyStats, TimedCopy},
     dma_proof,
 };
-use rp1_hal::dma::Dma;
 use rp1_link::{
     notify::HostIrq,
     ring_dma::{RingDma, SlotCopy},

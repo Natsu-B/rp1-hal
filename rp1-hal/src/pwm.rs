@@ -72,7 +72,7 @@ pub trait PinRoute<const N: u8, const C: u8>: sealed::Pin {
 /// Sole ownership of a PWM block (not one channel), issued by generated resources.
 #[derive(Debug)]
 pub struct Token<const N: u8> {
-    _private: (),
+    _private: core::marker::PhantomData<*mut ()>,
 }
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {
@@ -86,7 +86,9 @@ impl<const N: u8> Token<N> {
     /// Linux's PWM node and conflicting consumers must be disabled; SCMI must hold clk_pwmN.
     pub const unsafe fn new() -> Self {
         const { assert!(N < 2) };
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
     /// Starts XOSC / 1, releases only this block's reset, disables DMA/interrupts and all
     /// channels. Periods start at 65535 ticks, duty at zero. GPIO bank0 and the raw timer must
@@ -143,7 +145,9 @@ impl<const N: u8> Channels<N> {
     /// ```
     pub fn free(self) -> Result<Token<N>, crate::FreeError<Self, Error>> {
         match release_block(&mut Mmio, N) {
-            Ok(()) => Ok(Token { _private: () }),
+            Ok(()) => Ok(Token {
+                _private: core::marker::PhantomData,
+            }),
             Err(error) => Err(crate::FreeError {
                 driver: self,
                 error,
@@ -156,7 +160,9 @@ impl<const N: u8> Channels<N> {
     /// channels again.
     pub fn abort(self) -> Token<N> {
         stop_block(&mut Mmio, N);
-        Token { _private: () }
+        Token {
+            _private: core::marker::PhantomData,
+        }
     }
 }
 /// One channel, initially disabled, with a 32-bit period and compare. Dropping this value

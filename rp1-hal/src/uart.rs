@@ -124,7 +124,7 @@ fn receive_error(data: u32) -> Option<Error> {
 }
 
 pub struct Token<const N: u8> {
-    _private: (),
+    _private: core::marker::PhantomData<*mut ()>,
 }
 /// A configured UART that owns its TX and RX pins.
 pub struct Uart<const N: u8, const TX: u8, const RX: u8> {
@@ -134,7 +134,7 @@ pub struct Uart<const N: u8, const TX: u8, const RX: u8> {
 
 /// The transmitter and routed TX pin of UART N.
 ///
-/// Can be held in a core-local interrupt mutex. Keep both halves on the owning core.
+/// Both halves stay on the owning core.
 pub struct Tx<const N: u8, const PIN: u8> {
     pin: Pin<PIN, Alternate>,
     bound_us: u32,
@@ -142,7 +142,7 @@ pub struct Tx<const N: u8, const PIN: u8> {
 
 /// The receiver and routed RX pin of UART N.
 ///
-/// Can be held in a core-local interrupt mutex. Keep both halves on the owning core.
+/// Both halves stay on the owning core.
 pub struct Rx<const N: u8, const PIN: u8> {
     pin: Pin<PIN, Alternate>,
     timeout: MicrosDurationU32,
@@ -164,7 +164,9 @@ impl<const N: u8> Token<N> {
     /// ```
     pub const unsafe fn new() -> Self {
         const { assert!(N < 5) };
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
     /// Checks clk_uart and the baud rate, releases only this UART's reset, configures 8N1 with
     /// FIFOs, then routes the typed pins. On error the token and the pins come back as the
@@ -214,17 +216,19 @@ impl<const N: u8> Token<N> {
         }
     }
 }
+pin_builder!(Pin, []);
+pin_builder!(Pin, [], tx: TX => TxPin);
+pin_builder!(Pin, [tx: TX], rx: RX => RxPin);
+
 /// A declared UART N with its pins, as the generated resources hand it out
 /// (`rp1-build`); only routes from the bank-0 pin table can be named.
 ///
 /// ```no_run
 /// # use rp1_hal::{clocks::Clocks, fugit::RateExtU32, gpio::Pin, uart::{Error, Parts, Token, Uart}};
 /// // The resource generated for `uart2 = { tx = 4, rx = 5 }`:
-/// let uart2: Parts<2, 4, 5> = Parts {
-///     token: unsafe { Token::new() },
-///     tx: unsafe { Pin::new() },
-///     rx: unsafe { Pin::new() },
-/// };
+/// let pins = rp1_hal::uart::Pins::<2>::builder()
+///     .tx(unsafe { Pin::<4>::new() }).rx(unsafe { Pin::<5>::new() });
+/// let uart2 = Parts::new(unsafe { Token::new() }, pins);
 /// fn bring_up(uart2: Parts<2, 4, 5>, clocks: &Clocks) -> Result<Uart<2, 4, 5>, Error> {
 ///     let mut uart = uart2.init(clocks, 115_200.Hz())?;
 ///     embedded_io::Write::write_all(&mut uart, b"hello")?;
@@ -237,15 +241,26 @@ where
     Pin<TX>: TxPin<N>,
     Pin<RX>: RxPin<N>,
 {
-    pub token: Token<N>,
-    pub tx: Pin<TX>,
-    pub rx: Pin<RX>,
+    token: Token<N>,
+    tx: Pin<TX>,
+    rx: Pin<RX>,
 }
 impl<const N: u8, const TX: u8, const RX: u8> Parts<N, TX, RX>
 where
     Pin<TX>: TxPin<N>,
     Pin<RX>: RxPin<N>,
 {
+    /// Assemble the owned block and the routed pin bundle.
+    pub fn new(token: Token<N>, pins: Pins<N, (Pin<TX>, Pin<RX>)>) -> Self {
+        let (tx, rx) = pins.0;
+        Self { token, tx, rx }
+    }
+
+    /// Return the block and pins for manual assembly.
+    pub fn into_parts(self) -> (Token<N>, Pins<N, (Pin<TX>, Pin<RX>)>) {
+        (self.token, Pins((self.tx, self.rx)))
+    }
+
     /// [`Token::init`] with the declared pins.
     pub fn init(
         self,
@@ -617,7 +632,9 @@ where
     }
     fn into_parts(self) -> Parts<N, TX, RX> {
         Parts {
-            token: Token { _private: () },
+            token: Token {
+                _private: core::marker::PhantomData,
+            },
             tx: self.tx.pin.release(),
             rx: self.rx.pin.release(),
         }

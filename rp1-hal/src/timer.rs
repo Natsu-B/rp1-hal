@@ -52,14 +52,16 @@ impl DelayNs for Timer {
     }
 }
 pub struct Alarm<const N: u8> {
-    _private: (),
+    _private: core::marker::PhantomData<*mut ()>,
 }
 impl<const N: u8> Alarm<N> {
     /// # Safety
     /// Exactly one instance for the declared owner, with N < 4.
     pub const unsafe fn new() -> Self {
         assert!(N < 4);
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
     /// Arms this alarm at an absolute timer instant within the next half-cycle.
     pub fn schedule(&mut self, deadline: TimerInstantU32<1_000_000>) -> Result<(), Error> {

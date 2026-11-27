@@ -44,8 +44,7 @@
 //! In the terms of the other drivers' release contract, [`Transfer::cancel`] is the `abort`
 //! of a transfer: forced, and the rest of the block is discarded. Unlike their `abort` it
 //! is not bounded, for the reason above, and there is no fallible `free` that would return
-//! the buffers of a block that is still running. [`Dma::free`] is the infallible kind: it
-//! takes all eight channels, and a channel is idle whenever no transfer borrows it.
+//! the buffers of a block that is still running.
 use crate::{
     clocks::Clocks,
     linux_blocks::{Hardware, Mmio},
@@ -164,7 +163,7 @@ fn wait(io: &mut impl Hardware, address: usize, mask: u32, value: u32) -> Result
 /// Sole ownership of the DMA controller, issued by generated resources.
 #[derive(Debug)]
 pub struct Token {
-    _private: (),
+    _private: core::marker::PhantomData<*mut ()>,
 }
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {
@@ -177,11 +176,14 @@ impl Token {
     /// Generated resources only: one core owns the DMAC, its reset and clock. Linux's
     /// `rp1_dma` node and its `dmas` consumers must be disabled; SCMI must hold clk_dma.
     pub const unsafe fn new() -> Self {
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
     /// Starts clk_dma at 100 MHz, releases the DMA reset, soft-resets the DMAC, disables every
     /// channel and its interrupts and enables the controller (interrupt output off). On error
     /// the token comes back in [`InitError`](crate::InitError) for a retry.
+    #[doc(hidden)]
     pub fn init(self, clocks: &Clocks) -> Result<Dma, crate::InitError<Token, Error>> {
         if !clocks.still_current() {
             return Err(crate::InitError {
@@ -190,7 +192,7 @@ impl Token {
             });
         }
         match start(&mut Mmio) {
-            Ok(()) => Ok(Dma::new()),
+            Ok(()) => Ok(Dma { _token: self }),
             Err(error) => Err(crate::InitError {
                 error,
                 resources: self,
@@ -229,42 +231,27 @@ const fn channel_base(n: u8) -> usize {
     BASE + CHANNEL_BASE + n as usize * CHANNEL_STRIDE
 }
 
-/// The eight channels of an initialized controller. Linux numbering: channels 0 and 1 have the
-/// 8-beat FIFOs (datasheet "channels 1 and 2").
-#[derive(Debug)]
+/// An initialized DMA controller. The generated channel set holds this owner.
 pub struct Dma {
-    pub ch0: Channel<0>,
-    pub ch1: Channel<1>,
-    pub ch2: Channel<2>,
-    pub ch3: Channel<3>,
-    pub ch4: Channel<4>,
-    pub ch5: Channel<5>,
-    pub ch6: Channel<6>,
-    pub ch7: Channel<7>,
+    _token: Token,
 }
+
 impl Dma {
-    fn new() -> Self {
-        Self {
-            ch0: Channel(()),
-            ch1: Channel(()),
-            ch2: Channel(()),
-            ch3: Channel(()),
-            ch4: Channel(()),
-            ch5: Channel(()),
-            ch6: Channel(()),
-            ch7: Channel(()),
-        }
-    }
-    /// Returns the controller token once every channel is back. Clock and reset stay on.
-    /// Nothing can be running (a transfer borrows its channel), so this cannot fail.
-    pub fn free(self) -> Token {
-        Token { _private: () }
+    /// Issue a channel named in the owning core's declaration.
+    ///
+    /// # Safety
+    /// Generated resources only: issue each selected channel exactly once.
+    #[doc(hidden)]
+    pub const unsafe fn channel<const N: u8>(&mut self) -> Channel<N> {
+        const { assert!(N < 8) };
+        Channel(core::marker::PhantomData)
     }
 }
 
-/// One DMA channel. Idle whenever no [`Transfer`] borrows it (a dropped transfer is stopped).
+/// One initialized channel. Linux numbering: channels 0 and 1 have 8-beat FIFOs.
+/// A transfer borrows its channel until it completes or is stopped.
 #[derive(Debug)]
-pub struct Channel<const N: u8>(());
+pub struct Channel<const N: u8>(core::marker::PhantomData<*mut ()>);
 
 /// Transfer width log2 (bytes) for a copy: the largest power of two dividing both addresses and
 /// the length, at most 16 bytes (Linux `axi_chan_get_xfer_width`).

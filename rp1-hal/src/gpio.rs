@@ -36,13 +36,15 @@ const fn ints(core: u8) -> usize {
 /// (for example [`Pin::into_input`]) before enabling events: that rewrites GPIOn_CTRL and clears
 /// the event masks.
 pub struct PinIrq<const N: u8, const CORE: u8> {
-    _private: (),
+    _private: core::marker::PhantomData<*mut ()>,
 }
 impl<const N: u8, const CORE: u8> PinIrq<N, CORE> {
     /// # Safety
     /// Call once on core CORE (0 or 1), which must own pin N (0..27) in `gpio_irq`.
     pub const unsafe fn new() -> Self {
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
     /// Lets `event` interrupt this core. Call [`PinIrq::clear`] first to discard an edge latched
     /// before enabling.
@@ -161,7 +163,7 @@ pub struct Output;
 /// with the function select from the bank-0 pin table.
 pub struct Alternate;
 pub struct Pin<const N: u8, Mode = Unconfigured> {
-    _mode: PhantomData<Mode>,
+    _mode: PhantomData<(Mode, *mut ())>,
 }
 impl<const N: u8, M> Pin<N, M> {
     /// Reads the pad's current electrical settings.

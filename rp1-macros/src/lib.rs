@@ -94,12 +94,10 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
         Some("proc1") => 1,
         _ => return error("interrupt requires proc0 or proc1, optionally followed by sram"),
     };
-    let (mut sram, mut platform) = (false, false);
+    let mut sram = false;
     for arg in args {
         match arg.to_string().as_str() {
             "sram" if !sram => sram = true,
-            // Private opt-in for rp1-platform PCIE_OUT/PROC_MISC/CLOCKS_DEFAULT handlers.
-            "__platform" if !platform && core == 0 => platform = true,
             _ => return error("invalid or repeated interrupt option"),
         }
     }
@@ -128,12 +126,12 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
     if matches!(
         unraw.to_string().as_str(),
         "PCIE_OUT" | "PROC_MISC" | "CLOCKS_DEFAULT"
-    ) && !platform
-    {
+    ) {
         return error("this interrupt is reserved for rp1-platform");
     }
     let symbol = format!("__rp1_p{core}_{unraw}");
     let wrapper = format_ident!("{symbol}_trampoline");
+    let ownership = format_ident!("__irq_proc{core}");
     // SRAM handlers must also be boundaries for the automatic ISRAM planner.
     let section = if sram {
         format!(".text.rp1_cold.{symbol}")
@@ -148,6 +146,8 @@ pub fn interrupt(args: TokenStream, input: TokenStream) -> TokenStream {
     quote! {
         #(#cfg)*
         const _: ::rp1_rt::pac::Interrupt = ::rp1_rt::pac::Interrupt::#name;
+        #(#cfg)*
+        impl crate::rp1::#ownership::Handler for crate::rp1::#ownership::#name {}
         #(#attrs)*
         #[allow(non_snake_case)]
         #[unsafe(export_name = #symbol)]

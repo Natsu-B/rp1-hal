@@ -55,7 +55,7 @@ gpio = [8, 27]                            # 8 = SPI0 のチップセレクト（
 gpio_irq = [27]                           # 割り込みを受けるピン（gpio の部分集合）
 timer = ["ALARM1"]
 adc = {}                                  # ピンの無いブロック
-dma = {}                                  # DMA コントローラー全体（8 チャネル、docs/dma.md）
+dma = { channels = [0, 2] }               # DMA コントローラー全体を予約し、0 と 2 を発行（docs/dma.md）
 spi0 = { sck = 11, mosi = 10, miso = 9 }  # ハードの csN は未対応（エラー）
 host_irq = true                           # RP1 → Linux 割り込み（1 コアだけ。rp1_link::notify::HostIrq、design.md §6.2）
 doorbell = 26                             # Linux → このコアのドアベル（gpio / gpio_irq と重複不可）
@@ -102,7 +102,9 @@ on_conflict = "disable"                   # "disable"（既定）| "refuse"。�
   E4（`UART flow control is not supported yet`）。そのピンを GPIO として使うなら `gpio` に書く。`linux.keep` では Linux のフロー制御
   ピンとして書ける（機能表で検査し、保護する）。
 - ピンは「インスタンスの信号への割り当て」から導き、bank 0 の機能表（`rp1-pinmux`、datasheet・pinctrl-rp1・HAL の表と照合）で
-  検査する。生成される resources はインスタンスを型付きの `Parts`（例 `i2c::Parts<1, 2, 3>`）で渡し、表に無い組はコンパイルできない。
+  検査する。生成される resources はインスタンスを型付きの `Parts`（例 `i2c::Parts<1, 2, 3>`）で渡す。
+  手動組み立ても同じ builder を使う（`i2c::Pins::<1>::builder().sda(sda).scl(scl)` を `Parts::new` に渡す）。
+  ピン、IRQ、ドライバーは所有コア内に留める。ISR と共有するドライバーには `interrupt::Slot` を使う。
 - `linux.keep` はピンの保護だけ。Linux 側ノードの有効化は config.txt の `dtoverlay=`（例 `uart1-pi5`）に任せる。
   明示した `keep` はボード既定を置き換える（既定への追加ではない）。既定の UART1 を残したまま追加するなら、同じ table に `uart1` も書く
   （例 `keep = { uart1 = { tx = 0, rx = 1 }, i2c1 = { sda = 2, scl = 3 } }`）。`keep` から `uart1` を外すと GPIO 0/1 を RP1 に渡せる
@@ -166,17 +168,17 @@ rpi-cm5 のボード表は GPIO 28..53（ETH_RST_N、VBUS など）と Ethernet�
 
 ### 1.3.1 コアごとの割り込み所有
 
-STATIC: `ProcNResources.irq` は、宣言でそのコアに割り当てた線だけを持つ。宣言キーは増えない。
+STATIC（2026-11-27）: `ProcNResources.irq` は、宣言でそのコアに割り当てた `Binding<Source, IRQ, CORE>` だけを持つ。既存の NVIC 操作は `Line<IRQ>` への参照で使える。
 
 | 宣言 | `ProcNIrq` のフィールド |
 |---|---|
-| `timer = ["ALARMn"]` | `TIMER_n: rp1_rt::interrupt::Line<{26+n}>` |
-| `gpio_irq = [..]`（空でない） | `IO_BANK0: Line<0>` と、各ピンの `gpioN: rp1_hal::gpio::PinIrq<N, CORE>` |
-| `uart1`..`uart4` | `UARTn: Line<{41+n}>` |
-| `i2c0`..`i2c3` | `I2Cn: Line<{7+n}>` |
-| `spi0` / `spi1` / `spi3` | `SPIn: Line<{19+n}>` |
-| `pwm0` / `pwm1` | `PWM0: Line<5>` / `PWM1: Line<41>` |
-| `adc` | `ADC_FIFO: Line<52>` |
+| `timer = ["ALARMn"]` | `TIMER_n: Binding<AlarmIrq<n>, {26+n}, CORE>` |
+| `gpio_irq = [..]`（空でない） | `IO_BANK0: Binding<Bank0Irq, 0, CORE>` と、各ピンの `gpioN: rp1_hal::gpio::PinIrq<N, CORE>` |
+| `uart1`..`uart4` | `UARTn: Binding<BlockIrq<ID>, {41+n}, CORE>` |
+| `i2c0`..`i2c3` | `I2Cn: Binding<BlockIrq<ID>, {7+n}, CORE>` |
+| `spi0` / `spi1` / `spi3` | `SPIn: Binding<BlockIrq<ID>, {19+n}, CORE>` |
+| `pwm0` / `pwm1` | `PWM0: Binding<BlockIrq<48>, 5, CORE>` / `PWM1: Binding<BlockIrq<49>, 41, CORE>` |
+| `adc` | `ADC_FIFO: Binding<BlockIrq<ID>, 52, CORE>` |
 
 HW: 上の線の番号は実機で NVIC まで届くと確認された対応に限る（GPIO は両コア。PWM0・TIMER_3 は試作ファームでの確認）。根拠と、I2C / SPI の
 出力イネーブル `+0x108` などの条件は `docs/interrupts.md`。
@@ -185,7 +187,7 @@ SPI5 と DMA は IRQ 番号が実機未確認なので `Line` を生成しない
 インスタンスの所有やポーリング用トークンには影響しない。
 
 `gpio_irq` のピンは通常の `pins.gpioN` と別に割り込み権限を持つ。両コアがそれぞれ `gpio_irq` を宣言すると、
-両方に `Line<0>` が入る。IO_BANK0 の割り込み状態・イネーブルはコアごとに分かれている（DOC）。
+両方にコア番号付きの `IO_BANK0` が入る。IO_BANK0 の割り込み状態・イネーブルはコアごとに分かれている（DOC）。
 STATIC: `PinIrq` はそのコアから見たピンの割り込みを操作する。`enable(Event)` / `disable(Event)`（`Event` はレベル 2 種とエッジ 2 種）、
 `is_pending()`、`clear()`（ラッチしたエッジを消す）、`force()` / `unforce()` / `is_forced()` を持つ。
 コンストラクターは unsafe で、生成コードだけが呼ぶ。ピンの設定（`into_input` など）は GPIOn_CTRL を書き直してイベントのマスクを消すので、
@@ -197,7 +199,10 @@ IRQ59（CLOCKS_DEFAULT）など、それ以外のシステム線も渡さない�
 
 STATIC: `cargo rp1 check` と `cargo rp1 build` は、両コアの外部ベクタの Thumb ビット・アドレス範囲を検査し、
 既定ハンドラ以外の線を note の OWNERSHIP と照合する。宣言で所有しない線や未確認線にハンドラを置くとビルドエラーになる。
-IRQ53/57 の上書きは proc0 だけに許す。ハンドラを定義せず線を所有することは許される。
+IRQ53/57 はプラットフォーム専用。ハンドラを定義せず線を所有することは許される。
+`#[interrupt(procN)]` は同じコア・線に 1 個。IRQ で受信する link のドアベルは、既定で生成ハンドラが ack して起床を通知する。
+GPIO との共有や独自処理が必要な場合は `custom_doorbell_handler = true` を宣言し、
+そのコアの `IO_BANK0` で `doorbell.ack_and_signal()` と各 GPIO source を処理する。
 
 ### 1.4 ビルド時のエラー（build.rs が止める）
 
@@ -244,9 +249,9 @@ pub mod rp1 {
     }
     #[allow(non_snake_case)]
     pub struct Proc1Irq {
-        pub IO_BANK0: ::rp1_rt::interrupt::Line<0>,
-        pub SPI0: ::rp1_rt::interrupt::Line<19>,
-        pub TIMER_1: ::rp1_rt::interrupt::Line<27>,
+        pub IO_BANK0: Binding<Bank0Irq, 0, 1>,
+        pub SPI0: Binding<BlockIrq<16>, 19, 1>,
+        pub TIMER_1: Binding<AlarmIrq<1>, 27, 1>,
         pub gpio27: ::rp1_hal::gpio::PinIrq<27, 1>,
     }
     #[allow(non_snake_case)]

@@ -148,7 +148,7 @@ impl<const PIN: u8, const CORE: u8> Reader<PIN, CORE> {
 /// `slot` (the handler's), answering in `request`. Returns `None` for any other command, else
 /// the errors: 1 while the reader is not open yet.
 pub fn down_command<const PIN: u8, const CORE: u8>(
-    slot: &Shared<Reader<PIN, CORE>>,
+    slot: &Shared<Reader<PIN, CORE>, CORE>,
     request: &mut [u32; 16],
 ) -> Option<u32> {
     let (command, count, seed) = (request[1], request[2], request[3]);

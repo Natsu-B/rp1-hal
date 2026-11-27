@@ -745,6 +745,9 @@ fn provider_consumers(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
         ("pwms", "#pwm-cells", |id| (48..=49).contains(&id)),
         ("dmas", "#dma-cells", |id| id == 65),
     ];
+    let dma_disable = fdt
+        .find("/rp1-firmware")
+        .map_or_else(Vec::new, |node| fdt.strings(node, "rp1,allow-dma-disable"));
     for (prop, cells_prop, owned) in KINDS {
         if !out.blocks.iter().any(|id| owned(*id)) {
             continue;
@@ -773,7 +776,15 @@ fn provider_consumers(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
                     return Err(format!("{} {prop}: truncated specifier", fdt.path(n)));
                 }
                 if let Some(label) = out.owned_blocks.get(&provider) {
-                    out.add(n, format!("{prop} uses RP1-owned block {label}"));
+                    let reason = format!("{prop} uses RP1-owned block {label}");
+                    if prop == "dmas" && !dma_disable.contains(&fdt.path(n)) {
+                        out.unresolved.push(format!(
+                            "{}: {reason}; consumer is not listed for disable",
+                            fdt.path(n)
+                        ));
+                    } else {
+                        out.add(n, reason);
+                    }
                 }
                 at += count;
             }
@@ -854,7 +865,17 @@ fn protected_nodes(fdt: &Fdt) -> Result<(BTreeMap<usize, String>, Option<String>
     let board = rp1_proto::board::LINUX_BLOCKS
         .iter()
         .map(|(_, label)| *label);
-    for label in board.chain(["rp1_gpio", "rp1_scmi", "rp1_scmi_clocks", "rp1_scmi_shmem"]) {
+    for label in board.chain([
+        "rp1_gpio",
+        "rp1_scmi",
+        "rp1_scmi_clocks",
+        "rp1_scmi_shmem",
+        "rp1_csi0",
+        "rp1_csi1",
+        "i2c_csi_dsi0",
+        "i2c_csi_dsi1",
+        "fan",
+    ]) {
         if let Some(n) = fdt.label(label) {
             protect(n, format!("board Linux block {label}"));
         }

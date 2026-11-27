@@ -649,3 +649,37 @@ fn prediction_rejects_a_dtb_taken_after_rp1boot() {
     assert!(e.contains("already has /rp1-firmware"), "{e}");
     assert!(e.contains("fdtoverlay"), "{e}");
 }
+
+#[test]
+fn dma_subset_claims_the_linux_provider_and_requires_consumer_opt_in() {
+    use rp1_dt::check::{Plan, Policy, apply_plan, resolve};
+    let d: Declaration = toml::from_str("schema=2\n[proc1]\ndma={channels=[0,2]}").unwrap();
+    let base = BASE
+        .replace("rp1_dma: dma { };", "rp1_dma: dma { #dma-cells = <1>; };")
+        .replace("@EXTRA_RP1@", "optional-dma { dmas = <&rp1_dma 7>; };");
+    let (after, note) = apply_declaration(&d, &base);
+    assert!(!after.enabled(after.label("rp1_dma").unwrap()));
+    let consumer = "/rp1/optional-dma";
+    assert!(after.enabled(after.find(consumer).unwrap()));
+    let policy = Policy::from_fdt(&after).unwrap();
+    assert!(matches!(
+        resolve(&after, &note, policy).unwrap(),
+        Plan::Refuse(why) if why.iter().any(|s| s.contains(consumer) && s.contains("dmas"))
+    ));
+
+    let mut d = d;
+    d.linux.dma_disable.push(consumer.into());
+    let (before, note) = apply_declaration(&d, &base);
+    let plan = resolve(&before, &note, policy).unwrap();
+    assert!(matches!(&plan, Plan::Disable(nodes) if nodes.iter().any(|n| n.path == consumer)));
+    let mut after = before.clone();
+    apply_plan(&before, &mut after, &note, policy, &plan).unwrap();
+    assert!(!after.enabled(after.find(consumer).unwrap()));
+
+    let base = base.replace("optional-dma {", "rp1_csi0: optional-dma {");
+    let (after, note) = apply_declaration(&d, &base);
+    assert!(matches!(
+        resolve(&after, &note, policy).unwrap(),
+        Plan::Refuse(why) if why.iter().any(|s| s.contains("protected"))
+    ));
+}

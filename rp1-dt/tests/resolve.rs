@@ -1228,6 +1228,16 @@ fn owned_dma_consumers_are_disabled_and_rp1_dma_is_no_longer_protected() {
         gpiomem: Gpiomem::Keep,
         ..Policy::default()
     };
+    refusal(
+        resolve(&fdt, &note, policy).unwrap(),
+        "consumer is not listed for disable",
+    );
+    set(
+        &mut fdt,
+        "/rp1-firmware",
+        "rp1,allow-dma-disable",
+        b"/spi\0".to_vec(),
+    );
     let plan = resolve(&fdt, &note, policy).unwrap();
     let nodes = disables(&plan);
     assert_eq!(nodes.len(), 1);

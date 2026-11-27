@@ -83,7 +83,7 @@ jobs:
       - name: cargo rp1 build
         run: cargo rp1 build --locked -p ${{ matrix.package }} --target thumbv7m-none-eabi --release ${{ matrix.features }}
       - name: cargo rp1 check
-        run: cargo rp1 check target/thumbv7m-none-eabi/release/${{ matrix.package }}
+        run: cargo rp1 check target/thumbv7m-none-eabi/release/${{ matrix.package }} ${{ matrix.package == 'dual-core' && matrix.name != 'ping-poll' && '--require-link-irq' || '' }}
 
   linux-clients:
     runs-on: ubuntu-latest

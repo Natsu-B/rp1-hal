@@ -12,13 +12,13 @@ use rp1_hal::{gpio::PinIrq, i2c::I2c, timer::Alarm};
 use rp1_rt::{interrupt, interrupt::Line, pac::dw_i2c::intr::TX_EMPTY};
 
 type I2c1 = I2c<1, 2, 3>;
-static ALARM: Shared<Alarm<0>> = shared();
-static PIN: Shared<PinIrq<22, 0>> = shared();
-static I2C: Shared<I2c1> = shared();
-static BELL: Shared<rp1::Doorbell0> = shared();
+static ALARM: Shared<Alarm<0>, 0> = shared();
+static PIN: Shared<PinIrq<22, 0>, 0> = shared();
+static I2C: Shared<I2c1, 0> = shared();
+static BELL: Shared<rp1::Doorbell0, 0> = shared();
 /// The `down0` ring and the `tick0` writer, once main has opened them.
-pub static DOWN0: Shared<Reader<26, 0>> = shared();
-pub static TICK0: Shared<Ticks> = shared();
+pub static DOWN0: Shared<Reader<26, 0>, 0> = shared();
+pub static TICK0: Shared<Ticks, 0> = shared();
 static GPIO: Entries = Entries::new();
 static WRAP: Entries = Entries::new();
 /// Handler entries with the doorbell set.
@@ -49,7 +49,7 @@ fn IO_BANK0() {
     if let Some(bell) = proof::get(&BELL)
         && bell.is_pending()
     {
-        bell.ack();
+        bell.ack_and_signal();
         BELL_ENTRIES.enter(0);
         with(&DOWN0, |reader| reader.on_doorbell(bell));
     }

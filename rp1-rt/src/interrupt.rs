@@ -3,13 +3,15 @@
 //! `#[interrupt(proc0)]` and `#[interrupt(proc1)]` bind a PAC interrupt name to a core.
 //! Handlers run from ISRAM by default; `sram` keeps the handler in shared SRAM, including
 //! when using automatic ISRAM placement. `PCIE_OUT`, `PROC_MISC`, and `CLOCKS_DEFAULT`
-//! are reserved for system services. Duplicate definitions on one core fail at link time.
+//! are reserved for system services. A handler needs a declared line on that core.
+//! Duplicate definitions on one core fail to link.
 //!
 //! ```
 //! use core::cell::Cell;
 //! use rp1_rt::interrupt::{Mutex, free};
 //! static TICKS: Mutex<Cell<u32>> = Mutex::new(Cell::new(0));
 //!
+//! # mod rp1 { pub mod __irq_proc1 { pub trait Handler {} #[allow(non_camel_case_types)] pub enum TIMER_1 {} } }
 //! #[rp1_rt::interrupt(proc1)]
 //! fn TIMER_1() {
 //!     free(|cs| TICKS.borrow(cs).set(TICKS.borrow(cs).get() + 1));
@@ -33,7 +35,7 @@
 //!
 //! Keep user critical sections below 100 microseconds. Handlers receive no core token and
 //! cannot access `#[proc0]`/`#[proc1]` locals. Share state with
-//! main through ordinary statics and a `Mutex` or DSRAM atomics. `log!` in a handler does not
+//! main through a [`Slot`], ordinary statics with a `Mutex`, or DSRAM atomics. `log!` in a handler does not
 //! wait for the log lock: it drops the message when the log is busy, and otherwise sends it
 //! synchronously, polling the UART for each byte.
 
@@ -121,10 +123,9 @@ impl Default for Priority {
 /// Unique ownership of one core's NVIC line.
 ///
 /// Device interrupt masks are separate. Enabling a line without a handler is safe:
-/// the default handler masks it and records [`unhandled`]. `Line` is `Send` so it can
-/// sit in a core-local [`Mutex`]; it is neither `SharedSafe` nor `Message`.
+/// the default handler masks it and records [`unhandled`]. The line stays on its owning core.
 pub struct Line<const IRQ: u8> {
-    _private: (),
+    _core: core::marker::PhantomData<*mut ()>,
 }
 
 impl<const IRQ: u8> Line<IRQ> {
@@ -136,7 +137,9 @@ impl<const IRQ: u8> Line<IRQ> {
     /// Keep it on that core. System IRQs may only be constructed by system services.
     pub const unsafe fn new() -> Self {
         const { assert!(IRQ < 64, "NVIC IRQ must be in 0..64") };
-        Self { _private: () }
+        Self {
+            _core: core::marker::PhantomData,
+        }
     }
 
     /// Enable delivery on this core. Peripheral interrupt masks are unchanged.
@@ -174,6 +177,47 @@ impl<const IRQ: u8> Line<IRQ> {
         Nvic(Hardware).set_priority(IRQ, priority);
     }
 }
+
+/// A verified NVIC line assigned to a declaration's source and core.
+/// The source's device operations remain on the source token.
+pub struct Binding<S, const IRQ: u8, const CORE: u8> {
+    line: Line<IRQ>,
+    _source: core::marker::PhantomData<S>,
+}
+
+impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
+    /// # Safety
+    /// Generated resources only, once on CORE for the verified route from S to IRQ.
+    #[doc(hidden)]
+    pub const unsafe fn new() -> Self {
+        Self {
+            line: unsafe { Line::new() },
+            _source: core::marker::PhantomData,
+        }
+    }
+}
+impl<S, const IRQ: u8, const CORE: u8> core::ops::Deref for Binding<S, IRQ, CORE> {
+    type Target = Line<IRQ>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.line
+    }
+}
+impl<S, const IRQ: u8, const CORE: u8> core::ops::DerefMut for Binding<S, IRQ, CORE> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.line
+    }
+}
+
+/// A timer comparison feeding the corresponding TIMER IRQ.
+pub enum AlarmIrq<const N: u8> {}
+/// An instance's verified interrupt output.
+pub enum BlockIrq<const ID: u16> {}
+/// The bank-0 line shared by the core's GPIO edges/levels and doorbell force source.
+pub enum Bank0Irq {}
+
+mod slot;
+pub use slot::Slot;
 
 /// Whether this core is executing an exception or interrupt handler.
 /// Returns `false` on a host.
@@ -373,8 +417,6 @@ mod tests {
         assert_eq!(Priority::default().value(), 4);
         assert!(!in_handler());
         assert_eq!(unhandled(), None);
-        fn send<T: Send>() {}
-        send::<Line<0>>();
     }
 
     #[test]

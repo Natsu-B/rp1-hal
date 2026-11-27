@@ -245,7 +245,7 @@ fn divider(sys_hz: u32, hz: u32) -> Result<u32, Error> {
 }
 
 pub struct Token<const N: u8> {
-    _private: (),
+    _private: core::marker::PhantomData<*mut ()>,
 }
 /// A configured controller. Each [`SpiBus`] call checks once, before any FIFO access, that
 /// clk_sys still matches the [`Clocks`] it was set up with ([`Error::Precondition`] if not);
@@ -283,7 +283,9 @@ impl<const N: u8> Token<N> {
     /// ```
     pub const unsafe fn new() -> Self {
         const { assert!(matches!(N, 0 | 1 | 2 | 3 | 5)) };
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
     /// Checks clk_sys and the configuration, releases only this controller's reset, checks
     /// the block, detects the FIFO depth and frame field, then routes the typed pins. GPIO bank0
@@ -339,10 +341,10 @@ impl<const N: u8> Token<N> {
     fn init_on<const SCK: u8, const MOSI: u8, const MISO: u8>(
         self,
         io: &mut impl Io,
-        pins: Pins<SCK, MOSI, MISO>,
+        pins: PinTuple<SCK, MOSI, MISO>,
         clocks: &Clocks,
         config: Config,
-        route: impl FnOnce(Pins<SCK, MOSI, MISO>) -> Pins<SCK, MOSI, MISO, Alternate>,
+        route: impl FnOnce(PinTuple<SCK, MOSI, MISO>) -> PinTuple<SCK, MOSI, MISO, Alternate>,
     ) -> Result<Spi<N, SCK, MOSI, MISO>, crate::InitError<Parts<N, SCK, MOSI, MISO>, Error>>
     where
         Pin<SCK>: Sck<N>,
@@ -380,6 +382,11 @@ impl<const N: u8> Token<N> {
         }
     }
 }
+pin_builder!(Pin, []);
+pin_builder!(Pin, [], sck: SCK => Sck);
+pin_builder!(Pin, [sck: SCK], mosi: MOSI => Mosi);
+pin_builder!(Pin, [sck: SCK, mosi: MOSI], miso: MISO => Miso);
+
 /// A declared SPI N with its pins, as the generated resources hand it out (`rp1-build`).
 pub struct Parts<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8>
 where
@@ -387,10 +394,10 @@ where
     Pin<MOSI>: Mosi<N>,
     Pin<MISO>: Miso<N>,
 {
-    pub token: Token<N>,
-    pub sck: Pin<SCK>,
-    pub mosi: Pin<MOSI>,
-    pub miso: Pin<MISO>,
+    token: Token<N>,
+    sck: Pin<SCK>,
+    mosi: Pin<MOSI>,
+    miso: Pin<MISO>,
 }
 impl<const N: u8, const SCK: u8, const MOSI: u8, const MISO: u8> Parts<N, SCK, MOSI, MISO>
 where
@@ -398,6 +405,22 @@ where
     Pin<MOSI>: Mosi<N>,
     Pin<MISO>: Miso<N>,
 {
+    /// Assemble the owned block and the routed pin bundle.
+    pub fn new(token: Token<N>, pins: Pins<N, (Pin<SCK>, Pin<MOSI>, Pin<MISO>)>) -> Self {
+        let (sck, mosi, miso) = pins.0;
+        Self {
+            token,
+            sck,
+            mosi,
+            miso,
+        }
+    }
+
+    /// Return the block and pins for manual assembly.
+    pub fn into_parts(self) -> (Token<N>, Pins<N, (Pin<SCK>, Pin<MOSI>, Pin<MISO>)>) {
+        (self.token, Pins((self.sck, self.mosi, self.miso)))
+    }
+
     /// [`Token::init`] with the declared pins.
     pub fn init(
         self,
@@ -409,7 +432,7 @@ where
     }
 }
 /// SCK, MOSI and MISO.
-type Pins<const SCK: u8, const MOSI: u8, const MISO: u8, M = Unconfigured> =
+type PinTuple<const SCK: u8, const MOSI: u8, const MISO: u8, M = Unconfigured> =
     (Pin<SCK, M>, Pin<MOSI, M>, Pin<MISO, M>);
 
 /// The register part of [`Token::init`]: (depth, dfs32, CTRLR0, BAUDR). Nothing is written,
@@ -825,7 +848,9 @@ where
     }
     fn into_parts(self) -> Parts<N, SCK, MOSI, MISO> {
         Parts {
-            token: Token { _private: () },
+            token: Token {
+                _private: core::marker::PhantomData,
+            },
             sck: self._sck.release(),
             mosi: self._mosi.release(),
             miso: self._miso.release(),
@@ -1413,14 +1438,14 @@ mod tests {
         );
     }
 
-    fn pins() -> Pins<11, 10, 9> {
+    fn pins() -> PinTuple<11, 10, 9> {
         unsafe { (Pin::new(), Pin::new(), Pin::new()) }
     }
     /// `init_on` over `m` with a route that only records that it ran.
     fn init_model(
         token: Token<0>,
         m: &mut Model,
-        pins: Pins<11, 10, 9>,
+        pins: PinTuple<11, 10, 9>,
         config: Config,
         routed: &mut bool,
     ) -> Result<Spi<0, 11, 10, 9>, crate::InitError<Parts<0, 11, 10, 9>, Error>> {
@@ -1582,7 +1607,7 @@ mod tests {
     #[allow(dead_code)]
     fn init_with_question_mark(
         token: Token<0>,
-        (sck, mosi, miso): Pins<11, 10, 9>,
+        (sck, mosi, miso): PinTuple<11, 10, 9>,
         clocks: &Clocks,
     ) -> Result<Spi<0, 11, 10, 9>, Error> {
         let config = Config::new(1.MHz(), embedded_hal::spi::MODE_0).with_rx_sample_dly(1);

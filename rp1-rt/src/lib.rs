@@ -94,13 +94,15 @@ impl<T, C: Core> Local<T, C> {
 }
 
 pub struct Proc1Launcher {
-    _private: (),
+    _private: PhantomData<*mut ()>,
 }
 impl Proc1Launcher {
     /// # Safety
     /// Runtime only, once on proc0; proc1 must still be held in reset.
     pub unsafe fn new() -> Self {
-        Self { _private: () }
+        Self {
+            _private: PhantomData,
+        }
     }
     pub fn launch(self, _core: &mut Proc0) -> Result<(), LaunchError> {
         #[cfg(target_arch = "arm")]

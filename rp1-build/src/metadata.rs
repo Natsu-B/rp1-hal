@@ -170,7 +170,9 @@ impl Default for Stack {
     }
 }
 pub use crate::board::{Gpiomem, Linux, OnConflict};
-pub use crate::declaration::{Core, Heartbeat, I2cPins, Instance, PwmPins, SpiPins, UartPins};
+pub use crate::declaration::{
+    Core, DmaChannels, Heartbeat, I2cPins, Instance, PwmPins, SpiPins, UartPins,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -571,15 +573,21 @@ impl Declaration {
                             )
                             .into());
                         }
-                        if r.direction.as_deref() == Some("linux-to-rp1")
-                            && owner.doorbell.is_none()
-                        {
-                            return Err(format!(
-                                "notify=irq on ring {} requires {}.doorbell \
-                                     (Linux raises the reading core's doorbell)",
-                                r.name, r.core
-                            )
-                            .into());
+                        if r.direction.as_deref() == Some("linux-to-rp1") {
+                            if owner.doorbell.is_none() {
+                                return Err(format!(
+                                    "notify=irq on ring {} requires {}.doorbell \
+                                         (Linux raises the reading core's doorbell)",
+                                    r.name, r.core
+                                )
+                                .into());
+                            }
+                            if !owner.gpio_irq.is_empty() && !owner.custom_doorbell_handler {
+                                return Err(format!(
+                                    "E5: {} shares IO_BANK0 between GPIO and doorbell; set custom_doorbell_handler = true and dispatch both sources",
+                                    r.core
+                                ).into());
+                            }
                         }
                     }
                     Some(_) => return Err("invalid notify (poll or irq)".into()),

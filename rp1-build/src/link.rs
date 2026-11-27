@@ -8,24 +8,6 @@ use rp1_proto::note::{ShmKind, ShmRegion, Writer};
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
-/// Provide the link handler as a default so existing GPIO bank handlers retain precedence.
-pub(crate) fn irq_defaults(shm: &ShmLayout<'_>) -> Result<String> {
-    let mut defaults = String::new();
-    for core in 0..2 {
-        if shm
-            .regions
-            .iter()
-            .any(|region| region.receives_doorbell(core))
-        {
-            writeln!(
-                defaults,
-                "PROVIDE(__rp1_p{core}_IO_BANK0 = __rp1_link_p{core}_IO_BANK0);"
-            )?;
-        }
-    }
-    Ok(defaults)
-}
-
 pub(crate) fn generate(shm: &ShmLayout<'_>, note: &[u8]) -> Result<String> {
     let mut output = String::from(
         "use ::rp1_hal::platform::Pcie;\n\
@@ -71,7 +53,7 @@ pub(crate) fn generate(shm: &ShmLayout<'_>, note: &[u8]) -> Result<String> {
          /// Wait for Linux's request and publish Ready. The alarm and its matching disabled\n\
          /// NVIC line must be idle. Call in thread mode with IRQs enabled. The alarm\n\
          /// rechecks requests from older clients every 10 ms until startup completes.\n\
-         pub fn enable<const N: u8, const IRQ: u8>(pcie: &mut Pcie, alarm: &mut ::rp1_hal::timer::Alarm<N>, line: &mut generated::Line<IRQ>) -> Result<u32, EnableError> {\n\
+         pub fn enable<const N: u8, const IRQ: u8>(pcie: &mut Pcie, alarm: &mut ::rp1_hal::timer::Alarm<N>, line: &mut ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::AlarmIrq<N>, IRQ, 0>) -> Result<u32, EnableError> {\n\
              generated::enable(alarm, line, || try_enable(pcie))\n\
          }\n\
          #[doc(hidden)]\n\
@@ -241,16 +223,6 @@ fn write_core(
     endpoints: &[(&Endpoint<'_>, &String)],
     irq: bool,
 ) -> Result<()> {
-    if irq {
-        writeln!(
-            output,
-            "#[unsafe(no_mangle)]\n\
-             #[unsafe(link_section = \".isram.text.__rp1_link_p{core}_IO_BANK0\")]\n\
-             unsafe extern \"C\" fn __rp1_link_p{core}_IO_BANK0() {{\n\
-                 unsafe {{ super::Doorbell{core}::new() }}.ack_and_signal();\n\
-             }}"
-        )?;
-    }
     writeln!(
         output,
         "/// Attached endpoints owned by proc{core}.\npub struct Proc{core}Link {{"
@@ -282,7 +254,7 @@ fn write_core(
             output,
             "/// Enable the doorbell and sleep in thread mode until proc0 publishes the window.\n\
              /// A custom IO_BANK0 handler must acknowledge the doorbell and signal an event.\n\
-             pub fn open(self, irq: &mut generated::Line<0>) -> Result<Proc{core}Link, OpenError<::core::convert::Infallible>> {{\n\
+             pub fn open(self, irq: &mut ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, {core}>) -> Result<Proc{core}Link, OpenError<::core::convert::Infallible>> {{\n\
                  irq.enable();\n\
                  generated::open(self, Self::try_open)\n\
              }}"

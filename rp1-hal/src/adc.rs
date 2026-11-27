@@ -63,7 +63,7 @@ pub enum Error {
 
 /// Ownership of the ADC block, issued by the generated resources for `adc = {}`.
 pub struct Token {
-    _private: (),
+    _private: core::marker::PhantomData<*mut ()>,
 }
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {
@@ -77,7 +77,9 @@ impl Token {
     /// Generated resources only: sole owner of the ADC, its reset and its clock generator, with
     /// Linux's `rp1_adc` disabled and the SCMI server holding clk_adc.
     pub const unsafe fn new() -> Self {
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
 
     /// Starts clk_adc (XOSC / 1), releases the ADC reset, powers the ADC up with the interrupt
@@ -102,6 +104,7 @@ impl Token {
     ) -> Result<Adc, crate::InitError<Token, Error>> {
         match start(clocks) {
             Ok(clk_hz) => Ok(Adc {
+                _token: self,
                 clk_hz,
                 temperature_sensor: false,
             }),
@@ -147,6 +150,7 @@ fn start(clocks: &crate::clocks::Clocks) -> Result<u32, Error> {
 
 /// A powered ADC doing one conversion at a time.
 pub struct Adc {
+    _token: Token,
     clk_hz: u32,
     temperature_sensor: bool,
 }
@@ -196,7 +200,7 @@ impl Adc {
     /// is not measured (HW: not verified). It cannot fail.
     pub fn free(self) -> Token {
         write(CS, 0);
-        Token { _private: () }
+        self._token
     }
 }
 

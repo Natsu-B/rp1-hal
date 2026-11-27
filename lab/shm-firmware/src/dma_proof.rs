@@ -1,4 +1,4 @@
-//! Lab-only DMA proof, run by proc1 (which declares `dma = {}`).
+//! Lab-only DMA proof, run by proc1 (which declares DMA channels 0–2).
 //!
 //! - Boot: SRAM -> SRAM copies through [`rp1_hal::dma::Channel::copy`] (correctness of every
 //!   byte, several sizes) and their throughput (`DMA_SRAM ...` on UART0).
@@ -17,9 +17,10 @@
 //!   (`DMA_ABORT_RAW`): the enable bit must clear with `CH_ABORTED` set.
 #![cfg_attr(not(feature = "dma"), allow(unused_imports))]
 use crate::rp1;
+use crate::rp1::Proc1DmaChannels as Dma;
 use core::cell::UnsafeCell;
 use rp1_hal::{
-    dma::{BusAddr, Channel, Dma, Error, Stopped},
+    dma::{BusAddr, Channel, Error, Stopped},
     log,
 };
 #[cfg(feature = "dma")]
@@ -85,7 +86,7 @@ fn fill(p: *mut u32, seed: u32) {
     }
 }
 
-pub fn init(token: rp1_hal::dma::Token, clocks: &rp1_hal::clocks::Clocks) -> Option<Dma> {
+pub fn init(token: crate::rp1::Proc1Dma, clocks: &rp1_hal::clocks::Clocks) -> Option<Dma> {
     let dma = token.init(clocks).map_err(|e| e.error);
     log!(
         "p1 dma init rc=0x{:x}\n",

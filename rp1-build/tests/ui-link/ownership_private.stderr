@@ -1,0 +1,5 @@
+error[E0451]: field `_private` of struct `Proc0Pins` is private
+ --> $CASE:6:32
+  |
+6 |     let _ = rp1::Proc0Pins { ..p.pins };
+  |                                ^^^^^^ field `_private` is private

@@ -4,7 +4,7 @@ use rp1_build::{
     wire,
 };
 use rp1_proto::note::ownership_kind;
-use rp1_proto::note::{ENTRY, LINK, Link, Note};
+use rp1_proto::note::{ENTRY, LINK, Link, Note, OWNERSHIP};
 use std::{fs, path::Path, process::Command};
 
 fn declaration() -> Declaration {
@@ -607,6 +607,10 @@ fn in_tree_declarations_have_stable_notes() {
             ("Control".into(), TypeInfo::of::<[u32; 16]>()),
             ("Bulk".into(), TypeInfo::of::<[u32; 262144]>()),
         ]);
+        // Keep the pre-subset fixture byte-for-byte, including its declaration hash.
+        if let Some(rp1_build::metadata::Instance::Dma(dma)) = d.proc1.instances.get_mut("dma") {
+            dma.channels = None;
+        }
         let hash = d.declaration_hash().unwrap();
         let note = wire::descriptor(&name, &version, &d, hash, [0; 20]).unwrap();
         assert_eq!(
@@ -1015,9 +1019,28 @@ fn pwm_resources_keep_pins_and_note_block_ids_without_channel_subownership() {
 
 #[test]
 fn dma_resource_is_a_controller_token_with_block_id_65() {
-    let d: Declaration = toml::from_str("schema=2\n[proc1]\ndma={}").unwrap();
-    let a = generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap();
-    assert!(a.dts.contains("target = <&rp1_dma>"));
+    let artifacts = |dma| {
+        let d: Declaration = toml::from_str(&format!("schema=2\n[proc1]\ndma={dma}")).unwrap();
+        generate("test", "0.1.0", &d, [0; 32], [0; 20]).unwrap()
+    };
+    let legacy = artifacts("{}");
+    assert!(legacy.dts.contains("target = <&rp1_dma>"));
+    for subset in ["{channels=[0,2]}", "{channels=[]}"] {
+        let new = artifacts(subset);
+        assert_eq!(legacy.dts, new.dts);
+        assert_eq!(legacy.note, new.note);
+    }
+    let own = Note::parse(&legacy.note)
+        .unwrap()
+        .get(OWNERSHIP)
+        .unwrap()
+        .value;
+    assert!(
+        own[4..]
+            .as_chunks::<4>()
+            .0
+            .contains(&[ownership_kind::BLOCK, 2, 65, 0])
+    );
     assert_eq!(
         rp1_build::metadata::peripheral_id("DMA").unwrap(),
         (ownership_kind::BLOCK, 65)

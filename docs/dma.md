@@ -9,37 +9,35 @@ Linux source, **HYP** hypothesis.
 
 ```toml
 [package.metadata.rp1.proc1]
-dma = {}          # the whole controller: reset, clk_dma, the DMA interrupt line, all 8 channels
+dma = { channels = [0, 2] }
 ```
 
-- The controller is one block (one reset bit, one clock, one interrupt), so it is declared whole
-  by one core, like `adc`. Pins: none. Two cores, or `dma = { .. }` with keys, are build errors
-  (E3 / E0). STATIC: `rp1-build` tests.
-- `DMA` is no longer in the board's Linux-required list (BREAKING for the loader's protected
-  nodes). Without the declaration nothing changes: Linux keeps `rp1_dma` with SCMI clocks.
+- The declaration assigns the whole controller, reset and clock to one core. STATIC,
+  2026-11-27: `channels` selects the generated channel fields. Omission (`dma = {}`) gives
+  all eight channels. An empty list reserves the controller. The NOTE still claims block 65.
+  Two owners, repeated channels and indices outside 0–7 are declaration errors.
 - With the declaration the generated overlay disables `rp1_dma`, the image's `linux_resets`
   leave RESETS CTRL0 bit 3 alone, and the SCMI server holds clk_dma (Linux cannot change it).
   STATIC: `rp1-build` artifacts test; HW (2026-11-05): `rp1_dma` reads `status=disabled` and
   no DMA interrupt appears for it in Linux.
 - Linux consumers: an enabled node whose `dmas` names `rp1_dma` would defer forever (of-dma
-  returns -EPROBE_DEFER for an unregistered provider, DOC). The loader's resolver treats it like
-  a `pwms` consumer of an owned PWM: `on_conflict = "disable"` disables the node with
-  `why=dmas uses RP1-owned block rp1_dma`, `"refuse"` stops. Specifiers are parsed with the
+  returns -EPROBE_DEFER for an unregistered provider, DOC). The loader refuses an enabled
+  consumer unless its absolute DT path appears in `linux.dma_disable` and
+  `on_conflict = "disable"`. Protected nodes always cause refusal. Specifiers use the
   provider's `#dma-cells` (a DREQ number equal to a phandle is not a reference). STATIC:
   `rp1-dt` resolve test. HW (2026-11-05): with the standard CM5 IO DTB + `uart1-pi5` no enabled
   node uses `rp1_dma`; the loader disabled only `gpiomem` (as before). An overlay enabling an
-  RP1 SPI/I2S node (they carry `dmas = <&rp1_dma ..>`) would now lose that node. `rp1_pio` is
+  RP1 SPI/I2S node with `dmas = <&rp1_dma ..>` needs an explicit profile decision. `rp1_pio` is
   different: it is a protected node (in the board's Linux-required list), so a `dmas` conflict
   on an enabled `rp1_pio` makes the resolver **refuse** the plan even with
   `on_conflict = "disable"` (STATIC: `rp1-dt` resolve, protected nodes are never disabled).
 
 ## API
 
-- `dma::Token::init(&Clocks)` (once): clk_dma 100 MHz (DOC: datasheet ch. 9), release the reset,
-  `DMAC_RESET` soft reset, every channel disabled with interrupts masked, `DMAC_CFG.DMAC_EN`.
-  Returns `Dma { ch0..ch7 }`, or `rp1_hal::InitError` with the token as `resources` for a retry. `Dma::free()` takes
-  all eight channels back and returns the token; it cannot fail, since a transfer borrows
-  its channel.
+- `p.dma.init(&clocks)` starts clk_dma at 100 MHz (DOC: datasheet ch. 9), releases reset,
+  soft-resets the DMAC and leaves all channels disabled with interrupts masked. The returned
+  channel set has one field per selected channel (`ch0` and `ch2` above). On failure,
+  `InitError::resources` returns the declaration's controller token for a retry.
 - `Channel<N>::copy(&[u8], &mut [u8], timeout: MicrosDurationU32)`: safe, blocking.
   Both slices must be contiguous DMAC-visible memory in shared SRAM or the outbound window.
   Use `start` for peripheral registers. `copy` splits the transfer into blocks and stops a

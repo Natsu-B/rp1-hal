@@ -91,7 +91,7 @@ pub trait Scl<const N: u8>: sealed::Pin {
 const PAD: u32 = 0x7a;
 
 pub struct Token<const N: u8> {
-    _private: (),
+    _private: core::marker::PhantomData<*mut ()>,
 }
 /// `?` on a failed [`Token::init`].
 impl<R> From<crate::InitError<R, Error>> for Error {
@@ -112,7 +112,9 @@ impl<const N: u8> Token<N> {
     /// Generated resources only: sole owner of I2C N, its reset and IRQ, with Linux disabled.
     pub const unsafe fn new() -> Self {
         assert!(N < 7);
-        Self { _private: () }
+        Self {
+            _private: core::marker::PhantomData,
+        }
     }
     /// Checks clk_sys and the speed, releases only this controller's reset, then selects the
     /// typed SDA/SCL routes. GPIO bank0 and the raw microsecond timer must already be running
@@ -193,21 +195,36 @@ impl<const N: u8> Token<N> {
     }
 }
 
+pin_builder!(Pin, []);
+pin_builder!(Pin, [], sda: SDA => Sda);
+pin_builder!(Pin, [sda: SDA], scl: SCL => Scl);
+
 /// A declared I2C N with its pins, as the generated resources hand it out (`rp1-build`).
 pub struct Parts<const N: u8, const SDA: u8, const SCL: u8>
 where
     Pin<SDA>: Sda<N>,
     Pin<SCL>: Scl<N>,
 {
-    pub token: Token<N>,
-    pub sda: Pin<SDA>,
-    pub scl: Pin<SCL>,
+    token: Token<N>,
+    sda: Pin<SDA>,
+    scl: Pin<SCL>,
 }
 impl<const N: u8, const SDA: u8, const SCL: u8> Parts<N, SDA, SCL>
 where
     Pin<SDA>: Sda<N>,
     Pin<SCL>: Scl<N>,
 {
+    /// Assemble the owned block and the routed pin bundle.
+    pub fn new(token: Token<N>, pins: Pins<N, (Pin<SDA>, Pin<SCL>)>) -> Self {
+        let (sda, scl) = pins.0;
+        Self { token, sda, scl }
+    }
+
+    /// Return the block and pins for manual assembly.
+    pub fn into_parts(self) -> (Token<N>, Pins<N, (Pin<SDA>, Pin<SCL>)>) {
+        (self.token, Pins((self.sda, self.scl)))
+    }
+
     /// [`Token::init`] with the declared pins.
     pub fn init(
         self,
@@ -526,7 +543,9 @@ where
     }
     fn into_parts(self) -> Parts<N, SDA, SCL> {
         Parts {
-            token: Token { _private: () },
+            token: Token {
+                _private: core::marker::PhantomData,
+            },
             sda: self._sda.release(),
             scl: self._scl.release(),
         }

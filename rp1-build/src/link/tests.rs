@@ -62,13 +62,26 @@ fn generated_resources_only_reference_their_link_features() {
     let full = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
     assert!(full.contains("pub link: link::Proc0LinkInit"));
     assert!(full.contains("pub link: link::Proc1LinkInit"));
-    assert!(full.contains("fn __rp1_link_p1_IO_BANK0()"));
-    assert!(!full.contains("fn __rp1_link_p0_IO_BANK0()"));
-    let defaults = irq_defaults(&d.shm_layout().unwrap()).unwrap();
-    assert_eq!(
-        defaults,
-        "PROVIDE(__rp1_p1_IO_BANK0 = __rp1_link_p1_IO_BANK0);\n"
+    assert!(full.contains("fn doorbell_proc1()"));
+    assert!(!full.contains("fn doorbell_proc0()"));
+    assert!(full.contains(r#"export_name = "__rp1_p1_IO_BANK0""#));
+    assert_eq!(full.matches("pub enum IO_BANK0").count(), 0);
+    d.proc1.gpio = vec![22];
+    d.proc1.gpio_irq = vec![22];
+    assert!(
+        d.validate()
+            .unwrap_err()
+            .to_string()
+            .contains("shares IO_BANK0")
     );
+    d.proc1.custom_doorbell_handler = true;
+    let custom = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
+    assert!(!custom.contains("fn doorbell_proc1()"));
+    assert_eq!(custom.matches("pub enum IO_BANK0").count(), 1);
+    assert!(d.validate().is_ok());
+    d.proc1.custom_doorbell_handler = false;
+    d.proc1.gpio_irq.clear();
+    d.proc1.gpio.clear();
 
     d.shm.remove(0);
     let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
@@ -380,4 +393,121 @@ fn named_endpoint_limits() {
         .remove(0),
     );
     assert!(d.validate().unwrap_err().to_string().contains("at most 64"));
+}
+
+#[test]
+fn generated_ownership_is_checked_by_rust() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = fixture();
+    d.proc0.gpio = vec![22];
+    d.proc1.timer = vec!["ALARM0".into()];
+    d.proc1.instances.insert(
+        "dma".into(),
+        crate::metadata::Instance::Dma(crate::metadata::DmaChannels {
+            channels: Some(vec![0, 2]),
+        }),
+    );
+    d.validate().unwrap();
+    let generated = resources(&d, &[], &d.shm_layout().unwrap())
+        .unwrap()
+        .replace(
+            r#"include_bytes!(concat!(env!("OUT_DIR"),"/rp1-app.dtbo"))"#,
+            r#"b"""#,
+        );
+    fs::write(dir.path().join("resources.inc"), generated).unwrap();
+    let harness = r#"
+type Word = [u32; 4];
+mod types { pub type Word = super::Word; }
+include!("resources.inc");
+"#;
+    let t = trybuild::TestCases::new();
+    let pass = dir.path().join("ownership_pass.rs");
+    fs::write(
+        &pass,
+        format!(
+            "{harness}
+#[rp1_rt::interrupt(proc1)]
+fn TIMER_0() {{}}
+fn channels(dma: rp1::Proc1DmaChannels) {{
+    let _: rp1_hal::dma::Channel<0> = dma.ch0;
+    let _: rp1_hal::dma::Channel<2> = dma.ch2;
+}}
+fn gpio(p: rp1::Proc0Resources) -> rp1_hal::gpio::Pin<22> {{ p.pins.gpio22 }}
+fn main() {{}}"
+        ),
+    )
+    .unwrap();
+    t.pass(pass);
+    for (name, body) in [
+        (
+            "ownership_admission",
+            r#"fn use_pin(_: rp1_hal::gpio::Pin<22>) {}
+fn duplicate_pin(p: rp1::Proc0Resources) {
+    use_pin(p.pins.gpio22);
+    use_pin(p.pins.gpio22);
+}
+fn wrong_route(p: rp1::Proc0Resources) {
+    let _ = rp1_hal::uart::Pins::<1>::builder().tx(p.pins.gpio22);
+}
+fn host_alarm(p: rp1::Proc0Resources) {
+    let _ = p.TIMER_ALARM3;
+}
+fn unlisted_channel(dma: rp1::Proc1DmaChannels) {
+    let _ = dma.ch1;
+}
+fn main() {}
+"#,
+        ),
+        (
+            "ownership_private",
+            r#"fn private_resources(p: rp1::Proc0Resources) {
+    let _ = rp1::Proc0Pins { ..p.pins };
+}
+fn main() {}
+"#,
+        ),
+        (
+            "ownership_irq",
+            r#"#[rp1_rt::interrupt(proc0)]
+fn TIMER_0() {}
+#[rp1_rt::interrupt(proc1)]
+fn IO_BANK0() {}
+#[rp1_rt::interrupt(proc1)]
+fn TIMER_0() {}
+mod duplicate {
+    #[rp1_rt::interrupt(proc1)]
+    fn TIMER_0() {}
+}
+fn main() {}
+"#,
+        ),
+        (
+            "ownership_core_local",
+            r#"fn send<T: Send>() {}
+fn sync<T: Sync>() {}
+fn main() {
+    send::<rp1_hal::gpio::Pin<22>>();
+    send::<rp1_hal::uart::Tx<1, 0>>();
+    send::<rp1_hal::timer::Alarm<0>>();
+    send::<rp1_rt::interrupt::Line<26>>();
+    send::<rp1_hal::dma::Channel<0>>();
+    sync::<rp1::Proc0Resources>();
+}
+"#,
+        ),
+    ] {
+        let path = dir.path().join(format!("{name}.rs"));
+        fs::write(&path, format!("{harness}{body}")).unwrap();
+        if let Ok(expected) = fs::read_to_string(format!("tests/ui-link/{name}.stderr")) {
+            fs::write(
+                path.with_extension("stderr"),
+                expected.replace("$CASE", path.to_str().unwrap()).replace(
+                    "$GENERATED",
+                    dir.path().join("resources.inc").to_str().unwrap(),
+                ),
+            )
+            .unwrap();
+        }
+        t.compile_fail(path);
+    }
 }

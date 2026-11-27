@@ -22,12 +22,12 @@ use rp1_rt::{
 };
 
 type Spi0 = Spi<0, 11, 10, 9>;
-static ALARM: Shared<Alarm<1>> = shared();
-static BELL: Shared<rp1::Doorbell1> = shared();
+static ALARM: Shared<Alarm<1>, 1> = shared();
+static BELL: Shared<rp1::Doorbell1, 1> = shared();
 /// The `down1` ring, once main has opened it.
-pub static DOWN1: Shared<Reader<27, 1>> = shared();
-pub static PING: Shared<rp1::link::Ping> = shared();
-static SPI: Shared<Spi0> = shared();
+pub static DOWN1: Shared<Reader<27, 1>, 1> = shared();
+pub static PING: Shared<rp1::link::Ping, 1> = shared();
+static SPI: Shared<Spi0, 1> = shared();
 static WRAP: Entries = Entries::new();
 /// Handler entries with the doorbell set.
 static BELL_ENTRIES: Entries = Entries::new();
@@ -68,7 +68,7 @@ fn IO_BANK0() {
     let Some(bell) = proof::get(&BELL) else {
         return;
     };
-    bell.ack();
+    bell.ack_and_signal();
     BELL_ENTRIES.enter(1);
     let mut more = false;
     with(&PING, |ping| {

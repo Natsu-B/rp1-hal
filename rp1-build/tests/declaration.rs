@@ -481,14 +481,24 @@ fn dma_is_one_pinless_controller_owned_by_one_core() {
         "[proc0]\ndma={}\n[proc1]\ndma={}",
         &["E3", "DMA", "proc0", "proc1"],
     );
+    error("[proc0]\ndma={channel=1}", &["E0", "proc0.dma"]);
+    error("[proc0]\ndma=1", &["E0", "proc0.dma"]);
+    for channels in ["[2,2]", "[8]", "[-1]"] {
+        error(
+            &format!("[proc1]\ndma={{channels={channels}}}"),
+            &["E0", "channels"],
+        );
+    }
+    error("[linux]\nkeep={dma={channels=[0]}}", &["E4", "whole DMA"]);
     error(
-        "[proc0]\ndma={channel=1}",
-        &["E0", "proc0.dma must be an empty table"],
+        "[linux]\nkeep={dma={}}\n[proc0]\ndma={channels=[0,2]}",
+        &["E3", "DMA", "linux.keep"],
     );
-    error(
-        "[proc0]\ndma=1",
-        &["E0", "proc0.dma must be an empty table"],
-    );
+    for channels in ["[]", "[2,0]"] {
+        parse(&format!("[proc1]\ndma={{channels={channels}}}"))
+            .validate()
+            .unwrap();
+    }
     let d = parse("[proc1]\ndma={}");
     d.validate().unwrap();
     assert!(d.proc1.pins().is_empty());

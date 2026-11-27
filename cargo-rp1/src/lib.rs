@@ -14,6 +14,7 @@ pub struct Report {
     pub isram_bytes: u64,
     pub dsram_bytes: u64,
     pub exclusive_instructions: usize,
+    pub link_irq: bool,
 }
 fn word(b: &[u8], p: usize) -> Result<u32> {
     note::u32_at(b, p).map_err(|_| "truncated ELF".into())
@@ -30,16 +31,18 @@ pub fn descriptor(bytes: &[u8]) -> Result<&[u8]> {
     Note::parse(desc).map_err(|e| format!("invalid note: {e:?}"))?;
     Ok(desc)
 }
-/// Arguments of `cargo rp1 check`: the ELF, an optional board DTB and `--allow-boot-disable`.
+/// Arguments of `cargo rp1 check`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct CheckArgs {
     pub elf: std::path::PathBuf,
     pub dtb: Option<std::path::PathBuf>,
     pub allow_boot_disable: bool,
+    pub require_link_irq: bool,
 }
 
 pub fn parse_check_args(args: &[std::ffi::OsString]) -> Result<CheckArgs> {
     let (mut elf, mut dtb, mut allow_boot_disable) = (None, None, false);
+    let mut require_link_irq = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.to_str() {
@@ -47,6 +50,7 @@ pub fn parse_check_args(args: &[std::ffi::OsString]) -> Result<CheckArgs> {
                 dtb = Some(it.next().ok_or("--dtb needs a value")?.into());
             }
             Some("--allow-boot-disable") if !allow_boot_disable => allow_boot_disable = true,
+            Some("--require-link-irq") if !require_link_irq => require_link_irq = true,
             Some(s) if s.starts_with("--") => {
                 return Err(format!("unexpected check argument {s}").into());
             }
@@ -61,6 +65,7 @@ pub fn parse_check_args(args: &[std::ffi::OsString]) -> Result<CheckArgs> {
         elf: elf.ok_or("missing firmware ELF")?,
         dtb,
         allow_boot_disable,
+        require_link_irq,
     })
 }
 
@@ -219,6 +224,12 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
     }
     check_irq_tables(&file, &note)?;
     validate_regions(&note)?;
+    let mut rings = note
+        .records()
+        .filter_map(core::result::Result::ok)
+        .filter(|record| record.kind == note::SHM_REGION && record.value[0] == 1)
+        .peekable();
+    let link_irq = rings.peek().is_some() && rings.all(|record| record.value[3] == 1);
     let overlay = file
         .section_by_name(".rp1.dtbo")
         .ok_or("missing embedded overlay")?;
@@ -259,6 +270,7 @@ pub fn check(path: &Path, objdump: &Path) -> Result<Report> {
         isram_bytes: isram,
         dsram_bytes: dsram,
         exclusive_instructions,
+        link_irq,
     })
 }
 

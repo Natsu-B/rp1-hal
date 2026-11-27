@@ -217,8 +217,12 @@ pub(crate) fn stats() -> ScmiStats {
     stats
 }
 
-#[rp1_rt::interrupt(proc0, __platform, sram)]
-fn PROC_MISC() {
+#[unsafe(no_mangle)]
+#[cfg_attr(
+    all(target_arch = "arm", target_os = "none"),
+    unsafe(link_section = ".text.rp1_cold.__rp1_p0_PROC_MISC")
+)]
+unsafe extern "C" fn __rp1_p0_PROC_MISC() {
     let state = unsafe { &mut *(&raw mut STATE).cast::<State>() };
     handle(&mut state.server, &mut state.counters, &mut Mmio);
 }

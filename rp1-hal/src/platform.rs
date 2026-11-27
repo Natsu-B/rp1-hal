@@ -44,6 +44,7 @@ pub use perstn::{DetectorReport, LostDetail, PcieState, pcie_state};
 /// The platform resource: one per image, issued to proc0 only. [`Token::init`] consumes it, so
 /// the bring-up runs once.
 pub struct Token {
+    _proc0: PhantomData<*mut ()>,
     linux: linux_blocks::LinuxBlocks,
     sys_hz: u32,
 }
@@ -119,7 +120,11 @@ impl Token {
     /// Issued once to proc0 by the generated resources. `linux` is the set of blocks the
     /// declaration leaves to Linux, `sys_hz` the declared clk_sys rate.
     pub const unsafe fn new(linux: linux_blocks::LinuxBlocks, sys_hz: u32) -> Self {
-        Self { linux, sys_hz }
+        Self {
+            _proc0: PhantomData,
+            linux,
+            sys_hz,
+        }
     }
 
     /// Runs the steps of this module. `log` initializes the declared log (step 3).

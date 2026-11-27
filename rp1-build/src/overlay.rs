@@ -137,12 +137,23 @@ pub(crate) fn dts_with_layout(d: &Declaration, note: &[u8], shm: &ShmLayout<'_>)
             "status = \"disabled\";",
         );
     }
+    let dma_policy = if d.linux.dma_disable.is_empty() {
+        String::new()
+    } else {
+        let paths = d
+            .linux
+            .dma_disable
+            .iter()
+            .map(|path| format!("{path:?}"))
+            .collect::<Vec<_>>();
+        format!(" rp1,allow-dma-disable = {};", paths.join(", "))
+    };
     fragment(
         "target-path = \"/\"",
         &format!(
             r#"
         rp1-firmware {{ rp1,note = [{bytes}]; rp1,abi = <2>; rp1,static-only;
-            rp1,on-conflict = "{on_conflict}"; rp1,gpiomem = "{gpiomem}"; }};
+            rp1,on-conflict = "{on_conflict}"; rp1,gpiomem = "{gpiomem}";{dma_policy} }};
         rp1_link: rp1-link@1f0040c000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:{link}";
             reg = <0x1f 0x0040c000 0x4000>; status = "okay"; }};
         rp1-doorbell@1f000d0000 {{ compatible = "generic-uio"; linux,uio-name = "rp1:{doorbell}";

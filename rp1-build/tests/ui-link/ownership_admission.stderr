@@ -1,0 +1,45 @@
+error[E0308]: mismatched types
+  --> $CASE:11:52
+   |
+11 |     let _ = rp1_hal::uart::Pins::<1>::builder().tx(p.pins.gpio22);
+   |                                                 -- ^^^^^^^^^^^^^ expected `0`, found `22`
+   |                                                 |
+   |                                                 arguments to this method are incorrect
+   |
+   = note: expected struct `Pin<0>`
+              found struct `Pin<22>`
+note: method defined here
+  --> $WORKSPACE/rp1-hal/src/uart.rs
+   |
+   | pin_builder!(Pin, [], tx: TX => TxPin);
+   |                       ^^
+
+error[E0609]: no field `TIMER_ALARM3` on type `Proc0Resources`
+  --> $CASE:14:15
+   |
+14 |     let _ = p.TIMER_ALARM3;
+   |               ^^^^^^^^^^^^ unknown field
+   |
+   = note: available fields are: `pins`, `irq`, `host_irq`, `link`, `proc1`, `platform`
+
+error[E0609]: no field `ch1` on type `Proc1DmaChannels`
+  --> $CASE:17:17
+   |
+17 |     let _ = dma.ch1;
+   |                 ^^^ unknown field
+   |
+help: a field with a similar name exists
+   |
+17 -     let _ = dma.ch1;
+17 +     let _ = dma.ch0;
+   |
+
+error[E0382]: use of moved value: `p.pins.gpio22`
+ --> $CASE:8:13
+  |
+7 |     use_pin(p.pins.gpio22);
+  |             ------------- value moved here
+8 |     use_pin(p.pins.gpio22);
+  |             ^^^^^^^^^^^^^ value used here after move
+  |
+  = note: move occurs because `p.pins.gpio22` has type `rp1_hal::gpio::Pin<22>`, which does not implement the `Copy` trait

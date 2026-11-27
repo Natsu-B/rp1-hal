@@ -2,7 +2,9 @@
 pub use rp1_dt::fdt;
 use serde::Deserialize;
 use std::{
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -219,11 +221,23 @@ fn generate_with_layout(
         d.stack_size(1)?,
         metadata::Declaration::stack_margin(0),
         include_str!("../../rp1-rt/link.x"),
-        link::irq_defaults(shm)?,
+        custom_irq_assertions(d),
         include_str!("../../rp1-pac/irq.x")
     );
     let dts = overlay::dts_with_layout(d, &note, shm)?;
     Ok(Artifacts { note, layout, dts })
+}
+
+fn custom_irq_assertions(d: &metadata::Declaration) -> String {
+    let mut checks = String::new();
+    for (core, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
+        if c.custom_doorbell_handler {
+            checks.push_str(&format!(
+                "ASSERT(__rp1_p{core}_IO_BANK0 != __rp1_default_irq, \"proc{core} needs a custom IO_BANK0 handler\");\n"
+            ));
+        }
+    }
+    checks
 }
 
 fn resources(
@@ -256,11 +270,28 @@ fn resources(
             .regions
             .iter()
             .any(|r| usize::from(r.core()) == index + 1);
+        let doorbell = !c.custom_doorbell_handler
+            && shm.regions.iter().any(|r| r.receives_doorbell(index as u8));
+        if doorbell {
+            writeln!(
+                s,
+                "#[unsafe(export_name = \"__rp1_p{index}_IO_BANK0\")]\n\
+                #[unsafe(link_section = \".isram.text.__rp1_p{index}_IO_BANK0\")]\n\
+                unsafe extern \"C\" fn doorbell_proc{index}() {{\n\
+                    unsafe {{ Doorbell{index}::new() }}.ack_and_signal();\n\
+                }}"
+            )?;
+        }
         // Instances come as bundles of their token and pins; `pins` keeps the rest.
         let parts = c
             .instances
             .iter()
-            .map(|(name, instance)| instance_resource(name, instance))
+            .map(|(name, instance)| match instance {
+                metadata::Instance::Dma(channels) => {
+                    dma_resource(&mut s, index, channels.selected())
+                }
+                _ => instance_resource(name, instance),
+            })
             .collect::<Result<Vec<_>>>()?;
         // The doorbell pin's force bit belongs to the doorbell, not to a `Pin`.
         let pins: Vec<u8> = c
@@ -269,7 +300,7 @@ fn resources(
             .filter(|p| Some(*p) != c.doorbell)
             .filter(|p| !parts.iter().any(|(_, _, used)| used.contains(p)))
             .collect();
-        s.push_str(&format!("pub struct Proc{index}Pins {{\n"));
+        s.push_str(&format!("#[non_exhaustive]\npub struct Proc{index}Pins {{\n_private: ::core::marker::PhantomData<*mut ()>,\n"));
         for pin in &pins {
             s.push_str(&format!("pub gpio{pin}: ::rp1_hal::gpio::Pin<{pin}>,\n"));
         }
@@ -285,12 +316,22 @@ fn resources(
                 }),
             })
             .collect();
+        writeln!(
+            s,
+            "}}\n#[doc(hidden)]\n#[allow(non_camel_case_types)]\npub mod __irq_proc{index} {{\npub trait Handler {{}}"
+        )?;
+        for line in &lines {
+            if !(doorbell && line.irq == 0) {
+                writeln!(s, "pub enum {} {{}}", line.name)?;
+            }
+        }
         s.push_str(&format!(
-            "}}\n#[allow(non_snake_case)]\npub struct Proc{index}Irq {{\n"
+            "}}\n#[non_exhaustive]\n#[allow(non_snake_case)]\npub struct Proc{index}Irq {{\n_private: ::core::marker::PhantomData<*mut ()>,\n"
         ));
         for line in &lines {
-            let board::VerifiedIrq { name, irq, .. } = line;
-            s.push_str(&format!("pub {name}: ::rp1_rt::interrupt::Line<{irq}>,\n"));
+            let board::VerifiedIrq { name, irq, owner } = line;
+            let source = owner.source_type();
+            s.push_str(&format!("pub {name}: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::{source}, {irq}, {index}>,\n"));
         }
         for pin in &c.gpio_irq {
             s.push_str(&format!(
@@ -299,7 +340,7 @@ fn resources(
         }
         s.push_str("}\n#[allow(non_snake_case)]\n");
         s.push_str(&format!(
-            "pub struct {ty} {{ pub pins: Proc{index}Pins, pub irq: Proc{index}Irq,\n"
+            "#[non_exhaustive]\npub struct {ty} {{ _private: (), pub pins: Proc{index}Pins, pub irq: Proc{index}Irq,\n"
         ));
         for alarm in &c.timer {
             let p = format!("TIMER.{alarm}");
@@ -326,18 +367,20 @@ fn resources(
                 s.push_str("pub platform: ::rp1_hal::platform::Token,\n");
             }
         }
-        s.push_str(&format!("}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub unsafe fn new() -> Self {{ Self {{ pins: Proc{index}Pins {{\n"));
+        s.push_str(&format!("}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub(crate) unsafe fn new() -> Self {{ Self {{ _private: (), pins: Proc{index}Pins {{\n_private: ::core::marker::PhantomData,\n"));
         for pin in &pins {
             s.push_str(&format!(
                 "gpio{pin}: unsafe {{ ::rp1_hal::gpio::Pin::new() }},\n"
             ));
         }
         s.push_str("},\n");
-        s.push_str(&format!("irq: Proc{index}Irq {{\n"));
+        s.push_str(&format!(
+            "irq: Proc{index}Irq {{\n_private: ::core::marker::PhantomData,\n"
+        ));
         for line in &lines {
             let name = line.name;
             s.push_str(&format!(
-                "{name}: unsafe {{ ::rp1_rt::interrupt::Line::new() }},\n"
+                "{name}: unsafe {{ ::rp1_rt::interrupt::Binding::new() }},\n"
             ));
         }
         for pin in &c.gpio_irq {
@@ -416,10 +459,7 @@ fn instance_resource(
                 Vec::new(),
             ));
         }
-        Instance::Dma {} => {
-            let ty = "::rp1_hal::dma::Token";
-            return Ok((ty.into(), format!("unsafe {{ {ty}::new() }}"), Vec::new()));
-        }
+        Instance::Dma(_) => unreachable!("DMA has a declaration-specific channel set"),
         Instance::Adc {} => {
             let ty = "::rp1_hal::adc::Token";
             return Ok((ty.into(), format!("unsafe {{ {ty}::new() }}"), Vec::new()));
@@ -432,15 +472,48 @@ fn instance_resource(
     let numbers: Vec<String> = pins.iter().map(u8::to_string).collect();
     let ty = format!("::rp1_hal::{module}::Parts<{n}, {}>", numbers.join(", "));
     let mut init = format!(
-        "::rp1_hal::{module}::Parts {{ token: unsafe {{ ::rp1_hal::{module}::Token::new() }}"
+        "::rp1_hal::{module}::Parts::new(unsafe {{ ::rp1_hal::{module}::Token::new() }}, ::rp1_hal::{module}::Pins::<{n}>::builder()"
     );
     for (role, _) in &signals {
-        init.push_str(&format!(
-            ", {role}: unsafe {{ ::rp1_hal::gpio::Pin::new() }}"
-        ));
+        write!(init, ".{role}(unsafe {{ ::rp1_hal::gpio::Pin::new() }})")?;
     }
-    init.push_str(" }");
+    init.push(')');
     Ok((ty, init, pins))
+}
+
+fn dma_resource(
+    source: &mut String,
+    core: usize,
+    channels: &[u8],
+) -> Result<(String, String, Vec<u8>)> {
+    let ty = format!("Proc{core}Dma");
+    let initialized = format!("Proc{core}DmaChannels");
+    writeln!(source, "#[non_exhaustive]\npub struct {initialized} {{")?;
+    for n in channels {
+        writeln!(source, "pub ch{n}: ::rp1_hal::dma::Channel<{n}>,")?;
+    }
+    writeln!(source, "_controller: ::rp1_hal::dma::Dma,\n}}")?;
+    writeln!(
+        source,
+        "pub struct {ty}(::rp1_hal::dma::Token);\n\
+        impl {ty} {{\n\
+            pub fn init(self, clocks: &::rp1_hal::clocks::Clocks) -> ::core::result::Result<\
+                {initialized}, ::rp1_hal::InitError<Self, ::rp1_hal::dma::Error>> {{\n\
+                #[allow(unused_mut)]\n\
+                let mut controller = self.0.init(clocks).map_err(|e| ::rp1_hal::InitError {{\n\
+                    error: e.error, resources: Self(e.resources),\n\
+                }})?;\n\
+                Ok({initialized} {{"
+    )?;
+    for n in channels {
+        writeln!(source, "ch{n}: unsafe {{ controller.channel() }},")?;
+    }
+    writeln!(source, "_controller: controller,\n}})\n}}\n}}")?;
+    Ok((
+        ty.clone(),
+        format!("{ty}(unsafe {{ ::rp1_hal::dma::Token::new() }})"),
+        Vec::new(),
+    ))
 }
 
 #[cfg(test)]
@@ -452,6 +525,9 @@ mod tests {
             .split(&format!("pub struct Proc{core}Irq {{\n"))
             .nth(1)
             .unwrap()
+            .split_once('\n')
+            .unwrap()
+            .1
             .split('}')
             .next()
             .unwrap()
@@ -480,9 +556,6 @@ mod tests {
             ("host_irq=true", None),
         ];
         for (declaration, expected) in cases {
-            let expected = expected.map_or_else(String::new, |(name, irq)| {
-                format!("pub {name}: ::rp1_rt::interrupt::Line<{irq}>,\n")
-            });
             for core in 0..2 {
                 let d: metadata::Declaration = toml::from_str(&format!(
                     "schema=2\n[linux]\nkeep={{}}\n[proc{core}]\n{declaration}"
@@ -490,7 +563,21 @@ mod tests {
                 .unwrap();
                 d.validate().unwrap();
                 let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
-                assert_eq!(irq_fields(&source, core), expected, "{declaration}");
+                if let Some((name, irq)) = expected {
+                    let (kind, id) = metadata::peripheral_id(
+                        &declaration.split_once('=').unwrap().0.to_ascii_uppercase(),
+                    )
+                    .unwrap();
+                    assert_eq!(kind, rp1_proto::note::ownership_kind::BLOCK);
+                    assert_eq!(
+                        irq_fields(&source, core),
+                        format!(
+                            "pub {name}: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::BlockIrq<{id}>, {irq}, {core}>,\n"
+                        )
+                    );
+                } else {
+                    assert_eq!(irq_fields(&source, core), "");
+                }
                 assert_eq!(irq_fields(&source, 1 - core), "");
             }
         }
@@ -504,7 +591,7 @@ mod tests {
                 assert_eq!(
                     irq_fields(&source, core),
                     format!(
-                        "pub TIMER_{alarm}: ::rp1_rt::interrupt::Line<{}>,\n",
+                        "pub TIMER_{alarm}: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::AlarmIrq<{alarm}>, {}, {core}>,\n",
                         26 + alarm
                     )
                 );
@@ -522,7 +609,9 @@ mod tests {
         d.validate().unwrap();
         let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         for (core, pins) in [(0, &[22][..]), (1, &[26, 27][..])] {
-            let mut expected = String::from("pub IO_BANK0: ::rp1_rt::interrupt::Line<0>,\n");
+            let mut expected = format!(
+                "pub IO_BANK0: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, {core}>,\n"
+            );
             for pin in pins {
                 expected.push_str(&format!(
                     "pub gpio{pin}: ::rp1_hal::gpio::PinIrq<{pin}, {core}>,\n"
@@ -544,7 +633,7 @@ mod tests {
         let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         assert_eq!(
             irq_fields(&source, 1),
-            "pub IO_BANK0: ::rp1_rt::interrupt::Line<0>,\n\
+            "pub IO_BANK0: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 1>,\n\
              pub gpio22: ::rp1_hal::gpio::PinIrq<22, 1>,\n"
         );
         assert!(!source.contains("gpio27"), "{source}");
@@ -553,7 +642,7 @@ mod tests {
         let source = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
         assert_eq!(
             irq_fields(&source, 0),
-            "pub IO_BANK0: ::rp1_rt::interrupt::Line<0>,\n"
+            "pub IO_BANK0: ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 0>,\n"
         );
         assert!(!source.contains("gpio26"), "{source}");
     }
@@ -583,15 +672,18 @@ spi0 = { sck = 11, mosi = 10, miso = 9 }
             "pub uart2: ::rp1_hal::uart::Parts<2, 4, 5>,",
             "pub adc: ::rp1_hal::adc::Token,",
             "pub spi0: ::rp1_hal::spi::Parts<0, 11, 10, 9>,",
-            "uart2: ::rp1_hal::uart::Parts { token: unsafe { ::rp1_hal::uart::Token::new() }, \
-             tx: unsafe { ::rp1_hal::gpio::Pin::new() }, rx: unsafe { ::rp1_hal::gpio::Pin::new() } },",
+            "uart2: ::rp1_hal::uart::Parts::new(unsafe { ::rp1_hal::uart::Token::new() }, \
+             ::rp1_hal::uart::Pins::<2>::builder().tx(unsafe { ::rp1_hal::gpio::Pin::new() }).rx(unsafe { ::rp1_hal::gpio::Pin::new() })),",
         ] {
             assert!(s.contains(field), "{field}\n{s}");
         }
         let pins = |core: &str| -> Vec<&str> {
             let start = s.find(&format!("pub struct {core}Pins {{")).unwrap();
             let body = &s[start..start + s[start..].find('}').unwrap()];
-            body.lines().skip(1).collect()
+            body.lines()
+                .skip(1)
+                .filter(|line| line.starts_with("pub "))
+                .collect()
         };
         // A GPIO next to the instance's pins stays a plain pin.
         assert_eq!(

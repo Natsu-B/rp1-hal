@@ -82,6 +82,14 @@ pub enum IrqOwner {
 }
 
 impl IrqOwner {
+    pub(crate) fn source_type(self) -> String {
+        match self {
+            Self::GpioBank0 => "Bank0Irq".into(),
+            Self::Alarm(n) => format!("AlarmIrq<{n}>"),
+            Self::Instance(id) => format!("BlockIrq<{}>", id as u16),
+        }
+    }
+
     /// OWNERSHIP kind and id used to check a handler's claim.
     pub fn ownership(self) -> (u8, u16) {
         match self {
@@ -228,6 +236,7 @@ pub fn linux_line(pin: u8) -> Option<&'static str> {
     // Names from the gpio-line-names of the stock CM5 board DTB.
     Some(match pin {
         32 => "ETH_RST_N",
+        34 => "CAM_GPIO",
         37 => "ETH_IRQ_N",
         42 => "USB_VBUS_EN",
         44 => "RP1_STAT_LED (led-pwr)",
@@ -275,6 +284,9 @@ pub struct Linux {
     pub keep: Option<BTreeMap<String, Instance>>,
     pub gpiomem: Gpiomem,
     pub on_conflict: OnConflict,
+    /// Optional Linux DMA consumers which the loader may disable, by absolute DT node path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dma_disable: Vec<String>,
 }
 impl Default for Linux {
     fn default() -> Self {
@@ -283,6 +295,7 @@ impl Default for Linux {
             keep: None,
             gpiomem: Gpiomem::Disable,
             on_conflict: OnConflict::Disable,
+            dma_disable: Vec::new(),
         }
     }
 }
@@ -333,7 +346,7 @@ mod tests {
                     Kind::Spi => Instance::Spi(Default::default()),
                     Kind::Adc => Instance::Adc {},
                     Kind::Pwm => Instance::Pwm(Default::default()),
-                    Kind::Dma => Instance::Dma {},
+                    Kind::Dma => Instance::Dma(Default::default()),
                 })
             );
             let block = i.name.to_ascii_uppercase();

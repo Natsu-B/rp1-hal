@@ -39,6 +39,7 @@ timer = ["ALARM0"]
 i2c1 = { sda = 2, scl = 3 }
 host_irq = true
 doorbell = 26
+custom_doorbell_handler = true
 
 [package.metadata.rp1.proc1]
 gpio = [8]
@@ -47,6 +48,7 @@ adc = {}
 spi0 = { sck = 11, mosi = 10, miso = 9 }
 dma = {}
 doorbell = 27
+custom_doorbell_handler = true
 
 # The generated proc1 link attaches these endpoints once after the window is Ready.
 [[package.metadata.rp1.shm]]

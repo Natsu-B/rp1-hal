@@ -432,6 +432,7 @@ dependencies = [
  "rp1-link",
  "rp1-pinmux",
  "rp1-proto",
+ "rp1-rt",
  "serde",
  "sha2",
  "tempfile",
