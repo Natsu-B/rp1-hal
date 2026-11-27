@@ -1,6 +1,9 @@
 # I2C master
 
-STATIC (2026-11-27). Select `i2c.polling()` for embedded-hal 1.0 seven-bit `I2c`.
+STATIC (2026-11-28). Declare I2C1 and a wait timer on the same core to
+use `i2c.blocking(&mut p.wait_timer)` for embedded-hal 1.0 seven-bit
+`I2c`. The declaration generates the I2C1 interrupt and the capability
+carried by `rp1::I2c1Parts`.
 `write`, `read`, and `write_read` use the shared `transaction` implementation.
 Empty buffers are skipped, adjacent operations of the same direction continue,
 direction changes issue repeated START, and the final byte issues STOP. Reads can
@@ -12,6 +15,7 @@ schema = 2
 
 [package.metadata.rp1.proc0]
 i2c1 = { sda = 2, scl = 3 }
+wait_timer = "ALARM1"
 ```
 
 ```rust,ignore
@@ -19,7 +23,7 @@ use embedded_hal::i2c::I2c;
 use rp1_hal::i2c::Speed;
 
 let mut bus = p.i2c1.init(&clocks, Speed::Standard)?;
-bus.polling().write_read(0x2d, &request, &mut response)?;
+bus.blocking(&mut p.wait_timer).write_read(0x2d, &request, &mut response)?;
 ```
 
 STATIC: the generated token has one declared core owner. Initialization consumes
@@ -40,12 +44,18 @@ route for the same controller. IO_BANK1/2 are internal and deliberately unavaila
 through this board's safe HAL and ownership declaration. The PAC provides the
 DesignWare register slice for all seven instances, I2C0..6.
 
-| Controller | SDA | SCL |
-|---|---|---|
-| I2C0 | 0, 8 | 1, 9 |
-| I2C1 | 2, 10 | 3, 11 |
-| I2C2 | 4, 12 | 5, 13 |
-| I2C3 | 6, 14, 22 | 7, 15, 23 |
+| Controller | SDA | SCL | Synchronous wait |
+|---|---|---|---|
+| I2C0 | 0, 8 | 1, 9 | Explicit polling |
+| I2C1 | 2, 10 | 3, 11 | IRQ/WFE with a same-core wait timer, explicit polling |
+| I2C2 | 4, 12 | 5, 13 | Explicit polling |
+| I2C3 | 6, 14, 22 | 7, 15, 23 | Explicit polling |
+| I2C4–6 | — | — | No bank-0 route |
+
+I2C1 without a same-core wait timer uses explicit polling. Declare
+`custom_i2c1_handler = true` and define `#[rp1_rt::interrupt(procN)] fn I2C1()`
+to own the raw IRQ in the application. This exposes `p.irq.I2C1` and the
+raw mask, status and acknowledge methods.
 
 DOC: the peripheral drives open drain. Pads use input enable, Schmitt input, weak
 pull-up and 12 mA sink strength; **external pull-ups are required**. Initialization
@@ -84,27 +94,37 @@ A controller declared under `[proc1]` takes its `Clocks` from
 `Clocks::wait_from_proc0(&core, timeout)` (the value proc0's `platform::init` published;
 see `docs/adc.md`, "Clocks on proc1"). STATIC: compile-checked in `examples/dual-core`.
 
-STATIC: address NACK, data NACK and arbitration loss map to embedded-hal's matching
-error kinds. Other aborts retain `IC_TX_ABRT_SOURCE`. FIFO errors are reported as
-overrun. A 100 ms interval without transfer progress returns `Timeout`; cleanup
-has its own bounded disable wait. Error cleanup requests abort/STOP, then disables
-the controller and acknowledges interrupt state. A failed disable poisons the
-handle; further transactions return `Precondition`. Collect the parts with
-`try_free()` once stopped and reinitialize. There is no GPIO bus-clear sequence
-or interrupt-driven/DMA transfer.
+STATIC (2026-11-28). Both synchronous adapters require unmasked thread
+mode. Each transaction uses one absolute deadline across every operation,
+with a 100 ms default. Use `with_wait_config`, `transaction_until`, or
+`transaction_polling_until` to supply a different budget. The IRQ handler
+masks qualified FIFO, STOP or error sources and signals the waiter. The
+calling thread owns the FIFO and buffers. Once STOP arrives, the adapter
+confirms the controller is disabled and master idle. A separate 1 ms
+budget bounds this check after success or an abort/disable request.
 
-Release (STATIC, host model). `try_free()` checks for disable and master idle,
-masks the interrupts, closes the RP1 wrapper and returns the still-muxed pins and
-token. `free_polling()` repeats the disable request and waits up to 100 ms,
-retaining the controller and its interrupt mask on timeout. `try_cancel()` repeats
-disable without waiting and masks the interrupts. The controller can stay active
-while a target holds SCL. After cancellation, polling operations return `Busy` and
-interrupt controls cannot reopen the wrapper. `try_free()` returns the owner in
-`FreeError` until the controller stops.
+Address NACK, data NACK and arbitration loss map to embedded-hal's matching
+error kinds. Other aborts retain `IC_TX_ABRT_SOURCE`, and FIFO errors map to
+overrun. A NACK allows another transaction once disable and idle have
+been confirmed. After timeout, arbitration loss, other faults or manual
+cancellation, call `try_recover()` to confirm stop and discard stale
+status before reuse. If the target holds SCL and the controller is still
+active, recovery returns `Busy`. A failed transaction may have transferred
+a prefix. Recovery leaves the pins muxed and never drives them as GPIO.
+Transfers are CPU-driven, with no DMA support.
 
-STATIC: the polling loop is an `#[isram]` root; `cargo rp1 build` places its callees
-within the 8 KiB budget. Host tests cover FIFO boundaries, operation directions,
-NACK/abort mapping, timer wrap, stalled transfers, pin types and DT ownership.
+`try_start_transaction` borrows a driver and its operation buffers. Each
+`try_complete` call scans or services a fixed number of entries. The handle
+requests stop on cancellation or Drop with a bounded register sequence.
+The ISR never owns the buffers. `try_free` (or managed `free_until`) returns the still-muxed pins,
+block token and any generated IRQ capability only after disable and idle.
+Disable and unpend a separately owned raw NVIC line first, or ensure its
+handler accepts the returned controller. `free_polling` is a thread-only
+disable wait of up to 100 ms. It retains the driver and mask on failure.
+
+STATIC (host model). The FIFO step is an `#[isram]` root. Host tests cover
+FIFO boundaries, direction changes, STOP, abort details, arm races,
+stale interrupts, missing delivery, timer wrap, cancellation and re-arm.
 
 The hardware fixture is `lab/shm-firmware/src/i2c_proof.rs` with the dedicated
 `lab/esp32-i2c-peer` firmware. It only writes the ESP32 at 0x2d; negative probes at
@@ -118,10 +138,9 @@ general ESP32 trace firmware, retaining CM5 boot controls and leaving other pins
 inputs; the previous flash must be backed up before deployment.
 
 DOC: Espressif's [ESP32 I2C guide](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/i2c.html)
-documents standard/fast operation up to 400 kHz. Payload proofs therefore use
-100/400 kHz; the 1 MHz mode is exercised only by read-only NACK probes with the
-ESP32 slave stopped and its RMT input measuring SCL. A 1 MHz-capable data peer is
-still needed to qualify payload transfers at that speed.
+documents standard/fast operation up to 400 kHz. Payload acceptance covers 100/400 kHz.
+The 1 MHz SCL measurement used a read-only NACK probe and the ESP32 RMT input.
+The parity fixture reports 1 MHz payload trials as open pending an Fm+-capable peer.
 
 Hardware results and limits are recorded separately after each run, in run notes kept
 outside this repository (HW, 2026-10-29).

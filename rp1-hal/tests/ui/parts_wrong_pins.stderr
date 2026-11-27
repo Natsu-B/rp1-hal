@@ -52,7 +52,7 @@ help: the following other types implement trait `Scl<N>`
 note: required by a bound in `rp1_hal::i2c::Parts`
  --> src/i2c.rs
   |
-  | pub struct Parts<const N: u8, P: CompletePins<N>> {
+  | pub struct Parts<const N: u8, P: CompletePins<N>, I = NoIrq> {
   |                                  ^^^^^^^^^^^^^^^ required by this bound in `Parts`
 
 error[E0277]: the trait bound `rp1_hal::gpio::Pin<5>: Miso<0>` is not satisfied

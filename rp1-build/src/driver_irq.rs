@@ -28,6 +28,12 @@ pub(crate) const DRIVERS: &[DriverIrq] = &[
         custom: "custom_spi0_handler",
         module: "spi",
     },
+    DriverIrq {
+        instance: "i2c1",
+        vector: "I2C1",
+        custom: "custom_i2c1_handler",
+        module: "i2c",
+    },
 ];
 
 impl DriverIrq {

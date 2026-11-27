@@ -4,15 +4,11 @@
 //! fixed 64-byte read pattern. Check `bad_frames` on the peer to validate the write data.
 
 use crate::rp1;
-use embedded_hal::{delay::DelayNs, i2c::I2c};
-use rp1_hal::{
-    clocks::Clocks,
-    i2c::{Parts, Speed},
-    timer::WaitTimer,
-};
+use embedded_hal::i2c::I2c;
+use rp1_hal::{clocks::Clocks, fugit::ExtU32, i2c::Speed, timer::WaitTimer};
 
 pub fn run(
-    i2c: Parts<1, rp1::I2c1Pins>,
+    i2c: rp1::I2c1Parts,
     clocks: &Clocks,
     timer: &mut WaitTimer,
 ) -> Result<(), &'static str> {
@@ -20,7 +16,7 @@ pub fn run(
     let mut bus = i2c
         .init(clocks, Speed::Standard)
         .map_err(|_| "I2C1 init failed")?;
-    let mut bus = bus.polling();
+    let mut bus = bus.blocking(timer);
     // D1DR is the lab peer's frame tag. It counts bad frames and always serves 0x31 + 29*i.
     let mut frame: [u8; 16] = core::array::from_fn(|i| i as u8);
     frame[..4].copy_from_slice(b"D1DR");
@@ -29,10 +25,12 @@ pub fn run(
     // The HAL bounds each transfer. A STOP-terminated read resyncs the peer's TX FIFO.
     bus.read(PEER, &mut reply)
         .map_err(|_| "I2C1 resync read failed")?;
-    timer.delay_ms(2); // The peer refills its TX FIFO after STOP.
+    bus.delay(2.millis())
+        .map_err(|_| "I2C1 refill delay failed")?; // The peer refills its TX FIFO after STOP.
     bus.write(PEER, &frame)
         .map_err(|_| "I2C1 frame write failed")?;
-    timer.delay_ms(2);
+    bus.delay(2.millis())
+        .map_err(|_| "I2C1 refill delay failed")?;
     bus.read(PEER, &mut reply)
         .map_err(|_| "I2C1 reply read failed")?;
     if reply != core::array::from_fn(|i| (0x31 + i * 29) as u8) {

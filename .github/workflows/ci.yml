@@ -66,6 +66,7 @@ jobs:
           - { package: dma-parity }
           - { package: uart-parity }
           - { package: spi-parity }
+          - { package: i2c-parity }
           - { package: irq-proof }
           - { package: link-wake-fixture, features: --features firmware }
           - { package: irq-sweep }

@@ -45,8 +45,13 @@ error[E0277]: the trait bound `rp1_hal::i2c::I2c<1, (rp1_hal::gpio::Pin<2>, rp1_
 help: the following other types implement trait `embedded_hal::i2c::I2c<A>`
  --> src/i2c.rs
   |
-  | impl<const N: u8, P: CompletePins<N>> embedded_hal::i2c::I2c for Polling<'_, N, P> {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Polling<'_, N, P>` implements `embedded_hal::i2c::I2c`
+  | impl<const N: u8, P: CompletePins<N>, I> embedded_hal::i2c::I2c for Polling<'_, N, P, I> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Polling<'_, N, P, I>` implements `embedded_hal::i2c::I2c`
+  |
+ ::: src/i2c/irq_wait.rs
+  |
+  | impl<P: CompletePins<I2C>, const CORE: u8> embedded_hal::i2c::I2c for Blocking<'_, P, CORE> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Blocking<'_, P, CORE>` implements `embedded_hal::i2c::I2c`
   |
  ::: $CARGO/embedded-hal-$VERSION/src/i2c.rs
   |
@@ -62,8 +67,13 @@ error[E0277]: the trait bound `rp1_hal::i2c::I2c<1, (rp1_hal::gpio::Pin<2>, rp1_
 help: the following other types implement trait `embedded_hal::i2c::ErrorType`
  --> src/i2c.rs
   |
-  | impl<const N: u8, P: CompletePins<N>> embedded_hal::i2c::ErrorType for Polling<'_, N, P> {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Polling<'_, N, P>`
+  | impl<const N: u8, P: CompletePins<N>, I> embedded_hal::i2c::ErrorType for Polling<'_, N, P, I> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Polling<'_, N, P, I>`
+  |
+ ::: src/i2c/irq_wait.rs
+  |
+  | impl<P: CompletePins<I2C>, const CORE: u8> embedded_hal::i2c::ErrorType for Blocking<'_, P, CORE> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `rp1_hal::i2c::Blocking<'_, P, CORE>`
   |
  ::: $CARGO/embedded-hal-$VERSION/src/i2c.rs
   |

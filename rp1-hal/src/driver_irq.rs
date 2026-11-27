@@ -156,7 +156,7 @@ impl<S: Instance<IRQ>, const IRQ: u8> PerCore<S, IRQ> {
     }
 }
 
-fn probe_and_arm<I, T, E>(
+pub(crate) fn probe_and_arm<I, T, E>(
     io: &mut I,
     mut probe: impl FnMut(&mut I) -> Option<Result<T, E>>,
     arm: impl FnOnce(&mut I) -> Result<bool, E>,

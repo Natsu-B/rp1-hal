@@ -178,3 +178,25 @@ for shifter and CS-delay waits. Explicit `polling()` remains available on all
 supported controllers. The native transfer handle borrows both buffers.
 With `eh-nb`, the native driver also implements
 `embedded_hal_nb::spi::FullDuplex`.
+
+
+## I2C1 synchronous waits
+
+**STATIC · 2026-11-28.** Declare `i2c1` and `wait_timer` on the same core
+for the generated `rp1::I2c1Parts`. Initialize with
+`p.i2c1.init(&clocks, Speed::Standard)?`.
+
+| Before | v0.2 |
+|---|---|
+| `bus.polling().write_read(addr, tx, rx)?` | `bus.blocking(&mut p.wait_timer).write_read(addr, tx, rx)?` on managed I2C1 |
+| `i2c::Parts<1, rp1::I2c1Pins>` in application arguments | `rp1::I2c1Parts` on managed I2C1 |
+| Each FIFO step could restart the 100 ms timer | One 100 ms transaction budget. Override it with `with_wait_config` or supply an absolute deadline. |
+| Polling operations, speed changes or release in an ISR or critical section | **Breaking.** Explicit polling requires unmasked thread mode and returns `WrongContext` otherwise. Use the native `try_start_transaction` and bounded `try_complete` from a handler. |
+| A successful disable after any transfer error permitted reuse | After timeout, arbitration loss, other non-NACK errors or cancellation, call `bus.try_recover()?` before starting a new transaction. NACK permits reuse if the controller stopped. |
+| Application-owned raw I2C1 mask and status methods | Set `custom_i2c1_handler = true`, define `#[rp1_rt::interrupt(procN)] fn I2C1()`, and use `p.irq.I2C1`. |
+
+| Instances | Wait modes |
+|---|---|
+| I2C1 with the generated handler | IRQ/WFE, explicit polling |
+| I2C0, unmanaged I2C1, I2C2–3 | Explicit polling |
+| I2C4–6 | No bank-0 route |

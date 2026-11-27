@@ -214,6 +214,9 @@ STATIC（2026-11-27）: 同じコアで `uart1` と `wait_timer` を宣言する
 そのコアの `#[interrupt(procN)] fn UART1()` の定義がリンク時に必須になる。
 SPI0 も同様に `spi.blocking(&mut p.wait_timer)` を使う。
 `custom_spi0_handler = true` で `p.irq.SPI0` と独自 `SPI0()` を使える。
+STATIC（2026-11-28）: `i2c1` と `wait_timer` が同じコアにあれば
+`rp1::I2c1Parts` から初期化し、`bus.blocking(&mut p.wait_timer)` を使う。
+`custom_i2c1_handler = true` で `p.irq.I2C1` と独自 `I2C1()` を使える。
 
 ### 1.4 ビルド時のエラー（build.rs が止める）
 

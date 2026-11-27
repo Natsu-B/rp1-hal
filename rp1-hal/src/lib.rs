@@ -108,6 +108,13 @@ pub mod spi;
 pub mod timer;
 pub mod uart;
 
+/// Result of a bounded nonblocking operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Try<T> {
+    Ready(T),
+    WouldBlock,
+}
+
 /// Failed initialization. Parts are available once the peripheral can be initialized again.
 /// If recovery is pending, this error retains ownership of the peripheral and its pins.
 ///

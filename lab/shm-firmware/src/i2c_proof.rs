@@ -3,7 +3,7 @@ use crate::rp1;
 use embedded_hal::i2c::{I2c as _, Operation};
 use rp1_hal::{
     fugit::ExtU32,
-    i2c::{Error, Polling, Speed},
+    i2c::{Blocking, Error, Speed},
     log,
     timer::{Timer, WaitTimer},
 };
@@ -11,11 +11,11 @@ const PEER: u8 = 0x2d;
 pub fn run(bus: Option<&mut rp1::I2c1>, request: u32, waiter: &mut WaitTimer) {
     let result = match bus {
         None => Err(Error::Precondition),
-        Some(bus) if request == 1 => prove(&mut bus.polling(), waiter).map_err(|f| {
+        Some(bus) if request == 1 => prove(&mut bus.blocking(waiter)).map_err(|f| {
             log!("I2C_FAIL {:?}\n", f).unwrap();
             Error::Precondition
         }),
-        Some(bus) => measure(&mut bus.polling(), request),
+        Some(bus) => measure(&mut bus.blocking(waiter), request),
     };
     log!("I2C_RESULT request={} {:?}\n", request, result).unwrap();
     super::proof_reply(request, result.is_ok());
@@ -46,34 +46,33 @@ fn check(step: &'static str, bytes: &[u8]) -> Result<(), Failure> {
         Some((i, b)) => Err(Failure::Data(step, i, *b)),
     }
 }
-fn prove(bus: &mut Polling<'_, 1, rp1::I2c1Pins>, waiter: &mut WaitTimer) -> Result<(), Failure> {
+fn prove(bus: &mut Blocking<'_, rp1::I2c1Pins, 0>) -> Result<(), Failure> {
     let timer = Timer::new();
     let mut frame = core::array::from_fn::<_, 16, _>(|i| i as u8);
     frame[..4].copy_from_slice(&0x5244_3144u32.to_le_bytes());
-    let mut gap = || waiter.delay(2.millis()).map_err(|_| Failure::Delay);
     // Resync the peer: a STOP-terminated read makes it reload its reply (data unchecked).
     let _ = bus.read(PEER, &mut [0; 64]);
-    gap()?;
+    bus.delay(2.millis()).map_err(|_| Failure::Delay)?;
     for (speed, hz) in [(Speed::Standard, 100_000), (Speed::Fast, 400_000)] {
         let at = |step| move |e| Failure::Bus(step, e);
         bus.set_speed(speed).map_err(at("set_speed"))?;
         let start = timer.now().ticks();
         bus.write(PEER, &frame).map_err(at("write"))?;
         let write_us = timer.now().ticks().wrapping_sub(start) as u32;
-        gap()?;
+        bus.delay(2.millis()).map_err(|_| Failure::Delay)?;
         let mut bytes = [0; 64];
         let start = timer.now().ticks();
         bus.read(PEER, &mut bytes).map_err(at("read"))?;
         let read_us = timer.now().ticks().wrapping_sub(start) as u32;
         check("read", &bytes)?;
-        gap()?;
+        bus.delay(2.millis()).map_err(|_| Failure::Delay)?;
         bytes.fill(0);
         let start = timer.now().ticks();
         bus.write_read(PEER, &frame, &mut bytes)
             .map_err(at("write_read"))?;
         let combined_us = timer.now().ticks().wrapping_sub(start) as u32;
         check("write_read", &bytes)?;
-        gap()?;
+        bus.delay(2.millis()).map_err(|_| Failure::Delay)?;
         bytes.fill(0);
         let (a, b) = bytes.split_at_mut(32);
         bus.transaction(
@@ -87,7 +86,7 @@ fn prove(bus: &mut Polling<'_, 1, rp1::I2c1Pins>, waiter: &mut WaitTimer) -> Res
         )
         .map_err(at("w8_w8_r32_r32"))?;
         check("w8_w8_r32_r32", &bytes)?;
-        gap()?;
+        bus.delay(2.millis()).map_err(|_| Failure::Delay)?;
         // Read-only probe; never write any other address.
         let nack = bus.read(0x2e, &mut [0]);
         if nack != Err(Error::AddressNack) {
@@ -96,7 +95,7 @@ fn prove(bus: &mut Polling<'_, 1, rp1::I2c1Pins>, waiter: &mut WaitTimer) -> Res
         bytes.fill(0);
         bus.read(PEER, &mut bytes).map_err(at("read_after_nack"))?;
         check("read_after_nack", &bytes)?;
-        gap()?;
+        bus.delay(2.millis()).map_err(|_| Failure::Delay)?;
         log!("I2C_PASS hz={} write16_us={} read64_us={} write_read16_64_us={} nack={:?} recovery=ok\n",
             hz, write_us, read_us, combined_us, nack).unwrap();
     }
@@ -114,7 +113,7 @@ fn prove(bus: &mut Polling<'_, 1, rp1::I2c1Pins>, waiter: &mut WaitTimer) -> Res
         .unwrap();
     Ok(())
 }
-fn measure(bus: &mut Polling<'_, 1, rp1::I2c1Pins>, request: u32) -> Result<(), Error> {
+fn measure(bus: &mut Blocking<'_, rp1::I2c1Pins, 0>, request: u32) -> Result<(), Error> {
     let speed = match request {
         101 => Speed::Standard,
         102 => Speed::Fast,

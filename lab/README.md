@@ -873,3 +873,15 @@ FIFO, each within 10 µs including quantization. The firmware checks a
 no-input deadline, reset and re-arm, and identical eight-byte echo payloads
 with IRQ waits and explicit `.polling()`. The host verifier emits
 `PARITY_UART_IRQ_END` after checking those markers and the raw samples.
+
+
+### I2C1 controller parity
+
+**STATIC · 2026-11-28.** Build `i2c-parity` with `cargo rp1 build --release
+--target thumbv7m-none-eabi -p i2c-parity`. It observes the generated I2C1
+handler's accepted bits and times the transactions with the RP1 timer.
+The fixture uses the ESP32 peer at 0x2d on GPIO2/3 and sends read-only probes
+to 0x2e for NACK. A GPIO3 override holds SCL low during the timeout test
+and restores open-drain control before re-arm. Read the ESP32 counters
+before and after while CM5 is powered. Verify the UART0 and peer captures
+with `python3 lab/verify-i2c-parity.py UART0 PEER_BEFORE PEER_AFTER`.

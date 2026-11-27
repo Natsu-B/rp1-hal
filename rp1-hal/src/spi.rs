@@ -28,6 +28,7 @@ use crate::{
 use core::marker::PhantomData;
 use rp1_rt::interrupt::ThreadGuard;
 
+pub use crate::Try;
 use embedded_hal::spi::{
     ErrorKind, ErrorType, Mode, Operation, Phase, Polarity, SpiBus, SpiDevice,
 };
@@ -1089,13 +1090,6 @@ pub struct Transfer<'a, const N: u8, P: CompletePins<N>, I = NoIrq> {
     spi: &'a mut Spi<N, P, Controller, I>,
     exchange: Exchange<'a>,
     report: Option<TransferReport>,
-}
-
-/// Result of a bounded nonblocking observation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Try<T> {
-    Ready(T),
-    WouldBlock,
 }
 
 impl<const N: u8, P: CompletePins<N>, I> Transfer<'_, N, P, I> {

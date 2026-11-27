@@ -1,4 +1,4 @@
-//! UART, SPI and the alarm demo use IRQ waits. I²C uses explicit polling.
+//! UART, SPI, I²C and the alarm demo use IRQ waits.
 #![no_std]
 #![no_main]
 

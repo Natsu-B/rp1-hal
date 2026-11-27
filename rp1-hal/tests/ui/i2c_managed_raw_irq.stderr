@@ -1,0 +1,23 @@
+error[E0599]: no method named `enable_interrupt` found for mutable reference `&mut I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>), rp1_hal::i2c::Controller, rp1_hal::i2c::Irq<1, 0>>` in the current scope
+ --> tests/ui/i2c_managed_raw_irq.rs:4:9
+  |
+4 |     bus.enable_interrupt(1);
+  |         ^^^^^^^^^^^^^^^^ method not found in `&mut I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>), rp1_hal::i2c::Controller, rp1_hal::i2c::Irq<1, 0>>`
+
+error[E0599]: no method named `disable_interrupt` found for mutable reference `&mut I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>), rp1_hal::i2c::Controller, rp1_hal::i2c::Irq<1, 0>>` in the current scope
+ --> tests/ui/i2c_managed_raw_irq.rs:5:9
+  |
+5 |     bus.disable_interrupt(1);
+  |         ^^^^^^^^^^^^^^^^^ method not found in `&mut I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>), rp1_hal::i2c::Controller, rp1_hal::i2c::Irq<1, 0>>`
+
+error[E0599]: no method named `interrupt_status` found for mutable reference `&mut I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>), rp1_hal::i2c::Controller, rp1_hal::i2c::Irq<1, 0>>` in the current scope
+ --> tests/ui/i2c_managed_raw_irq.rs:6:9
+  |
+6 |     bus.interrupt_status();
+  |         ^^^^^^^^^^^^^^^^ method not found in `&mut I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>), rp1_hal::i2c::Controller, rp1_hal::i2c::Irq<1, 0>>`
+
+error[E0599]: no method named `clear_interrupt` found for mutable reference `&mut I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>), rp1_hal::i2c::Controller, rp1_hal::i2c::Irq<1, 0>>` in the current scope
+ --> tests/ui/i2c_managed_raw_irq.rs:7:9
+  |
+7 |     bus.clear_interrupt();
+  |         ^^^^^^^^^^^^^^^ method not found in `&mut I2c<1, (rp1_hal::gpio::Pin<2>, rp1_hal::gpio::Pin<3>), rp1_hal::i2c::Controller, rp1_hal::i2c::Irq<1, 0>>`

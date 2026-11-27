@@ -683,10 +683,11 @@ fn instance_resource(
     let capability = managed
         .map(|(_, core)| format!(", ::rp1_hal::{module}::Irq<{n}, {core}>"))
         .unwrap_or_default();
-    let role = if module == "spi" && managed.is_some() {
-        ", ::rp1_hal::spi::Controller"
-    } else {
-        ""
+    let role = match (instance, managed) {
+        (Instance::I2c(_) | Instance::Spi(_), Some(_)) => {
+            format!(", ::rp1_hal::{module}::Controller")
+        }
+        _ => String::new(),
     };
     writeln!(
         source,
@@ -1020,6 +1021,45 @@ mod tests {
                 assert_eq!(
                     checks.contains(&format!("{spi_symbol} != __rp1_default_irq")),
                     input.contains("custom_spi0_handler")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn i2c1_generated_irq_and_custom_handler_follow_the_owning_core() {
+        for core in 0..2 {
+            let config = format!("schema=2\n[proc{core}]\ni2c1={{sda=2,scl=3}}");
+            let timer = format!("{config}\nwait_timer='ALARM1'");
+            let other_timer = format!("{config}\n[proc{}]\nwait_timer='ALARM1'", 1 - core);
+            let custom = format!("{timer}\ncustom_i2c1_handler=true");
+            let symbol = format!("__rp1_p{core}_I2C1");
+            for (input, managed, custom) in [
+                (&timer, true, false),
+                (&config, false, false),
+                (&other_timer, false, false),
+                (&custom, false, true),
+            ] {
+                let decl: metadata::Declaration = toml::from_str(input).unwrap();
+                decl.validate().unwrap();
+                let source = resources(&decl, &[], &decl.shm_layout().unwrap()).unwrap();
+                let block = rp1_proto::BlockId::I2c1 as u16;
+                for pattern in [
+                    format!(".isram.text.{symbol}"),
+                    format!("i2c::__on_interrupt::<1, {core}>()"),
+                    format!(
+                        "I2c1Parts = ::rp1_hal::i2c::Parts<1, I2c1Pins, ::rp1_hal::i2c::Irq<1, {core}>>"
+                    ),
+                    format!("Binding::<::rp1_rt::interrupt::BlockIrq<{block}>, 8, {core}>::new()"),
+                ] {
+                    assert_eq!(source.contains(&pattern), managed, "{pattern}");
+                }
+                assert_eq!(irq_fields(&source, core).contains("pub I2C1:"), !managed);
+                assert_eq!(source.contains("impl sealed::Admitted for I2C1"), !managed);
+                assert_eq!(
+                    custom_irq_assertions(&decl)
+                        .contains(&format!("{symbol} != __rp1_default_irq")),
+                    custom
                 );
             }
         }

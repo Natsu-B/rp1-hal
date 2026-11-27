@@ -88,7 +88,17 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         .i2c1
         .init(&clocks, rp1_hal::i2c::Speed::Standard)
         .map_err(|e| *e.error());
-    log!("p0 i2c1 init {:?}\n", i2c.as_ref().map(|_| ())).unwrap();
+    // The init path can report only these faults. Keep transfer diagnostics
+    // out of this size-constrained raw IRQ image.
+    use rp1_hal::i2c::Error;
+    let init = match &i2c {
+        Ok(_) => "Ok(())",
+        Err(Error::Timeout) => "Err(Timeout)",
+        Err(Error::Invalid) => "Err(Invalid)",
+        Err(Error::Precondition) => "Err(Precondition)",
+        Err(_) => "Err(Other)",
+    };
+    log!("p0 i2c1 init {}\n", init).unwrap();
 
     let mut system = System {
         pcie: sys.pcie,

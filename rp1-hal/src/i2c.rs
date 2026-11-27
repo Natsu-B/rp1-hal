@@ -1,4 +1,11 @@
-//! Seven-bit DesignWare controller with explicit [`I2c::polling`] access (DOC: RP1 §9 and Linux i2c-designware).
+//! Seven-bit DesignWare controller (DOC: RP1 §9 and Linux i2c-designware).
+//!
+//! | Instance | Synchronous adapters |
+//! |---|---|
+//! | I2C1 with a generated IRQ | [`I2c::blocking`] (IRQ + WFE), explicit [`I2c::polling`] |
+//! | I2C0, unmanaged I2C1, I2C2–3 | Explicit [`I2c::polling`] |
+//! | I2C4–6 | No bank-0 routes |
+//!
 //! SCL counts are computed from `ic_clk` = clk_sys as reported by [`crate::clocks::Clocks`]
 //! (HW: 50 MHz on XOSC, 200 MHz on PLL_SYS); no shared clock or SCMI vote is changed.
 //! External pull-ups are required. Only bank-0 routes are exposed; I2C4..6 are internal.
@@ -8,12 +15,21 @@ use crate::{
     linux_blocks::Mmio as ResetMmio,
     read,
     scmi::Registers,
+    timer::{self, Deadline, Duration, Instant, Timer, WaitConfig},
     write,
 };
 use core::marker::PhantomData;
 use embedded_hal::i2c::{ErrorKind, NoAcknowledgeSource, Operation};
 
-use crate::pac::dw_i2c::{RegisterBlock, irq_wrap};
+use crate::pac::dw_i2c::{
+    RegisterBlock,
+    intr::{RX_FULL, RX_OVER, RX_UNDER, STOP_DET, TX_ABRT, TX_EMPTY, TX_OVER},
+    irq_wrap,
+};
+
+mod irq_wait;
+pub use crate::Try;
+pub use irq_wait::{__on_interrupt, Blocking, Irq};
 macro_rules! offsets {
     ($($name:ident = $field:ident),* $(,)?) => {$(const $name: usize = core::mem::offset_of!(RegisterBlock, $field);)*};
 }
@@ -27,7 +43,10 @@ offsets! {
 const STOP: u32 = 1 << 9;
 const RESTART: u32 = 1 << 10;
 const READ: u32 = 1 << 8;
-const STOP_DET: u32 = 1 << 9;
+const FIFO_ERRORS: u32 = RX_UNDER | RX_OVER | TX_OVER;
+const ERRORS: u32 = TX_ABRT | FIFO_ERRORS;
+const TX_NOT_FULL: u32 = 1 << 1;
+const RX_NOT_EMPTY: u32 = 1 << 3;
 const MASTER_ACTIVITY: u32 = 1 << 5;
 const COMP_TYPE: u32 = 0x4457_0140;
 const TIMEOUT_US: u32 = 100_000;
@@ -56,6 +75,14 @@ pub enum Error {
     ArbitrationLost,
     Timeout,
     Invalid,
+    /// The deadline exceeds the supported comparison horizon.
+    InvalidDeadline,
+    /// Synchronous I/O requires unmasked thread mode.
+    WrongContext,
+    /// The managed device or wait-timer IRQ cannot be delivered.
+    IrqUnavailable,
+    /// The dedicated wait alarm could not be retired.
+    AlarmUnavailable,
     Precondition,
     Abort(u32),
     Fifo,
@@ -115,6 +142,18 @@ impl embedded_hal::i2c::Error for Error {
         }
     }
 }
+impl From<timer::Error> for Error {
+    fn from(error: timer::Error) -> Self {
+        match error {
+            timer::Error::Timeout => Self::Timeout,
+            timer::Error::InvalidDeadline => Self::InvalidDeadline,
+            timer::Error::Masked | timer::Error::WrongContext => Self::WrongContext,
+            timer::Error::IrqUnavailable => Self::IrqUnavailable,
+            timer::Error::AlarmUnavailable => Self::AlarmUnavailable,
+        }
+    }
+}
+
 fn abort_error(source: u32) -> Error {
     if source & (1 << 12) != 0 {
         Error::ArbitrationLost
@@ -169,21 +208,28 @@ impl State {
     }
 }
 
-/// Initialized controller. Select [`I2c::polling`] for embedded-hal transactions.
-pub struct I2c<const N: u8, P: CompletePins<N>, Role = Controller> {
+/// Marker for a controller whose IRQ is available to the application.
+pub struct NoIrq;
+
+/// Initialized controller. Use [`I2c::blocking`] on managed I2C1, or select [`I2c::polling`].
+pub struct I2c<const N: u8, P: CompletePins<N>, Role = Controller, I = NoIrq> {
     pins: P::Active,
     rx_depth: usize,
     state: State,
     clocks: Clocks,
     _role: PhantomData<Role>,
+    irq: I,
 }
 
 /// The initialization error retains the block and its pins during recovery.
-pub type InitError<const N: u8, P> =
-    crate::InitError<Parts<N, P>, Error, crate::Recovery<Parts<N, P>>>;
+pub type InitError<const N: u8, P, I = NoIrq> =
+    crate::InitError<Parts<N, P, I>, Error, crate::Recovery<Parts<N, P, I>>>;
 
 /// Explicit polling access to the I²C controller.
-pub struct Polling<'a, const N: u8, P: CompletePins<N>>(&'a mut I2c<N, P>);
+pub struct Polling<'a, const N: u8, P: CompletePins<N>, I = NoIrq> {
+    bus: &'a mut I2c<N, P, Controller, I>,
+    config: WaitConfig,
+}
 
 impl<const N: u8> Token<N> {
     /// # Safety
@@ -202,14 +248,19 @@ pin_builder!(Pin, [sda: SDA], scl: SCL => Scl);
 complete_pins!(SDA: Sda, SCL: Scl; (Pin<SDA, Alternate>, Pin<SCL, Alternate>));
 
 /// A declared I²C N with its SDA and SCL pins.
-pub struct Parts<const N: u8, P: CompletePins<N>> {
+pub struct Parts<const N: u8, P: CompletePins<N>, I = NoIrq> {
     token: Token<N>,
     pins: Pins<N, P>,
+    irq: I,
 }
 impl<const N: u8, P: CompletePins<N>> Parts<N, P> {
     /// Assemble the owned block and the routed pin bundle.
     pub fn new(token: Token<N>, pins: Pins<N, P>) -> Self {
-        Self { token, pins }
+        Self {
+            token,
+            pins,
+            irq: NoIrq,
+        }
     }
 
     /// Return the block and pins for manual assembly.
@@ -221,7 +272,7 @@ impl<const N: u8, P: CompletePins<N>> Parts<N, P> {
 type PinTuple<const SDA: u8, const SCL: u8, M = crate::gpio::Unconfigured> =
     (Pin<SDA, M>, Pin<SCL, M>);
 
-impl<const N: u8, const SDA: u8, const SCL: u8> Parts<N, PinTuple<SDA, SCL>>
+impl<const N: u8, const SDA: u8, const SCL: u8, I> Parts<N, PinTuple<SDA, SCL>, I>
 where
     Pin<SDA>: Sda<N>,
     Pin<SCL>: Scl<N>,
@@ -248,7 +299,8 @@ where
         self,
         clocks: &Clocks,
         config: impl Into<Config>,
-    ) -> Result<I2c<N, PinTuple<SDA, SCL>>, InitError<N, PinTuple<SDA, SCL>>> {
+    ) -> Result<I2c<N, PinTuple<SDA, SCL>, Controller, I>, InitError<N, PinTuple<SDA, SCL>, I>>
+    {
         self.init_on(
             &mut Mmio::new(N),
             clocks,
@@ -268,7 +320,8 @@ where
         clocks: &Clocks,
         speed: Speed,
         route: impl FnOnce(PinTuple<SDA, SCL>) -> PinTuple<SDA, SCL, Alternate>,
-    ) -> Result<I2c<N, PinTuple<SDA, SCL>>, InitError<N, PinTuple<SDA, SCL>>> {
+    ) -> Result<I2c<N, PinTuple<SDA, SCL>, Controller, I>, InitError<N, PinTuple<SDA, SCL>, I>>
+    {
         if !io.sys_current_strict(clocks) {
             return Err(InitError::new(Error::Precondition, self));
         }
@@ -288,6 +341,7 @@ where
         }
         io.read(CLEAR);
         io.write(RX_TL, 0);
+        // Refill an entire FIFO per wake at the cost of possible SCL stretching.
         io.write(TX_TL, 0);
         configure(io, counts);
         Ok(I2c {
@@ -296,17 +350,18 @@ where
             state: State::Ready,
             clocks: *clocks,
             _role: PhantomData,
+            irq: self.irq,
         })
     }
 }
 
-impl<const N: u8, P: CompletePins<N>> InitError<N, P> {
+impl<const N: u8, P: CompletePins<N>, I> InitError<N, P, I> {
     /// Request I²C reset and return the parts once reset is confirmed.
-    pub fn try_recover(self) -> Result<Parts<N, P>, Self> {
+    pub fn try_recover(self) -> Result<Parts<N, P, I>, Self> {
         self.try_recover_with(&mut ResetMmio)
     }
 
-    fn try_recover_with(self, io: &mut impl Registers) -> Result<Parts<N, P>, Self> {
+    fn try_recover_with(self, io: &mut impl Registers) -> Result<Parts<N, P, I>, Self> {
         self.recover(|| {
             // Init has not muxed the pins. Holding reset also works when the controller
             // registers are inaccessible or a target is holding SCL.
@@ -392,6 +447,7 @@ trait Io {
     fn read(&mut self, offset: usize) -> u32;
     fn write(&mut self, offset: usize, value: u32);
     fn now(&mut self) -> u32;
+    fn instant(&mut self) -> Instant;
     /// clk_sys (`ic_clk`) still matches `clocks`, per transaction ([`Clocks::sys_current`]).
     fn sys_current(&mut self, clocks: &Clocks) -> bool;
     /// clk_sys still matches `clocks`, at init and speed changes
@@ -422,6 +478,10 @@ impl Io for Mmio {
     #[inline(always)]
     fn now(&mut self) -> u32 {
         read(0x400a_c028)
+    }
+    #[inline(always)]
+    fn instant(&mut self) -> Instant {
+        Timer::new().now()
     }
     #[inline(always)]
     fn sys_current(&mut self, clocks: &Clocks) -> bool {
@@ -456,11 +516,9 @@ fn release_polling(io: &mut impl Io) -> Result<(), Error> {
     Ok(())
 }
 
-/// Outside a transaction IC_ENABLE.ENABLE is already 0: the transaction error path
-/// requested ABORT while ENABLE was still set. ABORT is ignored unless ENABLE is set
-/// (DOC: DW_apb_i2c IC_ENABLE). Setting both here would enable it again.
+/// Cancellation also covers a native transfer whose handle was forgotten.
 fn cancel(io: &mut impl Io) -> Result<(), Error> {
-    io.write(ENABLE, 0);
+    request_stop(io, true);
     mask_interrupts(io);
     if stopped(io) {
         Ok(())
@@ -469,19 +527,16 @@ fn cancel(io: &mut impl Io) -> Result<(), Error> {
     }
 }
 
-fn check(io: &mut impl Io, start: u32) -> Result<u32, Error> {
-    let raw = io.read(RAW);
-    if raw & (1 << 6) != 0 {
+fn fault(io: &mut impl Io, raw: u32) -> Result<(), Error> {
+    if raw & TX_ABRT != 0 {
         return Err(abort_error(io.read(ABORT_SOURCE)));
     }
-    if raw & 0xb != 0 {
+    if raw & FIFO_ERRORS != 0 {
         return Err(Error::Fifo);
     }
-    if io.now().wrapping_sub(start) >= TIMEOUT_US {
-        return Err(Error::Timeout);
-    }
-    Ok(raw)
+    Ok(())
 }
+
 fn command(read: bool, restart: bool, stop: bool, byte: u8) -> u32 {
     u32::from(byte)
         | if read { READ } else { 0 }
@@ -494,71 +549,189 @@ fn operation_len(op: &Operation<'_>) -> usize {
         Operation::Write(bytes) => bytes.len(),
     }
 }
-#[rp1_rt::isram]
-fn transfer(io: &mut impl Io, ops: &mut [Operation<'_>], depth: usize) -> Result<(), Error> {
-    let last = ops.iter().rposition(|op| operation_len(op) != 0);
-    let mut previous = None;
-    for (index, op) in ops
-        .iter_mut()
-        .enumerate()
-        .filter(|(_, op)| operation_len(op) != 0)
-    {
-        let is_read = matches!(op, Operation::Read(_));
-        let restart = previous.is_some_and(|r| r != is_read);
-        let len = operation_len(op);
-        let (mut sent, mut received) = (0, 0);
-        let mut start = io.now();
-        while sent < len || (is_read && received < len) {
-            check(io, start)?;
-            let before = (sent, received);
-            let status = io.read(STATUS);
-            if let Operation::Read(bytes) = op
-                && received < sent
-                && status & (1 << 3) != 0
-            {
-                bytes[received] = io.read(DATA) as u8;
-                received += 1;
+
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Again,
+    Pending(u32, u32),
+    Complete,
+}
+
+/// Fixed budget per call, including when the operation slice contains many empty buffers.
+const SERVICE_BUDGET: usize = 16;
+
+struct Cursor {
+    scan: usize,
+    last: Option<usize>,
+    index: usize,
+    sent: usize,
+    received: usize,
+    previous: Option<bool>,
+}
+
+impl Cursor {
+    fn new(count: usize) -> Self {
+        Self {
+            scan: count,
+            last: None,
+            index: 0,
+            sent: 0,
+            received: 0,
+            previous: None,
+        }
+    }
+
+    fn find_last(&mut self, ops: &[Operation<'_>]) -> bool {
+        for _ in 0..SERVICE_BUDGET {
+            if self.scan == 0 {
+                return true;
             }
-            if sent < len && status & (1 << 1) != 0 && (!is_read || sent - received < depth) {
+            self.scan -= 1;
+            if operation_len(&ops[self.scan]) != 0 {
+                self.last = Some(self.scan);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Move a bounded group of FIFO entries. The waiter only observes readiness.
+    /// The thread or native caller owns all command submission and RX buffer access.
+    #[rp1_rt::isram]
+    fn step(
+        &mut self,
+        io: &mut impl Io,
+        ops: &mut [Operation<'_>],
+        depth: usize,
+        send: bool,
+    ) -> Result<Step, Error> {
+        let Some(last) = self.last else {
+            return Ok(Step::Complete);
+        };
+        for _ in 0..SERVICE_BUDGET {
+            let raw = io.read(RAW);
+            fault(io, raw)?;
+            if self.index > last {
+                return Ok(if raw & STOP_DET == 0 {
+                    Step::Pending(STOP_DET, 0)
+                } else {
+                    Step::Complete
+                });
+            }
+
+            let op = &mut ops[self.index];
+            let len = operation_len(op);
+            if len == 0 {
+                self.index += 1;
+                continue;
+            }
+            let is_read = matches!(op, Operation::Read(_));
+            let status = io.read(STATUS);
+            let mut advanced = false;
+            if let Operation::Read(bytes) = op
+                && self.received < self.sent
+                && status & RX_NOT_EMPTY != 0
+            {
+                bytes[self.received] = io.read(DATA) as u8;
+                self.received += 1;
+                advanced = true;
+            }
+            if send
+                && self.sent < len
+                && status & TX_NOT_FULL != 0
+                && (!is_read || self.sent - self.received < depth)
+            {
                 let byte = match op {
-                    Operation::Write(bytes) => bytes[sent],
+                    Operation::Write(bytes) => bytes[self.sent],
                     _ => 0,
                 };
                 io.write(
                     DATA,
                     command(
                         is_read,
-                        sent == 0 && restart,
-                        Some(index) == last && sent + 1 == len,
+                        self.sent == 0 && self.previous.is_some_and(|r| r != is_read),
+                        self.index == last && self.sent + 1 == len,
                         byte,
                     ),
                 );
-                sent += 1;
+                self.sent += 1;
+                advanced = true;
             }
-            if before != (sent, received) {
-                start = io.now();
+            if self.sent == len && (!is_read || self.received == len) {
+                self.previous = Some(is_read);
+                self.index += 1;
+                self.sent = 0;
+                self.received = 0;
+            } else if !advanced {
+                // With outstanding reads, RX data makes room under the credit limit.
+                // A TX_EMPTY condition at threshold zero always implies TX has room.
+                let outstanding = self.sent - self.received;
+                return Ok(if is_read && outstanding != 0 {
+                    let threshold = outstanding.min(depth.div_ceil(2)) - 1;
+                    Step::Pending(RX_FULL, threshold as u32)
+                } else {
+                    Step::Pending(TX_EMPTY, 0)
+                });
             }
         }
-        previous = Some(is_read);
-    }
-    if last.is_some() {
-        let start = io.now();
-        while check(io, start)? & STOP_DET == 0 {}
-        while io.read(STATUS) & MASTER_ACTIVITY != 0 {
-            check(io, start)?;
+        if self.index > last {
+            let raw = io.read(RAW);
+            fault(io, raw)?;
+            if raw & STOP_DET != 0 {
+                return Ok(Step::Complete);
+            }
         }
+        Ok(Step::Again)
     }
-    Ok(())
 }
 
-impl<const N: u8, P: CompletePins<N>> I2c<N, P> {
+fn scan_ops(io: &mut impl Io, ops: &[Operation<'_>], end: Deadline) -> Result<Cursor, Error> {
+    let mut cursor = Cursor::new(ops.len());
+    while !cursor.find_last(ops) {
+        end.check(io.instant())?;
+    }
+    Ok(cursor)
+}
+
+fn transfer<I: Io>(
+    io: &mut I,
+    ops: &mut [Operation<'_>],
+    mut cursor: Cursor,
+    depth: usize,
+    end: Deadline,
+    mut wait: impl FnMut(&mut I, u32, u32, Deadline) -> Result<(), Error>,
+) -> Result<(), Error> {
+    loop {
+        let expired = io.instant() >= end.instant();
+        match cursor.step(io, ops, depth, !expired)? {
+            Step::Complete => return Ok(()),
+            _ if expired => return Err(Error::Timeout),
+            Step::Again => {}
+            Step::Pending(mask, threshold) => match wait(io, mask, threshold, end) {
+                Err(Error::Timeout) => {
+                    // Deadline wake gets one final batch of RX and STOP, with no new commands.
+                    return match cursor.step(io, ops, depth, false)? {
+                        Step::Complete => Ok(()),
+                        _ => Err(Error::Timeout),
+                    };
+                }
+                result => result?,
+            },
+        }
+    }
+}
+
+impl<const N: u8, P: CompletePins<N>, I> I2c<N, P, Controller, I> {
     fn io(&self) -> Mmio {
         Mmio::new(N)
     }
 
     /// Selects the synchronous polling engine.
-    pub fn polling(&mut self) -> Polling<'_, N, P> {
-        Polling(self)
+    pub fn polling(&mut self) -> Polling<'_, N, P, I> {
+        Polling {
+            bus: self,
+            config: WaitConfig::new(),
+        }
     }
 
     /// Poll a transaction using a checked seven-bit address.
@@ -568,23 +741,91 @@ impl<const N: u8, P: CompletePins<N>> I2c<N, P> {
         address: Address7,
         ops: &mut [Operation<'_>],
     ) -> Result<(), Error> {
-        self.poll_transaction(address.0, ops)
+        self.poll_default(address.0, ops, WaitConfig::new())
     }
 
-    fn poll_transaction(&mut self, address: u8, ops: &mut [Operation<'_>]) -> Result<(), Error> {
-        let (clocks, depth) = (self.clocks, self.rx_depth);
-        run(
-            &mut self.io(),
-            &clocks,
-            &mut self.state,
-            address,
+    /// Explicitly poll until the supplied absolute deadline in unmasked thread mode.
+    pub fn transaction_polling_until(
+        &mut self,
+        address: Address7,
+        ops: &mut [Operation<'_>],
+        end: Deadline,
+    ) -> Result<(), Error> {
+        poll_context()?;
+        self.poll_transaction_with(&mut self.io(), address.0, ops, end)
+    }
+
+    fn poll_default(
+        &mut self,
+        address: u8,
+        ops: &mut [Operation<'_>],
+        config: WaitConfig,
+    ) -> Result<(), Error> {
+        poll_context()?;
+        self.poll_transaction_with(&mut self.io(), address, ops, default_deadline(config)?)
+    }
+
+    fn poll_transaction_with(
+        &mut self,
+        io: &mut impl Io,
+        address: u8,
+        ops: &mut [Operation<'_>],
+        end: Deadline,
+    ) -> Result<(), Error> {
+        admit(io, &self.clocks, self.state, address, end)?;
+        let cursor = scan_ops(io, ops, end)?;
+        if cursor.last.is_none() {
+            return Ok(());
+        }
+        end.check(io.instant())?;
+        // A handler would race the transfer loop for the FIFO and the status it polls.
+        let mask = io.read(MASK);
+        io.write(MASK, 0);
+        let result = match begin(io, address) {
+            Ok(()) => {
+                self.state = State::Poisoned;
+                let result = transfer(io, ops, cursor, self.rx_depth, end, |_, _, _, _| Ok(()));
+                request_stop(io, result.is_err());
+                let start = io.now();
+                let cleanup = loop {
+                    if stopped(io) {
+                        break Ok(());
+                    }
+                    if io.now().wrapping_sub(start) >= CLEANUP_US {
+                        break Err(Error::Timeout);
+                    }
+                };
+                finish(io, &mut self.state, result, cleanup)
+            }
+            Err(error) => Err(error),
+        };
+        io.write(MASK, mask);
+        result
+    }
+
+    /// Admit a nonblocking transaction with one absolute deadline. The handle
+    /// owns the driver and buffers until completion or cancellation. Each
+    /// `try_complete` services a fixed number of FIFO entries and never waits.
+    pub fn try_start_transaction<'a, 'buf>(
+        &'a mut self,
+        address: Address7,
+        ops: &'a mut [Operation<'buf>],
+        end: Deadline,
+    ) -> Result<Transfer<'a, 'buf, N, P, I>, Error> {
+        admit(&mut self.io(), &self.clocks, self.state, address.0, end)?;
+        let cursor = Cursor::new(ops.len());
+        Ok(Transfer {
+            bus: self,
+            cursor,
             ops,
-            depth,
-        )
+            end,
+            phase: Phase::Scan(address),
+        })
     }
 
-    /// Repeat the disable request without waiting. If a target holds SCL the
-    /// controller can stay active. Collect the parts with [`Self::try_free`].
+    /// Request abort/disable without waiting. A target holding SCL can keep
+    /// the controller active. Use [`Self::try_recover`] or [`Self::try_free`]
+    /// after the controller stops.
     pub fn try_cancel(&mut self) -> Result<(), Error> {
         self.cancel_with(&mut self.io())
     }
@@ -594,12 +835,30 @@ impl<const N: u8, P: CompletePins<N>> I2c<N, P> {
         cancel(io)
     }
 
+    /// Confirm that cancellation has stopped the controller, then clear stale sources.
+    /// A subsequent transaction rechecks the clock. This never changes the pin mux.
+    pub fn try_recover(&mut self) -> Result<(), Error> {
+        self.recover_with(&mut self.io())
+    }
+
+    fn recover_with(&mut self, io: &mut impl Io) -> Result<(), Error> {
+        if !stopped(io) {
+            return Err(Error::Busy);
+        }
+        mask_interrupts(io);
+        io.read(CLEAR);
+        self.state = State::Ready;
+        Ok(())
+    }
+}
+
+impl<const N: u8, P: CompletePins<N>> I2c<N, P> {
     /// Unmasks the [`intr`](crate::pac::dw_i2c::intr) bits in `mask` and opens the RP1 wrapper
     /// that routes the controller interrupt to the cores; the NVIC line comes from the generated
     /// `irq` resources. Polling transactions mask every interrupt while they run and restore
     /// the mask afterwards.
     pub fn enable_interrupt(&mut self, mask: u32) {
-        if !matches!(self.state, State::Stopping) {
+        if matches!(self.state, State::Ready) {
             enable_interrupt(&mut self.io(), mask);
         }
     }
@@ -626,7 +885,7 @@ impl<const N: u8, P: CompletePins<N>> I2c<N, P> {
         }
     }
 }
-impl<const N: u8, const SDA: u8, const SCL: u8> I2c<N, PinTuple<SDA, SCL>>
+impl<const N: u8, const SDA: u8, const SCL: u8, I> I2c<N, PinTuple<SDA, SCL>, Controller, I>
 where
     Pin<SDA>: Sda<N>,
     Pin<SCL>: Scl<N>,
@@ -639,7 +898,9 @@ where
     /// Masks interrupts and closes the RP1 wrapper. Reset stays released and the pins
     /// stay muxed. Disable and unpend the separately owned NVIC line first, or ensure
     /// its handler accepts the controller being gone.
-    pub fn try_free(self) -> Result<Parts<N, PinTuple<SDA, SCL>>, crate::FreeError<Self, Error>> {
+    pub fn try_free(
+        self,
+    ) -> Result<Parts<N, PinTuple<SDA, SCL>, I>, crate::FreeError<Self, Error>> {
         if !stopped(&mut self.io()) {
             return Err(crate::FreeError {
                 driver: self,
@@ -654,7 +915,13 @@ where
     /// interrupt mask are retained.
     pub fn free_polling(
         mut self,
-    ) -> Result<Parts<N, PinTuple<SDA, SCL>>, crate::FreeError<Self, Error>> {
+    ) -> Result<Parts<N, PinTuple<SDA, SCL>, I>, crate::FreeError<Self, Error>> {
+        if let Err(error) = poll_context() {
+            return Err(crate::FreeError {
+                driver: self,
+                error,
+            });
+        }
         match release_polling(&mut self.io()) {
             Ok(()) => Ok(self.into_parts()),
             Err(error) => {
@@ -669,35 +936,169 @@ where
         }
     }
 
-    fn into_parts(self) -> Parts<N, PinTuple<SDA, SCL>> {
+    fn into_parts(self) -> Parts<N, PinTuple<SDA, SCL>, I> {
         let (sda, scl) = self.pins;
-        Parts::new(
-            Token {
+        Parts {
+            token: Token {
                 _private: PhantomData,
             },
-            Pins::from_required((sda.release(), scl.release())),
-        )
+            pins: Pins::from_required((sda.release(), scl.release())),
+            irq: self.irq,
+        }
     }
 }
-impl<const N: u8, P: CompletePins<N>> Polling<'_, N, P> {
-    /// Sets the bus speed after confirming disable.
+impl<const N: u8, P: CompletePins<N>, I> Polling<'_, N, P, I> {
+    pub fn with_wait_config(mut self, config: WaitConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Sets the bus speed in unmasked thread mode after confirming disable.
     pub fn set_speed(&mut self, speed: Speed) -> Result<(), Error> {
-        let clocks = self.0.clocks;
-        set_speed(&mut self.0.io(), &clocks, &mut self.0.state, speed)
+        self.bus.state.ready()?;
+        poll_context()?;
+        let clocks = self.bus.clocks;
+        set_speed(&mut self.bus.io(), &clocks, &mut self.bus.state, speed)
     }
 }
-impl<const N: u8, P: CompletePins<N>> embedded_hal::i2c::ErrorType for Polling<'_, N, P> {
+
+impl<const N: u8, P: CompletePins<N>, I> embedded_hal::i2c::ErrorType for Polling<'_, N, P, I> {
     type Error = Error;
 }
-impl<const N: u8, P: CompletePins<N>> embedded_hal::i2c::I2c for Polling<'_, N, P> {
-    /// Empty operations are skipped. Adjacent operations in the same direction continue
-    /// without a restart. Direction changes restart, and only the final byte gets STOP.
-    /// A 100 ms interval without progress times out. A failed disable poisons this
-    /// handle. Further transactions return [`Error::Precondition`]. Use
-    /// [`I2c::try_free`] to collect the parts once stopped and initialize again.
-    /// A cancelled handle returns [`Error::Busy`].
+impl<const N: u8, P: CompletePins<N>, I> embedded_hal::i2c::I2c for Polling<'_, N, P, I> {
+    /// Skip empty buffers, restart on direction changes and issue STOP on the final byte.
+    /// After a fault other than NACK, confirm recovery before reusing the controller.
     fn transaction(&mut self, address: u8, ops: &mut [Operation<'_>]) -> Result<(), Error> {
-        self.0.poll_transaction(address, ops)
+        self.bus.poll_default(address, ops, self.config)
+    }
+}
+
+fn default_deadline(config: WaitConfig) -> Result<Deadline, Error> {
+    Ok(Deadline::after(
+        config.timeout_or(Duration::from_ticks(TIMEOUT_US)),
+    )?)
+}
+
+fn poll_context() -> Result<(), Error> {
+    rp1_rt::interrupt::ThreadGuard::new()
+        .map(|_| ())
+        .map_err(timer::Error::from)
+        .map_err(Error::from)
+}
+
+enum Phase {
+    Scan(Address7),
+    Transfer,
+    Disable(Result<(), Error>),
+    Done(Result<(), Error>),
+    Cancelled(bool),
+}
+
+/// CPU-driven I²C transaction. Dropping an active transfer requests stop
+/// and releases the buffers. The caller must confirm recovery before reusing the bus.
+pub struct Transfer<'a, 'buf, const N: u8, P: CompletePins<N>, I = NoIrq> {
+    bus: &'a mut I2c<N, P, Controller, I>,
+    cursor: Cursor,
+    ops: &'a mut [Operation<'buf>],
+    end: Deadline,
+    phase: Phase,
+}
+
+impl<const N: u8, P: CompletePins<N>, I> Transfer<'_, '_, N, P, I> {
+    /// Service one batch. A NACK permits reuse once disable and idle are confirmed.
+    pub fn try_complete(&mut self) -> Result<Try<()>, Error> {
+        self.complete_with(&mut self.bus.io())
+    }
+
+    fn complete_with(&mut self, io: &mut impl Io) -> Result<Try<()>, Error> {
+        let result = self.step(io);
+        if result.is_err() && matches!(self.phase, Phase::Transfer | Phase::Disable(_)) {
+            let _ = self.cancel_with(io);
+        }
+        result
+    }
+
+    fn step(&mut self, io: &mut impl Io) -> Result<Try<()>, Error> {
+        let expired = io.instant() >= self.end.instant();
+        match self.phase {
+            Phase::Done(result) => return result.map(Try::Ready),
+            Phase::Cancelled(_) => return Err(Error::Busy),
+            Phase::Scan(address) => {
+                if expired {
+                    return Err(Error::Timeout);
+                }
+                if !self.cursor.find_last(self.ops) {
+                    return Ok(Try::WouldBlock);
+                }
+                if self.cursor.last.is_none() {
+                    self.phase = Phase::Done(Ok(()));
+                    return Ok(Try::Ready(()));
+                }
+                self.end.check(io.instant())?;
+                // Suppress raw delivery before taking FIFO and latched status ownership.
+                if !stopped(io) {
+                    return Err(Error::Busy);
+                }
+                mask_interrupts(io);
+                start(io, address.0);
+                self.bus.state = State::Poisoned;
+                self.phase = Phase::Transfer;
+            }
+            _ => {}
+        }
+        let result = match self.phase {
+            Phase::Disable(result) => result,
+            _ => match self.cursor.step(io, self.ops, self.bus.rx_depth, !expired) {
+                Ok(Step::Complete) => Ok(()),
+                Ok(_) if expired => return Err(Error::Timeout),
+                Ok(_) => return Ok(Try::WouldBlock),
+                Err(error @ (Error::AddressNack | Error::DataNack)) => Err(error),
+                Err(error) => return Err(error),
+            },
+        };
+        if matches!(self.phase, Phase::Transfer) {
+            request_stop(io, result.is_err());
+            self.phase = Phase::Disable(result);
+        }
+        if !stopped(io) {
+            return if expired {
+                result.and(Err(Error::Timeout))
+            } else {
+                Ok(Try::WouldBlock)
+            };
+        }
+        let result = finish(io, &mut self.bus.state, result, Ok(()));
+        self.phase = Phase::Done(result);
+        result.map(Try::Ready)
+    }
+
+    /// Retire this transfer and request disable without waiting. If the
+    /// controller remains active, retry until it stops or release the handle
+    /// and call `I2c::try_recover` after the controller stops.
+    pub fn try_cancel(&mut self) -> Result<(), Error> {
+        self.cancel_with(&mut self.bus.io())
+    }
+
+    fn cancel_with(&mut self, io: &mut impl Io) -> Result<(), Error> {
+        match self.phase {
+            Phase::Done(_) => Ok(()),
+            Phase::Scan(_) | Phase::Cancelled(false) => {
+                self.phase = Phase::Cancelled(false);
+                Ok(())
+            }
+            _ => {
+                self.phase = Phase::Cancelled(true);
+                self.bus.cancel_with(io)
+            }
+        }
+    }
+}
+
+impl<const N: u8, P: CompletePins<N>, I> Drop for Transfer<'_, '_, N, P, I> {
+    fn drop(&mut self) {
+        if matches!(self.phase, Phase::Transfer | Phase::Disable(_)) {
+            let _ = self.bus.try_cancel();
+        }
     }
 }
 
@@ -720,61 +1121,68 @@ fn set_speed(
     Ok(())
 }
 
-/// One transaction, one clock check. `Precondition` before any controller access if the
-/// handle is poisoned or clk_sys (`ic_clk`) no longer matches `clocks` ([`Clocks::sys_current`]):
-/// the SCL counts were computed for it. clk_uart is not read.
-fn run(
+/// One transaction, one clock check. The SCL counts are for clk_sys, not clk_uart.
+fn admit(
     io: &mut impl Io,
     clocks: &Clocks,
-    state: &mut State,
+    state: State,
     address: u8,
-    ops: &mut [Operation<'_>],
-    depth: usize,
+    end: Deadline,
 ) -> Result<(), Error> {
-    match *state {
-        State::Stopping => return Err(Error::Busy),
-        _ if address >= 128 => return Err(Error::Invalid),
-        State::Poisoned => return Err(Error::Precondition),
-        State::Ready => {}
+    if matches!(state, State::Stopping) {
+        return Err(Error::Busy);
     }
+    Address7::new(address)?;
+    state.ready()?;
+    end.check(io.instant())?;
     if !io.sys_current(clocks) {
         return Err(Error::Precondition);
     }
-    if ops.iter().all(|op| operation_len(op) == 0) {
-        return Ok(());
-    }
-    // A handler would race the transfer loop for the FIFO and the status it polls.
-    let mask = io.read(MASK);
-    io.write(MASK, 0);
-    let result = transact(io, state, address, ops, depth);
-    io.write(MASK, mask);
-    result
+    Ok(())
 }
 
-fn transact(
-    io: &mut impl Io,
-    state: &mut State,
-    address: u8,
-    ops: &mut [Operation<'_>],
-    depth: usize,
-) -> Result<(), Error> {
-    *state = State::Poisoned;
-    disable(io)?;
+fn begin(io: &mut impl Io, address: u8) -> Result<(), Error> {
+    if !stopped(io) {
+        return Err(Error::Busy);
+    }
+    start(io, address);
+    Ok(())
+}
+
+fn start(io: &mut impl Io, address: u8) {
     io.read(CLEAR);
     io.write(TAR, u32::from(address));
     io.write(ENABLE, 1);
-    let result = transfer(io, ops, depth);
-    if result.is_err() {
-        // Request a STOP/flush before disabling, including when a slave stretches forever.
+}
+
+fn request_stop(io: &mut impl Io, abort: bool) {
+    // IC_ENABLE.ABORT is only meaningful while ENABLE is set. Never re-enable
+    // a controller while a preceding disable waits for a target to release SCL.
+    if abort && io.read(ENABLE) & 1 != 0 {
         io.write(ENABLE, 3);
     }
-    let cleanup = disable(io);
+    io.write(ENABLE, 0);
+}
+
+fn finish(
+    io: &mut impl Io,
+    state: &mut State,
+    result: Result<(), Error>,
+    cleanup: Result<(), Error>,
+) -> Result<(), Error> {
     if cleanup.is_ok() {
-        *state = State::Ready;
+        io.read(CLEAR);
+        // NACK completes on the wire. After other faults, require the caller to
+        // confirm recovery explicitly even when the controller is already disabled.
+        if matches!(result, Ok(()) | Err(Error::AddressNack | Error::DataNack)) {
+            *state = State::Ready;
+        }
     }
-    io.read(CLEAR);
     result.and(cleanup)
 }
+
+// Give disable and master idle time to settle after a transfer deadline.
+const CLEANUP_US: u32 = 1_000;
 
 #[cfg(test)]
 mod tests {
@@ -825,6 +1233,12 @@ mod tests {
         enable_writes: Vec<u32>,
     }
     impl Model {
+        fn model_instant(&self) -> Instant {
+            Instant::from_ticks(
+                u64::from(u32::MAX - 50) + u64::from(self.tick.wrapping_sub(u32::MAX - 50)),
+            )
+        }
+
         fn new(depth: usize) -> Self {
             Self {
                 commands: Vec::new(),
@@ -859,6 +1273,8 @@ mod tests {
         fn read(&mut self, offset: usize) -> u32 {
             match offset {
                 RAW => self.raw,
+                CLEAR => core::mem::take(&mut self.raw),
+                ENABLE => self.enable_writes.last().copied().unwrap_or(0),
                 ABORT_SOURCE => self.abort,
                 STATUS => {
                     if self.stalled {
@@ -915,6 +1331,11 @@ mod tests {
             self.tick = self.tick.wrapping_add(STEP_US);
             self.tick
         }
+        fn instant(&mut self) -> Instant {
+            let instant = self.model_instant();
+            self.now();
+            instant
+        }
         fn sys_current(&mut self, clocks: &Clocks) -> bool {
             self.fast += 1;
             self.sys == Some(clocks.sys().raw())
@@ -952,70 +1373,82 @@ mod tests {
             }
         }
     }
+    fn run(
+        io: &mut Model,
+        bus: &mut I2c<1, Pins1>,
+        address: u8,
+        ops: &mut [Operation<'_>],
+    ) -> Result<(), Error> {
+        let end = Deadline::after_ticks(io.model_instant(), TIMEOUT_US).unwrap();
+        bus.poll_transaction_with(io, address, ops, end)
+    }
+
+    fn transfer(io: &mut Model, ops: &mut [Operation<'_>], depth: usize) -> Result<(), Error> {
+        let end = Deadline::after_ticks(io.model_instant(), TIMEOUT_US).unwrap();
+        let mut cursor = Cursor::new(ops.len());
+        while !cursor.find_last(ops) {}
+        super::transfer(io, ops, cursor, depth, end, |_, _, _, _| Ok(()))
+    }
+
     const CLOCKS: crate::clocks::Clocks = crate::clocks::Clocks::for_test(200_000_000, 50_000_000);
     /// Review 6: PLL_SYS / CLK_UART unchanged but clk_sys elsewhere fails before any
     /// controller access, and the handle stays usable.
     #[test]
     fn stale_sys_clock_fails_before_the_controller_is_touched() {
         let mut m = Model::new(2);
+        let mut bus = model_bus(&mut m);
+        m.writes = 0;
+        m.strict = 0;
         m.sys = Some(50_000_000);
-        // Review 8: transactions use the fast check only; the strict one would fail here.
         m.strict_stale = true;
-        let mut state = State::Ready;
         assert_eq!(
-            run(
-                &mut m,
-                &CLOCKS,
-                &mut state,
-                0x2d,
-                &mut [Operation::Write(&[1])],
-                2
-            ),
+            run(&mut m, &mut bus, 0x2d, &mut [Operation::Write(&[1])]),
             Err(Error::Precondition)
         );
-        assert!(state.ready().is_ok() && m.writes == 0 && m.commands.is_empty());
+        assert!(bus.state.ready().is_ok() && m.writes == 0 && m.commands.is_empty());
         assert_eq!((m.fast, m.strict), (1, 0));
         m.sys = Some(200_000_000);
         assert_eq!(
-            run(
-                &mut m,
-                &CLOCKS,
-                &mut state,
-                0x2d,
-                &mut [Operation::Write(&[1])],
-                2
-            ),
+            run(&mut m, &mut bus, 0x2d, &mut [Operation::Write(&[1])]),
             Ok(())
         );
-        assert!(state.ready().is_ok());
+        assert!(bus.state.ready().is_ok());
         assert_eq!(m.commands, [1 | STOP]);
         // One check for the whole transaction, however many operations it has.
         let checks = m.fast;
         let mut r = [0; 3];
         run(
             &mut m,
-            &CLOCKS,
-            &mut state,
+            &mut bus,
             0x2d,
             &mut [
                 Operation::Write(&[1, 2]),
                 Operation::Read(&mut r),
                 Operation::Write(&[3]),
             ],
-            2,
         )
         .unwrap();
         assert_eq!((m.fast, m.strict), (checks + 1, 0));
-        let mut poisoned = State::Poisoned;
+    }
+
+    #[test]
+    fn polling_rejects_invalid_address_before_poisoned_state() {
+        let mut model = Model::new(2);
+        let mut bus = model_bus(&mut model);
+        bus.state = State::Poisoned;
         assert_eq!(
-            run(&mut m, &CLOCKS, &mut poisoned, 0x2d, &mut [], 2),
-            Err(Error::Precondition)
-        );
-        assert_eq!(
-            run(&mut m, &CLOCKS, &mut state, 0x80, &mut [], 2),
+            run(&mut model, &mut bus, 0x80, &mut []),
             Err(Error::Invalid)
         );
+        assert_eq!(
+            run(&mut model, &mut bus, 0x2d, &mut []),
+            Err(Error::Precondition)
+        );
+        bus.state = State::Stopping;
+        assert_eq!(run(&mut model, &mut bus, 0x80, &mut []), Err(Error::Busy));
+        assert_eq!(model.fast, 0);
     }
+
     type Pins1 = PinTuple<2, 3>;
     fn init_model(
         token: Token<1>,
@@ -1029,6 +1462,18 @@ mod tests {
             *routed = true;
             (sda.assume(), scl.assume())
         })
+    }
+
+    fn model_bus(model: &mut Model) -> I2c<1, Pins1> {
+        init_model(
+            unsafe { Token::new() },
+            model,
+            unsafe { (Pin::new(), Pin::new()) },
+            &CLOCKS,
+            Speed::Standard,
+            &mut false,
+        )
+        .unwrap()
     }
 
     /// Review 7: a stale clk_sys or a speed impossible at it fails before the reset is
@@ -1144,13 +1589,10 @@ mod tests {
         bus.disable_interrupt(crate::pac::dw_i2c::intr::TX_EMPTY);
         bus.clear_interrupt();
         assert_eq!(bus.interrupt_status(), 0);
-        assert_eq!(
-            bus.transaction_polling(Address7::new_const::<0x2d>(), &mut []),
-            Err(Error::Busy)
-        );
+        assert_eq!(run(&mut model, &mut bus, 0x2d, &mut []), Err(Error::Busy));
         assert_eq!(
             embedded_hal::i2c::I2c::transaction(&mut bus.polling(), 0x2d, &mut []),
-            Err(Error::Busy)
+            Err(Error::WrongContext)
         );
         assert_eq!(bus.polling().set_speed(Speed::Fast), Err(Error::Busy));
 
@@ -1227,7 +1669,7 @@ mod tests {
         );
         m.interrupt_writes.clear();
         let ops = &mut [Operation::Write(&[1])];
-        run(&mut m, &CLOCKS, &mut i2c.state, 0x2d, ops, 2).unwrap();
+        run(&mut m, &mut i2c, 0x2d, ops).unwrap();
         assert_eq!(m.interrupt_writes, [(MASK, 0), (MASK, STOP_DET | TX_ABRT)]);
     }
 
@@ -1336,6 +1778,98 @@ mod tests {
             Err(Error::Fifo)
         );
     }
+    #[test]
+    fn native_nack_returns_to_ready_after_idle() {
+        for (source, error) in [(1, Error::AddressNack), (1 << 3, Error::DataNack)] {
+            let mut model = Model::new(2);
+            let mut bus = model_bus(&mut model);
+            let end = Deadline::after_ticks(model.model_instant(), TIMEOUT_US).unwrap();
+            let mut ops = [Operation::Write(&[1])];
+            let mut transfer = Transfer {
+                bus: &mut bus,
+                cursor: Cursor::new(ops.len()),
+                ops: &mut ops,
+                end,
+                phase: Phase::Scan(Address7::new_const::<0x2d>()),
+            };
+            model.stalled = true;
+            assert_eq!(transfer.complete_with(&mut model), Ok(Try::WouldBlock));
+            model.stuck_enabled = true;
+            model.raw = TX_ABRT | STOP_DET;
+            model.abort = source;
+            assert_eq!(transfer.complete_with(&mut model), Ok(Try::WouldBlock));
+            assert_eq!(model.raw, TX_ABRT | STOP_DET);
+
+            model.stuck_enabled = false;
+            assert_eq!(transfer.complete_with(&mut model), Err(error));
+            assert_eq!(transfer.complete_with(&mut model), Err(error));
+            drop(transfer);
+            assert_eq!(model.raw, 0);
+            model.stalled = false;
+            assert_eq!(run(&mut model, &mut bus, 0x2d, &mut ops), Ok(()));
+        }
+    }
+
+    #[test]
+    fn native_cancel_waits_for_idle_before_rearm_and_clears_stale_stop() {
+        let mut model = Model::new(2);
+        let mut bus = init_model(
+            unsafe { Token::new() },
+            &mut model,
+            unsafe { (Pin::new(), Pin::new()) },
+            &CLOCKS,
+            Speed::Standard,
+            &mut false,
+        )
+        .unwrap();
+        let end = Deadline::after_ticks(model.model_instant(), TIMEOUT_US).unwrap();
+        let mut ops = [Operation::Write(&[1])];
+        let mut transfer = Transfer {
+            bus: &mut bus,
+            cursor: Cursor::new(ops.len()),
+            ops: &mut ops,
+            end,
+            phase: Phase::Scan(Address7::new_const::<0x2d>()),
+        };
+        model.stalled = true;
+        assert_eq!(transfer.complete_with(&mut model), Ok(Try::WouldBlock));
+        model.stuck_enabled = true;
+        model.master_active = true;
+        assert_eq!(transfer.cancel_with(&mut model), Err(Error::Busy));
+        drop(transfer);
+        assert_eq!(bus.state.ready(), Err(Error::Busy));
+        model.raw = STOP_DET | TX_ABRT;
+        model.abort = 1;
+        assert_eq!(bus.recover_with(&mut model), Err(Error::Busy));
+        assert_eq!(model.raw, STOP_DET | TX_ABRT);
+        model.stuck_enabled = false;
+        model.master_active = false;
+        assert_eq!(bus.recover_with(&mut model), Ok(()));
+        assert_eq!(model.raw, 0);
+        model.stalled = false;
+        assert_eq!(run(&mut model, &mut bus, 0x2d, &mut ops), Ok(()));
+        assert_eq!(model.commands, [1 | STOP]);
+    }
+
+    #[test]
+    fn final_probe_cannot_queue_a_command_after_the_deadline() {
+        let mut model = Model::new(2);
+        let mut ops = [Operation::Write(&[1, 2])];
+        let end = Deadline::after_ticks(model.model_instant(), TIMEOUT_US).unwrap();
+        let mut cursor = Cursor::new(ops.len());
+        assert!(cursor.find_last(&ops));
+        model.stalled = true;
+        assert_eq!(
+            super::transfer(&mut model, &mut ops, cursor, 2, end, |io, mask, _, _| {
+                assert_eq!(mask, TX_EMPTY);
+                io.stalled = false;
+                Err(Error::Timeout)
+            }),
+            Err(Error::Timeout)
+        );
+        assert!(model.commands.is_empty());
+    }
+
     /// The 64-bit formula before review 7, kept as the reference.
     fn timing_wide(ic_clk_hz: u32, speed: Speed) -> Result<Counts, Error> {
         let (mode, high_ns, low_ns) = match speed {
