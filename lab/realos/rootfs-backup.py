@@ -30,23 +30,37 @@ def inventory(root, scope):
     return [name for name in scope if present(root / name)]
 
 
+def hash_xattrs(digest, root, path):
+    # Filesystems can enumerate extended attributes in different orders.
+    # Linux POSIX ACLs are extended attributes too.
+    for name in sorted(os.listxattr(path, follow_symlinks=False)):
+        value = os.getxattr(path, name, follow_symlinks=False)
+        digest.update(os.fsencode(path.relative_to(root)) + b"\0")
+        digest.update(os.fsencode(name) + b"\0")
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+    if not path.is_symlink() and path.is_dir():
+        for child in sorted(path.iterdir()):
+            hash_xattrs(digest, root, child)
+
+
 def tree_hash(root, paths):
     # Hash names, contents, links, owners, modes and directories in a stable
-    # order, including ACLs and xattrs. Ignore filesystem timestamp precision.
+    # order. Ignore filesystem timestamp precision.
     with tempfile.TemporaryFile() as names:
         names.write(b"".join(os.fsencode(name) + b"\0" for name in paths))
         names.seek(0)
         with subprocess.Popen(
-            ["tar", "--sort=name", "--format=pax", "--mtime=@0", "--numeric-owner",
-             "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
-             "--acls", "--xattrs", "--xattrs-include=*",
+            ["tar", "--sort=name", "--format=gnu", "--mtime=@0", "--numeric-owner",
              "-cf", "-", "-C", root, "--null", "-T", "-"],
             stdin=names, stdout=subprocess.PIPE, env=dict(os.environ, LC_ALL="C")
         ) as archive:
-            digest = hashlib.file_digest(archive.stdout, "sha256").hexdigest()
+            digest = hashlib.file_digest(archive.stdout, "sha256")
             if archive.wait():
                 raise ValueError(f"could not hash {root}")
-    return digest
+    for name in paths:
+        hash_xattrs(digest, root, root / name)
+    return digest.hexdigest()
 
 
 def sync(src, dst, paths=None, verify=False):
@@ -110,10 +124,10 @@ def save(root, tftp, backup, identity, new_tree, paths):
             dst.mkdir()
             sync(src, dst, members)
             all_paths = members if members is not None else ["."]
+            sync(src, dst, members, verify=True)
             digest = tree_hash(src, all_paths)
             if tree_hash(dst, all_paths) != digest:
                 raise ValueError(f"{tree} backup differs from the source")
-            sync(src, dst, members, verify=True)
             manifest["sha256"][tree] = digest
         data = (json.dumps(manifest, indent=2) + "\n").encode()
         (stage / "manifest.json").write_bytes(data)

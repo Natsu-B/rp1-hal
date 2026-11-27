@@ -114,6 +114,22 @@ PY
     [[ -f $tty/autologin.conf && -f $TFTP_DIR/new ]]
     mv -fT "$BACKUP_DIR/tftp/saved-link" "$BACKUP_DIR/tftp/alias"
 
+    saved_config="$BACKUP_DIR/tftp/Å config"
+    python3 -c 'import os, sys; os.setxattr(sys.argv[1], "user.z", b"bad")' "$saved_config"
+    reject prepare --restore
+    [[ -f $tty/autologin.conf && -f $TFTP_DIR/new ]]
+    python3 - "$saved_config" <<'PYTHON'
+import os
+import sys
+
+path = sys.argv[1]
+# Recreate the attributes in the opposite order from the source.
+os.removexattr(path, "user.z")
+os.removexattr(path, "user.a")
+os.setxattr(path, "user.a", b"two")
+os.setxattr(path, "user.z", b"one")
+PYTHON
+
     reject env TFTP_DIR="$work" bash "$here/realos/prepare-rootfs.sh" --restore
     [[ -f $tty/autologin.conf && -f $TFTP_DIR/new ]]
     LC_ALL=C.UTF-8 prepare --restore
