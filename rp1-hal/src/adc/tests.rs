@@ -97,12 +97,12 @@ impl Registers for FakeAdc {
     fn write(&mut self, address: usize, value: u32) {
         match address {
             CS => {
-                let status = self.cs & (CS_READY | CS_ERR | CS_ERR_STICKY);
+                let status = self.cs & (CS_READY | CS_ERR_STICKY);
                 self.cs = value & !(CS_ERR_STICKY | CS_START_ONCE) | status;
                 self.cs &= !(value & CS_ERR_STICKY);
                 if value & CS_START_ONCE != 0 {
                     assert!(ready(self.cs));
-                    self.cs &= !(CS_READY | CS_ERR);
+                    self.cs &= !CS_READY;
                     self.starts += 1;
                     if let Some(sample) = self.on_start {
                         self.complete(sample);
@@ -130,8 +130,7 @@ fn immediate_start_and_sample_own_one_generation() {
     assert_eq!(state.start(&mut io, 3), Err(Error::Busy));
     assert_eq!(state.idle(), Err(Error::Busy));
     io.samples.push_back(41);
-    assert_eq!(state.sample(&mut io), Ok(None)); // FIFO populated before READY.
-    io.cs |= CS_READY;
+    assert!(!ready(io.cs));
     assert_eq!(state.sample(&mut io), Ok(Some(41)));
     assert_eq!(state.sample(&mut io), Err(Error::NoConversion));
     assert_eq!(io.starts, 1);
@@ -141,27 +140,33 @@ fn immediate_start_and_sample_own_one_generation() {
 #[test]
 fn cancel_waits_for_ready_then_drains_before_rearm() {
     let mut io = FakeAdc::default();
-    let mut state = State::Idle;
-    state.start(&mut io, 4).unwrap();
-    assert_eq!(state.cancel(&mut io), Err(Error::Recovering));
-    assert_eq!(state.sample(&mut io), Err(Error::Recovering));
-    assert_eq!(state.start(&mut io, 4), Err(Error::Recovering));
-    assert_eq!(state.idle(), Err(Error::Recovering));
+    let mut adc = Adc {
+        parts: unsafe { Token::new() },
+        clk_hz: 50_000_000,
+        state: State::Idle,
+    };
+    adc.state.start(&mut io, 4).unwrap();
+    assert!(!adc.is_recovering());
+    let _ = adc.state.cancel(&mut io); // Timeout cleanup can leave the conversion in flight.
+    assert!(adc.is_recovering());
+    assert_eq!(adc.state.sample(&mut io), Err(Error::Recovering));
+    assert_eq!(adc.state.start(&mut io, 4), Err(Error::Recovering));
+    assert_eq!(adc.state.idle(), Err(Error::Recovering));
     io.complete(111);
-    state.cancel(&mut io).unwrap();
+    adc.state.cancel(&mut io).unwrap();
+    assert!(!adc.is_recovering());
     assert!(io.samples.is_empty());
-    state.start(&mut io, 4).unwrap();
+    adc.state.start(&mut io, 4).unwrap();
     io.complete(222);
-    assert_eq!(state.sample(&mut io), Ok(Some(222)));
+    assert_eq!(adc.state.sample(&mut io), Ok(Some(222)));
 }
 
 #[test]
 fn error_paths_keep_overrun_conversion_and_fifo_state_separate() {
     for (flags, cs, word, error) in [
-        (FCS_OVER, CS_ERR, FIFO_ERR, Error::Overrun),
+        (FCS_OVER, CS_ERR_STICKY, FIFO_ERR, Error::Overrun),
         (FCS_UNDER, 0, 123, Error::FifoState),
-        (0, CS_ERR_STICKY, 123, Error::Conversion),
-        (0, CS_ERR, 123, Error::Conversion),
+        (0, CS_ERR_STICKY, FIFO_ERR, Error::Conversion),
         (0, 0, FIFO_ERR, Error::Conversion),
     ] {
         let mut io = FakeAdc::default();

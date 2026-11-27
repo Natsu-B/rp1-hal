@@ -10,6 +10,7 @@ enum Arrival {
     DuringArm,
     AfterArm,
     Sleeping,
+    FifoBeforeReady,
     MissingWithResult,
     MissingWithoutResult,
 }
@@ -60,6 +61,11 @@ impl WaitAlarm for Alarm<'_, '_> {
                 io.regs.complete(77);
                 *deliveries += source.service(io);
             }
+            (Arrival::FifoBeforeReady, 1) => {
+                assert!(!ready(io.regs.cs));
+                io.regs.samples.push_back(77);
+                *deliveries += source.service(io);
+            }
             (Arrival::MissingWithResult, 2) => io.regs.complete(77),
             _ => {}
         }
@@ -72,6 +78,7 @@ fn stale_before_arm_and_completion_during_after_or_without_delivery() {
         (Arrival::DuringArm, 0, 0, Ok(Ok(77))),
         (Arrival::AfterArm, 0, 1, Ok(Ok(77))),
         (Arrival::Sleeping, 2, 1, Ok(Ok(77))),
+        (Arrival::FifoBeforeReady, 1, 1, Ok(Ok(77))),
         (Arrival::MissingWithResult, 2, 0, Ok(Ok(77))),
         (
             Arrival::MissingWithoutResult,
@@ -160,12 +167,9 @@ fn stale_entry_and_force_cannot_publish_or_storm() {
     assert_eq!(io.regs.inte, 0);
     assert_eq!(io.probe(), None);
     io.regs.intf = FIFO_IRQ;
-    assert_eq!(source.arm(&mut io, FIFO_IRQ), Err(Error::IrqUnavailable));
+    assert!(source.arm(&mut io, FIFO_IRQ).unwrap());
     assert_eq!(source.service(&mut io), 0);
     assert_eq!(io.regs.read(INTS), 0);
-    assert!(source.arm(&mut io, FIFO_IRQ).unwrap());
-    io.regs.intf = FIFO_IRQ;
-    assert_eq!(source.service(&mut io), 0);
     assert!(source.armed);
     io.regs.complete(77);
     assert_eq!(source.service(&mut io), FIFO_IRQ);

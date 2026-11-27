@@ -38,7 +38,6 @@ const CS_TS_EN: u32 = 1 << 1;
 const CS_START_ONCE: u32 = 1 << 2;
 const CS_START_MANY: u32 = 1 << 3;
 const CS_READY: u32 = 1 << 8;
-const CS_ERR: u32 = 1 << 9;
 const CS_ERR_STICKY: u32 = 1 << 10;
 const CS_POWERED: u32 = CS_EN | CS_TS_EN;
 const CS_IDLE_MASK: u32 = CS_READY | CS_START_ONCE | CS_START_MANY;
@@ -57,8 +56,7 @@ const RESULT_MASK: u32 = 0xfff;
 const RESETS_CLR0: usize = 0x4001_4000 + CLR;
 const RESET_BIT: u32 = 1;
 
-/// A conversion takes 96 clk_adc cycles (≈ 1.9 µs at 50 MHz, DOC RP2040-class ADC).
-/// The default includes peripheral access and IRQ service.
+/// Budget for the whole one-shot call, including peripheral access and IRQ service.
 const TIMEOUT: Duration = Duration::from_ticks(1_000);
 
 /// Full-scale reference of the rpi-cm5 board (`vref-supply = <&rp1_vdd_3v3>`, DOC stock DT).
@@ -77,6 +75,7 @@ impl<const N: u8> Input<N> {
     /// # Safety
     /// Board or lab setup only. N must name an external AIN route owned by the caller.
     /// The board must keep the pin within the ADC electrical limits.
+    #[doc(hidden)]
     pub const unsafe fn __new() -> Self {
         const { assert!(N < 4) };
         Self { _private: () }
@@ -106,7 +105,8 @@ impl<C: Channel> Channel for &C {}
 pub enum Error {
     /// The clock tree changed or clk_adc could not be started.
     Precondition,
-    /// The operation did not complete by the deadline.
+    /// The operation did not complete by the deadline. See [`Adc::is_recovering`]
+    /// for the state after cleanup was attempted.
     Timeout,
     /// The deadline is outside the alarm's supported horizon.
     InvalidDeadline,
@@ -272,6 +272,11 @@ impl<I> Adc<I> {
         self.state.sample(&mut Mmio)
     }
 
+    /// Whether cleanup is pending. Use [`Self::try_cancel`] before starting again.
+    pub const fn is_recovering(&self) -> bool {
+        matches!(self.state, State::Recovering)
+    }
+
     /// Discard the current conversion. One-shot hardware may still finish
     /// after cancel. Retry this method if the ADC is recovering.
     pub fn try_cancel(&mut self) -> Result<(), Error> {
@@ -301,16 +306,23 @@ impl<I> Adc<I> {
     ) -> Result<u16, Error> {
         ThreadGuard::new().map_err(timer::Error::from)?;
         let timer = Timer::new();
-        end.check(timer.now())?;
+        let start = timer.now();
+        end.check(start)?;
+        let budget = (end.instant().ticks() - start.ticks()) as u32;
+        let start_lo = start.ticks() as u32;
+        // The admission check bounds the horizon to i32::MAX ticks.
+        let elapsed = || timer.now_32().ticks().wrapping_sub(start_lo) >= budget;
         let mut io = Mmio;
         self.state.prepare(&mut io)?;
-        end.check(timer.now())?;
+        if elapsed() {
+            return Err(Error::Timeout);
+        }
         self.state.launch(&mut io, C::SELECT);
         loop {
             if let Some(sample) = self.state.sample(&mut io)? {
                 return Ok(sample);
             }
-            if timer.now() >= end.instant() {
+            if elapsed() {
                 if let Some(sample) = self.state.sample(&mut io)? {
                     return Ok(sample);
                 }
@@ -381,17 +393,16 @@ impl State {
         if fcs & FCS_UNDER != 0 {
             return self.fail(io, Error::FifoState);
         }
-        let cs = io.read(CS);
-        if !ready(cs) || fcs & FCS_EMPTY != 0 {
+        if fcs & FCS_EMPTY != 0 {
             return Ok(None);
         }
         if fcs & FCS_LEVEL != 1 << 16 {
             return self.fail(io, Error::FifoState);
         }
         let value = io.read(FIFO);
-        // READY and one FIFO word identify this generation. A faulty conversion still
-        // consumes that word and clears the sticky flag before another start.
-        if cs & (CS_ERR | CS_ERR_STICKY) != 0 || value & FIFO_ERR != 0 {
+        // The FIFO was empty at launch and tags this result with its error bit.
+        // It can wake the waiter before READY, which gates the next start.
+        if value & FIFO_ERR != 0 {
             return self.fail(io, Error::Conversion);
         }
         *self = Self::Idle;

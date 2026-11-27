@@ -76,7 +76,6 @@ Only loads and stores are used (no LDREX/STREX in shared SRAM). Safe code cannot
 `Clocks` from arbitrary numbers, so a proc1 `Clocks` still means "proc0's init ran".
 Launching proc1 after init (the usual order) makes the wait return at once.
 
-
 ## Sequence
 
 **STATIC · 2026-11-28.** CS and clock setup follow the Linux ADC driver.
@@ -89,18 +88,25 @@ The PAC also describes FCS, FIFO and INTR/INTE/INTF/INTS.
 2. Each start validates idle and removes stale FIFO data. It programs
    AINSEL and issues START_ONCE. The managed path enables the FIFO
    threshold interrupt before START_ONCE. The ISR masks the asserted source
-   before signaling WFE. Thread mode checks READY and takes one FIFO word.
+   before signaling WFE. Thread mode takes one FIFO word even if READY is still low.
+   The next start checks READY.
    FIFO overflow is `Overrun`; a sample error is `Conversion`.
 3. Timeout and `try_cancel` retire the interrupt and discard the result.
    A pending one-shot can still complete. `Recovering` keeps ownership
    until `try_cancel` confirms READY, drains the FIFO within its fixed
-   depth and clears sticky flags. `try_free` requires idle and carries the
+   depth and clears sticky flags. Check `is_recovering()` after an error.
+   `try_free` requires idle and carries the
    driver in its error when release is unsafe. The clock and reset stay
    configured across release.
 4. Temperature uses the Linux scale. mV = 3300 × raw / 4095 (stock DT
    references the 3.3 V supply), and T = 27 − (mV − 706) / 1.721 °C.
 
 ## Hardware
+
+**HW · 2026-11-28.** The initial IRQ52 parity run on proc0 measured
+27–28 µs for 100 internal temperature reads, 7–8 µs for legacy OneShot,
+8 µs for explicit polling and 1,012–1,013 µs for a 1 ms timeout with the
+completion suppressed. These measure calls from entry through return.
 
 Historical polling measurements, HW (2026-10-29, cold boot ×3, lab `shm-firmware` declaring `ADC` on proc0):
 
@@ -119,7 +125,7 @@ Historical polling measurements, HW (2026-10-29, cold boot ×3, lab `shm-firmwar
   The sensor law is uncalibrated (DOC formula), so the absolute accuracy is not established.
 - One `read()` call takes 7.1 µs on proc0 at boot (1000 calls in 7.08–7.11 ms), and about
   34.4 µs while Linux is running. The call includes the register accesses around the
-  conversion; the conversion itself is not isolated (DOC/HYP: 96 clk_adc cycles ≈ 1.9 µs).
+  conversion.
   HYP for the slowdown: APB access latency on proc0 rises once Linux and proc1 are active.
   It was not investigated further.
 - The first conversion after TS_EN reads about 5–7 LSB higher than the steady value.

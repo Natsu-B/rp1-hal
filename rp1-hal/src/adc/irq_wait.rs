@@ -94,12 +94,8 @@ impl<I: Registers> Source<WaitIo<'_, I>> for FifoSource {
         if **state != State::Idle {
             return Ok(false);
         }
-        if io.regs.read(INTE) != 0 || io.regs.read(INTF) != 0 {
-            return Err(Error::IrqUnavailable);
-        }
         self.armed = true;
-        // Enable the FIFO source before START_ONCE. A completion before NVIC
-        // enable still asserts the level and can be seen by the post-arm probe.
+        // Start in arm so the FIFO interrupt is enabled before START_ONCE.
         io.regs.write_relaxed(INTE, mask);
         state.launch(&mut io.regs, *channel);
         Ok(true)
@@ -115,15 +111,22 @@ impl<I: Registers> Source<WaitIo<'_, I>> for FifoSource {
             io.regs.write(INTF, 0);
         }
         let pending = self.armed && (!forced || io.regs.read(INTS) & FIFO_IRQ != 0);
-        if pending || !self.armed {
-            self.retire(io);
+        if pending {
+            // The event signal completes the mask write before exception return.
+            io.regs.write_relaxed(INTE, 0);
+            self.armed = false;
+        } else if !self.armed {
+            io.regs.write(INTE, 0);
         }
         u32::from(pending)
     }
 
     fn retire(&mut self, io: &mut WaitIo<'_, I>) {
-        io.regs.write(INTE, 0);
-        self.armed = false;
+        if self.armed {
+            // The alarm has already finished, so complete the mask here.
+            io.regs.write(INTE, 0);
+            self.armed = false;
+        }
     }
 }
 
@@ -134,6 +137,7 @@ impl<I: Registers> Source<WaitIo<'_, I>> for FifoSource {
 #[inline(always)]
 pub unsafe fn __on_interrupt<const N: u8, const CORE: u8>() -> u32 {
     const { assert!(N == ADC) };
+    // The HAL never asserts ADC reset, and RESET_DONE cannot indicate readiness.
     StateSlots::on_interrupt::<CORE, _>(&mut WaitIo {
         regs: Mmio,
         request: None,
@@ -173,8 +177,8 @@ impl<const CORE: u8> Blocking<'_, CORE> {
     }
 
     /// Convert one sample by an absolute deadline. A timeout retires the IRQ
-    /// and discards the sample. If READY is still low, use [`Adc::try_cancel`]
-    /// to recover before starting another conversion.
+    /// and attempts to discard the sample. Check [`Adc::is_recovering`] to see
+    /// whether [`Adc::try_cancel`] still needs to run.
     pub fn read_until<C: Channel>(&mut self, _channel: C, end: Deadline) -> Result<u16, Error> {
         let mut io = WaitIo {
             regs: Mmio,
