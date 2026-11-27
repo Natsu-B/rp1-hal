@@ -3,9 +3,12 @@ use crate::Error;
 
 pub const MAGIC: &[u8; 8] = b"RP1NOTE\0";
 pub const ELF_TYPE: u32 = 0x5250_3102;
+/// ELF note type for descriptor v3.
 pub const ELF_TYPE_V3: u32 = 0x5250_3103;
-pub const LEGACY_VERSION: u16 = 2;
-pub const WAKE_VERSION: u16 = 3;
+/// Descriptor version for the standard schema 2 wire.
+pub const VERSION_V2: u16 = 2;
+/// Descriptor version for experimental link wake.
+pub const LINK_WAKE_VERSION: u16 = 3;
 pub const HEADER_LEN: usize = 32;
 pub const FIRMWARE: u16 = 1;
 pub const ENTRY: u16 = 2;
@@ -35,6 +38,7 @@ pub const SHM_REGION: u16 = 0x21;
 pub const LINK: u16 = 0x22;
 /// Non-critical record containing one logical RPC name.
 pub const RPC: u16 = 0x23;
+/// Critical v3 record containing the wake ABI, mailbox layout, routes and capabilities.
 pub const LINK_WAKE: u16 = 0x24;
 
 /// Decode the length-prefixed name in an RPC record.
@@ -96,7 +100,7 @@ impl<'a> Note<'a> {
         let version = u16_at(bytes, 8)?;
         if bytes.len() < HEADER_LEN
             || &bytes[..8] != MAGIC
-            || !matches!(version, LEGACY_VERSION | WAKE_VERSION)
+            || !matches!(version, VERSION_V2 | LINK_WAKE_VERSION)
             || u16_at(bytes, 10)? != 32
             || u32_at(bytes, 12)? as usize != bytes.len()
             || u32_at(bytes, 16)? != 0
@@ -111,7 +115,7 @@ impl<'a> Note<'a> {
         for record in note.records() {
             let r = record?;
             validate_record(&r)?;
-            if version == WAKE_VERSION && r.kind == LINK_WAKE && r.flags != 1 {
+            if version == LINK_WAKE_VERSION && r.kind == LINK_WAKE && r.flags != 1 {
                 return Err(Error::Invalid);
             }
             let index = match r.kind {
@@ -123,8 +127,8 @@ impl<'a> Note<'a> {
                 BOOT => Some(5),
                 SHM_AREA => Some(6),
                 SHM_REGION => None,
-                LINK if version == WAKE_VERSION => Some(7),
-                LINK_WAKE if version == WAKE_VERSION => Some(8),
+                LINK if version == LINK_WAKE_VERSION => Some(7),
+                LINK_WAKE if version == LINK_WAKE_VERSION => Some(8),
                 _ if r.flags & 1 != 0 => return Err(Error::Mismatch),
                 _ => None,
             };
@@ -139,7 +143,7 @@ impl<'a> Note<'a> {
         if seen & 0x2f != 0x2f {
             return Err(Error::Invalid);
         }
-        let wake_link = if version == WAKE_VERSION {
+        let wake_link = if version == LINK_WAKE_VERSION {
             let wake = LinkWake::parse(note.get(LINK_WAKE).ok_or(Error::Invalid)?.value)?;
             let link = Link::parse(note.get(LINK).ok_or(Error::Invalid)?.value)?;
             wake.check_routes(link)?;
@@ -149,7 +153,7 @@ impl<'a> Note<'a> {
         };
         if let Some(area) = note.get(SHM_AREA) {
             let area = ShmArea::parse(area.value)?;
-            let min = if version == WAKE_VERSION {
+            let min = if version == LINK_WAKE_VERSION {
                 crate::wake::mailbox::END
             } else {
                 crate::status::END
@@ -171,6 +175,7 @@ impl<'a> Note<'a> {
                 if let Some(link) = wake_link
                     && r.notify_irq
                 {
+                    // ShmRegion::parse admits only core numbers 1 and 2.
                     let route = link.cores[usize::from(r.core) - 1];
                     match r.kind {
                         ShmKind::RingToLinux if route.host_irq_vector.is_none() => {
@@ -214,7 +219,7 @@ impl<'a> Note<'a> {
                     }
                 }
             }
-        } else if version == WAKE_VERSION || note.get(SHM_REGION).is_some() {
+        } else if version == LINK_WAKE_VERSION || note.get(SHM_REGION).is_some() {
             return Err(Error::Invalid);
         }
         Ok(note)
@@ -498,8 +503,17 @@ impl Link {
     }
 }
 
-/// Critical v3 record. The owner is a zero-based core number. The optional
-/// startup route uses a proc0 doorbell and is advertised with STARTUP_WAKE.
+/// Critical v3 record, 16 bytes, little-endian:
+///
+/// - 0: wake ABI (u16 = 1)
+/// - 2: link-page mailbox start (u16 = 0xc0)
+/// - 4: mailbox length (u16 = 64)
+/// - 6: MSI-X owner (u8, 0 = proc0, 1 = proc1)
+/// - 7: proc0 startup doorbell pin (u8, 0xff if STARTUP_WAKE is absent)
+/// - 8: required capabilities (u32)
+/// - 12: offered capabilities (u32)
+///
+/// Only the vector owner may declare an IRQ-notified RP1-to-Linux ring.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LinkWake {
     pub required_caps: u32,
@@ -607,7 +621,9 @@ impl<'a> Iterator for Records<'a> {
     }
 }
 
-/// The descriptor inside the ELF `.note.rp1` section. The type must match its version.
+/// Extract the descriptor from ELF `.note.rp1`. The envelope has namesz 4, descsz,
+/// type [`ELF_TYPE`] (v2) or [`ELF_TYPE_V3`] (v3), name `RP1\0`, then the descriptor
+/// zero-padded to 4 bytes. The type must match the descriptor version.
 /// For descriptor validation, see [`Note::parse`].
 pub fn descriptor(section: &[u8]) -> Result<&[u8], Error> {
     if u32_at(section, 0)? != 4 || section.get(12..16) != Some(b"RP1\0") {
@@ -623,7 +639,7 @@ pub fn descriptor(section: &[u8]) -> Result<&[u8], Error> {
     let desc = section.get(16..end).ok_or(Error::Invalid)?;
     if !matches!(
         (u32_at(section, 8)?, u16_at(desc, 8)?),
-        (ELF_TYPE, LEGACY_VERSION) | (ELF_TYPE_V3, WAKE_VERSION)
+        (ELF_TYPE, VERSION_V2) | (ELF_TYPE_V3, LINK_WAKE_VERSION)
     ) {
         return Err(Error::Invalid);
     }

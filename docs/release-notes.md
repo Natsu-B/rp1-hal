@@ -69,6 +69,11 @@ header v1 path. The lab can opt into NOTE v3 and exercise the v2 SHM header
 codec, boot-scoped mailbox tickets, generation-scoped ring tickets and the
 single ALARM3/MSI-X vector owner.
 
+Two validation rules also apply to NOTE v2. `SHM_AREA.sram_end` must cover
+the status block through `0xbf`, including in a descriptor with no rings.
+A DT `rp1,abi` cell, when present, must be exactly `<2>`. Older generated
+v2 notes and overlays already satisfy both rules.
+
 Before, using the schema 2 link:
 
 ```toml
@@ -78,7 +83,7 @@ schema = 2
 host_irq = true
 ```
 
-After, selecting the experimental wire for a delivery fixture:
+The delivery fixture selects the experimental wire and enables the runtime feature.
 
 ```toml
 [package.metadata.rp1]
@@ -86,6 +91,8 @@ schema = 2
 link_wake = "experimental"
 [package.metadata.rp1.proc1]
 host_irq = true
+[dependencies]
+rp1-rt = { version = "0.1", features = ["experimental-link-wake"] }
 ```
 
 NOTE v3 uses ELF type `0x52503103`, DT `rp1,abi = <3>` and the critical

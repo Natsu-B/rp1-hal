@@ -314,6 +314,9 @@ fn resources(
         elf_note
     );
     let experimental_wake = d.link_wake.is_some();
+    if experimental_wake {
+        s.push_str("const _: () = ::rp1_rt::status::__REQUIRES_EXPERIMENTAL_LINK_WAKE;\n");
+    }
     if experimental_wake || !shm.regions.is_empty() {
         s.push_str("pub mod link {\n");
         s.push_str(&link::generate(shm, note, experimental_wake)?);

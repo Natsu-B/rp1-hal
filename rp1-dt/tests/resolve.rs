@@ -95,6 +95,32 @@ fn uart3() -> &'static str {
 }
 
 #[test]
+fn legacy_dtb_accepts_absent_or_matching_abi_cell() {
+    let (mut fdt, note) = fixture("");
+    let check_abi = |tree: &Fdt| {
+        check::final_conflicts(tree, &note)
+            .unwrap()
+            .iter()
+            .any(|conflict| conflict == "/rp1-firmware rp1,abi differs from the ELF note")
+    };
+    assert!(!check_abi(&fdt));
+    set(
+        &mut fdt,
+        "/rp1-firmware",
+        "rp1,abi",
+        2u32.to_be_bytes().into(),
+    );
+    assert!(!check_abi(&fdt));
+    set(
+        &mut fdt,
+        "/rp1-firmware",
+        "rp1,abi",
+        3u32.to_be_bytes().into(),
+    );
+    assert!(check_abi(&fdt));
+}
+
+#[test]
 fn uart3_overlay_conflicts_with_spi0_gpio8_gpio9_and_is_marked() {
     let (mut fdt, note) = fixture(&format!(
         "{} / {{ __symbols__ {{ aaa_fragment = \"{RP1}/serial@3c000\"; }}; }};",

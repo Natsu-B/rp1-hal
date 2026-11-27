@@ -215,7 +215,7 @@ impl Firmware {
     pub fn open() -> Result<Self> {
         let note = fs::read(NOTE)?;
         let parsed = Note::parse(&note)?;
-        if parsed.version() != proto::note::LEGACY_VERSION {
+        if parsed.version() != proto::note::VERSION_V2 {
             return Err(Error::setup(
                 "experimental link-wake NOTE requires a link-wake client",
             ));

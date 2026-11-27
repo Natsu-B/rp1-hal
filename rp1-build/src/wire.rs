@@ -173,9 +173,9 @@ pub(crate) fn descriptor_with_layout(
     }
     out[..8].copy_from_slice(MAGIC);
     let version = if d.link_wake.is_some() {
-        WAKE_VERSION
+        LINK_WAKE_VERSION
     } else {
-        LEGACY_VERSION
+        VERSION_V2
     };
     out[8..10].copy_from_slice(&version.to_le_bytes());
     out[10..12].copy_from_slice(&32u16.to_le_bytes());
@@ -192,7 +192,7 @@ pub fn elf_note(desc: &[u8]) -> Vec<u8> {
     word(&mut out, desc.len() as u32);
     word(
         &mut out,
-        if u16_at(desc, 8) == Ok(WAKE_VERSION) {
+        if u16_at(desc, 8) == Ok(LINK_WAKE_VERSION) {
             ELF_TYPE_V3
         } else {
             ELF_TYPE

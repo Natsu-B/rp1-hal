@@ -13,20 +13,22 @@ pub(crate) fn generate(
     note: &[u8],
     experimental_wake: bool,
 ) -> Result<String> {
-    let mut output = String::from(
-        "use ::rp1_hal::platform::Pcie;\n\
-         use ::rp1_link::{self as transport, EnableError, Message, OpenError};\n\
-         use ::rp1_link::generated::{self, ShmArea, ShmKind, ShmRegion};\n",
-    );
-    if experimental_wake {
-        output = String::from("use ::rp1_link::generated::{ShmArea, ShmRegion};\n");
+    let mut output = if experimental_wake {
+        let mut imports = String::from("use ::rp1_link::generated::{ShmArea, ShmRegion};\n");
         if !shm.regions.is_empty() {
-            output.push_str("use ::rp1_link::generated::ShmKind;\n");
+            imports.push_str("use ::rp1_link::generated::ShmKind;\n");
             if shm.regions.iter().any(|r| r.spec.kind == "block") {
-                output.push_str("use ::rp1_link::generated;\n");
+                imports.push_str("use ::rp1_link::generated;\n");
             }
         }
-    }
+        imports
+    } else {
+        String::from(
+            "use ::rp1_hal::platform::Pcie;\n\
+             use ::rp1_link::{self as transport, EnableError, Message, OpenError};\n\
+             use ::rp1_link::generated::{self, ShmArea, ShmKind, ShmRegion};\n",
+        )
+    };
     let visibility = if experimental_wake { "pub " } else { "" };
     let area = shm.area;
     let regions = shm

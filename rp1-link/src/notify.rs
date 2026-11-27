@@ -218,7 +218,7 @@ impl sealed::Notify for HostIrq {
 #[doc(hidden)]
 pub struct VectorOwner {
     terminal_epochs: [u32; 2],
-    _local: core::marker::PhantomData<*mut ()>,
+    _local: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

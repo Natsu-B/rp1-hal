@@ -112,6 +112,33 @@ fn generated_resources_only_reference_their_link_features() {
 }
 
 #[test]
+fn generated_v3_doorbell_handler_links() {
+    let mut d = fixture();
+    d.link_wake = Some(crate::metadata::LinkWakeProfile::Experimental);
+    d.validate().unwrap();
+    let shm = d.shm_layout().unwrap();
+    let note = wire::descriptor_with_layout("wake", "0.1.0", &d, [0; 32], [0; 20], &shm).unwrap();
+    let generated = resources(&d, &note, &shm).unwrap().replace(
+        r#"include_bytes!(concat!(env!("OUT_DIR"),"/rp1-app.dtbo"))"#,
+        r#"b"""#,
+    );
+    // The normal fixture uses custom handlers. This declaration must take the generated path.
+    // rp1-link's v3_doorbell_reads_its_bank_after_clear checks the callee with fake MMIO.
+    assert!(generated.contains("Doorbell1::new() }.__ack_and_signal_wake()"));
+    let dir = tempfile::tempdir().unwrap();
+    let source = format!(
+        "{generated}
+static_assertions::assert_impl_all!(rp1_link::notify::VectorOwner: Send);
+static_assertions::assert_not_impl_any!(rp1_link::notify::VectorOwner: Sync);
+unsafe extern \"C\" {{ fn __rp1_p1_IO_BANK0(); }}
+fn main() {{
+    std::hint::black_box(__rp1_p1_IO_BANK0 as unsafe extern \"C\" fn());
+}}"
+    );
+    trybuild::TestCases::new().pass(write_case(dir.path(), "pass", source));
+}
+
+#[test]
 fn every_region_has_an_alias_that_names_its_notifier() {
     let d = fixture();
     let (body, _) = fragment(&d);

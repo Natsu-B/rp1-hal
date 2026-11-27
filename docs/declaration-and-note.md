@@ -1,4 +1,4 @@
-# 宣言と `.note.rp1` v2（設計 B、2026-10-23 草案）
+# 宣言と `.note.rp1`（設計 B、2026-10-23 草案）
 
 ファームが「何を持ち、Linux と何を共有するか」を、ビルド前に 1 か所で宣言する。
 ビルドはそこから Rust の型・linker script・`.note.rp1` を作り、ローダーと Linux 側は note だけを読む。
@@ -275,9 +275,10 @@ pub mod rp1 {
 `platform` は生成される `rp1::platform::init(&mut core, p.platform)` に渡す。これがクロック・Linux 側ブロック・
 宣言した log・PCIe エンドポイント・SCMI サーバーを順に立ち上げ（`rp1_hal::platform`）、`System`（`clocks`、`pcie`、`report`）を返す。
 
-## 2. `.note.rp1` v2 の形式
+## 2. `.note.rp1` の形式
 
-ELF の note（`SHT_NOTE`、非ロード）。name = `"RP1\0"`、type = `0x5250_3102`（v1 は `0x5250_3101`）。
+ELF の note（`SHT_NOTE`、非ロード）。namesz = 4、name = `"RP1\0"`、type は v2 が
+`0x52503102`、実験的 v3 が `0x52503103`。type と descriptor version を照合する。
 すべてリトルエンディアン。desc は 4 バイト境界。
 
 ### 2.1 ヘッダー（32 バイト）
@@ -285,7 +286,7 @@ ELF の note（`SHT_NOTE`、非ロード）。name = `"RP1\0"`、type = `0x5250_
 | オフセット | 型 | 内容 |
 |---|---|---|
 | 0 | `[u8; 8]` | `"RP1NOTE\0"` |
-| 8 | `u16` | ABI 版 = 2 |
+| 8 | `u16` | descriptor version（通常 2、実験的 link wake は 3） |
 | 10 | `u16` | ヘッダー長 = 32 |
 | 12 | `u32` | desc 全体の長さ |
 | 16 | `u32` | flags（予約、0） |
@@ -329,6 +330,31 @@ flags bit0 = critical: 読み手が知らない type なら拒否する。0 な�
 | ローダー | ENTRY、SHM_AREA（ハンドオフ）、OWNERSHIP（当てた後の DTB の検査、§3.2）。overlay 本体は `.rp1.dtbo` | 知らない critical レコード・CRC 不一致・DTB の印（§3.2）と不一致 → RP1 を起動せず停止（ログに理由） |
 | Linux 側 `rp1-linux` | overlay が載せたコピー（`/rp1-firmware` ノードの `rp1,note` プロパティ）の SHM_*、LINK、RPC、FIRMWARE | 型 ID 不一致・名前が無い → `Err` |
 | `cargo rp1 check --dtb` | OWNERSHIP、LOG、SHM_AREA/SHM_REGION、note 全体 | ローダーと同じコード（`rp1_dt::check::enforce`）で起動時の結果を予測して表示する（STATIC）。ローダーが停止する場合（保護ノード、`on_conflict = "refuse"`、DT の不備）は失敗。衝突によるノードの無効化は既定で失敗、`--allow-boot-disable` で警告。gpiomem 方針だけの無効化は表示だけ。予測が起動時と一致するのは、渡した DTB がファームの渡す DTB と同じときだけ（[build.md](build.md) §3）。衝突として数えるもの（§3.2 手順 3）: 有効なノードの `pinctrl-N` が `rp1_gpio` 配下のグループで RP1 所有ピンを設定、所有ブロックのノード（`rp1_uartN` 等）が有効・ラベルが無い、authority=rp1 なのに `rp1_clocks` が有効、`rp1-shm` 予約が SHM_AREA と違う・他の予約や `/memreserve/` と重なる、`rp1:<name>` の UIO が領域と違う、`/rp1-firmware rp1,note` が ELF の note と違う、有効な gpio-hog・`gpio(s)`/`*-gpio(s)` の利用者が `gpio-reserved-ranges` の線を使う |
+
+### 2.4 実験的 link wake（NOTE v3）
+
+**STATIC · 2026-11-27.** `[package.metadata.rp1]` で `schema = 2` と
+`link_wake = "experimental"` を指定する。ファームの `rp1-rt` に Cargo feature
+`experimental-link-wake` を有効にする。これで初期化が mailbox をゼロ化する。
+v3 は `LINK` と `SHM_AREA` に加えて critical `LINK_WAKE`（type `0x0024`、flags 1）を要求する。
+DT の `/rp1-firmware` に `rp1,abi = <3>` を置く。ローダーは有効な `rp1:irq` が
+RP1 MSI-X vector 29 の edge であることも照合する。
+
+| Byte offset | Type | `LINK_WAKE` value (16 B) |
+|---|---|---|
+| 0 | `u16` | wake ABI = 1 |
+| 2 | `u16` | mailbox start = `0xc0` |
+| 4 | `u16` | mailbox length = 64 |
+| 6 | `u8` | vector owner（0 = proc0、1 = proc1） |
+| 7 | `u8` | proc0 startup doorbell pin（0..27、無しは `0xff`） |
+| 8 | `u32` | required caps |
+| 12 | `u32` | offered caps |
+
+capability の bit 0 / 1 / 2 は `LATCHED_WAKE` / `STARTUP_WAKE` / `CREDIT_WAKE`。
+実験 profile が提供するのは bit 0。v3 で `rp1-to-linux` の `notify = "irq"` を使う
+ring は vector owner が担当する。別コアの通知は owner への引渡しが要る。
+SRAM の宣言領域は `0x100` から。mailbox、DDR header v2、ticket の手順は
+[通信規約 §10](protocol.md#10-実験的-link-wakenote-v3) を参照。
 
 ## 3. Linux 用 DT overlay（`rp1-app.dtbo`）
 

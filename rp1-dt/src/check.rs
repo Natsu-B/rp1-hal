@@ -80,13 +80,13 @@ pub fn final_conflicts(fdt: &Fdt, note: &[u8]) -> Result<Vec<String>> {
     }
 
     let abi = firmware.and_then(|n| fdt.prop(n, "rp1,abi"));
-    if (abi.is_some() || parsed.version() == note::WAKE_VERSION)
+    if (abi.is_some() || parsed.version() == note::LINK_WAKE_VERSION)
         && abi != Some(&u32::from(parsed.version()).to_be_bytes())
     {
         bad.push("/rp1-firmware rp1,abi differs from the ELF note".into());
     }
 
-    if parsed.version() == note::WAKE_VERSION {
+    if parsed.version() == note::LINK_WAKE_VERSION {
         let mut nodes = (0..fdt.nodes.len())
             .filter(|&n| fdt.enabled(n) && fdt.strings(n, "linux,uio-name") == ["rp1:irq"]);
         let valid = nodes.next().is_some_and(|n| {

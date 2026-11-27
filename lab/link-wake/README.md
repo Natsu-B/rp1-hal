@@ -25,4 +25,7 @@ for a test pulse without a terminal transition. Proc1 scans terminal SRAM
 on entry and after events. A proc0 terminal can wake proc1 even before any
 ring is attached. Proc1's deliberate stop can publish and pulse before
 parking. A fault or panic in proc1 can leave the vector without an owner.
+If PCIe is down, the terminal stays eligible for a later scan after a
+doorbell or terminal event. IRQ53 signals loss, and the fixture has no
+automatic transition back to Up or dedicated retry event.
 Start from a cold boot with old writers and posted accesses drained.

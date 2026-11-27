@@ -4,6 +4,7 @@ use rp1_build::{
     wire,
 };
 use rp1_proto::{
+    Error,
     note::{self, Note, ShmArea, ShmRegion},
     wake::{LATCHED_WAKE, mailbox},
 };
@@ -62,7 +63,7 @@ fn schemas_keep_v2_and_v3_note_layouts_distinct() {
         }
         let mut mixed = envelope;
         mixed[8] = if version == 3 { 2 } else { 3 };
-        assert!(note::descriptor(&mixed).is_err());
+        assert_eq!(note::descriptor(&mixed).err(), Some(Error::Invalid));
     }
 }
 
@@ -81,41 +82,46 @@ fn malformed_v3_record_and_stale_layout_are_rejected() {
     let wake = offset(note::LINK_WAKE);
     let region = offset(note::SHM_REGION);
     let route = offset(note::LINK) + 9;
-    for (at, byte) in [
-        (wake - 8, 0x29), // unknown critical TLV and missing LINK_WAKE
-        (wake - 6, 0),    // non-critical
-        (wake, 2),        // unknown wake ABI
-        (wake + 2, 0x80), // mailbox overlaps status
-        (wake + 4, 32),   // mailbox truncated
-        (wake + 6, 0),    // wrong vector owner
-        (wake + 7, 26),   // unadvertised startup route
-        (wake + 8, 3),    // required capability absent
-        (wake + 8, 0x80), // unknown required capability
-        (wake + 12, 0),   // promised capabilities absent
-        (route, 58),      // wrong MSI-X vector
+    for (at, byte, error) in [
+        (wake - 8, 0x29, Error::Mismatch), // unknown critical TLV and missing LINK_WAKE
+        (wake - 6, 0, Error::Invalid),     // non-critical
+        (wake, 2, Error::Invalid),         // unknown wake ABI
+        (wake + 2, 0x80, Error::Invalid),  // mailbox overlaps status
+        (wake + 4, 32, Error::Invalid),    // mailbox truncated
+        (wake + 6, 0, Error::Mismatch),    // wrong vector owner
+        (wake + 7, 26, Error::Mismatch),   // unadvertised startup route
+        (wake + 8, 3, Error::Mismatch),    // required capability absent
+        (wake + 8, 0x80, Error::Mismatch), // unknown required capability
+        (wake + 12, 0, Error::Mismatch),   // promised capabilities absent
+        (route, 58, Error::Mismatch),      // wrong MSI-X vector
     ] {
         let mut changed = a.note.clone();
         changed[at] = byte;
-        assert!(Note::parse(&changed).is_err(), "CRC at offset {at}");
+        assert_eq!(
+            Note::parse(&changed).err(),
+            Some(Error::Invalid),
+            "CRC at {at}"
+        );
         reseal(&mut changed);
-        assert!(Note::parse(&changed).is_err(), "invalid TLV at offset {at}");
+        assert_eq!(Note::parse(&changed).err(), Some(error), "TLV at {at}");
     }
 
     let mut overlaps_mailbox = a.note.clone();
     overlaps_mailbox[region + 16..region + 18]
         .copy_from_slice(&(mailbox::START as u16).to_le_bytes());
     reseal(&mut overlaps_mailbox);
-    assert!(Note::parse(&overlaps_mailbox).is_err());
+    assert_eq!(Note::parse(&overlaps_mailbox).err(), Some(Error::Invalid));
 
     let mut duplicate = a.note.clone();
     duplicate.extend_from_slice(&a.note[wake - 8..wake + note::LinkWake::LEN]);
     reseal(&mut duplicate);
-    assert!(Note::parse(&duplicate).is_err());
+    assert_eq!(Note::parse(&duplicate).err(), Some(Error::Invalid));
 
     let mut legacy = a.note.clone();
     legacy[8] = 2;
-    assert!(
-        Note::parse(&legacy).is_err(),
+    assert_eq!(
+        Note::parse(&legacy).err(),
+        Some(Error::Mismatch),
         "critical LINK_WAKE cannot enter a v2 descriptor"
     );
 
@@ -129,7 +135,24 @@ fn malformed_v3_record_and_stale_layout_are_rejected() {
         0x180
     );
     reseal(&mut changed);
-    assert!(Note::parse(&changed).is_err());
+    assert_eq!(Note::parse(&changed).err(), Some(Error::Invalid));
+}
+
+#[test]
+fn legacy_empty_shm_area_must_still_cover_status() {
+    let a = generate("legacy", "0.1.0", &Declaration::default(), [0; 32], [0; 20]).unwrap();
+    let note = Note::parse(&a.note).unwrap();
+    assert_eq!(note.version(), note::VERSION_V2);
+    assert!(note.get(note::SHM_REGION).is_none());
+    let area = note.get(note::SHM_AREA).unwrap().value;
+    let end = area.as_ptr() as usize - a.note.as_ptr() as usize + 12;
+
+    let mut truncated = a.note;
+    truncated[end..end + 2].copy_from_slice(&((rp1_proto::status::END - 4) as u16).to_le_bytes());
+    // SHM_AREA alone is valid. The v2 descriptor requires space for status overall.
+    ShmArea::parse(&truncated[end - 12..end - 12 + note::SHM_AREA_LEN]).unwrap();
+    reseal(&mut truncated);
+    assert_eq!(Note::parse(&truncated).err(), Some(Error::Invalid));
 }
 
 #[test]

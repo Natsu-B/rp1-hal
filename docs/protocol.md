@@ -31,7 +31,8 @@ M3 側（`rp1-link`）と Linux 側（`rp1-linux`）の両方がそれを使う�
 | 0x00〜0x23 | 固定語: ハンドオフ（0x00〜0x0c）、予約（0x10 / 0x14）、`SHM_GENERATION` / `SHM_STATUS` / `SHM_REQUEST`（0x18 / 0x1c / 0x20） | ローダー / Linux / proc0 |
 | 0x24〜0x3f | lab と診断用（lab のファームとスクリプトが 0x24 / 0x28 / 0x2c を使う）。ライブラリは使わない | lab |
 | 0x40〜0xbf | ファームの状態語（§9） | rp1-rt |
-| 0xc0〜 | 宣言した領域の SRAM 部分（割り当ての開始。0xc0 より前に置いた note は読み手が拒否する） | 端点 |
+| 0xc0〜0xff | NOTE v3 の link wake mailbox（§10）。v2 では宣言領域に割り当て可 | §10 |
+| 0x100〜 | 宣言した領域の SRAM 部分（v2 は 0xc0 から、v3 は 0x100 から） | 端点 |
 | 0x17c0〜0x18bf | SCMI shmem | Linux / proc0 |
 
 0x00〜0x3f は凍結する。新しい語は足さない。
@@ -397,3 +398,72 @@ rp1-linux は `rp1_linux::Error` を返す: 上の誤りは `Proto(..)`（`Lost(
   - `health(window)`: 終端・未知の状態のコアは `Down`。宣言 `heartbeat` のあるコアの `BEAT` を
     `max(window, 2 × 宣言した周期の最大)` あけて 2 回読み、変わらなければ `Stalled`。宣言どおりに打つコアを `Stalled` と言わない。
   - `Monitor::open()` は `rp1:link` を読み取り専用・ロックなしで開く（HW、2026-11-18: 標準カーネルの実 OS と BusyBox 環境で UIO の読み取り専用 mmap を確認）。
+
+
+## 10. 実験的 link wake（NOTE v3）
+
+**STATIC · 2026-11-27.** schema 2 で `link_wake = "experimental"` を選ぶと ELF type
+`0x52503103`、NOTE descriptor version 3、DT `rp1,abi = <3>` になる。critical TLV
+`LINK_WAKE`（`0x24`、16 B）の byte layout は [宣言と NOTE §2.4](declaration-and-note.md#24-実験的-link-wake-note-v3)。
+MSI-X vector 29 の owner は 1 コア。v3 の `rp1-to-linux` ring で `notify = "irq"`
+を宣言できるのは owner のコアだけ。別コアからこの vector を使うには owner への通知が必要になる。
+
+### 10.1 Link SRAM mailbox
+
+各語は aligned LE `u32` で、初期化後は単一 writer。proc0 の `rp1-rt::status` 初期化は
+`0xc0..0xff` をゼロ化する。proc0 は提供 caps を書いてから `BOOT_EPOCH` を公開する。
+`BOOT_EPOCH` は status の `EPOCH` のコピーで、mailbox と提供 caps の公開を示す。
+request/result は後続の startup 実装が使う。
+
+| Offset | Field | Writer | Commit |
+|---|---|---|---|
+| `0xc0` | `BOOT_EPOCH` | proc0 | `BOOT_EPOCH` |
+| `0xc4` | `OFFERED_CAPS` | proc0 | `BOOT_EPOCH` |
+| `0xc8` | `REQUEST_EPOCH` | Linux | `SHM_REQUEST`（`0x20`、opcode 3） |
+| `0xcc` | `REQUEST_SEQ` | Linux | `SHM_REQUEST` |
+| `0xd0` | `REQUIRED_CAPS` | Linux | `SHM_REQUEST` |
+| `0xd4` | `ACCEPTED_CAPS` | proc0 | `SHM_STATUS`（`0x1c`） |
+| `0xd8` | `RESULT_SEQ` | proc0 | `SHM_STATUS` |
+| `0xdc` | `WAIT` (arm) | Linux | 同じ語を readback |
+| `0xe0` | `SEQ` | vector owner | 同じ語を readback、次いで pulse |
+| `0xe4` | `ACK` | Linux | 同じ語を readback |
+| `0xe8..0xff` | 予約 0 | proc0 (初期化) | — |
+
+`RESULT_SEQ` は応答した `REQUEST_SEQ` と同じ値を使う。Linux は `SHM_STATUS` の acquire 後、
+同じ boot epoch/request の結果を使う。
+
+### 10.2 Ring と ticket
+
+128 B の制御部と slot の位置は §2 と同じ。各語は aligned LE `u32`。表は各部の先頭からの位置。
+
+| 用途 | arm（待機側） | seq（通知側） | ACK（待機側） |
+|---|---|---|---|
+| RX | `ctrl+64`（読み手） | `data+68`（書き手） | `ctrl+68`（読み手） |
+| credit（reject） | `data+72`（書き手） | `ctrl+72`（読み手） | `data+76`（書き手） |
+
+1. 待機側は次の奇数を arm し、同じアドレスの readback を済ませてから条件を再確認する。
+2. 通知側は data/tail/terminal の commit を同じ窓の readback で完了し、arm を読む。新しい
+   奇数なら `seq = arm` を commit し、同じアドレスを readback してから pulse する。
+3. 待機側は現在の arm と一致する seq を観測したときだけ ACK できる。同じアドレスを
+   readback する。取消しは `arm + 1` を commit/readback する。現在の arm 以外の seq/ACK
+   は効力を持たない。待機側は shared vector の起床ごとに全条件を再確認する。
+4. arm は `0xffff_fffd` から `1` へ回り、現在の seq と直近の ACK に等しい候補を飛ばす。
+   同じ世代の reopen は保持した arm から進む。通知側は arm の取得から seq の commit までに
+   その待機側が `2^31 - 3` 回の新規 arm を行う前に完了する。通知側が停止している間は seq が
+   固定され、ACK は保持値かその seq のみを採れるため、最大 2 候補を飛ばしてもこの範囲で
+   arm は再利用されない。
+5. 同じ世代で通知側を引き継ぐときは、旧 writer を停止・排出する。条件がまだ ready で、
+   現在の奇数 arm に対し `seq == arm && ack != arm` なら、引継ぎ時に一度 recovery kick する。
+
+### 10.3 初期化と失効
+
+DDR header v2 は §1.3 の 64 B 形式で、offset 8 の版は 2、offset 56 / 60 は boot epoch /
+accepted caps（いずれも LE `u32`）。ring ticket は `(boot_epoch, generation)`、
+mailbox ticket は boot epoch に属する。proc0 は旧 writer を停止し、posted writes と DMA を排出してから
+領域を再利用する。新しい boot epoch の世代は 2 から始まり、同じ epoch では未使用の偶数へ進む。
+世代の再利用が必要になればその boot の DDR 初期化を拒否する。
+
+proc0 は新世代の直前の奇数を書いて readback する。その間に全 ring の RX/credit の
+arm/seq/ACK をゼロ化して各語を readback し、header を書き、最後に偶数世代を commit/readback
+する。Linux は Ready の status、NOTE digest、boot epoch、偶数世代、accepted caps を照合する。
+奇数世代、別の世代、別の boot epoch は既存の ring handle を失効させる。
