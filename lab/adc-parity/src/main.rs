@@ -302,21 +302,23 @@ fn main(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     } = counts.since();
     log!("ADC_REINIT raw={raw} us={elapsed} irq={irq} stray={stray} alarm={alarm} dropped={dropped}\n").unwrap();
 
-    let counts = Counts::read();
-    let start = now();
-    let raw = adc.read_polling(TEMPERATURE).unwrap();
-    let elapsed = now().wrapping_sub(start);
-    unsaturated(raw);
-    let Counts {
-        irq,
-        stray,
-        alarm,
-        dropped,
-    } = counts.since();
-    log!(
-        "ADC_POLL raw={raw} us={elapsed} irq={irq} stray={stray} alarm={alarm} dropped={dropped}\n"
-    )
-    .unwrap();
+    for i in 0..100 {
+        let counts = Counts::read();
+        let start = now();
+        let raw = adc.read_polling(TEMPERATURE).unwrap();
+        let elapsed = now().wrapping_sub(start);
+        unsaturated(raw);
+        let Counts {
+            irq,
+            stray,
+            alarm,
+            dropped,
+        } = counts.since();
+        log!(
+            "ADC_POLL i={i} raw={raw} us={elapsed} irq={irq} stray={stray} alarm={alarm} dropped={dropped}\n"
+        )
+        .unwrap();
+    }
     log!("ADC_PARITY_FIRMWARE_END result=PASS\n").unwrap();
     loop {
         rp1_rt::wait_for_event();
