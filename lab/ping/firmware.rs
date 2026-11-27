@@ -1,28 +1,69 @@
 #[path = "commands.rs"]
 mod commands;
 
-macro_rules! probe {
-    ($resources:ident) => {
-        $crate::ping_test::Probe::new(
-            #[cfg(feature = "link-wake")]
-            $resources.host_irq,
-        )
-    };
-}
-pub(super) use probe;
-
 pub struct Probe {
     delayed: u32,
     #[cfg(feature = "link-wake")]
-    host_irq: rp1_link::notify::VectorOwner,
+    pub host_irq: rp1_link::notify::VectorOwner,
+    #[cfg(feature = "link-wake")]
+    idle: Option<Idle>,
+}
+
+#[cfg(feature = "link-wake")]
+struct Idle {
+    started: u32,
+    slept: u32,
+    returns: u32,
+    longest: u32,
+}
+
+#[cfg(feature = "link-wake")]
+use {
+    crate::rp1,
+    core::sync::atomic::{AtomicBool, Ordering},
+};
+#[cfg(feature = "link-wake")]
+struct PanicFlag(AtomicBool);
+// Proc1 stores and proc0 loads; neither uses an exclusive access to shared SRAM.
+#[cfg(feature = "link-wake")]
+unsafe impl rp1_proto::SharedSafe for PanicFlag {}
+#[cfg(feature = "link-wake")]
+#[rp1_rt::shared]
+static PROC0_PANIC: PanicFlag = PanicFlag(AtomicBool::new(false));
+
+#[cfg(feature = "link-wake")]
+pub fn check_proc0_panic() {
+    if PROC0_PANIC.0.load(Ordering::Acquire) {
+        panic!("ping test proc0");
+    }
 }
 
 impl Probe {
-    pub fn new(#[cfg(feature = "link-wake")] host_irq: rp1_link::notify::VectorOwner) -> Self {
+    #[cfg(not(feature = "link-wake"))]
+    pub fn new() -> Self {
+        Self { delayed: 0 }
+    }
+
+    #[cfg(feature = "link-wake")]
+    pub fn new(host_irq: rp1_link::notify::VectorOwner) -> Self {
         Self {
             delayed: 0,
-            #[cfg(feature = "link-wake")]
             host_irq,
+            idle: None,
+        }
+    }
+
+    #[cfg(feature = "link-wake")]
+    pub fn sleep(&mut self) {
+        if let Some(idle) = &mut self.idle {
+            let before = now();
+            rp1_rt::wait_for_event();
+            let elapsed = now().wrapping_sub(before);
+            idle.slept += elapsed;
+            idle.longest = idle.longest.max(elapsed);
+            idle.returns += 1;
+        } else {
+            rp1_rt::wait_for_event();
         }
     }
 
@@ -33,6 +74,42 @@ impl Probe {
                 rp1_rt::status::__record_stop_before_park(1);
                 self.host_irq.pulse_terminals().expect("stop wake failed");
                 rp1_rt::status::stop(1);
+            }
+            #[cfg(feature = "link-wake")]
+            commands::FAULT => {
+                pause();
+                // A local configurable UsageFault in proc1 thread mode.
+                unsafe { core::arch::asm!("udf #0", options(nomem, nostack, noreturn)) }
+            }
+            #[cfg(feature = "link-wake")]
+            commands::PROC0_PANIC => {
+                PROC0_PANIC.0.store(true, Ordering::Release);
+                rp1_rt::send_event();
+                // Leave the request without a reply so Linux observes terminal delivery.
+                value
+            }
+            #[cfg(feature = "link-wake")]
+            commands::IDLE_BEGIN => {
+                self.idle = Some(Idle {
+                    started: now(),
+                    slept: 0,
+                    returns: 0,
+                    longest: 0,
+                });
+                value
+            }
+            #[cfg(feature = "link-wake")]
+            commands::IDLE_END => {
+                if let Some(idle) = self.idle.take() {
+                    let _ = rp1_hal::log!(
+                        "RP1_IDLE wall_us={} wfe_us={} returns={} longest_us={}\n",
+                        now().wrapping_sub(idle.started),
+                        idle.slept,
+                        idle.returns,
+                        idle.longest
+                    );
+                }
+                value
             }
             commands::COUNT => self.delayed,
             commands::PANIC => {
@@ -55,4 +132,14 @@ fn pause() {
     while timer.now_32().ticks().wrapping_sub(start) < 2_000 {
         core::hint::spin_loop();
     }
+}
+
+#[cfg(feature = "link-wake")]
+fn now() -> u32 {
+    rp1_hal::timer::Timer::new().now_32().ticks()
+}
+
+#[cfg(feature = "link-wake")]
+pub fn proc0_panic_requested(value: u32) -> bool {
+    value == commands::PROC0_PANIC
 }

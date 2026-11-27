@@ -369,6 +369,7 @@ dependencies = [
 name = "linux-ping"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rp1-linux",
  "rp1-proto",
 ]

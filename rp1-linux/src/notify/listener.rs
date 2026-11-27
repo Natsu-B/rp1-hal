@@ -68,14 +68,16 @@ impl AsFd for Listener {
 
 /// Keep the same monotonic end across signals. A zero-length poll can still
 /// report a pending event.
-pub(crate) fn poll_until(fds: &mut [libc::pollfd], end: Instant) -> io::Result<()> {
+pub(crate) fn poll_until(fds: &mut [libc::pollfd], end: Option<Instant>) -> io::Result<()> {
     poll_with(end, |remaining| {
-        let timeout = libc::timespec {
+        let timeout = remaining.map(|remaining| libc::timespec {
             tv_sec: remaining.as_secs().min(i32::MAX as u64) as _,
             tv_nsec: remaining.subsec_nanos().into(),
-        };
-        let n =
-            unsafe { libc::ppoll(fds.as_mut_ptr(), fds.len() as _, &timeout, std::ptr::null()) };
+        });
+        let timeout = timeout
+            .as_ref()
+            .map_or(std::ptr::null(), std::ptr::from_ref);
+        let n = unsafe { libc::ppoll(fds.as_mut_ptr(), fds.len() as _, timeout, std::ptr::null()) };
         if n >= 0 {
             Ok(())
         } else {
@@ -85,13 +87,15 @@ pub(crate) fn poll_until(fds: &mut [libc::pollfd], end: Instant) -> io::Result<(
 }
 
 fn poll_with(
-    end: Instant,
-    mut poll: impl FnMut(std::time::Duration) -> io::Result<()>,
+    end: Option<Instant>,
+    mut poll: impl FnMut(Option<std::time::Duration>) -> io::Result<()>,
 ) -> io::Result<()> {
     loop {
-        let remaining = end.saturating_duration_since(Instant::now());
+        let remaining = end.map(|end| end.saturating_duration_since(Instant::now()));
         match poll(remaining) {
-            Err(e) if e.kind() == io::ErrorKind::Interrupted && !remaining.is_zero() => {}
+            Err(e)
+                if e.kind() == io::ErrorKind::Interrupted
+                    && !remaining.is_some_and(|d| d.is_zero()) => {}
             // The caller still does nonblocking count intake at the deadline.
             Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(()),
             result => return result,
@@ -148,7 +152,7 @@ mod tests {
             events: libc::POLLIN,
             revents: 0,
         });
-        poll_until(&mut fds, Instant::now()).unwrap();
+        poll_until(&mut fds, Some(Instant::now())).unwrap();
         assert!(fds.iter().all(|fd| fd.revents == libc::POLLIN));
     }
 
@@ -156,7 +160,8 @@ mod tests {
     fn signals_keep_the_original_deadline() {
         let end = Instant::now() + Duration::from_millis(10);
         let mut calls = 0;
-        poll_with(end, |remaining| {
+        poll_with(Some(end), |remaining| {
+            let remaining = remaining.unwrap();
             calls += 1;
             if calls == 1 {
                 std::thread::sleep(remaining);

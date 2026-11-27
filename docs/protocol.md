@@ -479,7 +479,12 @@ head を再確認してから元の絶対期限まで `ppoll` する。4 byte �
 取消し時はその WaitSet の ticket を解除する。
 
 期限時も最初に未読 count を取り込む。可視の終端、世代の無効化、確認した PCIe
-断は `PeerDown`、count がなく ready を発見した場合は `NotifyLost`、無通信は
-`Timeout`。既知の再起動は host の旧 session と writer を明示的に破棄する。
+断は `PeerDown`。count がなく ready を発見した場合は `late` を加算する。
+明示期限の readiness API は `NotifyLost` を返し、データは取得可能なまま残す。
+相対期限の readiness/receive と RPC は ready またはデータを返す。count が期限後に
+届く場合もある。進捗が見えない場合は `Timeout`。owner が終端を書かずに停止した
+場合も含む。相対待機の `None` はタイマーなしで待つ。有限時間での停止検知には
+`Monitor` の heartbeat または独立 supervisor を使う。
+既知の再起動は host の旧 session と writer を明示的に破棄する。
 boot epoch が数値として再出現する場合、この識別には運用側での失効と排出が必要になる。
 owner の panic/fault から期限より早く起床するには独立した supervisor が必要。

@@ -5,8 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-ping-test = ["dep:rp1-proto"]
+ping-test = ["dep:rp1-proto", "dep:libc"]
 
 [dependencies]
 rp1-linux = { path = "../../rp1-linux" }
 rp1-proto = { path = "../../rp1-proto", optional = true }
+
+[dependencies.libc]
+version = "0.2"
+optional = true

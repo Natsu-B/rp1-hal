@@ -42,10 +42,9 @@ impl Rig {
         let header =
             unsafe { shm::Header::open_v2(header_map.ptr(), &[0; 32], scope, LATCHED_WAKE) }
                 .unwrap();
-        let profile = crate::strict::Profile::with_listener(listener);
         let session = Rc::new(Session {
             header: SessionHeader::V3(header),
-            strict: Some(profile.session(&link_page, scope).unwrap()),
+            strict: Some(StrictSession::new(Rc::new(listener), &link_page, scope).unwrap()),
             _map: header_map,
             link: link_page,
         });
@@ -242,7 +241,7 @@ fn drop_disarms_only_owned_tickets_and_a_restart_blocks_stale_cleanup() {
     let mut wait = WaitSet::new(session.clone(), &mut ea).unwrap();
     assert_eq!(wait.prepare(end).unwrap(), WaitState::Armed);
     assert!(matches!(
-        WaitSet::new(session.clone(), &mut eb),
+        WaitSet::new(session.clone(), &mut eb).unwrap().prepare(end),
         Err(Error::Busy)
     ));
     let b_stale_arm = 17;
@@ -304,4 +303,137 @@ fn restart_scope_is_bound_to_both_boot_and_ddr_generation() {
         Err(Error::PeerDown(PeerDown::Restarted))
     ));
     assert_eq!(control(&rig.session.link, 0, shm::wake::RX_WAIT), 0);
+}
+
+type PollHook = std::cell::RefCell<Option<Box<dyn FnOnce()>>>;
+
+thread_local! {
+    static BEFORE_POLL: PollHook = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn run_before_poll() {
+    if let Some(hook) = BEFORE_POLL.with(|hook| hook.take()) {
+        hook();
+    }
+}
+
+#[test]
+fn commit_between_first_scan_and_arm_is_seen_before_blocking() {
+    let Rig {
+        session,
+        mut rx,
+        tx: [mut tx, _],
+        peer: _peer,
+    } = Rig::new();
+    let mut endpoints: [&mut dyn Waitable; 1] = [&mut rx[0]];
+    let mut wait = WaitSet::new(session.clone(), &mut endpoints).unwrap();
+    wait.before_arm = Some(Box::new(move || {
+        assert_eq!(control(&session.link, 0, shm::wake::RX_WAIT), 0);
+        tx.push(&47).unwrap();
+    }));
+    assert_eq!(
+        wait.prepare(Instant::now() + Duration::from_secs(1))
+            .unwrap(),
+        WaitState::Ready(0)
+    );
+    drop(wait);
+    assert_eq!(rx[0].try_recv().unwrap(), Some(47));
+}
+
+#[test]
+fn a_ready_receiver_does_not_ack_an_unready_receiver() {
+    let Rig {
+        session,
+        mut peer,
+        rx: [mut a, mut b],
+        tx: [mut tx, _],
+    } = Rig::new();
+    let a_data = a._map.clone();
+    let b_data = b._map.clone();
+    let mut endpoints: [&mut dyn Waitable; 2] = [&mut a, &mut b];
+    let mut wait = WaitSet::new(session.clone(), &mut endpoints).unwrap();
+    assert_eq!(
+        wait.prepare(Instant::now() + Duration::from_secs(1))
+            .unwrap(),
+        WaitState::Armed
+    );
+    tx.push(&47).unwrap();
+    a_data.write(shm::wake::RX_SEQ, 1);
+    b_data.write(shm::wake::RX_SEQ, 1);
+    peer.write_all(&2u32.to_ne_bytes()).unwrap();
+    assert_eq!(wait.dispatch(libc::POLLIN).unwrap(), WaitState::Ready(0));
+    assert_eq!(control(&session.link, 0, shm::wake::RX_ACK), 1);
+    assert_eq!(control(&session.link, 1, shm::wake::RX_ACK), 0);
+}
+
+#[test]
+fn unrelated_pipe_rearms_neither_ticket_then_link_and_deadline_dispatch() {
+    let Rig {
+        session,
+        mut peer,
+        mut rx,
+        mut tx,
+    } = Rig::new();
+    let (mut camera, mut frames) = std::io::pipe().unwrap();
+    let mut endpoints: [&mut dyn Waitable; 1] = [&mut rx[0]];
+    let mut wait = WaitSet::new(session.clone(), &mut endpoints).unwrap();
+    let end = Instant::now() + Duration::from_secs(1);
+    assert_eq!(wait.prepare(end).unwrap(), WaitState::Armed);
+    let mut fds = [wait.as_fd().as_raw_fd(), camera.as_raw_fd()].map(|fd| libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    frames.write_all(&[1]).unwrap();
+    poll_until(&mut fds, Some(end)).unwrap();
+    assert_eq!((fds[0].revents, fds[1].revents), (0, libc::POLLIN));
+    assert_eq!(wait.dispatch(fds[0].revents).unwrap(), WaitState::Armed);
+    assert_eq!(control(&session.link, 0, shm::wake::RX_WAIT), 1);
+    camera.read_exact(&mut [0; 1]).unwrap();
+
+    tx[0].push(&47).unwrap();
+    peer.write_all(&2u32.to_ne_bytes()).unwrap();
+    poll_until(&mut fds, Some(end)).unwrap();
+    assert_eq!(wait.dispatch(fds[0].revents).unwrap(), WaitState::Ready(0));
+    drop(wait);
+    assert_eq!(rx[0].try_recv().unwrap(), Some(47));
+
+    let mut endpoints: [&mut dyn Waitable; 1] = [&mut rx[0]];
+    let mut wait = WaitSet::new(session, &mut endpoints).unwrap();
+    let end = Instant::now() + Duration::from_millis(30);
+    assert_eq!(wait.prepare(end).unwrap(), WaitState::Armed);
+    poll_until(&mut fds, Some(end)).unwrap();
+    assert_eq!((fds[0].revents, fds[1].revents), (0, 0));
+    assert!(matches!(wait.dispatch(0), Err(Error::Timeout)));
+}
+
+#[test]
+fn recv_and_rpc_return_data_at_the_deadline_without_a_count() {
+    let Rig {
+        session,
+        peer: _peer,
+        rx: [mut a, b],
+        tx: [mut tx_a, mut tx_b],
+    } = Rig::new();
+    BEFORE_POLL.with(|hook| hook.replace(Some(Box::new(move || tx_a.push(&47).unwrap()))));
+    assert_eq!(a.recv(Some(Duration::from_millis(30))).unwrap(), Some(47));
+    assert_eq!(a.wait_stats().late, 1);
+
+    let data = anon(4096);
+    let ctrl = anon(4096);
+    let len = shm::ring_body_size(4, 4).unwrap();
+    let inner =
+        unsafe { shm::RingTx::attach(data.ptr(), len, ctrl.ptr(), 128, 4, shm::Overflow::Reject) }
+            .unwrap();
+    let tx = crate::RingTx {
+        inner,
+        doorbell: None,
+        publisher: None,
+        _map: data,
+        session,
+    };
+    let mut client = crate::Client::new(tx, b, 4);
+    BEFORE_POLL.with(|hook| hook.replace(Some(Box::new(move || tx_b.push(&48).unwrap()))));
+    assert_eq!(client.call(&7, Duration::from_millis(30)).unwrap(), 48);
+    assert_eq!(client.wait_stats().late, 1);
 }

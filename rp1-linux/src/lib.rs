@@ -173,6 +173,7 @@ struct Session {
 }
 enum SessionHeader {
     V2(shm::Header),
+    // NOTE v3 uses SHM header v2.
     V3(shm::HeaderV2),
 }
 impl Session {
@@ -181,7 +182,7 @@ impl Session {
         note: &[u8],
         area: &ShmArea,
         link: &Rc<Mapping>,
-        v3: Option<(proto::wake::Session, u32, &strict::Profile)>,
+        v3: Option<(proto::wake::Session, u32, Rc<notify::listener::Listener>)>,
     ) -> Result<Self> {
         let map = Mapping::open(
             &format!("rp1:{}", uio::HEADER),
@@ -190,12 +191,12 @@ impl Session {
             Access::Shared,
         )?;
         let digest: [u8; 32] = Sha256::digest(note).into();
-        let (header, strict, generation, actual_regions) = if let Some((scope, caps, profile)) = v3
+        let (header, strict, generation, actual_regions) = if let Some((scope, caps, listener)) = v3
         {
             let header = unsafe { shm::Header::open_v2(map.ptr(), &digest, scope, caps) }?;
             (
                 SessionHeader::V3(header),
-                Some(profile.session(link, scope)?),
+                Some(strict::StrictSession::new(listener, link, scope)?),
                 scope.generation(),
                 header.regions(),
             )
@@ -257,10 +258,10 @@ impl Session {
 
 /// The firmware the boot DT's note describes, reached through `rp1:link`.
 ///
-/// In schema 2 the firmware handle is shared. In v3 it owns the one exclusive
-/// link interrupt listener. Each endpoint also has one owner, the holder of
-/// its UIO node's `flock`. Endpoints keep their mappings and v3 listener
-/// alive after the `Firmware` is dropped.
+/// Each endpoint is owned by the holder of its UIO node's `flock`. A v3
+/// session acquires the exclusive IRQ listener at `wait_ready`. One process
+/// owns all v3 IRQ receivers. Endpoints keep their session alive after the
+/// `Firmware` is dropped.
 pub struct Firmware {
     note: Vec<u8>,
     area: ShmArea,
@@ -276,8 +277,13 @@ impl Firmware {
     pub fn open() -> Result<Self> {
         let note = fs::read(NOTE)?;
         let parsed = Note::parse(&note)?;
-        let strict = parsed
-            .get(proto::note::LINK_WAKE)
+        let strict = (parsed.version() == proto::note::LINK_WAKE_VERSION)
+            .then(|| {
+                parsed
+                    .get(proto::note::LINK_WAKE)
+                    .ok_or(proto::Error::Invalid)
+            })
+            .transpose()?
             .map(|record| strict::Profile::open(proto::note::LinkWake::parse(record.value)?))
             .transpose()?;
         let area = ShmArea::parse(parsed.get(SHM_AREA).ok_or(proto::Error::Invalid)?.value)?;
@@ -304,12 +310,12 @@ impl Firmware {
     }
     /// Ask RP1 to enable shared memory, wait up to `timeout` until it is ready, and return
     /// its generation (`Err(Timeout)` if it is not ready by then). Cheap once ready: later
-    /// calls only check that the shared memory is still the same, and open it again after
-    /// the firmware re-initialized it.
+    /// calls check the existing session. A v3 restart requires a new `Firmware`
+    /// after its old writers have quiesced. Schema 2 can reattach on this handle.
     pub fn wait_ready(&self, timeout: Duration) -> Result<u32> {
         if let Some(profile) = &self.strict {
             if let Some(session) = self.session.borrow().as_ref() {
-                session.strict.as_ref().unwrap().check_link(&self.link)?;
+                session.check()?;
                 return session.generation();
             }
             let session = profile.ready(self, timeout)?;
@@ -512,25 +518,31 @@ impl Firmware {
             session,
         })
     }
-    /// Sleep until one of `endpoints` has messages or `timeout` passes (`None`: no deadline);
-    /// returns whether one has. Each round arms every ring and re-checks them all, then sleeps
-    /// once: on `rp1:irq` up to [`RECHECK`] when all are irq rings, at most [`POLL`] when one
-    /// is a poll ring. The caller then receives from every endpoint. No spin, and
-    /// [`RingRx::wait_stats`] is not updated. `Err(PeerDown)` once a serving core is down.
+    /// Sleep until one receiver has data or the relative timeout expires.
+    /// V3 IRQ receivers block on the shared listener without periodic checks.
+    /// Schema 2 rechecks on IRQ or at the legacy sleep bound. `None` waits
+    /// indefinitely in either profile.
     pub fn wait_any_for(
         &self,
         endpoints: &mut [&mut dyn Waitable],
         timeout: Option<Duration>,
     ) -> Result<bool> {
+        let end = deadline(timeout)?;
         if self.strict.is_some() {
-            let end = deadline(timeout).ok_or(Error::InvalidDeadline)?;
-            return match self.wait_any(endpoints, end) {
+            return match self.wait_set(endpoints)?.wait_inner(end, false) {
                 Ok(_) => Ok(true),
                 Err(Error::Timeout) => Ok(false),
                 Err(error) => Err(error),
             };
         }
-        let deadline = deadline(timeout);
+        self.wait_any_legacy(endpoints, end)
+    }
+
+    fn wait_any_legacy(
+        &self,
+        endpoints: &mut [&mut dyn Waitable],
+        deadline: Option<Instant>,
+    ) -> Result<bool> {
         loop {
             for endpoint in endpoints.iter() {
                 endpoint.check()?;
@@ -633,8 +645,10 @@ impl Peer {
 }
 
 /// When a wait that may take `timeout` ends (`None`: never).
-fn deadline(timeout: Option<Duration>) -> Option<Instant> {
-    timeout.and_then(|t| Instant::now().checked_add(t))
+fn deadline(timeout: Option<Duration>) -> Result<Option<Instant>> {
+    timeout
+        .map(|t| Instant::now().checked_add(t).ok_or(Error::InvalidDeadline))
+        .transpose()
 }
 /// One sleep's bound: `longest`, or less when the deadline is closer.
 fn remaining(deadline: Option<Instant>, longest: Duration) -> Duration {
@@ -652,9 +666,7 @@ pub struct WaitStats {
     pub woken: u64,
     /// Sleeps that ran to their bound ([`RECHECK`], [`POLL`] or the deadline) without one.
     pub rechecks: u64,
-    /// Of `rechecks`, those after which messages were available: data found by the re-check
-    /// rather than a wake (a lost, merged-away or slower-than-`RECHECK` notification, or any
-    /// message of a poll ring).
+    /// Data found at a v3 deadline without a count, or after a legacy or poll recheck.
     pub late: u64,
     /// Final scans at the absolute deadline in v3.
     pub deadline_checks: u64,
@@ -690,7 +702,7 @@ impl<T: Message> RingRx<T> {
     /// The oldest message, waiting up to `timeout` for one (`None`: no deadline). `Ok(None)`
     /// when the deadline passed first.
     pub fn recv(&mut self, timeout: Option<Duration>) -> Result<Option<T>> {
-        let deadline = deadline(timeout);
+        let deadline = deadline(timeout)?;
         loop {
             if let Some(value) = self.try_recv()? {
                 return Ok(Some(value));
@@ -714,7 +726,7 @@ impl<T: Message> RingRx<T> {
     /// [`RingRx::try_recv_into`], waiting up to `timeout` for the first message (`None`: no
     /// deadline). `Ok(0)` when the deadline passed first.
     pub fn recv_into(&mut self, out: &mut [T], timeout: Option<Duration>) -> Result<usize> {
-        let deadline = deadline(timeout);
+        let deadline = deadline(timeout)?;
         loop {
             let n = self.try_recv_into(out)?;
             if n != 0 || out.is_empty() || !self.wait_until(deadline)? {
@@ -772,17 +784,14 @@ impl<T: Message> RingRx<T> {
     /// Wait until messages are available or `timeout` passes (`None`: no deadline), without
     /// taking any; returns whether some are.
     ///
-    /// Spins first (see [`RingRx::set_spin`]), then sleeps. An irq ring arms its sleep
-    /// counter, reads it back and re-checks `head` before it sleeps on `rp1:irq`, and RP1
-    /// drains `head` before it samples the counter (protocol.md §2.3); each sleep is bounded
-    /// by [`RECHECK`] because a wake is only a hint. Before each sleep it reads the serving
-    /// core's state: `Err(PeerDown)` once that core is down.
+    /// V3 IRQ waits use the session listener with no spin or periodic recheck.
+    /// Legacy IRQ and explicit poll rings honor the configured spin and recheck bounds.
     pub fn wait_for(&mut self, timeout: Option<Duration>) -> Result<bool> {
-        self.wait_until(deadline(timeout))
+        self.wait_until(deadline(timeout)?)
     }
     fn wait_until(&mut self, deadline: Option<Instant>) -> Result<bool> {
-        if self.session.strict.is_some() && self.ticket.is_some() {
-            return match self.wait(deadline.ok_or(Error::InvalidDeadline)?) {
+        if self.ticket.is_some() {
+            return match self.wait_irq(deadline, false) {
                 Ok(()) => Ok(true),
                 Err(Error::Timeout) => Ok(false),
                 Err(error) => Err(error),
@@ -902,14 +911,17 @@ impl<T: Message> sealed::Waitable for RingRx<T> {
         self.inner.available()
     }
     fn arm(&mut self) -> Result<()> {
-        Ok(self.ticket.as_mut().unwrap().arm()?)
+        Ok(self.ticket.as_mut().ok_or(Error::Unsupported)?.arm()?)
     }
     fn acknowledge(&mut self) -> Result<()> {
-        self.ticket.as_mut().unwrap().acknowledge()?;
+        self.ticket
+            .as_mut()
+            .ok_or(Error::Unsupported)?
+            .acknowledge()?;
         Ok(())
     }
     fn cancel(&mut self) -> Result<()> {
-        self.ticket.as_mut().unwrap().cancel()?;
+        self.ticket.as_mut().ok_or(Error::Unsupported)?.cancel()?;
         Ok(())
     }
     fn stats(&mut self) -> &mut WaitStats {

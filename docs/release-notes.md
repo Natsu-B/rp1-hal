@@ -110,9 +110,10 @@ sizes and use reserved words for notification. The opt-in generates typed endpoi
 Default manifests continue to generate the schema-2 wire profile.
 
 **STATIC · 2026-11-27.** The Linux receiver and RPC client share one
-exclusive nonblocking UIO listener for v3. A second opener returns `Busy`.
-A finite absolute deadline controls data waits. Legacy relative waits are
-available as `rx.wait_for(timeout)` and `fw.wait_any_for(endpoints, timeout)`.
+exclusive nonblocking UIO listener for v3. The listener is acquired at
+`wait_ready`. A competing session returns `Busy`. Relative waits accept
+`None` to block indefinitely without a timer on IRQ rings. Explicit wait
+methods accept a monotonic absolute deadline.
 The legacy schema-2 IRQ path keeps its 10 ms recheck. V3 rings default to IRQ; use `notify = "poll"` to select polling.
 
 ### Before
@@ -132,26 +133,52 @@ consume(&mut rx)?;
 let index = fw.wait_any(&mut [&mut a, &mut b], end)?;
 ```
 
-For a camera fd alongside the link, use `fw.wait_set(&mut endpoints)?`,
-`prepare(end)`, `as_fd()` and `dispatch(revents)`. Use level-triggered
-polling, dispatch the link after each poll return, and reuse the original
-deadline if it remains armed. An IRQ count is a hint to examine every
-receiver. RPC callers can share the same budget with `client.call_until`.
+For a camera fd alongside the link, use level-triggered polling. Dispatch
+the link flags after every poll return, then service the camera. Drop the
+set to release its receiver borrows before consuming a message.
 
-When v3 reaches its deadline, `Timeout` means the scan found no work,
-`NotifyLost` means work was visible without a delivered hint, and
+```rust,ignore
+let end = Instant::now() + budget;
+let index = {
+    let mut readers: [&mut dyn rp1_linux::Waitable; 2] = [&mut first, &mut second];
+    let mut set = fw.wait_set(&mut readers)?;
+    let mut state = set.prepare(end)?;
+    loop {
+        match state {
+            rp1_linux::WaitState::Ready(index) => break index,
+            rp1_linux::WaitState::Armed => {
+                let events = poll_until(camera.as_fd(), set.as_fd(), end)?;
+                let result = set.dispatch(events.link_revents);
+                if events.camera_readable {
+                    service_camera(&mut camera)?;
+                }
+                state = result?;
+            }
+        }
+    }
+};
+receive_ready(index, &mut first, &mut second)?;
+```
+
+When v3 finds data at the deadline without an IRQ count, it increments
+`late`. Explicit readiness waits can return `NotifyLost` and leave the
+data available. Relative readiness waits, receives and RPC accept it.
 `PeerDown` carries the terminal reason, a restart or verified link loss.
 Update matches on `Error::PeerDown { .. }` to
-`Error::PeerDown(PeerDown::Terminal { .. })`. A timeout or lost wake can
-leave an RPC request outstanding. A known reset requires dropping the old
-session and quiescing its writers before reopening.
+`Error::PeerDown(PeerDown::Terminal { .. })`. A known reset requires
+dropping the old session and quiescing its writers before reopening.
 
-**HW / HYP · 2026-11-27.** The vector owner's panic or fault produced no
-pulse in the delivery characterization. The v3 data wait checks for a
-terminal record at its deadline. An earlier response requires an
-independent supervisor event. Startup still uses the compatibility
-retry, channel Full recovery still uses the reply-tail doorbell, and the
-strict DMA publication contract remains reserved for later work.
+**HW / STATIC · 2026-11-27.** In B1, an owner panic or UsageFault
+produced no pulse. A finite wait checks terminal status at its deadline.
+A hung owner that publishes no terminal record can yield `Timeout`.
+Use `Monitor` heartbeats or an independent supervisor for bounded
+detection, especially during indefinite waits. The v3 dual-core owner
+checks local terminal records before sleeping.
+
+Startup still uses the compatibility retry. The named-channel reply-tail
+doorbell uses two non-posted reads and can raise an RP1 IRQ per receive
+batch. RPC reserves response slots and skips that doorbell. PR C owns the
+credit-based path. The strict DMA publication contract remains reserved.
 
 **HYP · 2026-11-27.** Physical delivery through MSI-X/UIO and the posted
 window ordering still require hardware verification.

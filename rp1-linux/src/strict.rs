@@ -16,7 +16,6 @@ pub(crate) type Ticket<S> = proto::shm::wake::Waiter<S, Live<S>>;
 
 pub(crate) struct Profile {
     config: LinkWake,
-    pub(crate) listener: Rc<Listener>,
     epoch: Cell<Option<BootEpoch>>,
 }
 
@@ -27,29 +26,15 @@ impl Profile {
         }
         Ok(Self {
             config,
-            listener: Rc::new(Listener::open()?),
             epoch: Cell::new(None),
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_listener(listener: Listener) -> Self {
-        Self {
-            config: LinkWake {
-                required_caps: wake::LATCHED_WAKE,
-                offered_caps: wake::LATCHED_WAKE,
-                owner: 1,
-                startup_doorbell: None,
-            },
-            listener: Rc::new(listener),
-            epoch: Cell::new(None),
-        }
     }
 
     pub(crate) fn ready(&self, fw: &Firmware, timeout: Duration) -> Result<Session> {
         let end = Instant::now()
             .checked_add(timeout)
             .ok_or(Error::InvalidDeadline)?;
+        let listener = Rc::new(Listener::open()?);
         let epoch = loop {
             let word = fw.link.read(mailbox::BOOT_EPOCH);
             if word == u32::MAX {
@@ -115,14 +100,16 @@ impl Profile {
                 error => Error::from(error),
             })?;
         let scope = wake::Session::new(epoch.word(), fw.link.read(link::SHM_GENERATION))?;
-        let session = Session::open(&fw.note, &fw.area, &fw.link, Some((scope, caps, self)))?;
+        let session = Session::open(&fw.note, &fw.area, &fw.link, Some((scope, caps, listener)))?;
         session.check()?;
         check_epoch(&fw.link, epoch)?;
         Ok(session)
     }
+}
 
-    pub(crate) fn session(
-        &self,
+impl StrictSession {
+    pub(crate) fn new(
+        listener: Rc<Listener>,
         link: &Rc<Mapping>,
         scope: wake::Session,
     ) -> Result<StrictSession> {
@@ -132,7 +119,7 @@ impl Profile {
             Box::new(move || BootEpoch::new(live_link.read(mailbox::BOOT_EPOCH)));
         let mailbox = unsafe { Words::link(link.ptr()).waiter(epoch, live) }?;
         Ok(StrictSession {
-            listener: self.listener.clone(),
+            listener,
             busy: Cell::new(false),
             mailbox: RefCell::new(mailbox),
             epoch,

@@ -44,3 +44,17 @@ impl<Req: Message, Rep: Message, N: Notify, W: Wake> Server<Req, Rep, N, W> {
         })
     }
 }
+
+impl<Req, Rep, W> Server<Req, Rep, crate::notify::TicketIrq, W> {
+    /// Number of failed attempts to pulse the owned host vector.
+    pub fn pulse_failures(&self) -> u32 {
+        self.tx.notify.pulse_failures()
+    }
+
+    /// Retry a delivery whose local pulse failed. Call from the vector owner
+    /// while its SHM window is live, before blocking or after another event.
+    pub fn retry_notification(&mut self) -> Result<bool, Error> {
+        crate::ring::window_ready()?;
+        Ok(self.tx.notify.retry())
+    }
+}

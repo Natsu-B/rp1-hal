@@ -1,6 +1,6 @@
 //! How the two sides tell each other that a ring has data. Each endpoint carries its notifier
-//! as a type parameter, chosen by the declaration (`notify = "poll"` or `"irq"`), and every
-//! notifier is zero-sized: [`Poll`] compiles to nothing.
+//! as a type parameter, chosen by the declaration (`notify = "poll"` or `"irq"`), and legacy
+//! notifiers are zero-sized. [`Poll`] compiles to nothing.
 //!
 //! | Direction | Notifier | Signal |
 //! |---|---|---|
@@ -336,6 +336,8 @@ type LiveSession = fn() -> Result<Session, SessionError>;
 pub struct TicketIrq {
     publisher: Publisher<Session, LiveSession>,
     data: *mut u8,
+    pulse_pending: bool,
+    pulse_failures: u32,
 }
 
 impl TicketIrq {
@@ -344,17 +346,41 @@ impl TicketIrq {
         let scope = live().map_err(|_| Error::Reset)?;
         let publisher =
             unsafe { Words::rx(data, ctrl).publisher(scope, live) }.map_err(|_| Error::Reset)?;
-        Ok(Self { publisher, data })
+        Ok(Self {
+            publisher,
+            data,
+            pulse_pending: false,
+            pulse_failures: 0,
+        })
+    }
+
+    pub(crate) fn retry(&mut self) -> bool {
+        if !self.pulse_pending {
+            return false;
+        }
+        if VectorOwner::pulse_owned().is_err() {
+            self.pulse_failures = self.pulse_failures.saturating_add(1);
+            return false;
+        }
+        self.pulse_pending = false;
+        true
+    }
+
+    pub(crate) fn pulse_failures(&self) -> u32 {
+        self.pulse_failures
     }
 }
 
 impl Notify for TicketIrq {}
 impl sealed::Notify for TicketIrq {
     fn wake<T: Message>(&mut self, _: sealed::Token, _: &mut shm::RingTx<T>) -> bool {
-        self.publisher.publish(|| {
+        match self.publisher.publish(|| {
             let _ = unsafe { self.data.cast::<u32>().read_volatile() };
-        }) == Ok(true)
-            && VectorOwner::pulse_owned().is_ok()
+        }) {
+            Ok(fresh) => self.pulse_pending |= fresh,
+            Err(_) => return false,
+        }
+        self.retry()
     }
 }
 
@@ -362,6 +388,7 @@ impl sealed::Notify for TicketIrq {
 #[doc(hidden)]
 pub struct TicketDoorbell<const PIN: u8, const CORE: u8> {
     ticket: Waiter<Session, LiveSession>,
+    armed: bool,
 }
 
 impl<const PIN: u8, const CORE: u8> TicketDoorbell<PIN, CORE> {
@@ -370,14 +397,18 @@ impl<const PIN: u8, const CORE: u8> TicketDoorbell<PIN, CORE> {
         let scope = live().map_err(|_| Error::Reset)?;
         let ticket =
             unsafe { Words::rx(data, ctrl).waiter(scope, live) }.map_err(|_| Error::Reset)?;
-        Ok(Self { ticket })
+        Ok(Self {
+            ticket,
+            armed: false,
+        })
     }
 }
 
 impl<const PIN: u8, const CORE: u8> Wake for TicketDoorbell<PIN, CORE> {}
 impl<const PIN: u8, const CORE: u8> sealed::Wake for TicketDoorbell<PIN, CORE> {
     fn opened<T: Message>(&mut self, _: sealed::Token, ring: &mut shm::RingRx<T>) {
-        if self.ticket.arm().is_ok() && ring.available() != 0 {
+        self.armed = self.ticket.arm().is_ok();
+        if self.armed && ring.available() != 0 {
             unsafe { Doorbell::<PIN, CORE>::new() }.raise();
         }
     }
@@ -390,26 +421,33 @@ impl<const PIN: u8, const CORE: u8> sealed::Wake for TicketDoorbell<PIN, CORE> {
         mut handle: impl FnMut(T) -> Result<(), Error>,
     ) -> Result<Progress, Error> {
         let reset = |_| Error::Reset;
-        if ring.available() != 0 {
-            self.ticket.acknowledge().map_err(reset)?;
-        }
-        self.ticket.cancel().map_err(reset)?;
         let mut budget = max.max(1);
         loop {
-            while budget != 0 {
-                let Some(value) = ring.pop()? else { break };
-                handle(value)?;
-                budget -= 1;
+            if ring.available() != 0 {
+                while budget != 0 {
+                    let Some(value) = ring.pop()? else { break };
+                    handle(value)?;
+                    budget -= 1;
+                }
+                if self.armed {
+                    // The request was observed under this ticket. Complete the reply
+                    // first so its pulse can overlap the downlink ACK and re-arm.
+                    self.ticket.acknowledge().map_err(reset)?;
+                    self.ticket.cancel().map_err(reset)?;
+                    self.armed = false;
+                }
+                if budget == 0 {
+                    return Ok(Progress::More);
+                }
             }
-            if budget == 0 {
-                return Ok(Progress::More);
+            if !self.armed {
+                self.ticket.arm().map_err(reset)?;
+                self.armed = true;
+                if ring.available() != 0 {
+                    continue;
+                }
             }
-            self.ticket.arm().map_err(reset)?;
-            if ring.available() == 0 {
-                return Ok(Progress::Idle);
-            }
-            self.ticket.acknowledge().map_err(reset)?;
-            self.ticket.cancel().map_err(reset)?;
+            return Ok(Progress::Idle);
         }
     }
 }
@@ -613,6 +651,49 @@ mod tests {
         );
         assert_eq!(owner.pulse_observed_terminals(terminal), Ok(false));
         assert!(fake::take().is_empty());
+    }
+
+    #[test]
+    fn v3_reply_retries_a_locally_failed_pulse_with_the_same_ticket() {
+        use crate::mmio::fake;
+        use rp1_proto::{LINK_START, link};
+
+        let window = LINK_START as usize;
+        fake::set(window + link::SHM_STATUS, link::SHM_READY);
+        fake::set(window + link::SHM_GENERATION, 2);
+        fake::set(window + mailbox::BOOT_EPOCH, 2);
+        fake::set(TIMER_INTS, ALARM_BIT);
+        fake::alias(MSIX_CFG_SET, MSIX_CFG, true);
+        fake::alias(MSIX_CFG_CLR, MSIX_CFG, false);
+        let mut data = [0u32; 128];
+        let mut ctrl = [0u32; 32];
+        ctrl[shm::wake::RX_WAIT / 4] = 1;
+        let mut ring = unsafe {
+            shm::RingTx::attach(
+                data.as_mut_ptr().cast(),
+                512,
+                ctrl.as_ptr().cast(),
+                128,
+                4,
+                shm::Overflow::Reject,
+            )
+        }
+        .unwrap();
+        let mut irq =
+            unsafe { TicketIrq::attach(data.as_mut_ptr().cast(), ctrl.as_mut_ptr().cast()) }
+                .unwrap();
+        ring.push(&9u32).unwrap();
+        assert!(!sealed::Notify::wake(
+            &mut irq,
+            sealed::Token(()),
+            &mut ring
+        ));
+        assert_eq!(data[shm::wake::RX_SEQ / 4], 1);
+        assert_eq!(irq.pulse_failures(), 1);
+        fake::set(TIMER_INTS, 0);
+        assert!(sealed::Notify::wake(&mut irq, sealed::Token(()), &mut ring));
+        assert!(!irq.retry());
+        assert_eq!(irq.pulse_failures(), 1);
     }
 
     #[test]

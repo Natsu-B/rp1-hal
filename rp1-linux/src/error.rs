@@ -14,9 +14,10 @@ pub enum Error {
     Proto(rp1_proto::Error),
     /// An overwrite ring dropped this many messages; the next read continues after them.
     Lost(u32),
-    /// The deadline passed first.
+    /// The deadline passed without observable progress. The peer may be silent or hung.
     Timeout,
-    /// A commit was visible at the deadline without a delivered wake.
+    /// An explicit wait saw data at its deadline without a count. The wake may
+    /// arrive late. The data is still available.
     NotifyLost,
     /// The requested duration cannot be represented as a monotonic deadline.
     InvalidDeadline,
@@ -28,7 +29,8 @@ pub enum Error {
     Unknown,
     /// The current session lost its serving core or its connection.
     PeerDown(PeerDown),
-    /// BAR2 reads 0xffff_ffff: the PCIe link to RP1 is down.
+    /// BAR2 reads 0xffff_ffff: the PCIe link to RP1 is down. An attached v3
+    /// session reports this through `PeerDown(LinkDown)`.
     LinkDown,
     /// The firmware's status words are layout version `firmware`, not this crate's.
     Abi { firmware: u16 },
@@ -37,12 +39,18 @@ pub enum Error {
 /// Why a peer is no longer usable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PeerDown {
+    /// A core published a terminal status in the current boot.
     Terminal {
+        /// RP1 core index.
         core: u8,
+        /// The recorded terminal state.
         state: CoreState,
+        /// The firmware stop, panic or fault reason.
         reason: u32,
     },
+    /// The boot epoch or shared-memory generation changed.
     Restarted,
+    /// The current session lost its PCIe window.
     LinkDown,
 }
 

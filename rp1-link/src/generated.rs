@@ -16,6 +16,8 @@ use rp1_proto::{
 };
 pub use rp1_rt::interrupt::Line;
 
+const TIMER_RAWL: usize = 0x400a_c028;
+
 /// # Safety
 /// The area, SRAM ranges and digest must come from this firmware's validated declaration and
 /// descriptor. Only the proc0 request handler may activate the reservation.
@@ -149,7 +151,6 @@ fn write(address: usize, value: u32) {
 
 fn initialize(size: u32, sram_ranges: &[(u16, u16)], digest: &[u8; 32]) -> u32 {
     const BASE: usize = SHM_WINDOW as usize;
-    const TIMER_RAWL: usize = 0x400a_c028;
     let previous = if read(BASE) == u32::from_le_bytes(*b"RP1S")
         && read(BASE + 4) == u32::from_le_bytes(*b"HM\0\0")
     {
@@ -361,7 +362,7 @@ pub unsafe fn try_enable_v3(
                     LINK_START as *mut u8,
                     regions,
                     digest,
-                    read(0x400a_c028),
+                    read(TIMER_RAWL),
                     caps,
                 )
                 .map_err(|_| EnableError::Mismatch)?;

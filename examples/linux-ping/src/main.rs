@@ -48,8 +48,9 @@ fn channel_echo() -> Result<()> {
     // A previous timed-out run may have left a reply in the ring.
     while channel.try_recv()?.is_some() {}
     channel.send(&nonce)?;
-    channel.wait(Instant::now() + CALL_TIMEOUT)?;
-    let reply = channel.try_recv()?.ok_or("channel reply missing")?;
+    let reply = channel
+        .recv(Some(CALL_TIMEOUT))?
+        .ok_or("channel reply timed out")?;
     if reply != nonce {
         return Err(format!("channel sent {nonce:#010x}, received {reply:#010x}").into());
     }

@@ -1,5 +1,6 @@
 use crate::{
     Error, Firmware, PeerDown, Result, RingRx, Session, Waitable, notify::listener::poll_until,
+    strict::StrictSession,
 };
 use rp1_proto::Message;
 use std::{
@@ -27,11 +28,23 @@ pub enum WaitState {
 pub struct WaitSet<'a, 'endpoints> {
     session: Rc<Session>,
     endpoints: &'a mut [&'endpoints mut dyn Waitable],
+    armed: Option<Armed>,
+    cores: u8,
+    tickets_armed: bool,
+    cleanup_checked: bool,
+    #[cfg(test)]
+    before_arm: Option<Box<dyn FnOnce()>>,
+}
+
+#[derive(Clone, Copy)]
+struct Armed {
     end: Option<Instant>,
+    report_lost: bool,
 }
 
 impl Firmware {
-    /// Borrow IRQ receivers from this v3 session. Keep at most one live wait set.
+    /// Borrow one or more IRQ receivers from this v3 session. At most one wait
+    /// may be armed at a time. Drop the set before receiving from its endpoints.
     pub fn wait_set<'a, 'endpoints>(
         &self,
         endpoints: &'a mut [&'endpoints mut dyn Waitable],
@@ -39,15 +52,25 @@ impl Firmware {
         WaitSet::new(self.session()?, endpoints)
     }
 
-    /// Block until an IRQ receiver is ready or the absolute deadline is reached.
+    /// Block until a receiver is ready or the absolute deadline is reached.
+    /// On v3 IRQ, `NotifyLost` leaves the data available to receive.
     pub fn wait_any(&self, endpoints: &mut [&mut dyn Waitable], end: Instant) -> Result<usize> {
-        self.wait_set(endpoints)?.wait(end)
+        if self.strict.is_some() {
+            self.wait_set(endpoints)?.wait(end)
+        } else {
+            self.wait_any_legacy(endpoints, Some(end))?;
+            endpoints
+                .iter()
+                .position(|ep| ep.available() != 0)
+                .ok_or(Error::Timeout)
+        }
     }
 }
 
 impl<T: Message> RingRx<T> {
     /// Wait for data until the absolute monotonic deadline. The default IRQ wait
     /// blocks on the session listener. A declared poll ring uses periodic checks.
+    /// `NotifyLost` may reflect a late count and leaves the data in the ring.
     pub fn wait(&mut self, end: Instant) -> Result<()> {
         if self.ticket.is_none() {
             return self
@@ -55,9 +78,13 @@ impl<T: Message> RingRx<T> {
                 .then_some(())
                 .ok_or(Error::Timeout);
         }
+        self.wait_irq(Some(end), true)
+    }
+
+    pub(crate) fn wait_irq(&mut self, end: Option<Instant>, report_lost: bool) -> Result<()> {
         let session = self.session.clone();
         let mut endpoints = [self as &mut dyn Waitable];
-        WaitSet::new(session, &mut endpoints)?.wait(end)?;
+        WaitSet::new(session, &mut endpoints)?.wait_inner(end, report_lost)?;
         Ok(())
     }
 }
@@ -67,7 +94,7 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
         session: Rc<Session>,
         endpoints: &'a mut [&'endpoints mut dyn Waitable],
     ) -> Result<Self> {
-        let strict = session.strict.as_ref().ok_or(Error::Unsupported)?;
+        session.strict.as_ref().ok_or(Error::Unsupported)?;
         if !endpoints
             .iter()
             .all(|ep| ep.strict_receiver(Rc::as_ptr(&session).cast()))
@@ -75,46 +102,62 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
         {
             return Err(Error::Unsupported);
         }
-        if strict.busy.replace(true) {
-            return Err(Error::Busy);
-        }
+        let cores = endpoints.iter().fold(1, |mask, ep| mask | (1 << ep.core()));
         Ok(Self {
             session,
             endpoints,
-            end: None,
+            armed: None,
+            cores,
+            tickets_armed: false,
+            cleanup_checked: false,
+            #[cfg(test)]
+            before_arm: None,
         })
+    }
+
+    fn strict(&self) -> &StrictSession {
+        self.session
+            .strict
+            .as_ref()
+            .expect("WaitSet requires a v3 session")
     }
 
     /// The borrowed link fd for level-triggered polling. Only dispatch consumes it.
     pub fn as_fd(&self) -> BorrowedFd<'_> {
-        self.session.strict.as_ref().unwrap().listener.as_fd()
+        self.strict().listener.as_fd()
     }
 
     /// Start a fresh wait. A ready return requires no external poll.
     pub fn prepare(&mut self, end: Instant) -> Result<WaitState> {
-        if self.end.is_some() {
+        self.prepare_wait(Some(end), true)
+    }
+
+    fn prepare_wait(&mut self, end: Option<Instant>, report_lost: bool) -> Result<WaitState> {
+        if self.strict().busy.replace(true) {
             return Err(Error::Busy);
         }
+        self.armed = Some(Armed { end, report_lost });
         let result = self.prepare_inner(end);
         self.finish(result)
     }
 
-    fn prepare_inner(&mut self, end: Instant) -> Result<WaitState> {
+    fn prepare_inner(&mut self, end: Option<Instant>) -> Result<WaitState> {
         self.intake(0)?;
-        if let Some(index) = self.scan()? {
+        // The ring heads are in local DDR. The initial empty scan needs no BAR2 reads.
+        if let Some(index) = self.endpoints.iter().position(|ep| ep.available() != 0) {
+            self.check()?;
             return Ok(WaitState::Ready(index));
         }
-        if Instant::now() >= end {
-            return Err(Error::Timeout);
+        if end.is_some_and(|end| Instant::now() >= end) {
+            return self.scan()?.map(WaitState::Ready).ok_or(Error::Timeout);
         }
-        self.end = Some(end);
-        self.session
-            .strict
-            .as_ref()
-            .unwrap()
-            .mailbox
-            .borrow_mut()
-            .arm()?;
+        self.session.check_header()?;
+        #[cfg(test)]
+        if let Some(hook) = self.before_arm.take() {
+            hook();
+        }
+        self.tickets_armed = true;
+        self.strict().mailbox.borrow_mut().arm()?;
         for ep in self.endpoints.iter_mut() {
             ep.arm()?;
         }
@@ -128,14 +171,14 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
     /// poll flags, or zero if only another fd or the deadline fired. After `Armed`,
     /// poll again with the same deadline without rearming.
     pub fn dispatch(&mut self, revents: libc::c_short) -> Result<WaitState> {
-        let end = self.end.ok_or(Error::Unsupported)?;
-        let result = self.dispatch_inner(revents, end);
+        let armed = self.armed.ok_or(Error::Unsupported)?;
+        let result = self.dispatch_inner(revents, armed);
         self.finish(result)
     }
 
-    fn dispatch_inner(&mut self, revents: libc::c_short, end: Instant) -> Result<WaitState> {
+    fn dispatch_inner(&mut self, revents: libc::c_short, armed: Armed) -> Result<WaitState> {
         let woke = self.intake(revents)?;
-        let expired = Instant::now() >= end;
+        let expired = armed.end.is_some_and(|end| Instant::now() >= end);
         if woke || expired {
             for ep in self.endpoints.iter_mut() {
                 let stats = ep.stats();
@@ -146,7 +189,11 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
         match self.scan()? {
             Some(index) if expired && !woke => {
                 self.endpoints[index].stats().late += 1;
-                Err(Error::NotifyLost)
+                if armed.report_lost {
+                    Err(Error::NotifyLost)
+                } else {
+                    Ok(WaitState::Ready(index))
+                }
             }
             Some(index) => Ok(WaitState::Ready(index)),
             None if expired => Err(Error::Timeout),
@@ -156,7 +203,11 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
 
     /// Block with ppoll and retain the same deadline across spurious wakes and signals.
     pub fn wait(&mut self, end: Instant) -> Result<usize> {
-        let mut state = self.prepare(end)?;
+        self.wait_inner(Some(end), true)
+    }
+
+    pub(crate) fn wait_inner(&mut self, end: Option<Instant>, report_lost: bool) -> Result<usize> {
+        let mut state = self.prepare_wait(end, report_lost)?;
         loop {
             match state {
                 WaitState::Ready(index) => return Ok(index),
@@ -169,6 +220,8 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
                     for ep in self.endpoints.iter_mut() {
                         ep.stats().sleeps += 1;
                     }
+                    #[cfg(test)]
+                    tests::run_before_poll();
                     if let Err(error) = poll_until(&mut pfd, end) {
                         let _ = self.cancel();
                         return Err(error.into());
@@ -180,7 +233,7 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
     }
 
     fn intake(&self, revents: libc::c_short) -> Result<bool> {
-        let listener = &self.session.strict.as_ref().unwrap().listener;
+        let listener = &self.strict().listener;
         let result = listener.intake();
         if revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 || result.is_err() {
             // A kernel error flag alone does not identify the RP1 session state.
@@ -192,18 +245,14 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
     }
 
     fn check(&self) -> Result<()> {
-        let strict = self.session.strict.as_ref().unwrap();
+        let strict = self.strict();
         strict.check_link(&self.session.link)?;
         self.session.check_header()?;
-        let mut cores = 1; // proc0 owns the shared window.
-        for ep in self.endpoints.iter() {
-            cores |= 1 << ep.core();
-        }
         for core in 0..2 {
-            if cores & (1 << core) != 0 {
+            if self.cores & (1 << core) != 0 {
                 match self.session.check_peer(core) {
                     Err(e @ Error::PeerDown(PeerDown::Terminal { .. })) => {
-                        if self.end.is_some() {
+                        if self.tickets_armed {
                             strict.mailbox.borrow_mut().acknowledge()?;
                         }
                         return Err(e);
@@ -217,6 +266,7 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
 
     fn scan(&mut self) -> Result<Option<usize>> {
         self.check()?;
+        self.cleanup_checked = true;
         let mut ready = None;
         for (index, ep) in self.endpoints.iter_mut().enumerate() {
             if ep.available() != 0 {
@@ -224,7 +274,7 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
                 ready.get_or_insert(index);
                 // ACK only a ticket with an observed, sticky readiness condition.
                 // Another endpoint may have caused the wake on this shared vector.
-                if self.end.is_some() {
+                if self.tickets_armed {
                     ep.acknowledge()?;
                 }
             }
@@ -234,6 +284,7 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
 
     fn finish(&mut self, result: Result<WaitState>) -> Result<WaitState> {
         if matches!(result, Ok(WaitState::Armed)) {
+            self.cleanup_checked = false;
             return result;
         }
         let cleanup = self.cancel();
@@ -242,16 +293,23 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
 
     /// Cancel this wait, leaving the listener enabled for the next wait.
     pub fn cancel(&mut self) -> Result<()> {
-        if self.end.take().is_none() {
+        if self.armed.take().is_none() {
             return Ok(());
         }
-        let strict = self.session.strict.as_ref().unwrap();
-        strict.check_link(&self.session.link)?;
-        self.session.check_header()?;
+        self.strict().busy.set(false);
+        // An immediate ready result held the listener but did not arm anything.
+        if !self.tickets_armed {
+            self.cleanup_checked = false;
+            return Ok(());
+        }
+        self.tickets_armed = false;
+        if !std::mem::take(&mut self.cleanup_checked) {
+            self.session.check()?;
+        }
         for ep in self.endpoints.iter_mut() {
             ep.cancel()?;
         }
-        strict.mailbox.borrow_mut().cancel()?;
+        self.strict().mailbox.borrow_mut().cancel()?;
         Ok(())
     }
 }
@@ -259,7 +317,6 @@ impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
 impl Drop for WaitSet<'_, '_> {
     fn drop(&mut self) {
         let _ = self.cancel();
-        self.session.strict.as_ref().unwrap().busy.set(false);
     }
 }
 

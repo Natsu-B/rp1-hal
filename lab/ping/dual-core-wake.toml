@@ -36,3 +36,11 @@ core = "proc1"
 message = "Nonce"
 reply = "Nonce"
 depth = 8
+
+[[package.metadata.rp1.shm]]
+name = "dropped"
+kind = "channel"
+core = "proc1"
+message = "Nonce"
+reply = "Nonce"
+depth = 8

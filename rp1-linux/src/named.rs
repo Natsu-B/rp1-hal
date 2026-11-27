@@ -18,7 +18,7 @@ impl Firmware {
     /// Open the named RPC for one caller at a time.
     pub fn client<Req: Message, Rep: Message>(&self, name: &str) -> Result<Client<Req, Rep>> {
         let (Channel { tx, rx }, depth) = self.open_pair(name, true, Self::map)?;
-        Ok(Client { tx, rx, depth })
+        Ok(Client::new(tx, rx, depth))
     }
 
     fn open_pair<Tx: Message, Rx: Message>(
@@ -137,6 +137,15 @@ pub struct Client<Req, Rep> {
 }
 
 impl<Req: Message, Rep: Message> Client<Req, Rep> {
+    pub(crate) fn new(tx: RingTx<Req>, rx: RingRx<Rep>, depth: u32) -> Self {
+        Self { tx, rx, depth }
+    }
+
+    /// Notification statistics for replies received by this client.
+    pub fn wait_stats(&self) -> crate::WaitStats {
+        self.rx.wait_stats()
+    }
+
     /// Publish a request and wait for its reply. A zero timeout publishes once if there is
     /// room, then returns [`Error::Timeout`] immediately.
     ///
@@ -153,7 +162,8 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
         self.wait_reply(index, end)
     }
 
-    /// Publish and await a reply under a single absolute deadline.
+    /// Publish and await a reply under a single absolute deadline. If the reply
+    /// is present at the deadline, return it even if the IRQ count is delayed.
     pub fn call_until(&mut self, request: &Req, end: Instant) -> Result<Rep> {
         let index = self.publish(request, Some(end))?;
         self.wait_reply(index, end)
@@ -168,7 +178,7 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
             }
         };
         check_deadline()?;
-        self.rx.session.check_header()?;
+        self.rx.session.check()?;
         self.rx.session.check_peer(self.rx.peer.core)?;
         let index = self.tx.inner.head();
         while self.rx.tail() != index {
@@ -183,13 +193,18 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
             return Err(Error::Busy);
         }
         check_deadline()?;
-        self.tx.send(request)?;
+        self.tx.inner.push(request)?;
+        self.tx.wake()?;
         Ok(index)
     }
 
     fn wait_reply(&mut self, index: u32, end: Instant) -> Result<Rep> {
         loop {
-            match self.rx.wait(end) {
+            match if self.rx.ticket.is_some() {
+                self.rx.wait_irq(Some(end), false)
+            } else {
+                self.rx.wait(end)
+            } {
                 Err(Error::Timeout) if self.rx.session.strict.is_none() => {
                     self.rx.peer.check()?;
                     return Err(Error::Timeout);
@@ -197,7 +212,15 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
                 result => result?,
             }
             let tail = self.rx.tail();
-            if let Some(reply) = self.rx.try_recv()?
+            let reply = if self.rx.ticket.is_some() {
+                // The synchronous IRQ wait just checked link, terminal and generation.
+                let reply = self.rx.inner.pop()?;
+                self.rx.session.check_header()?;
+                reply
+            } else {
+                self.rx.try_recv()?
+            };
+            if let Some(reply) = reply
                 && tail == index
             {
                 return Ok(reply);

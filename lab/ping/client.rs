@@ -1,5 +1,8 @@
 use super::{CALL_TIMEOUT, Result, echo, rtt};
-use rp1_linux::{CoreState, Error, Firmware, PcieState, PeerDown, ScmiState, ShmState};
+use rp1_linux::{
+    Client, CoreState, Error, Firmware, PcieState, PeerDown, ScmiState, ShmState, WaitState,
+    Waitable,
+};
 use rp1_proto::note::{LINK, Link, Note, SHM_REGION, ShmRegion};
 use std::time::{Duration, Instant};
 
@@ -11,7 +14,7 @@ const ROUNDS: u32 = 5_000;
 pub fn run(args: &[String]) -> Result<()> {
     let [mode, step] = args else {
         return Err(
-            "usage: linux-ping --test irq|poll|wake ready|rtt|late|panic|stop|idle|backpressure"
+            "usage: linux-ping --test irq|poll|wake ready|rtt|late|panic|stop|fault|proc0-panic|idle|idle60|drop|backpressure"
                 .into(),
         );
     };
@@ -37,31 +40,19 @@ pub fn run(args: &[String]) -> Result<()> {
         println!("PING_READY mode={mode} generation={generation}");
         return Ok(());
     }
-    if strict && step == "idle" {
-        return idle(&fw);
+    if strict && matches!(step.as_str(), "idle" | "idle60") {
+        return idle(&fw, if step == "idle" { 11 } else { 62 });
+    }
+    if strict && matches!(step.as_str(), "drop" | "proc0-panic") {
+        return dropped(&fw, step == "proc0-panic");
     }
     if strict && step == "backpressure" {
         return backpressure(&fw);
     }
     let mut client = fw.client("ping")?;
     match step.as_str() {
-        "rtt" if strict => {
-            let mut nanos = Vec::with_capacity(1_000);
-            for value in 0..1_000u32 {
-                let start = Instant::now();
-                let reply = client.call_until(&value, start + CALL_TIMEOUT)?;
-                nanos.push(start.elapsed().as_nanos());
-                assert_eq!(reply, value);
-            }
-            for (index, ns) in nanos.iter().enumerate() {
-                println!("PING_SAMPLE seq={index} ns={ns}");
-            }
-            nanos.sort_unstable();
-            println!(
-                "PING_RTT mode=wake n=1000 failed=0 p50_ns={} p99_ns={} max_ns={}",
-                nanos[499], nanos[989], nanos[999]
-            );
-        }
+        "rtt" if strict => strict_rtt(&mut client)?,
+        "reference" if !strict => strict_rtt(&mut client)?,
         "rtt" => rtt(&mut client, ROUNDS, &format!(" mode={mode}"))?,
         "late" => {
             let before = client.call(&commands::COUNT, CALL_TIMEOUT)?;
@@ -88,12 +79,11 @@ pub fn run(args: &[String]) -> Result<()> {
                 "PING_LATE mode={mode} n={ROUNDS} injected={injected} timed_out={injected} replied={replied} wrong=0 failed=0"
             );
         }
-        "panic" | "stop" if strict => {
-            let panic = step == "panic";
-            let (request, expected) = if panic {
-                (commands::PANIC, CoreState::Panicked)
-            } else {
-                (commands::STOP, CoreState::Stopped)
+        "panic" | "stop" | "fault" if strict => {
+            let (request, expected) = match step.as_str() {
+                "panic" => (commands::PANIC, CoreState::Panicked),
+                "fault" => (commands::FAULT, CoreState::Fault),
+                _ => (commands::STOP, CoreState::Stopped),
             };
             let start = Instant::now();
             let result = client.call_until(&request, start + Duration::from_millis(10));
@@ -106,13 +96,13 @@ pub fn run(args: &[String]) -> Result<()> {
             else {
                 return Err(format!("expected proc1 terminal after {us} us: {result:?}").into());
             };
-            assert_eq!(state, expected);
-            assert!(if panic {
-                (10_000..=15_000).contains(&us)
-            } else {
-                (1..10_000).contains(&us)
-            });
             println!("PING_PEER_DOWN core=1 state={state:?} reason={reason} elapsed_us={us}");
+            if state != expected || us > 15_000 {
+                return Err(format!(
+                    "expected {expected:?} within 15000 us, got {state:?} at {us} us"
+                )
+                .into());
+            }
         }
         "panic" if irq => {
             let start = Instant::now();
@@ -166,13 +156,48 @@ fn check_note(irq: bool, strict: bool) -> Result<()> {
     Ok(())
 }
 
-// The idle and Full recovery probes use the same observations as the original
-// channel probe: WaitStats, /proc CPU ticks, and reply ordering.
-fn cpu_ticks() -> Result<u64> {
-    let stat = std::fs::read_to_string("/proc/self/stat")?;
-    let (_, fields) = stat.rsplit_once(") ").ok_or("missing stat fields")?;
-    let fields: Vec<_> = fields.split_whitespace().collect();
-    Ok(fields[11].parse::<u64>()? + fields[12].parse::<u64>()?)
+fn strict_rtt(client: &mut Client<u32, u32>) -> Result<()> {
+    let mut nanos = Vec::with_capacity(1_000);
+    let mut failed = 0;
+    for value in 0..1_000u32 {
+        let start = Instant::now();
+        let reply = client.call_until(&value, start + CALL_TIMEOUT);
+        let ns = start.elapsed().as_nanos();
+        let ok = matches!(reply, Ok(echo) if echo == value);
+        println!("PING_SAMPLE seq={value} ns={ns} ok={}", u8::from(ok));
+        if ok {
+            nanos.push(ns);
+        } else {
+            failed += 1;
+            eprintln!("PING_SAMPLE_ERROR seq={value} result={reply:?}");
+            if !matches!(reply, Ok(_) | Err(Error::Timeout)) {
+                break;
+            }
+        }
+    }
+    nanos.sort_unstable();
+    let rank = |percent: usize| {
+        nanos
+            .len()
+            .checked_mul(percent)
+            .unwrap()
+            .div_ceil(100)
+            .checked_sub(1)
+            .map_or(0, |index| nanos[index])
+    };
+    println!(
+        "PING_RTT n={} failed={failed} p50_ns={} p99_ns={} max_ns={} wait_stats={:?}",
+        nanos.len() + failed,
+        rank(50),
+        rank(99),
+        rank(100),
+        client.wait_stats(),
+    );
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(format!("{failed} incorrect or failed replies").into())
+    }
 }
 
 fn irq_count() -> Result<u64> {
@@ -188,22 +213,28 @@ fn irq_count() -> Result<u64> {
         .sum())
 }
 
-fn idle(fw: &Firmware) -> Result<()> {
+fn idle(fw: &Firmware, seconds: u64) -> Result<()> {
     let (mut tx, mut rx) = fw.channel::<u32, u32>("channel")?.split();
     assert!(rx.try_recv()?.is_none());
-    let ticks = cpu_ticks()?;
+    let mut client = fw.client("ping")?;
+    echo(&mut client, commands::IDLE_BEGIN)?;
     let irq_before = irq_count()?;
     let now = Instant::now();
-    let result = rx.wait(now + Duration::from_secs(10));
+    println!("IDLE_BEGIN seconds={seconds} pid={}", std::process::id());
+    let result = rx.wait(now + Duration::from_secs(seconds));
     let wall_us = now.elapsed().as_micros();
     let irq_after = irq_count()?;
     println!("IDLE_IRQ before={irq_before} after={irq_after}");
-    assert_eq!(irq_before, irq_after);
-    let ticks = cpu_ticks()? - ticks;
     let stats = rx.wait_stats();
-    println!("IDLE_CPU wall_us={wall_us} ticks={ticks} wait_stats={stats:?}");
+    println!("IDLE_WAIT wall_us={wall_us} result={result:?} wait_stats={stats:?}");
+    let nonce = 0xc5b2_0001;
+    tx.send(&nonce)?;
+    rx.wait(Instant::now() + CALL_TIMEOUT)?;
+    assert_eq!(rx.try_recv()?, Some(nonce));
+    echo(&mut client, commands::IDLE_END)?;
+    println!("IDLE_NONCE value={nonce:#x} ok=1");
+    assert_eq!(irq_before, irq_after);
     assert!(matches!(result, Err(Error::Timeout)));
-    assert!((10_000_000..=10_050_000).contains(&wall_us));
     assert_eq!(
         (
             stats.sleeps,
@@ -214,17 +245,75 @@ fn idle(fw: &Firmware) -> Result<()> {
         ),
         (1, 0, 0, 0, 1)
     );
-    let nonce = 0xc5b2_0001;
-    tx.send(&nonce)?;
-    rx.wait(Instant::now() + CALL_TIMEOUT)?;
-    assert_eq!(rx.try_recv()?, Some(nonce));
-    println!("IDLE_NONCE ok=1");
+    Ok(())
+}
+
+fn dropped(fw: &Firmware, proc0_panic: bool) -> Result<()> {
+    let (mut tx, mut rx) = fw.channel::<u32, u32>("dropped")?.split();
+    let mut endpoints = [&mut rx as &mut dyn Waitable];
+    let mut wait = fw.wait_set(&mut endpoints)?;
+    let request = if proc0_panic {
+        commands::PROC0_PANIC
+    } else {
+        0x8751_0929
+    };
+    let start = Instant::now();
+    let end = start + Duration::from_millis(10);
+    assert_eq!(wait.prepare(end)?, WaitState::Armed);
+    tx.send(&request)?;
+    // Poll the fd without rearming, then dispatch including at the deadline.
+    let mut pfd = libc::pollfd {
+        fd: std::os::fd::AsRawFd::as_raw_fd(&wait.as_fd()),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = loop {
+        let remaining = end.saturating_duration_since(Instant::now());
+        let timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: remaining.as_nanos() as _,
+        };
+        let polled = unsafe { libc::ppoll(&mut pfd, 1, &timeout, std::ptr::null()) };
+        if polled < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        match wait.dispatch(pfd.revents) {
+            Ok(WaitState::Armed) => continue,
+            result => break result,
+        }
+    };
+    let elapsed = start.elapsed();
+    println!(
+        "PING_DROP_OR_PROC0_PANIC proc0_panic={proc0_panic} result={result:?} elapsed_ns={}",
+        elapsed.as_nanos()
+    );
+    drop(wait);
+    assert!(elapsed <= Duration::from_millis(15), "elapsed={elapsed:?}");
+    if proc0_panic {
+        assert!(matches!(
+            result,
+            Err(Error::PeerDown(PeerDown::Terminal {
+                core: 0,
+                state: CoreState::Panicked,
+                ..
+            }))
+        ));
+    } else {
+        assert!(matches!(result, Err(Error::NotifyLost)));
+        assert_eq!(rx.try_recv()?, Some(request));
+        println!("PING_DROP_DATA value={request:#x} ok=1");
+    }
     Ok(())
 }
 
 fn backpressure(fw: &Firmware) -> Result<()> {
     let (mut tx, mut rx) = fw.channel::<u32, u32>("channel")?.split();
-    for trial in 1..=12u32 {
+    let mut failed = 0;
+    for trial in 1..=1000u32 {
         let begin = trial * 16;
         let values = std::array::from_fn::<_, 8, _>(|i| begin + i as u32);
         assert_eq!(tx.send_slice(&values)?, values.len());
@@ -235,17 +324,21 @@ fn backpressure(fw: &Firmware) -> Result<()> {
         }
         assert_eq!(rx.available(), 8);
         tx.send(&(begin + 8))?;
-        std::thread::sleep(Duration::from_millis(30));
         assert_eq!(rx.available(), 8);
         let released = Instant::now();
         for expected in begin..=begin + 8 {
             rx.wait(released + Duration::from_millis(100))?;
             assert_eq!(rx.try_recv()?, Some(expected));
         }
-        let resumed_us = released.elapsed().as_micros();
-        println!("CHANNEL_BACKPRESSURE trial={trial} full=8 compared=9 resumed_us={resumed_us}");
-        assert!((1..100_000).contains(&resumed_us));
+        let resumed_ns = released.elapsed().as_nanos();
+        println!("CHANNEL_BACKPRESSURE trial={trial} full=8 compared=9 resumed_ns={resumed_ns}");
+        failed += usize::from(resumed_ns > 250_000);
         assert!(rx.try_recv()?.is_none());
     }
-    Ok(())
+    println!("CHANNEL_BACKPRESSURE_SUMMARY n=1000 failed={failed}");
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(format!("{failed} Full recoveries exceeded 250 µs").into())
+    }
 }

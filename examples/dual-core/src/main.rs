@@ -51,7 +51,7 @@ fn TIMER_0() {
     // The handler is the only writer: a load and a store, no read-modify-write.
     TICKS.store(TICKS.load(Relaxed) + 1, Relaxed);
     rp1_rt::status::beat();
-    #[cfg(not(feature = "ping-poll"))]
+    #[cfg(not(any(feature = "ping-poll", feature = "link-wake")))]
     // Older Linux clients do not ring after freeing channel reply slots.
     rp1_rt::send_event();
 }
@@ -114,6 +114,8 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     #[cfg(feature = "ping-poll")]
     let mut channel = Some(p.link.open().expect("channel open failed").channel);
     loop {
+        #[cfg(feature = "link-wake")]
+        ping_test::check_proc0_panic();
         #[cfg(feature = "ping-poll")]
         if let Some(endpoint) = channel.as_mut()
             && let Err(error) = endpoint.respond(1, |nonce| nonce)
@@ -162,9 +164,32 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let mut ping = link.ping;
     #[cfg(not(feature = "ping-poll"))]
     let mut channel = Some(link.channel);
-    #[cfg(feature = "ping-test")]
-    let mut probe = ping_test::probe!(p);
+    #[cfg(all(feature = "ping-test", not(feature = "link-wake")))]
+    let mut probe = ping_test::Probe::new();
+    #[cfg(feature = "link-wake")]
+    let mut probe = ping_test::Probe::new(p.host_irq);
+    #[cfg(feature = "link-wake")]
+    let (mut dropped_tx, mut dropped_rx) = link.dropped.split();
+    #[cfg(feature = "link-wake")]
+    let mut pulse_failures = 0;
     loop {
+        #[cfg(feature = "link-wake")]
+        {
+            let _ = probe.host_irq.pulse_terminals();
+            let drop_progress = dropped_rx
+                .drain(8, |value| {
+                    if ping_test::proc0_panic_requested(value) {
+                        probe.reply(value);
+                    } else {
+                        dropped_tx.push(&value).expect("drop probe reply");
+                        rp1_link::flush_window();
+                    }
+                })
+                .expect("drop probe drain");
+            if drop_progress == Progress::More {
+                continue;
+            }
+        }
         let progress = ping
             .serve(8, |value| {
                 #[cfg(feature = "ping-test")]
@@ -184,8 +209,20 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                     }
                 }
             }
+            #[cfg(feature = "link-wake")]
+            {
+                let failures = ping.pulse_failures();
+                if pulse_failures != failures {
+                    pulse_failures = failures;
+                    let _ = log!("PING_PULSE_FAILURES count={}\n", failures);
+                    let _ = ping.retry_notification();
+                }
+            }
             // Both endpoints share the doorbell. Check both before going to sleep.
             if progress == Progress::Idle {
+                #[cfg(feature = "link-wake")]
+                probe.sleep();
+                #[cfg(not(feature = "link-wake"))]
                 rp1_rt::wait_for_event();
             }
         }
