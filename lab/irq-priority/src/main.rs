@@ -357,7 +357,7 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let first = now().wrapping_add(20_000);
     arm(&mut p.TIMER_ALARM0, first);
     unsafe { (&raw mut ALARM0).write(MaybeUninit::new(p.TIMER_ALARM0)) };
-    p.irq.TIMER_0.set_priority(Priority::control::<2>());
+    p.irq.TIMER_0.set_slot_priority::<2, _, _>(&STROBE);
     p.irq.TIMER_0.enable();
     FIRST.store(first, Ordering::Release);
     rp1_rt::send_event();
