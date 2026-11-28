@@ -138,14 +138,26 @@ fn jumpers(bus: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
             Deadline::at(start + DEADLINE_US.micros()),
         );
         let us = (Timer::new().now() - start).ticks() as u32;
-        assert_eq!(result, Err(Error::AddressNack));
-        assert_eq!(ABORT.load(Relaxed), 1);
-        assert_eq!(
-            RX.load(Relaxed) + TX.load(Relaxed) + OTHER.load(Relaxed) + STRAY.load(Relaxed),
-            0
-        );
-        assert!((MIN_US..=MAX_US).contains(&us));
-        assert!(idle() && levels() & LINES == LINES);
+        let abrt = ABORT.load(Relaxed);
+        let rx = RX.load(Relaxed);
+        let tx = TX.load(Relaxed);
+        let other = OTHER.load(Relaxed);
+        let stray = STRAY.load(Relaxed);
+        let idle = idle();
+        let pads = levels() & LINES;
+        if result != Err(Error::AddressNack)
+            || abrt != 1
+            || rx + tx + other + stray != 0
+            || !(MIN_US..=MAX_US).contains(&us)
+            || !idle
+            || pads != LINES
+        {
+            log!(
+                "I2C_JUMPER_FAIL instance={N} step=nack result={result:?} us={us} tx_abrt={abrt} rx={rx} tx={tx} other={other} stray={stray} idle={idle} pads={pads:#x}\n"
+            )
+            .unwrap();
+            panic!("I2C jumper NACK");
+        }
         latency = (latency.0.min(us), latency.1.max(us));
     };
 
@@ -174,9 +186,17 @@ fn jumpers(bus: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
         Deadline::at(start + SHORT_US.micros()),
     );
     let alarm_us = FIRST_ALARM.load(Relaxed).wrapping_sub(start.ticks() as u32);
-    assert_eq!(result, Err(Error::Timeout));
-    assert_eq!(ABORT.load(Relaxed) + RX.load(Relaxed) + TX.load(Relaxed), 0);
-    assert!((SHORT_US..=SHORT_US + 4).contains(&alarm_us));
+    let device_irqs = ABORT.load(Relaxed) + RX.load(Relaxed) + TX.load(Relaxed);
+    if result != Err(Error::Timeout)
+        || device_irqs != 0
+        || !(SHORT_US..=SHORT_US + 4).contains(&alarm_us)
+    {
+        log!(
+            "I2C_JUMPER_FAIL instance={N} step=timeout result={result:?} alarm_us={alarm_us} device_irqs={device_irqs}\n"
+        )
+        .unwrap();
+        panic!("I2C jumper timeout");
+    }
     bus.try_recover()?;
     assert!(idle() && levels() & LINES == LINES);
     nack_after_timeout(bus, timer, ABSENT)?;
