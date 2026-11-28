@@ -103,9 +103,15 @@ pub(super) fn inventory(devices: &[u32], alarms: &[u32]) {
         .map(irq_mask)
         .fold(0, |a, b| a | b);
     assert_eq!(enabled & !allowed, 0, "unstamped enabled IRQs");
-    for (irq, priority) in [(53u32, 0), (57, 1)]
+    use rp1_rt::interrupt::priority;
+    for (irq, priority) in [(53u32, priority::PCIE_RESET), (57, priority::SCMI)]
         .into_iter()
-        .chain(devices.iter().chain(alarms).map(|&irq| (irq, 4)))
+        .chain(
+            devices
+                .iter()
+                .chain(alarms)
+                .map(|&irq| (irq, priority::DEVICE)),
+        )
     {
         let raw = unsafe { IPR.add(irq as usize).read_volatile() };
         assert_eq!(raw, priority << 5);
@@ -121,12 +127,21 @@ pub(super) fn wait_for_linux() {
     wait_for_host("ATTR_AWAIT_LINUX", START);
 }
 
+pub(super) fn host_requested(value: u32) -> bool {
+    unsafe { TRIGGER.read_volatile() == value }
+}
+
 pub(super) fn wait_for_host(marker: &str, value: u32) {
     log!("{marker}\n").unwrap();
     // The root console writes this only after Linux reaches multi-user.
-    while unsafe { TRIGGER.read_volatile() } != value {
+    while !host_requested(value) {
         core::hint::spin_loop();
     }
+}
+
+#[allow(dead_code)]
+pub(super) fn scmi_entries() -> u32 {
+    TRACES[1].total.load(Relaxed)
 }
 
 pub(super) fn begin() -> u32 {

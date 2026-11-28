@@ -409,6 +409,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "irq-priority"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "rp1-build",
+ "rp1-hal",
+ "rp1-proto",
+ "rp1-rt",
+]
+
+[[package]]
 name = "irq-proof"
 version = "0.1.0"
 dependencies = [

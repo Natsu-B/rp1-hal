@@ -81,6 +81,7 @@ jobs:
           - { package: link-wake-fixture, features: --features firmware }
           - { package: irq-sweep }
           - { package: scmi-starvation }
+          - { package: irq-priority }
           - { package: shm-firmware, name: default }
           - { package: shm-firmware, name: none, features: --no-default-features }
           - { package: shm-firmware, name: i2c, features: --no-default-features --features i2c }
