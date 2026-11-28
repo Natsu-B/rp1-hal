@@ -901,7 +901,30 @@ fn dma_resource(
     pio: bool,
 ) -> Result<(String, String, Vec<u8>)> {
     let ty = format!("Proc{core}Dma");
-    let initialized = format!("Proc{core}DmaChannels");
+    dma_channels(source, core, channels, &ty, false)?;
+    if pio {
+        dma_channels(source, core, channels, &ty, true)?;
+    }
+    Ok((
+        ty.clone(),
+        format!("{ty}(unsafe {{ ::rp1_hal::dma::Token::new() }})"),
+        Vec::new(),
+    ))
+}
+
+fn dma_channels(
+    source: &mut String,
+    core: usize,
+    channels: &[u8],
+    ty: &str,
+    pio: bool,
+) -> Result<()> {
+    let (suffix, init) = if pio {
+        ("PioChannels", "init_pio")
+    } else {
+        ("Channels", "init")
+    };
+    let initialized = format!("{ty}{suffix}");
     writeln!(
         source,
         "/// Initialized channels issued by the proc{core} DMA declaration.\n\
@@ -916,11 +939,16 @@ fn dma_resource(
         writeln!(source, "pub ch{n}: ::rp1_hal::dma::Channel<{n}{requests}>,")?;
     }
     writeln!(source, "_controller: ::rp1_hal::dma::Dma,\n}}")?;
+    if !pio {
+        writeln!(
+            source,
+            "/// Controller owned by `proc{core}.dma`.\npub struct {ty}(::rp1_hal::dma::Token);"
+        )?;
+    }
     writeln!(
         source,
-        "/// Controller owned by `proc{core}.dma`.\npub struct {ty}(::rp1_hal::dma::Token);\n\
-        impl {ty} {{\n\
-            pub fn init(self, clocks: &::rp1_hal::clocks::Clocks) -> ::core::result::Result<\
+        "impl {ty} {{\n\
+            pub fn {init}(self, clocks: &::rp1_hal::clocks::Clocks) -> ::core::result::Result<\
                 {initialized}, ::rp1_hal::InitError<Self, ::rp1_hal::dma::Error>> {{\n\
                 #[allow(unused_mut)]\n\
                 let mut controller = self.0.init(clocks).map_err(|e| e.map_parts(Self))?;\n\
@@ -970,11 +998,7 @@ fn dma_resource(
                      Err(error) => Err(::rp1_hal::FreeError::new(self, error)),\n\
                  }}\n}}\n}}"
     )?;
-    Ok((
-        ty.clone(),
-        format!("{ty}(unsafe {{ ::rp1_hal::dma::Token::new() }})"),
-        Vec::new(),
-    ))
+    Ok(())
 }
 
 #[cfg(test)]

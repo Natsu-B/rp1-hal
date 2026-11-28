@@ -458,6 +458,15 @@ fn generated_ownership_is_checked_by_rust() {
         }),
     );
     d.validate().unwrap();
+    let mut split = d.clone();
+    let pio = split.proc1.instances.remove("pio").unwrap();
+    split.proc0.instances.insert("pio".into(), pio);
+    split.validate().unwrap();
+    assert!(
+        !resources(&split, &[], &split.shm_layout().unwrap())
+            .unwrap()
+            .contains("fn init_pio")
+    );
     let generated = resources(&d, &[], &d.shm_layout().unwrap())
         .unwrap()
         .replace(
@@ -481,6 +490,13 @@ fn TIMER_0() {{}}
 fn channels(dma: rp1::Proc1DmaChannels) {{
     let _: rp1_hal::dma::Channel<0> = dma.ch0;
     let _: rp1_hal::dma::Channel<2> = dma.ch2;
+}}
+fn pio_dma<'a>(
+    dma: &'a mut rp1::Proc1DmaPioChannels,
+    tx: &'a mut rp1_hal::dma::PioFifo<rp1_hal::pio::Tx<0>>,
+    source: &'a mut rp1_hal::dma::Lease<'_>,
+) -> Result<rp1_hal::dma::PioTransfer<'a>, rp1_hal::dma::Error> {{
+    dma.ch0.try_start_to_pio(source, tx)
 }}
 fn free_subset(dma: rp1::Proc1DmaChannels) -> Result<rp1::Proc1Dma,
     rp1_hal::FreeError<rp1::Proc1DmaChannels, rp1_hal::dma::Error>> {{

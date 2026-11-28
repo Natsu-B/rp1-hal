@@ -119,12 +119,13 @@ assert_eq!(src.as_slice(), dst.as_slice());
 
 ### PIO FIFOs (STATIC)
 
-Declare `dma` with a pool and `pio` on the same core. The generated channels then
-accept both SRAM copies and PIO transfers. Use `into_dma()` on a TX or RX FIFO to
-reserve it for transfers. The selected SRAM lease range must contain a whole number
+Declare `dma` with a pool and `pio` on the same core. The generated `init_pio`
+method provides channels for SRAM copies and PIO transfers. Use `into_dma()` on a
+TX or RX FIFO to reserve it for transfers. The selected SRAM lease range must contain a whole number
 of 32-bit words and start at a 4-byte boundary.
 
 ```rust
+let mut dma = p.dma.init_pio(&clocks)?;
 let mut tx = tx.into_dma();
 let mut transfer = dma.ch0.try_start_to_pio(&mut src, &mut tx)?;
 transfer.wait_polling(end)?;

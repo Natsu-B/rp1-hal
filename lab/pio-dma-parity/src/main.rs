@@ -58,7 +58,7 @@ fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
     let stack = unsafe { stack_watermark::paint() };
     let clocks = Clocks::wait_from_proc0(&core, Duration::millis(10)).unwrap();
     let (pio, sms) = p.pio.split_wait(&clocks).unwrap();
-    let mut dma = p.dma.init(&clocks).unwrap();
+    let mut dma = p.dma.init_pio(&clocks).unwrap();
     let pool = p.dma_pool;
     let wait = &mut { p.wait_timer };
     let mut lease = pool.lease(0, SLOT).unwrap();
