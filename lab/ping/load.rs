@@ -91,7 +91,7 @@ fn image_worker(start: Instant) -> std::result::Result<Vec<u128>, i32> {
 #[inline(never)]
 fn filter(input: &[u8], output: &mut [i16]) {
     const STRIDE: usize = WIDTH * CHANNELS;
-    for (row, out) in (1..HEIGHT - 1).zip(output.chunks_exact_mut(STRIDE).skip(1)) {
+    for (row, out) in (1..HEIGHT - 1).zip(output.as_chunks_mut::<STRIDE>().0.iter_mut().skip(1)) {
         let above = &input[(row - 1) * STRIDE..row * STRIDE];
         let middle = &input[row * STRIDE..(row + 1) * STRIDE];
         let below = &input[(row + 1) * STRIDE..(row + 2) * STRIDE];
