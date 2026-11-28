@@ -196,6 +196,20 @@ fn experimental_route_respects_the_existing_ownership_checks() {
 }
 
 #[test]
+fn startup_and_data_doorbells_reserve_their_pins() {
+    let mut declaration: Declaration =
+        toml::from_str(&format!("schema=2\n{STARTUP}\n{DECLARATION}")).unwrap();
+    declaration.validate().unwrap();
+    for (pin, owner) in [(26, "proc0.startup_doorbell"), (27, "proc1.doorbell")] {
+        declaration.proc0.gpio = vec![pin];
+        let error = declaration.validate().unwrap_err().to_string();
+        assert!(error.starts_with(&format!("E1: GPIO {pin} is claimed by both ")));
+        assert!(error.contains(owner), "{error}");
+        assert!(error.contains("proc0.gpio"), "{error}");
+    }
+}
+
+#[test]
 fn only_the_validated_startup_profile_is_available_in_manifests() {
     let fixture = format!("schema=2\nlink_wake='delivery-fixture'\n{DECLARATION}");
     assert!(toml::from_str::<Declaration>(&fixture).is_err());
