@@ -25,6 +25,9 @@ clock = { authority = "rp1", clk_sys_hz = 200000000 }
 log = { sink = "uart0", baudrate = 115200 }
 stack = { proc1 = "4KiB" }
 
+[package.metadata.rp1.proc0]
+timer = ["ALARM0"]
+
 [package.metadata.rp1.proc1]
 pio = { sms = [0, 1, 2, 3] }
 dma = { channels = [0, 7], pool = { slots = 1, bytes = 1040 } }

@@ -13,7 +13,10 @@ spec.loader.exec_module(verifier)
 
 
 def fixture():
-    lines = ["PIO_D_READY core=1 clk_hz=200000000 divider=200:0 quantization_us=1 irq40=masked"]
+    lines = [
+        "PIO_D_INIT clocks=1 pio=1 dma=1 echo=1",
+        "PIO_D_READY core=1 clk_hz=200000000 divider=200:0 quantization_us=1 irq40=masked",
+    ]
     for run in (1, 2):
         for sm in range(4):
             for rx in (0, 1):

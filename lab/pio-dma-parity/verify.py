@@ -47,6 +47,7 @@ def verify(output):
             assert row[field] == str(value), (key, field, row[field], value)
         return row
 
+    take(("INIT",), clocks=1, pio=1, dma=1, echo=1)
     take(("READY",), core=1, clk_hz=200000000, divider="200:0", quantization_us=1, irq40="masked")
     min_us = 10_000
     max_us = stop_max = 0

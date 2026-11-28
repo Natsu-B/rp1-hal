@@ -45,11 +45,12 @@ const COMPLETION: u32 = 10_000;
 const PHASE_LIMIT: u32 = 30_000_000;
 
 #[entry(proc0)]
-fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
+fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let stack = unsafe { stack_watermark::paint_core::<0>() };
-    let _ = rp1::platform::init(&mut core, p.platform).unwrap();
+    let mut sys = rp1::platform::init(&mut core, p.platform).unwrap();
     log!("PIO_D_PLAT ok=1 stack_free={}\n", stack.free_bytes()).unwrap();
     p.proc1.launch(&mut core).unwrap();
+    rp1::link::enable(&mut sys.pcie, &mut p.TIMER_ALARM0, &mut p.irq.TIMER_0).unwrap();
     park()
 }
 
@@ -75,6 +76,7 @@ fn main1(core: Proc1, p: rp1::Proc1Resources) -> ! {
         ".wrap",
     );
     let program = pio.install(&echo.program).unwrap();
+    log!("PIO_D_INIT clocks=1 pio=1 dma=1 echo=1\n").unwrap();
     let mut ping = p.link.open().unwrap().ping;
     let mut tokens = (sms.sm0, sms.sm1, sms.sm2, sms.sm3);
     log!(
