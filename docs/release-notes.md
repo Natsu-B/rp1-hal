@@ -344,9 +344,10 @@ declaration keys were removed.
 
 STATIC (2026-11-28). See [Interrupt priorities](interrupts.md#優先度).
 
-- SCMI IRQ57 moves from priority 1 to 6. User ISRs at priorities 2–5,
-  `interrupt::free` and core-local `Slot` borrows can now delay SCMI. Keep their
-  combined blocking time within the [SCMI workload budget](interrupts.md#優先度).
+- SCMI IRQ57 moves from priority 1 to 6. User ISRs at priorities 2–5 and
+  core-local `Slot` borrows that mask priority 6 can now delay SCMI. Count
+  these delays and time in `interrupt::free` toward the
+  [SCMI workload budget](interrupts.md#優先度).
 - `Line<IRQ, P>` and `Binding<S, IRQ, CORE, P>` have a trailing priority policy type.
   Ordinary line and binding types can omit it. The generated doorbell uses
   `FixedDoorbell` at priority 5 and has no `set_priority`. Enable it or pass
