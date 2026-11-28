@@ -33,10 +33,11 @@ pub unsafe fn paint_core<const CORE: usize>() -> Watermark {
         static __stack_size0: u8;
         static __stack_size1: u8;
     }
-    let stack_size = match CORE {
-        0 => core::ptr::addr_of!(__stack_size0),
-        1 => core::ptr::addr_of!(__stack_size1),
-        _ => unreachable!(),
+    const { assert!(CORE < 2) };
+    let stack_size = if CORE == 0 {
+        core::ptr::addr_of!(__stack_size0)
+    } else {
+        core::ptr::addr_of!(__stack_size1)
     };
     let top = 0x1000_4000 as *mut u32;
     let bottom = (top as usize - stack_size as usize) as *mut u32;
