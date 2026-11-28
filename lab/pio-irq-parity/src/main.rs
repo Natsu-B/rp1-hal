@@ -249,6 +249,13 @@ impl Peer {
     }
 }
 
+unsafe extern "C" {
+    #[link_name = "__rp1_p1_PIO_0"]
+    fn generated_irq0();
+    #[link_name = "__rp1_p1_PIO_1"]
+    fn generated_irq1();
+}
+
 #[rp1_rt::isram]
 unsafe extern "C" fn irq0() {
     interrupt::<0>();
@@ -291,7 +298,16 @@ fn interrupt<const LINE: u8>() {
         write(ICER, LINE_BITS[index]);
         status
     } else {
-        unsafe { rp1_hal::pio::__on_interrupt::<LINE, 1>() }
+        let enabled = read(INTE[index]);
+        // Call the original vector target and measure the bits it retired.
+        unsafe {
+            if LINE == 0 {
+                generated_irq0();
+            } else {
+                generated_irq1();
+            }
+        }
+        enabled & !read(INTE[index])
     };
     store(&ENTRIES[index], load(&ENTRIES[index]) + 1);
     if source != 0 {
