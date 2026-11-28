@@ -52,6 +52,38 @@ fn configuration(mode: usize) -> (Program<32>, u8, Buffers) {
     }
 }
 
+/// Run the echo from the HAL's PIO quickstart on the bench.
+#[inline(never)]
+pub fn echo_example(
+    pio: &PIO,
+    slot: &mut Option<UninitStateMachine<0>>,
+    timer: &Timer,
+) -> LabResult<()> {
+    let echo = pio_asm!("pull block", "mov isr, osr", "push block");
+    let program = pio.install(&echo.program).map_err(|_| "echo install")?;
+    let (sm, mut rx, mut tx) = PIOBuilder::from_installed_program(&program)
+        .build(slot.take().ok_or("echo sm")?)
+        .map_err(|_| "echo build")?;
+    let running = sm.start().map_err(|_| "echo start")?;
+    let start = now(timer);
+    let sent = tx.write(21);
+    let word = loop {
+        if let Some(word) = rx.read() {
+            break Some(word);
+        }
+        if now(timer).wrapping_sub(start) >= 1_000 {
+            break None;
+        }
+    };
+    *slot = Some(running.stop().uninit(rx, tx).0);
+    program.uninstall().map_err(|_| "echo uninstall")?;
+    if !sent || word != Some(21) {
+        return Err("echo data");
+    }
+    log!("PIO_B_ECHO word=21\n").unwrap();
+    Ok(())
+}
+
 #[inline(never)]
 pub fn lifecycle<const N: u8>(
     pio: &PIO,

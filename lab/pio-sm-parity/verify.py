@@ -6,16 +6,19 @@ import re
 import sys
 
 
-# (pulse count, divider INT:FRAC, cycles, nominal high ns, nominal period ns,
+# Delay from OE deassertion to the GPIO22 input threshold, including fixture uncertainty.
+PINDIRS_DECAY_NS = (7_000, 12_000)
+
+# (pulse count, divider INT:FRAC, cycles, drive ns, nominal period ns,
 #  bounds for 1,000 rising intervals in us)
 CASES = {
     "1khz": (10000, "10000:0", 20, 500000, 1000000, 990000, 1010000),
     "10khz": (10000, "1000:0", 20, 50000, 100000, 99000, 101000),
-    "int": (1001, "800:0", 20, 40000, 80000, 79200, 80800),
-    "frac": (1001, "800:128", 20, 40025, 80050, 79250, 80850),
+    "int": (1001, "800:0", 20, 40000, 80000, 79965, 80035),
+    "frac": (1001, "800:128", 20, 40025, 80050, 80015, 80085),
     "side": (1000, "1000:0", 20, 50000, 100000, 99000, 101000),
     "opt_side": (1000, "2000:0", 10, 50000, 100000, 99000, 101000),
-    "pindirs": (1000, "1000:0", 20, 50000, 100000, 99000, 101000),
+    "pindirs": (1000, "1000:0", 20, 40000, 100000, 99000, 101000),
     "phase": (10001, "1000:0", 20, 50000, 100000, 99000, 101000),
 }
 
@@ -52,6 +55,8 @@ def verify(path):
         assert 0 < elapsed(value(end, "end"), value(end, "start")) < 30_000_000
         assert value(end, "safety") == 15 and value(end, "dma") == 0
         assert value(end, "stack_free") > 0 and value(entries("STACK")[0], "free") > 0
+        echo, = entries("ECHO")
+        assert value(echo, "word") == 21
         assert len(entries("FIFO")) == 4
         for n, row in enumerate(entries("FIFO")):
             assert value(row, "sm") == n
@@ -61,17 +66,18 @@ def verify(path):
         assert len(entries("WAVE")) == 9
         assert len(entries("WAVE_END")) == 7
         assert len(entries("WINDOW")) == 40
-        for name, (pulses, divider, cycles, high, period, lower, upper) in CASES.items():
+        for name, (pulses, divider, cycles, drive, period, lower, upper) in CASES.items():
             for ch in range(2 if name == "phase" else 1):
                 wave, = [r for r in entries("WAVE") if r["case"] == name and value(r, "channel") == ch]
                 assert value(wave, "edges") == 2 * pulses, (name, ch, wave)
                 assert wave["clkdiv"] == divider and value(wave, "cycles") == cycles
                 assert value(wave, "quantum_ns") == 100
-                high_tolerance = 5000 if name == "pindirs" else 1000
-                for prefix, nominal, tolerance in [("high", high, high_tolerance), ("period", period, 1000)]:
-                    lo = value(wave, f"{prefix}_min_ns")
-                    hi = value(wave, f"{prefix}_max_ns")
-                    assert nominal - tolerance <= lo <= hi <= nominal + tolerance, (name, prefix, lo, hi)
+                assert value(wave, "drive_ns") == drive
+                decay_lo, decay_hi = PINDIRS_DECAY_NS if name == "pindirs" else (-1000, 1000)
+                high_min, high_max = value(wave, "high_min_ns"), value(wave, "high_max_ns")
+                assert drive + decay_lo <= high_min <= high_max <= drive + decay_hi, (name, high_min, high_max)
+                period_min, period_max = value(wave, "period_min_ns"), value(wave, "period_max_ns")
+                assert period - 1000 <= period_min <= period_max <= period + 1000, (name, period_min, period_max)
                 windows = [r for r in entries("WINDOW") if r["case"] == name and value(r, "channel") == ch]
                 assert len(windows) == (pulses - 1) // 1000, (name, ch, windows)
                 for j, row in enumerate(windows):
@@ -80,6 +86,10 @@ def verify(path):
                     hi = elapsed(value(row, "last_hi"), value(row, "first_lo")) + 1
                     assert lower <= lo <= hi <= upper, (name, ch, row)
                     assert (lo, hi) == (value(row, "sum_lo"), value(row, "sum_hi"))
+                    if name in ("int", "frac"):
+                        assert lo <= period <= hi, (name, lo, hi)
+                        samples = elapsed(value(wave, "last"), value(wave, "first"))
+                        assert abs(samples - period * 10) <= 1, (name, samples)
             if name != "phase":
                 finish, = [r for r in entries("WAVE_END") if r["case"] == name]
                 assert value(finish, "pass") == 1 and value(finish, "elapsed") < 30_000_000

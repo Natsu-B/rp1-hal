@@ -68,11 +68,14 @@ struct Case {
     pulses: u32,
     side: bool,
     dirs: bool,
-    high_ns: u32,
+    drive_ns: u32,
     period_ns: u32,
     sum_low_us: u32,
     sum_high_us: u32,
 }
+
+// Delay from OE deassertion to the GPIO22 input threshold, including fixture uncertainty.
+const PINDIRS_DECAY_NS: (u32, u32) = (7_000, 12_000);
 
 const CASES: [Case; 7] = [
     Case {
@@ -83,7 +86,7 @@ const CASES: [Case; 7] = [
         pulses: 10000,
         side: false,
         dirs: false,
-        high_ns: 500_000,
+        drive_ns: 500_000,
         period_ns: 1_000_000,
         sum_low_us: 990_000,
         sum_high_us: 1_010_000,
@@ -96,7 +99,7 @@ const CASES: [Case; 7] = [
         pulses: 10000,
         side: false,
         dirs: false,
-        high_ns: 50_000,
+        drive_ns: 50_000,
         period_ns: 100_000,
         sum_low_us: 99_000,
         sum_high_us: 101_000,
@@ -109,10 +112,10 @@ const CASES: [Case; 7] = [
         pulses: 1001,
         side: false,
         dirs: false,
-        high_ns: 40_000,
+        drive_ns: 40_000,
         period_ns: 80_000,
-        sum_low_us: 79_200,
-        sum_high_us: 80_800,
+        sum_low_us: 79_965,
+        sum_high_us: 80_035,
     },
     Case {
         name: "frac",
@@ -122,10 +125,10 @@ const CASES: [Case; 7] = [
         pulses: 1001,
         side: false,
         dirs: false,
-        high_ns: 40_025,
+        drive_ns: 40_025,
         period_ns: 80_050,
-        sum_low_us: 79_250,
-        sum_high_us: 80_850,
+        sum_low_us: 80_015,
+        sum_high_us: 80_085,
     },
     Case {
         name: "side",
@@ -135,7 +138,7 @@ const CASES: [Case; 7] = [
         pulses: 1000,
         side: true,
         dirs: false,
-        high_ns: 50_000,
+        drive_ns: 50_000,
         period_ns: 100_000,
         sum_low_us: 99_000,
         sum_high_us: 101_000,
@@ -148,7 +151,7 @@ const CASES: [Case; 7] = [
         pulses: 1000,
         side: true,
         dirs: false,
-        high_ns: 50_000,
+        drive_ns: 50_000,
         period_ns: 100_000,
         sum_low_us: 99_000,
         sum_high_us: 101_000,
@@ -161,7 +164,7 @@ const CASES: [Case; 7] = [
         pulses: 1000,
         side: true,
         dirs: true,
-        high_ns: 50_000,
+        drive_ns: 40_000,
         period_ns: 100_000,
         sum_low_us: 99_000,
         sum_high_us: 101_000,
@@ -169,6 +172,15 @@ const CASES: [Case; 7] = [
 ];
 
 impl Case {
+    fn high_bounds_ns(self) -> (u32, u32) {
+        if self.dirs {
+            let (lo, hi) = PINDIRS_DECAY_NS;
+            (self.drive_ns + lo, self.drive_ns + hi)
+        } else {
+            (self.drive_ns - 1_000, self.drive_ns + 1_000)
+        }
+    }
+
     #[inline(never)]
     fn program(self) -> Program<32> {
         match self.name {
@@ -202,8 +214,7 @@ impl Case {
                 .program
             }
             "pindirs" => {
-                // The fixture's weak pull-down takes about 9 us to cross
-                // the input threshold after release. Drive for 40 us.
+                // Eight cycles of drive and twelve of release at 5 us/cycle.
                 pio_asm!(
                     ".side_set 1 pindirs",
                     "pull block side 0",
@@ -312,20 +323,26 @@ impl Edges {
         let high_max_ns = self.high_max.saturating_add(1).saturating_mul(100);
         let period_min_ns = self.period_min.saturating_sub(1).saturating_mul(100);
         let period_max_ns = self.period_max.saturating_add(1).saturating_mul(100);
-        // The weak pull-down discharges the PINDIRS fixture during Hi-Z.
-        let high_tolerance_ns = if case.dirs { 5_000 } else { 1_000 };
+        let (high_lo, high_hi) = case.high_bounds_ns();
         let mut pass = self.count == expected
-            && high_min_ns >= case.high_ns - high_tolerance_ns
-            && high_max_ns <= case.high_ns + high_tolerance_ns
+            && high_min_ns >= high_lo
+            && high_max_ns <= high_hi
             && period_min_ns >= case.period_ns - 1_000
             && period_max_ns <= case.period_ns + 1_000;
-        log!("PIO_B_WAVE case={} channel={channel} clkdiv={}:{} cycles={} edges={} first={} last={} high_min_ns={high_min_ns} high_max_ns={high_max_ns} period_min_ns={period_min_ns} period_max_ns={period_max_ns} quantum_ns=100\n",
-            case.name, case.integer, case.fraction, case.cycles, self.count, self.first.sample, self.last.sample).unwrap();
+        log!("PIO_B_WAVE case={} channel={channel} clkdiv={}:{} cycles={} drive_ns={} edges={} first={} last={} high_min_ns={high_min_ns} high_max_ns={high_max_ns} period_min_ns={period_min_ns} period_max_ns={period_max_ns} quantum_ns=100\n",
+            case.name, case.integer, case.fraction, case.cycles, case.drive_ns, self.count, self.first.sample, self.last.sample).unwrap();
         for window in 0..((case.pulses - 1) / 1000) as usize {
             let Window { first, last } = self.windows[window];
             let lo = last.lo.wrapping_sub(first.hi).saturating_sub(1);
             let hi = last.hi.wrapping_sub(first.lo).saturating_add(1);
-            pass &= lo >= case.sum_low_us && hi <= case.sum_high_us;
+            pass &= case.sum_low_us <= lo && lo <= hi && hi <= case.sum_high_us;
+            if matches!(case.name, "int" | "frac") {
+                // For 1,000 periods, nominal microseconds equal the period in ns.
+                // The PIO sampler distinguishes the settings to one 100 ns sample.
+                let samples = last.sample.wrapping_sub(first.sample);
+                pass &= lo <= case.period_ns && case.period_ns <= hi;
+                pass &= samples.abs_diff(case.period_ns * 10) <= 1;
+            }
             log!("PIO_B_WINDOW case={} channel={channel} i={window} intervals=1000 first_lo={} first_hi={} last_lo={} last_hi={} sum_lo={lo} sum_hi={hi}\n",
                 case.name, first.lo, first.hi, last.lo, last.hi).unwrap();
         }
@@ -334,6 +351,73 @@ impl Edges {
 }
 
 impl Bench {
+    pub fn calibrate(&mut self, pio: &PIO, timer: &Timer) -> LabResult<()> {
+        const PIN: u32 = 1 << 12;
+        const RIO_OUT_SET: usize = 0x400e_2000;
+        const RIO_OE_SET: usize = 0x400e_2004;
+        const RIO_OE_CLEAR: usize = 0x400e_3004;
+        const CTRL12: usize = 0x400d_0064;
+        const PAD12: usize = 0x400f_0034;
+        const OE_DISABLED: u32 = 2 << 14;
+        const RIO: u32 = 5;
+        const OUTPUT_PAD: u32 = 0x52; // IE, 4 mA, Schmitt, no pull.
+        const OD: u32 = 1 << 7;
+        fn write(address: usize, value: u32) {
+            unsafe { (address as *mut u32).write_volatile(value) }
+        }
+
+        if pad_state() != 0xf || self.gpio12.is_none() {
+            return Err("calibration pads");
+        }
+        let sample = pio.install(&sampler()).map_err(|_| "calibration install")?;
+        let (sm, mut rx, tx) = PIOBuilder::from_installed_program(&sample)
+            .clock_divisor_fixed_point(4, 0)
+            .jmp_pin(22)
+            .autopush(true)
+            .pins(Pins::new().input(self.gpio22.take().ok_or("gpio22")?, DOWN))
+            .build(self.sm2.take().ok_or("sm2")?)
+            .map_err(|_| "calibration build")?;
+        let sm = sm.start().map_err(|_| "calibration start")?;
+        write(RIO_OE_CLEAR, PIN);
+        write(RIO_OUT_SET, PIN);
+        write(PAD12, OUTPUT_PAD);
+        write(CTRL12, RIO);
+        // Only RIO drives GPIO12. The PIO sampler sees the same weakly pulled GPIO22.
+        let result = (|| {
+            for trial in 0..16 {
+                write(RIO_OE_SET, PIN);
+                let start = now(timer);
+                while now(timer).wrapping_sub(start) < 40 {}
+                let release_lo = now(timer);
+                write(RIO_OE_CLEAR, PIN);
+                let release_hi = now(timer);
+                let rise = rx.read().ok_or("calibration rise")?;
+                let mut fall_lo = release_hi;
+                let (fall_hi, fall) = loop {
+                    let before = now(timer);
+                    if let Some(fall) = rx.read() {
+                        break (now(timer), fall);
+                    }
+                    fall_lo = before;
+                    if before.wrapping_sub(release_hi) >= 100 {
+                        return Err("calibration fall timeout");
+                    }
+                };
+                log!("PIO_B_DECAY trial={trial} release_lo={release_lo} release_hi={release_hi} fall_lo={fall_lo} fall_hi={fall_hi} high_samples={}\n",
+                    rise.wrapping_sub(fall)).unwrap();
+            }
+            Ok(())
+        })();
+        write(RIO_OE_CLEAR, PIN);
+        write(PAD12, OUTPUT_PAD | OD);
+        write(CTRL12, OE_DISABLED | RIO);
+        let (sm, mut pins) = sm.stop().uninit(rx, tx);
+        self.sm2 = Some(sm);
+        self.gpio22 = pins.take();
+        sample.uninstall().map_err(|_| "calibration uninstall")?;
+        result
+    }
+
     pub fn check(&mut self, pio: &PIO, timer: &Timer) -> LabResult<()> {
         for case in CASES {
             self.single(pio, timer, case)?;

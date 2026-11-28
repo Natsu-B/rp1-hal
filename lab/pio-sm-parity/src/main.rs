@@ -88,7 +88,11 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
             run += 1;
             let start = now(&timer);
             log!("PIO_B_BEGIN run={run} start={start}\n").unwrap();
-            let result = check(&pio, &mut w, &timer);
+            let result = if cfg!(feature = "fixture-calibration") {
+                w.calibrate(&pio, &timer)
+            } else {
+                check(&pio, &mut w, &timer)
+            };
             let end = now(&timer);
             log!("PIO_B_END run={run} result={result:?} start={start} end={end} safety={:#x} dma={:#x} stack_free={}\n",
                 pad_state(), dma_enables(), watermark.free_bytes()).unwrap();
@@ -102,6 +106,7 @@ fn check(pio: &PIO, bench: &mut wave::Bench, timer: &Timer) -> LabResult<()> {
     if pad_state() != 0xf || dma_enables() != 0 {
         return Err("unsafe entry");
     }
+    fifo::echo_example(pio, &mut bench.sm0, timer)?;
     fifo::lifecycle(pio, &mut bench.sm0, timer)?;
     fifo::lifecycle(pio, &mut bench.sm1, timer)?;
     fifo::lifecycle(pio, &mut bench.sm2, timer)?;

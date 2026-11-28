@@ -9,6 +9,9 @@ name = "pio-sm-parity"
 test = false
 bench = false
 
+[features]
+fixture-calibration = []
+
 [dependencies]
 rp1-hal = { path = "../../rp1-hal", features = ["pio-asm"] }
 rp1-link = { path = "../../rp1-link" }
