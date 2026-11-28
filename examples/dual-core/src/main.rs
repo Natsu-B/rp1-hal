@@ -79,7 +79,6 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let bss = bss_check(0xb55_0000 | private);
     log!("proc0 ready private={} bss=0x{:x}\n", private, bss).unwrap();
     LOCAL.get(&core).set(1);
-    // SCLK/MOSI/MISO = GPIO11/10/9, GPIO8 as chip select.
     // v3 polls only this startup ID probe (one 100 ms deadline) to fit the ISRAM reply loop.
     let mut bus = p
         .spi0
@@ -100,34 +99,17 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
         .transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])
         .unwrap();
     log!("proc0 spi0 {frequency} Hz id={id:x?}\n").unwrap();
+    #[cfg(not(feature = "link-wake"))]
+    start_heartbeat(p.TIMER_ALARM0, &mut p.irq.TIMER_0);
+    p.proc1.launch(&mut core).unwrap();
     #[cfg(feature = "link-wake")]
     {
-        p.proc1.launch(&mut core).unwrap();
-        let mut context = p.wait_timer.thread_context().unwrap();
-        if rp1::link::enable(
-            &mut sys.pcie,
-            &mut p.irq.IO_BANK0,
-            &mut context,
-            startup_end,
-        )
-        .is_err()
-        {
-            park_after_startup_error();
-        }
+        ping_test::enable_startup(&mut sys.pcie, p.irq.IO_BANK0, p.wait_timer, startup_end);
+        start_heartbeat(p.TIMER_ALARM0, &mut p.irq.TIMER_0);
     }
-
-    let mut alarm = p.TIMER_ALARM0;
-    alarm.enable_interrupt();
-    alarm.try_arm(next_tick()).unwrap();
-    ALARM0.put(alarm).ok().unwrap();
-    p.irq.TIMER_0.enable();
-
     #[cfg(not(feature = "link-wake"))]
-    {
-        p.proc1.launch(&mut core).unwrap();
-        rp1::link::enable(&mut sys.pcie, &mut p.TIMER_ALARM1, &mut p.irq.TIMER_1)
-            .expect("SHM enable failed");
-    }
+    rp1::link::enable(&mut sys.pcie, &mut p.TIMER_ALARM1, &mut p.irq.TIMER_1)
+        .expect("SHM enable failed");
 
     let mut rx = VALUES.consumer(&mut core);
     let mut logged = 0;
@@ -156,9 +138,18 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     }
 }
 
+fn start_heartbeat(
+    mut alarm: Alarm<0>,
+    irq: &mut interrupt::Binding<interrupt::AlarmIrq<0>, 26, 0>,
+) {
+    alarm.enable_interrupt();
+    alarm.try_arm(next_tick()).unwrap();
+    ALARM0.put(alarm).ok().unwrap();
+    irq.enable();
+}
+
 #[entry(proc1)]
-#[allow(unused_mut)]
-fn main1(mut core: Proc1, mut p: rp1::Proc1Resources) -> ! {
+fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     #[cfg(feature = "link-wake")]
     let startup_end = rp1_hal::timer::Deadline::after(10.secs()).unwrap();
     let private = PRIVATE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -185,26 +176,15 @@ fn main1(mut core: Proc1, mut p: rp1::Proc1Resources) -> ! {
     #[cfg(feature = "ping-poll")]
     let link = p.link.open().expect("link open failed");
     #[cfg(feature = "link-wake")]
-    {
-        let mut context = p.wait_timer.thread_context().unwrap();
-        let Ok(link) = p
-            .link
-            .open_until(&mut p.irq.IO_BANK0, &mut context, startup_end)
-        else {
-            park_after_startup_error()
-        };
-        ping_test::run_wake(link, p.host_irq);
-    }
+    ping_test::open_and_run(
+        p.link,
+        p.irq.IO_BANK0,
+        p.wait_timer,
+        startup_end,
+        p.host_irq,
+    );
     #[cfg(not(feature = "link-wake"))]
     run_link(link)
-}
-
-#[cfg(feature = "link-wake")]
-fn park_after_startup_error() -> ! {
-    // Leave the committed startup diagnosis visible to Linux.
-    loop {
-        rp1_rt::wait_for_event();
-    }
 }
 
 #[cfg(not(feature = "link-wake"))]

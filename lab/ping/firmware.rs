@@ -21,6 +21,12 @@ struct Idle {
 use {
     crate::rp1,
     core::sync::atomic::{AtomicBool, Ordering},
+    rp1_hal::{
+        platform::Pcie,
+        timer::{Deadline, WaitTimer},
+    },
+    rp1_link::notify::VectorOwner,
+    rp1_rt::interrupt::{Bank0Irq, Binding},
 };
 #[cfg(feature = "link-wake")]
 struct PanicFlag(AtomicBool);
@@ -140,8 +146,44 @@ fn now() -> u32 {
 }
 
 #[cfg(feature = "link-wake")]
+pub fn enable_startup(
+    pcie: &mut Pcie,
+    mut irq: Binding<Bank0Irq, 0, 0>,
+    mut timer: WaitTimer,
+    end: Deadline,
+) {
+    let mut context = timer.thread_context().unwrap();
+    if rp1::link::enable(pcie, &mut irq, &mut context, end).is_err() {
+        park_after_startup_error();
+    }
+}
+
+#[cfg(feature = "link-wake")]
+pub fn open_and_run(
+    link: rp1::link::Proc1LinkInit,
+    mut irq: Binding<Bank0Irq, 0, 1>,
+    mut timer: WaitTimer,
+    end: Deadline,
+    owner: VectorOwner,
+) -> ! {
+    let mut context = timer.thread_context().unwrap();
+    match link.open_until(&mut irq, &mut context, end) {
+        Ok(link) => run_wake(link, owner),
+        Err(_) => park_after_startup_error(),
+    }
+}
+
+#[cfg(feature = "link-wake")]
+fn park_after_startup_error() -> ! {
+    // Leave the committed startup diagnosis visible to Linux.
+    loop {
+        rp1_rt::wait_for_event();
+    }
+}
+
+#[cfg(feature = "link-wake")]
 #[rp1_rt::isram]
-pub fn run_wake(link: rp1::link::Proc1Link, owner: rp1_link::notify::VectorOwner) -> ! {
+fn run_wake(link: rp1::link::Proc1Link, owner: VectorOwner) -> ! {
     use rp1_link::Progress;
 
     let mut ping = link.ping;
