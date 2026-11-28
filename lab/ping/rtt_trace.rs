@@ -94,17 +94,15 @@ impl Trace {
         {
             println!("RTT_STATUS {line}");
         }
-        // SAFETY: sched_param contains only integers and timespecs.
-        let mut parameter: libc::sched_param = unsafe { std::mem::zeroed() };
-        // SAFETY: zero selects the calling thread and parameter is writable storage.
-        let policy = unsafe { libc::sched_getscheduler(0) };
-        if policy < 0 || unsafe { libc::sched_getparam(0, &mut parameter) } != 0 {
+        // Use Linux's one-int sched_param ABI. The musl sched_getparam wrapper
+        // may return ENOSYS instead of issuing the Linux syscall.
+        let mut priority: libc::c_int = 0;
+        // SAFETY: zero selects the calling thread and priority is writable.
+        let policy = unsafe { libc::syscall(libc::SYS_sched_getscheduler, 0) };
+        if policy < 0 || unsafe { libc::syscall(libc::SYS_sched_getparam, 0, &mut priority) } != 0 {
             return Err(io::Error::last_os_error().into());
         }
-        println!(
-            "RTT_TASK pid={pid} policy={policy} priority={}",
-            parameter.sched_priority
-        );
+        println!("RTT_TASK pid={pid} policy={policy} priority={priority}");
         // Linux's Instant and tracefs's mono clock both use CLOCK_MONOTONIC.
         // Bracket the anchor to bound timestamp alignment error.
         let lower = clock(libc::CLOCK_MONOTONIC)?;
