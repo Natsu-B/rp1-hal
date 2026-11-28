@@ -7,7 +7,10 @@ use alloc::{
     string::String,
     vec::Vec,
 };
-use rp1_proto::note::{self, Note};
+use rp1_proto::{
+    board::{PIO_DREQ_FIRST, PIO_DREQ_LAST, PIO_IRQ0, PIO_IRQ1},
+    note::{self, Note},
+};
 
 /// What the loader does when an enabled Linux node conflicts with RP1 ownership
 /// (`/rp1-firmware/rp1,on-conflict`).
@@ -24,10 +27,10 @@ pub enum OnConflict {
 /// It maps every bank-0 pin's registers, so it cannot be restricted per pin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Gpiomem {
-    /// Disable it whenever RP1 owns a pin (default).
+    /// Disable it whenever RP1 owns a pin or PIO (default).
     #[default]
     Disable,
-    /// Leave it enabled.
+    /// Leave it enabled. A PIO claim requires `Disable`.
     Keep,
 }
 
@@ -93,7 +96,9 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
         .value;
     let mut conflicts = node_conflicts(after, own)?;
     let mut gpiomem = BTreeSet::new();
-    if !conflicts.pins.is_empty() && policy.gpiomem == Gpiomem::Disable {
+    let direct_pio = conflicts.blocks.contains(&PIO_BLOCK);
+    // Raw GPIO writes could route pads to PIO behind the final-DT pinmux checks.
+    if direct_pio || (!conflicts.pins.is_empty() && policy.gpiomem == Gpiomem::Disable) {
         for n in (0..after.nodes.len()).filter(|n| after.enabled(*n)) {
             if after
                 .strings(n, "compatible")
@@ -146,7 +151,7 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
     let protected = if conflicts.nodes.is_empty() {
         BTreeMap::new()
     } else {
-        let (protected, console) = protected_nodes(after, conflicts.blocks.contains(&PIO_BLOCK))?;
+        let (protected, console) = protected_nodes(after, direct_pio)?;
         if let Some(why) = console
             && conflicts.nodes.iter().any(|(n, r)| !policy_only(n, r))
         {
@@ -762,6 +767,7 @@ fn pio_conflicts(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
         let compat = fdt.strings(n, "compatible");
         let stock_firmware =
             stock.contains(&Some(n)) || compat.iter().any(|c| c == "raspberrypi,rp1-firmware");
+        // Defence in depth: disabling rp1_pio also blocks in-kernel pio_open() clients.
         let client = compat.iter().any(|c| {
             c.strip_prefix("raspberrypi,").is_some_and(|c| {
                 c == "rp1-pio" || c.ends_with("-pio-rp1") || c.starts_with("rp1-pio-")
@@ -787,7 +793,7 @@ fn pio_conflicts(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
             ));
         }
         for (prop, irq) in irq_lines(fdt, n, rp1, "rp1", &mut out.unresolved)? {
-            if matches!(irq, 50 | 51) {
+            if matches!(irq, PIO_IRQ0 | PIO_IRQ1) {
                 out.unresolved
                     .push(format!("{} {prop} uses PIO IRQ {irq}", fdt.path(n)));
             }
@@ -844,7 +850,7 @@ fn provider_consumers(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
                     let [request] = values[at..at + count] else {
                         return Err("rp1_dma must have #dma-cells = <1>".into());
                     };
-                    if (56..=63).contains(&request) {
+                    if (PIO_DREQ_FIRST..=PIO_DREQ_LAST).contains(&request) {
                         out.unresolved
                             .push(format!("{} dmas uses PIO DREQ {request}", fdt.path(n)));
                     }

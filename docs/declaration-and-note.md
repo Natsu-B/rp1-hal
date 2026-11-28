@@ -423,7 +423,7 @@ overlay は ELF の `.rp1.dtbo` セクション（非ロード）に入れ、ロ
      割り当て時にそのピンのイベント設定を書き換える）
    - RP1 所有ブロックのノードが enabled のまま（後の overlay が有効に戻した）
    - `/dev/gpiomem0` のノード（`compatible = "raspberrypi,gpiomem"`、reg が RP1 の `0xc0_400d0000`）。`linux.gpiomem = "disable"`
-     （既定）で、RP1 がピンを 1 本でも持つとき。衝突ではなく方針なので、`check --dtb` は表示だけ
+     （既定）で、RP1 がピンを 1 本でも持つか PIO を所有するとき。衝突ではなく方針なので、`check --dtb` は表示だけ
    rp1_gpio を指す指定子は厳格に読み、壊れていればエラーで停止する。他のコントローラ宛ての読めない指定子は読み飛ばす（Linux も
    無視する）。ただし読めない部分に rp1_gpio の phandle 値が現れるときは拒否する。
 4. 方針（`/rp1-firmware` の `rp1,on-conflict`、宣言の `linux.on_conflict`）で決める:

@@ -45,7 +45,7 @@ pub fn reserved_gpios(dtb: &Path) -> Result<std::collections::BTreeSet<u32>> {
 
 /// Stock-enabled RP1 nodes that need the stock RP1 firmware's mailbox service (`rp1_firmware`),
 /// which rp1-hal does not implement (disabled when RP1 is the clock authority).
-pub const BOARD_NEEDS_STOCK_FIRMWARE: &[&str] = &["rp1_pio"];
+pub const BOARD_NEEDS_STOCK_FIRMWARE: &[&str] = &[rp1_proto::board::PIO_LABEL];
 /// Consumers of RP1 clocks and the SCMI clock IDs (rp1_hal::scmi::id) for each `clocks` cell, in
 /// the stock order (DOC: bcm2712-rpi-cm5 DT / rp1.dtsi). Nodes whose clocks rp1-hal does not serve
 /// (csi, dsi, vec, dpi, mmc: video PLL, MIPI and SDIO clocks) keep `&rp1_clocks` and cannot probe.
@@ -135,6 +135,9 @@ pub(crate) fn dts_with_layout(d: &Declaration, note: &[u8], shm: &ShmLayout<'_>)
     for i in d.owned_instances() {
         // The RP1 clock overlay already disables the stock PIO node.
         if i.kind == crate::board::Kind::Pio {
+            debug_assert!(
+                d.clock.authority == "rp1" && BOARD_NEEDS_STOCK_FIRMWARE.contains(&i.label)
+            );
             continue;
         }
         fragment(

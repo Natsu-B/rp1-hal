@@ -49,6 +49,12 @@ pub mod link {
 pub mod board {
     /// Stock PIO stays protected unless a validated direct-control NOTE claims the block.
     pub const PIO_LABEL: &str = "rp1_pio";
+    /// RP1 hwirqs for the two PIO interrupt outputs.
+    pub const PIO_IRQ0: u32 = 50;
+    pub const PIO_IRQ1: u32 = 51;
+    /// DMAC request IDs, alternating TX and RX for each SM starting at SM0 TX.
+    pub const PIO_DREQ_FIRST: u32 = 56;
+    pub const PIO_DREQ_LAST: u32 = 63;
 
     /// RP1 blocks Linux needs on rpi-cm5, with the board DT labels of their Linux nodes.
     pub const LINUX_BLOCKS: &[(&str, &str)] = &[

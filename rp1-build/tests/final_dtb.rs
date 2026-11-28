@@ -790,6 +790,31 @@ fn pio_final_tree_enforces_direct_control() {
 }
 
 #[test]
+fn pio_disables_rp1_gpiomem_without_pin_claims() {
+    use rp1_dt::check::{Plan, Policy, apply_plan, resolve};
+
+    let d: Declaration = toml::from_str(
+        "schema=2\n[linux]\non_conflict='refuse'\ngpiomem='disable'\n[proc1]\npio={sms=[0]}",
+    )
+    .unwrap();
+    let source = format!(
+        "{BASE}\n{GPIOMEM}\n/ {{ gpiomem@1000 {{ compatible = \"raspberrypi,gpiomem\"; reg = <0 0x1000 0x1000>; }}; }};"
+    );
+    let (mut fdt, note) = apply_declaration(&d, &source);
+    assert!(rp1_dt::check::reserved_gpios(&fdt).unwrap().is_empty());
+    let rp1_gpiomem = fdt.find("/gpiomem@c0400d0000").unwrap();
+    let other_gpiomem = fdt.find("/gpiomem@1000").unwrap();
+    assert!(fdt.enabled(rp1_gpiomem) && fdt.enabled(other_gpiomem));
+    let policy = Policy::from_fdt(&fdt).unwrap();
+    let plan = resolve(&fdt, &note, policy).unwrap();
+    assert!(matches!(&plan, Plan::Disable(nodes)
+        if nodes.len() == 1 && nodes[0].policy_only && nodes[0].path == "/gpiomem@c0400d0000"));
+    apply_plan(&fdt.clone(), &mut fdt, &note, policy, &plan).unwrap();
+    assert!(!fdt.enabled(rp1_gpiomem));
+    assert!(fdt.enabled(other_gpiomem));
+}
+
+#[test]
 fn pio_stays_protected_without_a_pio_claim() {
     use rp1_dt::check::{Plan, Policy, resolve};
 
