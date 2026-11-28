@@ -20,3 +20,6 @@ panic = "abort"
 
 [profile.release.package.pio-sm-parity]
 opt-level = "z"
+
+[profile.release.package.pio-irq-parity]
+opt-level = "z"
