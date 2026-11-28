@@ -217,13 +217,13 @@ impl<P: CompletePins<N>, const CORE: u8, const N: u8> Blocking<'_, N, P, CORE> {
 
     fn flush_admitted(&mut self, end: Deadline) -> Result<(), Error> {
         let mut io = self.spi.io();
-        let result = flush::<CORE, N>(
-            self.timer,
-            &mut io,
-            end,
-            self.spi.bits,
-            self.spi.frequency().raw(),
-        );
+        let bits = self.spi.bits;
+        let hz = self.spi.frequency().raw();
+        let result = if CORE == 0 {
+            flush(irq_state0::<N>(), self.timer, &mut io, end, bits, hz)
+        } else {
+            flush(irq_state1::<N>(), self.timer, &mut io, end, bits, hz)
+        };
         if result.is_err() {
             let _ = self.spi.cancel_with(&mut io);
         }
@@ -277,7 +277,11 @@ impl<P: CompletePins<N>, const CORE: u8, const N: u8> Blocking<'_, N, P, CORE> {
     }
 }
 
-fn flush<const CORE: u8, const N: u8>(
+// Keep the post-alarm probe and return on the core-local path. A shared
+// implementation avoids adding an ISRAM copy for each controller.
+#[rp1_rt::isram]
+fn flush<const CORE: u8>(
+    irq: &IrqState<CORE>,
     timer: &mut WaitTimer,
     io: &mut Mmio,
     end: Deadline,
@@ -290,7 +294,7 @@ fn flush<const CORE: u8, const N: u8>(
         return Ok(());
     }
     let empty = if status & sr::TFE == 0 {
-        wait_for_irq::<N, CORE>(timer, io, int::TXEI, end)?
+        wait_device(irq, timer, io, int::TXEI, end)?
     } else {
         io.now_low()
     };
@@ -300,7 +304,7 @@ fn flush<const CORE: u8, const N: u8>(
     flush_tail(timer, io, end, bits, hz, empty)
 }
 
-#[rp1_rt::isram]
+#[inline(always)]
 fn flush_tail(
     timer: &mut WaitTimer,
     io: &mut Mmio,
@@ -332,6 +336,7 @@ fn flush_tail(
     }
 }
 
+#[inline(always)]
 fn wire_idle(io: &mut impl Io) -> Result<bool, Error> {
     error(io.read(RISR))?;
     Ok(io.read(SR) & IDLE == sr::TFE)
