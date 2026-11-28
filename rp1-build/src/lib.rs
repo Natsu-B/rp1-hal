@@ -348,7 +348,7 @@ fn resources(
     }
     if experimental_wake || !shm.regions.is_empty() {
         s.push_str("pub mod link {\n");
-        s.push_str(&link::generate(shm, note, wake)?);
+        s.push_str(&link::generate(d, shm, note, wake)?);
         s.push_str("}\n");
     }
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
@@ -566,9 +566,14 @@ fn resources(
                 name, irq, owner, ..
             } = line;
             let source = owner.source_type();
+            let priority = if doorbell && *irq == 0 {
+                ", { ::rp1_rt::interrupt::priority::DOORBELL }"
+            } else {
+                ""
+            };
             writeln!(
                 s,
-                "pub type {name} = ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::{source}, {irq}, {index}>;"
+                "pub type {name} = ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::{source}, {irq}, {index}{priority}>;"
             )?;
         }
         writeln!(

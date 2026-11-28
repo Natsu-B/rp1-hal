@@ -41,7 +41,7 @@ __rp1_setup_exceptions:
     cpsie f
     dsb sy
     isb sy
-    movs r2, #32
+    movs r2, #{fault_priority}
     strb r2, [r1, #12]  // SHPR1: MemManage, BusFault and UsageFault at priority 1.
     strb r2, [r1, #13]
     strb r2, [r1, #14]
@@ -75,7 +75,8 @@ __rp1_setup_exceptions:
     .word 0x10004000
     .word __rp1_reset1
     system_exceptions
-"#
+"#,
+    fault_priority = const crate::interrupt::priority::encode(crate::interrupt::priority::FAULT),
 );
 
 unsafe extern "C" {

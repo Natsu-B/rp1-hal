@@ -321,7 +321,7 @@ fn pending_channel_is_served_once_and_other_channels_survive() {
             Op::Read(PROC_GATE, 0x8000),
             Op::Write(PROC_GATE, 0x8001),
             Op::Read(PROC_GATE, 0x8001),
-            Op::Write(IPR, 1 << 5),
+            Op::Write(IPR, 6 << 5),
             Op::Write(ICPR, IRQ_BIT),
             Op::Write(ISER, IRQ_BIT),
             Op::Read(PROC_EVENTS, u32::MAX),

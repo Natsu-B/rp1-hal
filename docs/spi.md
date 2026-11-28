@@ -181,15 +181,15 @@ timeouts, shifter idle and sensed CS levels with the RP1 timer.
 an optional wire CSV from a bench with a MOSI/MISO loopback and a sample rate
 of at least 100 MS/s. The measurements below used the previous polling driver.
 
-STATIC. Lower priority numbers preempt higher ones. The managed SPI IRQ
-and the wait alarm run at priority 4. On proc0, PCIE_OUT (IRQ53, priority 0)
-and SCMI (IRQ57, priority 1) can preempt SPI and thread mode. The lab's
-3 µs idle-to-return gate excludes time spent in those platform handlers. The
-lab brackets shifter idle on proc1 and stamps proc0 ISR entry and exit.
-Only handler time overlapping the idle-to-return window is credited, with
-nested time counted once.
+STATIC. The managed SPI IRQ and wait alarm run at priority 4 and can preempt
+SCMI (IRQ57, priority 6). IRQ53 still preempts device ISRs.
+For a bounded proc0 thread continuation, see
+[the priority model](interrupts.md#優先度).
+The lab brackets shifter idle on proc1 and stamps proc0 ISR entry and exit.
+The 3 µs idle-to-return gate credits only platform-handler time overlapping
+the idle-to-return window, counting nested time once.
 
-HW (2026-11). SCMI reached 39 µs in the initial stamped boot cohort.
+HW (2026-11, former IRQ57 priority 1). SCMI reached 39 µs in the initial stamped boot cohort.
 One SPI0 1 MHz trial had a 10 µs upper bound with 7 µs of SCMI overlap.
 IRQ53 was enabled and recorded zero entries. The original 17 µs SPI3
 sample predates the ISR stamps. In the expanded trace, 409 of 1,000 SPI3

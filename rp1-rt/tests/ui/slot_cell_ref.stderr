@@ -12,5 +12,5 @@ note: required because it appears within the type `Option<&'static Cell<u32>>`
   |
   | pub enum Option<T> {
   |          ^^^^^^
-  = note: required for `Slot<Option<&'static Cell<u32>>, 0>` to implement `Sync`
+  = note: required for `Slot<Option<&'static Cell<u32>>, 0, 4>` to implement `Sync`
   = note: shared static variables must have a type that implements `Sync`

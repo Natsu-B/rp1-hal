@@ -11,7 +11,7 @@ use core::{
 /// any change to its priority. A more urgent level IRQ that tries to borrow a busy slot
 /// may keep firing without being acknowledged.
 /// Keep the closure bounded so other handlers at the masked priorities can run.
-pub struct Slot<T, const CORE: u8, const CEILING: u8 = 4> {
+pub struct Slot<T, const CORE: u8, const CEILING: u8 = { super::priority::DEVICE }> {
     value: UnsafeCell<T>,
     busy: AtomicBool,
 }
@@ -37,7 +37,7 @@ impl<T, const CORE: u8, const CEILING: u8> Slot<T, CORE, CEILING> {
         const {
             assert!(CORE < 2, "Slot core must be 0 or 1");
             assert!(
-                CEILING >= 2 && CEILING <= 7,
+                CEILING >= super::priority::CONTROL_MIN && CEILING <= super::priority::LOWEST,
                 "Slot ceiling must be in 2..=7"
             );
         }
@@ -45,6 +45,17 @@ impl<T, const CORE: u8, const CEILING: u8> Slot<T, CORE, CEILING> {
             value: UnsafeCell::new(value),
             busy: AtomicBool::new(false),
         }
+    }
+
+    /// Declare a control priority whose handler may borrow this slot.
+    pub const fn control_priority<const P: u8>() -> super::Priority {
+        const {
+            assert!(
+                P >= CEILING,
+                "control priority must respect the Slot ceiling"
+            )
+        };
+        super::Priority::control::<P>()
     }
 
     /// Run a closure with exclusive access. The borrow ends before this method returns.

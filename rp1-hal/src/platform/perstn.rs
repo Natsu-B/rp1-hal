@@ -27,7 +27,7 @@ const ISPR: usize = ISER + 0x100;
 const ICPR: usize = ISER + 0x180;
 const IPR: usize = 0xe000_e400 + IRQ;
 const VTOR: usize = 0xe000_ed08;
-const PRIORITY: u8 = 0;
+const PRIORITY: u8 = rp1_rt::interrupt::priority::encode(rp1_rt::interrupt::priority::PCIE_RESET);
 /// PCIE_INTR / INTE bit 1: a PERSTn edge.
 pub(crate) const PERSTN_EDGE: u32 = 1 << 1;
 const MAX_SPURIOUS: u32 = 16;

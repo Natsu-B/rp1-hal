@@ -9,7 +9,9 @@ use model::{basepri, set_basepri, set_basepri_max};
 #[inline(always)]
 pub unsafe fn __basepri_acquire() -> u8 {
     let saved = basepri();
-    set_basepri_max(2 << 5);
+    set_basepri_max(crate::interrupt::priority::encode(
+        crate::interrupt::priority::CONTROL_MIN,
+    ));
     saved
 }
 
@@ -27,7 +29,7 @@ impl SlotMask {
     #[inline(always)]
     pub(crate) fn raise<const CEILING: u8>() -> Self {
         let saved = basepri();
-        set_basepri_max(CEILING << (8 - crate::pac::NVIC_PRIO_BITS));
+        set_basepri_max(crate::interrupt::priority::encode(CEILING));
         #[cfg(all(target_arch = "arm", target_os = "none"))]
         crate::cpu::sync();
         #[cfg(all(target_arch = "arm", target_os = "none", feature = "slot-mask-timing"))]
@@ -134,5 +136,43 @@ mod model {
             }
             assert_eq!(basepri(), initial);
         }
+    }
+
+    #[test]
+    fn device_ceiling_preserves_control_and_link_loss_delivery() {
+        use super::{__basepri_acquire, __basepri_release};
+        use crate::interrupt::{__with_scmi_masked, Slot, priority::*};
+
+        fn eligible(priority: u8) -> bool {
+            basepri() == 0 || encode(priority) < basepri()
+        }
+
+        let device = Slot::<_, 0, DEVICE>::new(());
+        set_basepri(0);
+        device.try_with(|_| {
+            assert!(eligible(PCIE_RESET));
+            assert!(eligible(FAULT));
+            assert!(eligible(CONTROL_MIN));
+            assert!(!eligible(DEVICE));
+            assert!(!eligible(DOORBELL));
+            assert!(!eligible(SCMI));
+            __with_scmi_masked(|| assert_eq!(basepri(), 0x80));
+        });
+        __with_scmi_masked(|| {
+            assert!(eligible(PCIE_RESET));
+            assert!(eligible(DEVICE));
+            assert!(eligible(DOORBELL));
+            assert!(!eligible(SCMI));
+            // Exercise the target BASEPRI implementation through the host mask model.
+            unsafe {
+                let saved = __basepri_acquire();
+                assert!(eligible(PCIE_RESET));
+                assert!(eligible(FAULT));
+                assert!(!eligible(CONTROL_MIN));
+                __basepri_release(saved);
+            }
+            assert_eq!(basepri(), 0xc0);
+        });
+        assert_eq!(basepri(), 0);
     }
 }

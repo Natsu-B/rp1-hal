@@ -16,15 +16,46 @@ STATIC（`rp1-rt`）:
   `#[interrupt(proc1, sram)]` で共有 SRAM に置く。1 コアに同じ線を 2 回定義するとリンクエラー。
 - ハンドラの無い線は既定ハンドラに入り、その線を NVIC で無効にして戻る。`interrupt::unhandled()` が
   最後の IRQ 番号と回数を返す。
-- 優先度は `Priority` で 2〜7（既定 4）。0 と 1 はシステム用（PCIe・SCMI）に空けてある。
-- 既定の `interrupt::free` は BASEPRI でそのコアの利用者割り込み（優先度 2〜7）をマスクし、
-  抜けるときに元の値を復元する。システム割り込みや fault のハンドラは利用者の `Mutex` に触れない。
+- 既定の `interrupt::free` は BASEPRI でそのコアの優先度 2〜7 をマスクし、抜けるときに元の値を復元する。
+  優先度 0 の IRQ53 と優先度 1 の fault は利用者の `Mutex` に触れない。
   マスク区間は 100 µs 未満に保ち、コア間のデータは `rp1_rt::sync` の型を使う。
 - `critical-section-primask` を選ぶと、システム割り込みも遅れ、区間中の構成可能 fault は HardFault になる。
   その場合、プラットフォームの遅延目標と fault 後のサービス継続は保証されない。panic ハンドラが停止前に
   PRIMASK を解除すれば panic の封じ込めは可能。bare-metal ARM の復元状態は独自実装を含めて `u8`。
 - `log!` はハンドラの中ではロックを待たない。取れなければその行を捨てて数える。取れたときは
   UART が空くのを 1 バイトずつポーリングして同期送信するので、長い行はハンドラを長引かせる。
+
+### 優先度
+
+STATIC。数値が小さいほど先に実行される。各コアの NVIC は独立。
+
+| 優先度 | コアと割り込み | 役割 |
+| --- | --- | --- |
+| 0 | proc0 PCIE_OUT (53) | PERSTn 検出時に共有窓を Lost として公開 |
+| 1 | 両コアの構成可能 fault | 終端の記録と封じ込め |
+| 2–4 | 宣言したコアの制御 IRQ | 例: 周期アラーム、PWM |
+| 4 | 所有コアの wait alarm、生成 UART/SPI/I²C/ADC ハンドラ、raw IRQ の既定値 | deadline 通知とデバイス待機の解除 |
+| 5 | 所有コアの生成 IO_BANK0 (0) | Linux からのドアベルを ack し、スレッドを起こす |
+| 6 | proc0 PROC_MISC (57) | SCMI クロック要求を処理して Linux に応答 |
+| 2–7 | 所有コアのアプリ独自 IRQ | `Priority::new` で選択 |
+
+`Priority::control::<P>()` は 2〜4 を検査する。`Binding::set_slot_priority::<P, _, _>(&slot)`
+は加えて `P >= CEILING` と同一コアを検査する。複数の Slot を参照するハンドラは全ての ceiling
+を満たす。生成デバイス IRQ とその Slot の ceiling は共に 4。
+BASEPRI に論理優先度 4 を設定すると、4–7 が保留される。
+既定ドアベルの優先度は固定。独自 IO_BANK0 ハンドラはアプリが優先度と実行時間を管理する。
+Linux 宛て MSI-X は RP1 NVIC の IRQ を増やさない。
+
+IRQ53 は優先度 0 で PCIe エッジ配送を止め、`SHM_WINDOW_LOST` を発行する。
+Lost 公開前に新規アクセスを許す区間を伸ばさないため、制御 IRQ より上に置く。
+Lost はソフトウェアの利用停止通知で、IRQ53 は outbound iATU を書き換えない。
+窓公開時の短い PRIMASK 区間は IRQ53 も保留する。新しいホストとの復旧には RP1 の再ロードが必要。
+
+SCMI は IRQ57 内で全処理する。制御・デバイス ISR は IRQ57 に割り込める。
+スレッドの継続を遅延させたくない場合は、短いデバイス待機から継続までを
+`platform::with_scmi_deferred` で囲む。IRQ57 だけを保留し、出口で配送を再開する。
+Linux の応答が必要な処理はスコープの外に置き、連続呼び出しの間に SCMI が実行できる時間を残す。
+スタックの見積もりには IRQ57 と、そこへネストする制御・デバイス IRQ を含める。
 
 ## 2. 所有
 

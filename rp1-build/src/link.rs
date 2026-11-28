@@ -2,13 +2,14 @@
 
 use crate::{
     Result,
-    metadata::{Endpoint, Pair, ShmLayout},
+    metadata::{Declaration, Endpoint, Pair, ShmLayout},
 };
 use rp1_proto::note::{ShmKind, ShmRegion, Writer};
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
 pub(crate) fn generate(
+    declaration: &Declaration,
     shm: &ShmLayout<'_>,
     note: &[u8],
     wake: Option<rp1_proto::note::LinkWake>,
@@ -73,7 +74,7 @@ pub(crate) fn generate(
             writeln!(
                 output,
                 "/// Wait for the startup doorbell and commit the link result by `end`.\n\
-                 pub fn enable(pcie: &mut Pcie, startup_doorbell: &mut generated::Binding<generated::Bank0Irq, 0, 0>, context: &mut ::rp1_hal::timer::WaitContext<'_>, end: ::rp1_hal::timer::Deadline) -> Result<u32, ::rp1_link::StartupEnableError> {{\n\
+                 pub fn enable(pcie: &mut Pcie, startup_doorbell: &mut generated::Binding<generated::Bank0Irq, 0, 0, {{ ::rp1_rt::interrupt::priority::DOORBELL }}>, context: &mut ::rp1_hal::timer::WaitContext<'_>, end: ::rp1_hal::timer::Deadline) -> Result<u32, ::rp1_link::StartupEnableError> {{\n\
                      let layout = generated::StartupLayout {{ area: AREA, regions: &REGIONS, digest: &DIGEST }};\n\
                      unsafe {{ generated::enable_v3(pcie, startup_doorbell, context, end, layout, || ::rp1_link::notify::__kick_startup_owner::<{pin}, {}>()) }}\n\
                  }}",
@@ -127,7 +128,11 @@ pub(crate) fn generate(
         };
         writeln!(output, "pub type {alias} = {ty};")?;
     }
-    for core in 0..2 {
+    for (core, config) in [&declaration.proc0, &declaration.proc1]
+        .into_iter()
+        .enumerate()
+    {
+        let core = core as u8;
         let owned: Vec<_> = shm
             .endpoints
             .iter()
@@ -139,7 +144,15 @@ pub(crate) fn generate(
                 .regions
                 .iter()
                 .any(|region| region.receives_doorbell(core));
-            write_core(&mut output, core, &regions, &owned, irq, experimental_wake)?;
+            let doorbell = irq.then_some(config.custom_doorbell_handler);
+            write_core(
+                &mut output,
+                core,
+                &regions,
+                &owned,
+                doorbell,
+                experimental_wake,
+            )?;
         }
     }
     Ok(output)
@@ -289,7 +302,7 @@ fn write_core(
     core: u8,
     regions: &[ShmRegion<'_>],
     endpoints: &[(&Endpoint<'_>, &String)],
-    irq: bool,
+    doorbell: Option<bool>,
     v3: bool,
 ) -> Result<()> {
     writeln!(
@@ -318,13 +331,21 @@ fn write_core(
          impl Proc{core}LinkInit {{\n\
          pub(super) const fn new() -> Self {{ Self {{ _core: ::core::marker::PhantomData }} }}",
     )?;
-    if v3 {
-        let irq_arg = if irq {
-            format!("irq: &mut generated::Binding<generated::Bank0Irq, 0, {core}>, ")
+    let irq_arg = doorbell.map(|custom| {
+        let priority = if custom {
+            ""
         } else {
-            String::new()
+            ", { ::rp1_rt::interrupt::priority::DOORBELL }"
         };
-        let enable = if irq { "irq.enable();" } else { "" };
+        format!(
+            "irq: &mut ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, {core}{priority}>"
+        )
+    });
+    if v3 {
+        let (irq_arg, enable) = match &irq_arg {
+            Some(arg) => (format!("{arg}, "), "irq.enable();"),
+            None => (String::new(), ""),
+        };
         writeln!(
             output,
             "/// Wait for the window using this core's one-shot deadline.\n\
@@ -333,12 +354,12 @@ fn write_core(
                  generated::open_until(self, context, end, Self::try_open)\n\
              }}"
         )?;
-    } else if irq {
+    } else if let Some(irq_arg) = irq_arg {
         writeln!(
             output,
             "/// Enable the doorbell and sleep in thread mode until proc0 publishes the window.\n\
              /// A custom IO_BANK0 handler must acknowledge the doorbell and signal an event.\n\
-             pub fn open(self, irq: &mut ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, {core}>) -> Result<Proc{core}Link, OpenError<::core::convert::Infallible>> {{\n\
+             pub fn open(self, {irq_arg}) -> Result<Proc{core}Link, OpenError<::core::convert::Infallible>> {{\n\
                  irq.enable();\n\
                  generated::open(self, Self::try_open)\n\
              }}"

@@ -3,8 +3,8 @@
 use crate::timer::{self, Deadline, Timer, WaitTimer};
 use rp1_rt::interrupt::{Line, OwnedLine, Priority, Slot};
 
-const CEILING: u8 = 4;
-const PRIORITY: Priority = Priority::new(CEILING).unwrap();
+const CEILING: u8 = rp1_rt::interrupt::priority::DEVICE;
+const PRIORITY: Priority = Priority::control::<CEILING>();
 
 pub(crate) enum Error {
     Busy,

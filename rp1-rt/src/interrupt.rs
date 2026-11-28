@@ -21,11 +21,11 @@
 //! ```
 //!
 //! Ordinary statics, including `TICKS`, have one DSRAM copy per core.
-//! The default `critical-section-single-core` feature uses BASEPRI to mask user priorities
-//! 2–7 on this core. It restores the previous mask when leaving a section, so sections nest.
-//! System interrupts at priorities 0 and 1, NMI and fault handlers must never access data
-//! protected by a user `Mutex`. Both cores can enter simultaneously. Use [`crate::sync`] for
-//! cross-core data because `Mutex` cannot be placed in `#[shared]`.
+//! The default `critical-section-single-core` feature uses BASEPRI to mask priorities
+//! 2–7 on this core, including the generated doorbell and SCMI. It restores the previous
+//! mask when leaving a section, so sections nest. IRQ53, NMI and fault handlers can still
+//! run and must never use a user `Mutex`. Both cores can enter simultaneously. Use
+//! [`crate::sync`] for cross-core data because `Mutex` cannot be placed in `#[shared]`.
 //!
 //! Enable `critical-section-primask` to mask all configurable exceptions during `free`.
 //! This delays platform IRQs and escalates faults in the section to HardFault, so the platform
@@ -94,6 +94,32 @@ pub use mask::{__basepri_acquire, __basepri_release};
 /// Critical section for user contexts on this core; see the module docs.
 pub use critical_section::{CriticalSection, Mutex, with as free};
 
+/// Priority assignments shared by the runtime, HAL and generated dispatchers.
+#[doc(hidden)]
+pub mod priority {
+    pub const PCIE_RESET: u8 = 0;
+    pub const FAULT: u8 = 1;
+    pub const CONTROL_MIN: u8 = 2;
+    pub const DEVICE: u8 = 4;
+    pub const DOORBELL: u8 = 5;
+    pub const SCMI: u8 = 6;
+    pub const LOWEST: u8 = (1 << crate::pac::NVIC_PRIO_BITS) - 1;
+
+    pub const fn encode(priority: u8) -> u8 {
+        priority << (8 - crate::pac::NVIC_PRIO_BITS)
+    }
+
+    const _: () = assert!(
+        PCIE_RESET == 0
+            && PCIE_RESET < FAULT
+            && FAULT < CONTROL_MIN
+            && CONTROL_MIN <= DEVICE
+            && DEVICE < DOORBELL
+            && DOORBELL < SCMI
+            && SCMI <= LOWEST
+    );
+}
+
 /// User interrupt priority, from 2 (highest user priority) through 7 (lowest).
 /// Priorities 0 and 1 are reserved for system services. The startup default is 4.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,11 +128,22 @@ pub struct Priority(u8);
 impl Priority {
     /// Construct a user priority. Reserved or out-of-range values return `None`.
     pub const fn new(priority: u8) -> Option<Self> {
-        if matches!(priority, 2..=7) {
+        if matches!(priority, priority::CONTROL_MIN..=priority::LOWEST) {
             Some(Self(priority))
         } else {
             None
         }
+    }
+
+    /// Declare a control priority (2–4), above the platform doorbell and SCMI.
+    pub const fn control<const P: u8>() -> Self {
+        const {
+            assert!(
+                P >= priority::CONTROL_MIN && P <= priority::DEVICE,
+                "control priority must be in 2..=4"
+            )
+        };
+        Self(P)
     }
 
     /// The logical priority before shifting into the NVIC's three implemented bits.
@@ -117,7 +154,7 @@ impl Priority {
 
 impl Default for Priority {
     fn default() -> Self {
-        Self(4)
+        Self(priority::DEVICE)
     }
 }
 
@@ -127,11 +164,11 @@ impl Default for Priority {
 /// the default handler masks it and records [`unhandled`].
 /// The line stays on its owning core. Share it with that core's handlers through a [`Slot`].
 /// It implements neither `SharedSafe` nor `Message`, so it cannot cross cores.
-pub struct Line<const IRQ: u8> {
+pub struct Line<const IRQ: u8, const FIXED: u8 = 0> {
     _core: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 
-impl<const IRQ: u8> Line<IRQ> {
+impl<const IRQ: u8, const FIXED: u8> Line<IRQ, FIXED> {
     /// Construct the line token for generated resources.
     ///
     /// # Safety
@@ -139,7 +176,13 @@ impl<const IRQ: u8> Line<IRQ> {
     /// in the declaration.
     /// Keep it on that core. System IRQs may only be constructed by system services.
     pub const unsafe fn new() -> Self {
-        const { assert!(IRQ < 64, "NVIC IRQ must be in 0..64") };
+        const {
+            assert!(IRQ < 64, "NVIC IRQ must be in 0..64");
+            assert!(
+                FIXED == 0 || (IRQ == 0 && FIXED == priority::DOORBELL),
+                "only the generated doorbell has a fixed line priority"
+            );
+        };
         Self {
             _core: core::marker::PhantomData,
         }
@@ -147,7 +190,11 @@ impl<const IRQ: u8> Line<IRQ> {
 
     /// Enable delivery on this core. Peripheral interrupt masks are unchanged.
     pub fn enable(&mut self) {
-        Nvic(Hardware).enable(IRQ);
+        let nvic = Nvic(Hardware);
+        if FIXED != 0 {
+            nvic.set_priority(IRQ, Priority(FIXED));
+        }
+        nvic.enable(IRQ);
     }
 
     /// Disable delivery on this core without clearing its pending state.
@@ -174,7 +221,9 @@ impl<const IRQ: u8> Line<IRQ> {
     pub fn unpend(&mut self) {
         Nvic(Hardware).unpend(IRQ);
     }
+}
 
+impl<const IRQ: u8> Line<IRQ> {
     /// Set this line's user priority without changing neighboring lines.
     /// Keep it at or below the urgency of any [`Slot`] the handler uses.
     pub fn set_priority(&mut self, priority: Priority) {
@@ -217,12 +266,12 @@ impl OwnedLine {
 
 /// A verified NVIC line assigned to a declaration's source and core.
 /// The source's device operations remain on the source token.
-pub struct Binding<S, const IRQ: u8, const CORE: u8> {
-    line: Line<IRQ>,
+pub struct Binding<S, const IRQ: u8, const CORE: u8, const FIXED: u8 = 0> {
+    line: Line<IRQ, FIXED>,
     _source: core::marker::PhantomData<S>,
 }
 
-impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
+impl<S, const IRQ: u8, const CORE: u8, const FIXED: u8> Binding<S, IRQ, CORE, FIXED> {
     /// # Safety
     /// Generated resources only, once on CORE for the verified route from S to IRQ.
     #[doc(hidden)]
@@ -232,6 +281,16 @@ impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
             line: unsafe { Line::new() },
             _source: core::marker::PhantomData,
         }
+    }
+}
+impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
+    /// Set a control priority for a handler using this core-local slot.
+    pub fn set_slot_priority<const P: u8, const CEILING: u8, T>(
+        &mut self,
+        _slot: &Slot<T, CORE, CEILING>,
+    ) {
+        self.line
+            .set_priority(Slot::<T, CORE, CEILING>::control_priority::<P>());
     }
 
     #[doc(hidden)]
@@ -248,14 +307,18 @@ impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
         }
     }
 }
-impl<S, const IRQ: u8, const CORE: u8> core::ops::Deref for Binding<S, IRQ, CORE> {
-    type Target = Line<IRQ>;
+impl<S, const IRQ: u8, const CORE: u8, const FIXED: u8> core::ops::Deref
+    for Binding<S, IRQ, CORE, FIXED>
+{
+    type Target = Line<IRQ, FIXED>;
 
     fn deref(&self) -> &Self::Target {
         &self.line
     }
 }
-impl<S, const IRQ: u8, const CORE: u8> core::ops::DerefMut for Binding<S, IRQ, CORE> {
+impl<S, const IRQ: u8, const CORE: u8, const FIXED: u8> core::ops::DerefMut
+    for Binding<S, IRQ, CORE, FIXED>
+{
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.line
     }
@@ -309,9 +372,9 @@ impl ThreadGuard {
     }
 
     /// Check whether this source's line can preempt the current thread.
-    pub fn check_irq<S, const IRQ: u8, const CORE: u8>(
+    pub fn check_irq<S, const IRQ: u8, const CORE: u8, const FIXED: u8>(
         &self,
-        _binding: &Binding<S, IRQ, CORE>,
+        _binding: &Binding<S, IRQ, CORE, FIXED>,
     ) -> Result<(), ContextError> {
         self.check_number(IRQ)
     }
@@ -344,6 +407,15 @@ fn context(ipsr: u32, primask: u32, faultmask: u32, basepri: u8) -> Result<(), C
         return Err(ContextError::Masked);
     }
     Ok(())
+}
+
+/// Mask SCMI while changing or reading its core-local state. Also masks lower priorities.
+#[doc(hidden)]
+#[inline(always)]
+pub fn __with_scmi_masked<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
+    let _mask = mask::SlotMask::raise::<{ priority::SCMI }>();
+    f()
 }
 
 /// Run a thread-mode wait with events on transitions to pending, even for disabled lines.
@@ -408,6 +480,17 @@ pub(crate) fn reset_all_lines() {
     Nvic(Hardware).reset();
 }
 
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+pub(crate) fn mask_for_park() {
+    crate::cpu::set_basepri(priority::encode(priority::CONTROL_MIN));
+
+    // A parked context never resumes. Preserve SCMI only when IRQ57 has a fresh frame
+    // available; an IRQ57 already active below the parked context cannot finish.
+    let nvic = Nvic(Hardware);
+    nvic.keep_scmi_on_park();
+    crate::cpu::sync();
+}
+
 struct Nvic<R>(R);
 impl<R: Registers> Nvic<R> {
     #[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
@@ -446,7 +529,17 @@ impl<R: Registers> Nvic<R> {
         self.write_bit(ICPR, irq);
     }
     fn set_priority(&self, irq: u8, priority: Priority) {
-        self.0.write_byte(IPR + usize::from(irq), priority.0 << 5);
+        self.0
+            .write_byte(IPR + usize::from(irq), priority::encode(priority.0));
+    }
+
+    #[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
+    fn keep_scmi_on_park(&self) {
+        const IRQ: u8 = crate::pac::Interrupt::PROC_MISC as u8;
+        const IABR: usize = 0xe000_e300;
+        if self.is_enabled(IRQ) && !self.read_bit(IABR, IRQ) {
+            self.set_priority(IRQ, Priority(priority::FAULT));
+        }
     }
 
     fn check_delivery(&self, irq: u8) -> Result<(), ContextError> {
@@ -483,6 +576,22 @@ mod tests {
         nvic.enable(26);
         assert_eq!(nvic.check_delivery(26), Ok(()));
         assert_eq!(nvic.check_delivery(27), Err(ContextError::IrqUnavailable));
+    }
+
+    #[test]
+    fn parking_promotes_only_an_enabled_inactive_scmi_line() {
+        const IRQ: u8 = crate::pac::Interrupt::PROC_MISC as u8;
+        let nvic = Nvic(Fake::default());
+        nvic.keep_scmi_on_park();
+        assert!(nvic.0.writes.take().is_empty());
+        nvic.enable(IRQ);
+        nvic.0.writes.take();
+        nvic.keep_scmi_on_park();
+        assert_eq!(nvic.0.writes.take(), [(IPR + usize::from(IRQ), 0x20, 1)]);
+        nvic.write_bit(0xe000_e300, IRQ);
+        nvic.0.writes.take();
+        nvic.keep_scmi_on_park();
+        assert!(nvic.0.writes.take().is_empty());
     }
 
     #[derive(Default)]

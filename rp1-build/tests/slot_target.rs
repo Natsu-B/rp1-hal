@@ -55,7 +55,8 @@ fn thumb_slot_requires_send_and_accepts_a_uart_half() {
         "{errors}"
     );
     assert!(
-        errors.contains("required for `Slot<Option<&'static Cell<u32>>, 0>` to implement `Sync`"),
+        errors
+            .contains("required for `Slot<Option<&'static Cell<u32>>, 0, 4>` to implement `Sync`"),
         "{errors}"
     );
 }

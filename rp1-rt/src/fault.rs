@@ -11,7 +11,7 @@ trait FaultCpu {
     fn write_frame(&self, index: usize, value: u32);
     fn record(&self, exception: u32, pc: u32, cfsr: u32);
     fn clear_cfsr(&self, bits: u32);
-    fn write_basepri(&self, mask: u8);
+    fn mask_for_park(&self);
     fn sync(&self);
     fn stop(&self) -> !;
 }
@@ -30,7 +30,7 @@ fn configurable_fault(regs: &impl FaultCpu, park: u32) {
         FRAME_XPSR,
         (regs.read_frame(FRAME_XPSR) & 0x3ff) | (1 << 24),
     );
-    regs.write_basepri(2 << 5);
+    regs.mask_for_park();
     regs.sync();
 }
 
@@ -127,8 +127,8 @@ __rp1_hardfault:
             unsafe { CFSR.write_volatile(bits) };
         }
 
-        fn write_basepri(&self, mask: u8) {
-            cpu::set_basepri(mask);
+        fn mask_for_park(&self) {
+            crate::interrupt::mask_for_park();
         }
 
         fn sync(&self) {

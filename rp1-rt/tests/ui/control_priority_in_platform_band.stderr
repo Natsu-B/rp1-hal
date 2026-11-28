@@ -1,0 +1,24 @@
+error[E0080]: evaluation panicked: control priority must be in 2..=4
+ --> $RUST/core/src/panic.rs
+  |
+  |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `rp1_rt::interrupt::Priority::control::<5>::{constant#0}` failed here
+  |
+ ::: src/interrupt.rs
+  |
+  | /             assert!(
+  | |                 P >= priority::CONTROL_MIN && P <= priority::DEVICE,
+  | |                 "control priority must be in 2..=4"
+  | |             )
+  | |_____________- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/interrupt.rs
+  |
+  | /         const {
+  | |             assert!(
+  | |                 P >= priority::CONTROL_MIN && P <= priority::DEVICE,
+  | |                 "control priority must be in 2..=4"
+  | |             )
+  | |         };
+  | |_________^

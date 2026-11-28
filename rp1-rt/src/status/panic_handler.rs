@@ -1,5 +1,5 @@
 trait PanicCpu {
-    fn write_basepri(&mut self, mask: u8);
+    fn mask_for_park(&mut self);
     fn enable_interrupts(&mut self);
     fn wait(&mut self) -> !;
 }
@@ -8,8 +8,7 @@ trait PanicCpu {
 #[inline(always)]
 fn handle(regs: &mut impl PanicCpu, record: impl FnOnce()) -> ! {
     record();
-    // Open priority 1 even if the caller had set BASEPRI to 0x20.
-    regs.write_basepri(2 << 5);
+    regs.mask_for_park();
     regs.enable_interrupts();
     regs.wait()
 }
@@ -23,8 +22,8 @@ mod hardware {
     struct CortexM;
 
     impl PanicCpu for CortexM {
-        fn write_basepri(&mut self, mask: u8) {
-            cpu::set_basepri(mask);
+        fn mask_for_park(&mut self) {
+            crate::interrupt::mask_for_park();
         }
 
         fn enable_interrupts(&mut self) {
@@ -67,11 +66,11 @@ mod tests {
     }
 
     impl PanicCpu for Fake {
-        fn write_basepri(&mut self, mask: u8) {
+        fn mask_for_park(&mut self) {
             assert_eq!(words(), self.expected_words);
             assert_eq!(self.basepri, 0x20);
             assert!(self.primask);
-            self.basepri = mask;
+            self.basepri = 0x40;
         }
 
         fn enable_interrupts(&mut self) {

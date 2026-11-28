@@ -58,7 +58,7 @@ pub struct System {
 
 /// The PCIe endpoint init brought up. proc0 only (not `Send`).
 pub struct Pcie {
-    _proc0: PhantomData<core::cell::Cell<()>>,
+    _proc0: PhantomData<*mut ()>,
     /// The SHM transaction published the reservation, or outbound region 0 read back wrong:
     /// the window stays as it is until RP1 is reloaded.
     shm_pinned: bool,
@@ -71,9 +71,26 @@ impl Pcie {
     }
 }
 
-/// Snapshot IRQ57's counters on proc0 with interrupts masked.
+/// Snapshot IRQ57's counters on proc0 with SCMI masked.
 pub fn scmi_stats(_pcie: &Pcie) -> ScmiStats {
     irq::stats()
+}
+
+/// Run bounded proc0 thread work with SCMI delivery deferred.
+///
+/// Include the device wait and its latency-sensitive continuation in the closure.
+/// Pending SCMI requests can run as soon as the closure exits. Bound the closure
+/// and leave gaps between calls so Linux can receive replies. Keep waits that
+/// depend on Linux outside this scope.
+///
+/// Requires unmasked thread mode. A terminal panic or fault inside the closure
+/// leaves SCMI disabled until reload.
+pub fn with_scmi_deferred<T>(
+    _pcie: &Pcie,
+    f: impl FnOnce() -> T,
+) -> Result<T, rp1_rt::interrupt::ContextError> {
+    rp1_rt::interrupt::ThreadGuard::new()?;
+    Ok(irq::defer(f))
 }
 
 /// The values init read on its way (for the log).

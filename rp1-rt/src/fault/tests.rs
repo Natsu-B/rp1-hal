@@ -66,8 +66,8 @@ impl FaultCpu for Fake {
         self.events.borrow_mut().push(ClearCfsr(bits));
     }
 
-    fn write_basepri(&self, mask: u8) {
-        self.events.borrow_mut().push(Basepri(mask.into()));
+    fn mask_for_park(&self) {
+        self.events.borrow_mut().push(Basepri(0x40));
     }
 
     fn sync(&self) {

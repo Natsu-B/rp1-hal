@@ -2,7 +2,7 @@
 //! published state word before ISER. Only IRQ57 writes them after ISER (rule E1).
 //!
 //! IRQ53 (priority 0) can preempt IRQ57. A serve time is "clean" when IRQ53's entry count is
-//! the same before and after it, so `max_serve_clean_us` is SCMI's own time.
+//! the same before and after it. Other IRQs can contribute to this elapsed time.
 
 use super::{
     CHANNEL, ClockHardware, HOST_EVENTS_SET, PROC_EVENTS, PROC_EVENTS_CLR, RP1_CLOCKS, Registers,
@@ -23,7 +23,7 @@ const ISPR: usize = ISER + 0x100;
 const ICPR: usize = ISER + 0x180;
 const IPR: usize = 0xe000_e400 + IRQ;
 const PROC_GATE: usize = 0xf800_0008;
-const PRIORITY: u8 = 1 << 5;
+const PRIORITY: u8 = rp1_rt::interrupt::priority::encode(rp1_rt::interrupt::priority::SCMI);
 const MAX_EMPTY_STREAK: u8 = 16;
 const STATUS_WORD: usize = rp1_proto::LINK_START as usize + rp1_proto::status::PLAT_SCMI;
 
@@ -50,11 +50,11 @@ pub struct ScmiStats {
     pub requests: u32,
     pub duplicates: u32,
     pub spurious57: u32,
-    /// The longest serve time, including any IRQ53 that preempted it.
+    /// The longest elapsed serve time, including preemption.
     pub max_serve_all_us: u32,
     /// Entries that IRQ53 did not preempt.
     pub clean_n: u32,
-    /// The longest serve time among the `clean_n` entries.
+    /// The longest elapsed serve time among the `clean_n` entries.
     pub max_serve_clean_us: u32,
 }
 
@@ -206,9 +206,34 @@ pub(crate) unsafe fn install(held: u32) {
     unsafe { (&raw mut STATE).write(MaybeUninit::new(state)) };
 }
 
+pub(crate) fn defer<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    let _restore = {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::write_relaxed(ISER, IRQ_BIT);
+                rp1_proto::barrier();
+            }
+        }
+
+        // IRQ57 can quarantine itself. Keep the enabled read and disable indivisible
+        // with respect to that handler, and keep pending requests latched.
+        rp1_rt::interrupt::__with_scmi_masked(|| {
+            if crate::read(ISER) & IRQ_BIT == 0 {
+                return None;
+            }
+            crate::write_relaxed(ICER, IRQ_BIT);
+            rp1_proto::barrier();
+            Some(Restore)
+        })
+    };
+    f()
+}
+
 pub(crate) fn stats() -> ScmiStats {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
-    let stats = rp1_rt::interrupt::__primask_free(|| {
+    let stats = rp1_rt::interrupt::__with_scmi_masked(|| {
         // Proc0's Pcie handle guarantees install ran. IRQ57 is masked here.
         unsafe { (*(&raw const STATE).cast::<State>()).counters.stats }
     });
