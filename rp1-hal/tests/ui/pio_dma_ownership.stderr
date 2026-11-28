@@ -1,0 +1,82 @@
+error[E0308]: mismatched types
+ --> tests/ui/pio_dma_ownership.rs:7:39
+  |
+7 |     let _ = ch.try_start_to_pio(data, rx);
+  |                ----------------       ^^ expected `&mut PioFifo<Tx<_, _>>`, found `&mut PioFifo<Rx<0>>`
+  |                |
+  |                arguments to this method are incorrect
+  |
+  = note: expected mutable reference `&mut PioFifo<rp1_hal::pio::Tx<_, _>>`
+             found mutable reference `&mut PioFifo<rp1_hal::pio::Rx<0>>`
+note: method defined here
+ --> src/dma/pio.rs
+  |
+  |     pub fn try_start_to_pio<'t, const SM: u8, I>(
+  |            ^^^^^^^^^^^^^^^^
+
+error[E0499]: cannot borrow `*ch` as mutable more than once at a time
+  --> tests/ui/pio_dma_ownership.rs:18:13
+   |
+17 |     let transfer = ch.try_start_to_pio(a, tx).unwrap();
+   |                    -- first mutable borrow occurs here
+18 |     let _ = ch.try_start_from_pio(rx, b);
+   |             ^^ second mutable borrow occurs here
+19 |     drop(transfer);
+   |          -------- first borrow later used here
+
+error[E0499]: cannot borrow `*tx` as mutable more than once at a time
+  --> tests/ui/pio_dma_ownership.rs:30:39
+   |
+29 |     let transfer = a.try_start_to_pio(src, tx).unwrap();
+   |                                            -- first mutable borrow occurs here
+30 |     let _ = b.try_start_to_pio(other, tx);
+   |                                       ^^ second mutable borrow occurs here
+31 |     drop(transfer);
+   |          -------- first borrow later used here
+
+error[E0499]: cannot borrow `dst` as mutable more than once at a time
+  --> tests/ui/pio_dma_ownership.rs:36:13
+   |
+35 |     let transfer = ch.try_start_from_pio(&mut rx, &mut dst).unwrap();
+   |                                                   -------- first mutable borrow occurs here
+36 |     let _ = dst.as_mut_slice();
+   |             ^^^ second mutable borrow occurs here
+37 |     drop(dst);
+38 |     drop(transfer);
+   |          -------- first borrow later used here
+
+error[E0505]: cannot move out of `dst` because it is borrowed
+  --> tests/ui/pio_dma_ownership.rs:37:10
+   |
+34 | fn lease_during_transfer(ch: &mut Channel<0, PioRequests>, mut dst: Lease<'_>, mut rx: PioFifo<Rx<0>>) {
+   |                                                            ------- binding `dst` declared here
+35 |     let transfer = ch.try_start_from_pio(&mut rx, &mut dst).unwrap();
+   |                                                   -------- borrow of `dst` occurs here
+36 |     let _ = dst.as_mut_slice();
+37 |     drop(dst);
+   |          ^^^ move out of `dst` occurs here
+38 |     drop(transfer);
+   |          -------- borrow later used here
+
+error[E0499]: cannot borrow `tx` as mutable more than once at a time
+  --> tests/ui/pio_dma_ownership.rs:43:13
+   |
+42 |     let transfer = ch.try_start_to_pio(&mut src, &mut tx).unwrap();
+   |                                                  ------- first mutable borrow occurs here
+43 |     let _ = tx.try_cpu();
+   |             ^^ second mutable borrow occurs here
+44 |     drop(transfer);
+   |          -------- first borrow later used here
+
+error[E0505]: cannot move out of `rx` because it is borrowed
+  --> tests/ui/pio_dma_ownership.rs:55:23
+   |
+50 |     mut rx: PioFifo<Rx<0>>,
+   |     ------ binding `rx` declared here
+...
+54 |     let transfer = ch.try_start_from_pio(&mut rx, &mut dst).unwrap();
+   |                                          ------- borrow of `rx` occurs here
+55 |     let _ = sm.uninit(rx.try_into_inner().ok().unwrap(), tx);
+   |                       ^^ move out of `rx` occurs here
+56 |     drop(transfer);
+   |          -------- borrow later used here

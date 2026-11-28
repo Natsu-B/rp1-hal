@@ -1,6 +1,6 @@
 //! Explicit opt-in to the lab's outbound ordering experiment.
 
-use super::{BusAddr, Channel, Error, Lease, Pool, RawTransfer, State, start_block};
+use super::{BusAddr, Channel, Error, Gate, Lease, Pool, RawTransfer, State, start_block};
 use crate::{
     linux_blocks::Mmio,
     scmi::Registers,
@@ -11,12 +11,12 @@ use core::mem::ManuallyDrop;
 const TIMEOUT: Duration = Duration::millis(10);
 
 /// A ring copy engine with its own quarantinable SRAM scratch slot.
-pub struct ExperimentalRingDma<'a, const N: u8> {
-    channel: &'a mut Channel<N>,
+pub struct ExperimentalRingDma<'a, const N: u8, G = ()> {
+    channel: &'a mut Channel<N, G>,
     scratch: &'a Pool<1>,
 }
 
-impl<const N: u8> Channel<N> {
+impl<const N: u8, G: Gate> Channel<N, G> {
     /// Select the experimental, polling ring adapter. The scratch slot must be 16-byte
     /// aligned and fit a batch plus 15 bytes.
     ///
@@ -28,7 +28,7 @@ impl<const N: u8> Channel<N> {
     pub unsafe fn experimental_ring_dma<'a>(
         &'a mut self,
         scratch: &'a Pool<1>,
-    ) -> ExperimentalRingDma<'a, N> {
+    ) -> ExperimentalRingDma<'a, N, G> {
         ExperimentalRingDma {
             channel: self,
             scratch,
@@ -59,7 +59,7 @@ fn stage<'a>(pool: &'a Pool<1>, src: &[u8]) -> Result<Lease<'a>, Error> {
 
 // SAFETY: the constructor requires the outbound lifetime and ordering proofs. DMA reads only
 // the private scratch slot, which is quarantined if the local engine's stop is uncertain.
-unsafe impl<const N: u8> rp1_proto::shm::SlotCopy for ExperimentalRingDma<'_, N> {
+unsafe impl<const N: u8, G: Gate> rp1_proto::shm::SlotCopy for ExperimentalRingDma<'_, N, G> {
     type Error = Error;
 
     // Keep admission and staging in shared SRAM. The channel setup and status reads
@@ -71,6 +71,7 @@ unsafe impl<const N: u8> rp1_proto::shm::SlotCopy for ExperimentalRingDma<'_, N>
     )]
     unsafe fn copy_to_remote(&mut self, src: &[u8], dst: *mut u8) -> Result<(), Error> {
         rp1_rt::interrupt::ThreadGuard::new().map_err(crate::timer::Error::from)?;
+        self.channel.gate.check()?;
         let destination = window(dst as usize, src.len())?;
         let scratch = stage(self.scratch, src)?;
         let end = Deadline::after(TIMEOUT)?;

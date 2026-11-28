@@ -86,7 +86,7 @@ dma = { channels = [0, 2], pool = { slots = 2, bytes = 1024 } }
   that. `HS_SEL_SRC/DST = 1` (software) where Linux leaves 0; for memory-to-memory with DMAC
   flow control no handshake is used either way (HW: both copy correctly). Single-block contiguous mode
   (no LLI) is not what Linux uses; it works on RP1 (HW below).
-- Deferred capabilities are linked lists, IRQ40 delivery and peripheral handshakes.
+- Deferred capabilities include linked lists and IRQ40 delivery.
 - Ring producer: `rp1_link::ring_dma::RingDma`, feature `rp1-link/unstable-ring-dma`
   (below, "DMA ring producer").
 
@@ -116,6 +116,47 @@ src.as_mut_slice().fill(0x5a);
 dma.ch2.copy_polling(&mut src, &mut dst, Duration::millis(10))?;
 assert_eq!(src.as_slice(), dst.as_slice());
 ```
+
+### PIO FIFOs (STATIC)
+
+Declare `dma` with a pool and `pio` on the same core. The generated channels then
+accept both SRAM copies and PIO transfers. Use `into_dma()` on a TX or RX FIFO to
+reserve it for transfers. The selected SRAM lease range must contain a whole number
+of 32-bit words and start at a 4-byte boundary.
+
+```rust
+let mut tx = tx.into_dma();
+let mut transfer = dma.ch0.try_start_to_pio(&mut src, &mut tx)?;
+transfer.wait_polling(end)?;
+// Dropping a completed transfer returns both endpoints.
+drop(transfer);
+```
+
+Use `try_start_from_pio(&mut rx, &mut dst)` with a reserved RX FIFO. Like rp-hal's
+single-buffer DMA, the FIFO type determines direction and pacing. RP1 uses one
+fixed APB FIFO address, an incrementing SRAM address and one 32-bit beat per
+handshake. Request IDs are 56–63 with consecutive TX/RX pairs for SM0–SM3.
+The driver opens only the selected SM's DREQ after enabling the channel. TX DMA
+completion means the words reached the FIFO. Check the SM or output separately
+for waveform completion. [RP1 DMA bindings](https://github.com/raspberrypi/linux/blob/rpi-6.12.y/include/dt-bindings/mfd/rp1.h) ·
+[RP1 PIO DMA thresholds](https://github.com/raspberrypi/linux/commit/f31ed0ba33) ·
+[rp-hal single-buffer DMA](https://github.com/rp-rs/rp-hal/blob/main/rp2040-hal/src/dma/single_buffer.rs)
+
+The borrowed FIFO excludes CPU access and FIFO IRQ waits. Once the transfer has
+retired, `try_cpu` borrows the FIFO for CPU use and `try_into_inner` returns it
+for SM reconfiguration or release. The opposite direction stays available
+throughout a transfer.
+
+Cancellation masks DREQ before requesting graceful disable. Use `try_cancel`
+for one check or `cancel_until` for a timer-backed check bounded to 1 ms.
+`try_reclaim` returns the transfer if the stop proof is pending. A dropped or
+forgotten transfer with an outstanding claim quarantines that lease and FIFO for
+the firmware epoch. `try_recover` can retire the channel independently, after
+the request is masked and the channel stop is proven. Inspect the outcome before
+using received data. A cancelled RX transfer may have written a prefix.
+
+IRQ40 delivery has its own hardware gate. Completion uses `try_complete` or
+explicit `wait_polling` while that gate is pending.
 
 ## Cancellation and the abort register
 
@@ -398,9 +439,9 @@ another phase was interrupted without end markers. The requested two-boot comple
 remains NOT VERIFIED. Separate 6M-item wide256 DMA and CPU diagnostics completed, but do not
 replace the failed campaign or establish a reset cause. The ordering chain remains HYP.
 
-## Mem-to-peripheral plan (not implemented)
+## Other peripheral handshakes (HYP)
 
-Peripherals with a DMA handshake (UART, SPI, I2C0..5, PWM FIFO, I2S, PIO, ADC FIFO, DMA_TICK)
+Peripherals with a DMA handshake (UART, SPI, I2C0..5, PWM FIFO, I2S, ADC FIFO, DMA_TICK)
 connect to DMAC handshake interfaces (DOC: datasheet ch. 9; the handshake table is not in the
 text we have, the Linux `rp1.h` `RP1_DMA_*` numbers are). Steps: (1) take the DREQ numbers from
 the Linux DT binding header with evidence; (2) `CFG2.DST_PER`/`SRC_PER` = DREQ, `HS_SEL` = 0

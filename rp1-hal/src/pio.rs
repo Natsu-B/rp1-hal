@@ -39,7 +39,7 @@ const IRQ0_INTF: usize = BASE + 0x154;
 const IRQ1_INTE: usize = BASE + 0x15c;
 const IRQ1_INTF: usize = BASE + 0x160;
 
-const fn sm_reg(n: u8, offset: usize) -> usize {
+pub(crate) const fn sm_reg(n: u8, offset: usize) -> usize {
     BASE + 0xcc + 0x20 * n as usize + offset
 }
 

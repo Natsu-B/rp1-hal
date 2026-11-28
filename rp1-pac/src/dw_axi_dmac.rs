@@ -143,6 +143,8 @@ pub mod cfg2 {
     pub const DST_PER_SHIFT: u32 = 11;
     /// High half: transfer type and flow control (0 = memory to memory, DMAC flow control).
     pub const TT_FC_SHIFT: u32 = 0;
+    pub const TT_FC_MEM_TO_PER: u32 = 1;
+    pub const TT_FC_PER_TO_MEM: u32 = 2;
     /// High half: 1 = software handshake (the default for memory).
     pub const HS_SEL_SRC: u32 = 1 << 3;
     pub const HS_SEL_DST: u32 = 1 << 4;

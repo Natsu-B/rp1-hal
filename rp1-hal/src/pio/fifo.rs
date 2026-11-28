@@ -77,7 +77,7 @@ fn level(read: impl Fn(usize) -> u32, sm: u8, rx: bool, capacity: u8) -> u8 {
 macro_rules! fifo {
     ($type:ident, $rx:expr, $full:expr, $empty:expr) => {
         impl<const N: u8, I> $type<N, I> {
-            pub(super) fn new(buffers: Buffers) -> Self {
+            pub(crate) fn new(buffers: Buffers) -> Self {
                 Self {
                     buffers,
                     local: PhantomData,

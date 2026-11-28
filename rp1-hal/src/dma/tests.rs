@@ -3,7 +3,7 @@ use super::*;
 use std::{collections::BTreeMap, vec::Vec};
 
 #[derive(Clone, Copy, Default)]
-enum DisableStatus {
+pub(super) enum DisableStatus {
     #[default]
     Immediate,
     Late,
@@ -11,25 +11,26 @@ enum DisableStatus {
 }
 /// A fake that retains status separately from CHEN and can refuse disable indefinitely.
 #[derive(Default)]
-struct Fake {
-    regs: BTreeMap<usize, u32>,
-    writes: Vec<(usize, u32)>,
-    now: u64,
+pub(super) struct Fake {
+    pub(super) regs: BTreeMap<usize, u32>,
+    pub(super) writes: Vec<(usize, u32)>,
+    pub(super) now: u64,
     reads: usize,
-    stuck: bool,
-    refuse_stop: bool,
-    disable_status: DisableStatus,
+    pub(super) stuck: bool,
+    pub(super) refuse_stop: bool,
+    pub(super) disable_status: DisableStatus,
     late_disabled: u8,
-    refuse_ack: bool,
+    pub(super) refuse_ack: bool,
+    pub(super) disable_delay: u64,
 }
 impl Fake {
-    fn deliver_disable(&mut self, n: u8) {
+    pub(super) fn deliver_disable(&mut self, n: u8) {
         assert_ne!(self.late_disabled & (1 << n), 0);
         self.late_disabled &= !(1 << n);
         self.stop(n, int::CH_DISABLED);
     }
 
-    fn stop(&mut self, n: u8, status: u32) {
+    pub(super) fn stop(&mut self, n: u8, status: u32) {
         *self.regs.entry(BASE + common::CHEN).or_default() &= !(1 << n);
         *self
             .regs
@@ -66,6 +67,7 @@ impl Registers for Fake {
                         if !self.refuse_stop
                             && self.regs.get(&a).is_some_and(|value| value & en != 0)
                         {
+                            self.now += self.disable_delay;
                             let status = match self.disable_status {
                                 DisableStatus::Immediate => int::CH_DISABLED,
                                 DisableStatus::Late => {
@@ -104,13 +106,13 @@ impl Registers for Fake {
         }
     }
 }
-fn running() -> Fake {
+pub(super) fn running() -> Fake {
     let mut f = Fake::default();
     start(&mut f).unwrap();
     f.writes.clear();
     f
 }
-fn reg(f: &Fake, a: usize) -> u32 {
+pub(super) fn reg(f: &Fake, a: usize) -> u32 {
     f.writes.iter().rev().find(|w| w.0 == a).unwrap().1
 }
 
@@ -202,6 +204,7 @@ fn stale_clock_is_a_precondition_error() {
 fn channel<const N: u8>() -> Channel<N> {
     Channel {
         state: State::Idle,
+        gate: (),
         _local: core::marker::PhantomData,
     }
 }

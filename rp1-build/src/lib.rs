@@ -461,9 +461,12 @@ fn resources(
             .instances
             .iter()
             .map(|(name, instance)| match instance {
-                metadata::Instance::Dma(channels) => {
-                    dma_resource(&mut s, index, channels.selected())
-                }
+                metadata::Instance::Dma(channels) => dma_resource(
+                    &mut s,
+                    index,
+                    channels.selected(),
+                    c.instances.contains_key("pio"),
+                ),
                 metadata::Instance::Pio(pio) => pio_resource(
                     &mut s,
                     index,
@@ -895,6 +898,7 @@ fn dma_resource(
     source: &mut String,
     core: usize,
     channels: &[u8],
+    pio: bool,
 ) -> Result<(String, String, Vec<u8>)> {
     let ty = format!("Proc{core}Dma");
     let initialized = format!("Proc{core}DmaChannels");
@@ -903,8 +907,13 @@ fn dma_resource(
         "/// Initialized channels issued by the proc{core} DMA declaration.\n\
          #[non_exhaustive]\npub struct {initialized} {{"
     )?;
+    let requests = if pio {
+        ", ::rp1_hal::dma::PioRequests"
+    } else {
+        ""
+    };
     for n in channels {
-        writeln!(source, "pub ch{n}: ::rp1_hal::dma::Channel<{n}>,")?;
+        writeln!(source, "pub ch{n}: ::rp1_hal::dma::Channel<{n}{requests}>,")?;
     }
     writeln!(source, "_controller: ::rp1_hal::dma::Dma,\n}}")?;
     writeln!(
@@ -917,8 +926,9 @@ fn dma_resource(
                 let mut controller = self.0.init(clocks).map_err(|e| e.map_parts(Self))?;\n\
                 Ok({initialized} {{"
     )?;
+    let issue_channel = if pio { "__pio_channel" } else { "channel" };
     for n in channels {
-        writeln!(source, "ch{n}: unsafe {{ controller.channel() }},")?;
+        writeln!(source, "ch{n}: unsafe {{ controller.{issue_channel}() }},")?;
     }
     writeln!(
         source,

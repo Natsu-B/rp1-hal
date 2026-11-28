@@ -1,5 +1,5 @@
-//! RP1 DMA controller (Synopsys DW AXI DMAC, eight channels): memory-to-memory single-block
-//! transfers with polled completion.
+//! RP1 DMA controller (Synopsys DW AXI DMAC, eight channels): single-block transfers between
+//! shared SRAM and SRAM or a PIO FIFO.
 //!
 //! Register evidence: [`crate::pac::dw_axi_dmac`]; address map, ownership and HW results:
 //! `docs/dma.md`.
@@ -32,9 +32,9 @@
 //! Cancellation stops the engine's buffer accesses, but does not drain accepted remote writes.
 //!
 //! # Cancellation
-//! A transfer borrows both pool leases while it holds exclusive access to the channel.
+//! A transfer holds both endpoints and exclusive access to the channel.
 //! Cancellation requests graceful disable, then checks for a terminal state with a bounded
-//! number of MMIO accesses. A running or ambiguous channel retains its leases. Drop requests
+//! number of MMIO accesses. A running or ambiguous channel retains its endpoints. Drop requests
 //! the same stop and quarantines the slots if it cannot prove quiescence. A forgotten transfer
 //! leaves its pool claims and the channel's in-flight state intact.
 //!
@@ -49,9 +49,12 @@ use crate::{
     scmi::{Generator, Kind, PhysicalState, RP1_CLOCKS, Registers, Round, id},
     timer::{self, Deadline, Duration, Timer, WaitTimer, read_instant},
 };
+mod pio;
 mod pool;
 #[cfg(feature = "unstable-ring-dma")]
 mod ring;
+use pio::Gate;
+pub use pio::{PioFifo, PioRequests, PioTransfer};
 use pool::EngineClaim;
 pub use pool::{Lease, Pool};
 #[cfg(feature = "unstable-ring-dma")]
@@ -283,6 +286,19 @@ impl Dma {
         const { assert!(N < 8) };
         Channel {
             state: State::Idle,
+            gate: (),
+            _local: core::marker::PhantomData,
+        }
+    }
+
+    /// # Safety
+    /// Generated resources only. Issue N once, on the core that also owns PIO.
+    #[doc(hidden)]
+    pub const unsafe fn __pio_channel<const N: u8>(&mut self) -> Channel<N, PioRequests> {
+        const { assert!(N < 8) };
+        Channel {
+            state: State::Idle,
+            gate: PioRequests::new(),
             _local: core::marker::PhantomData,
         }
     }
@@ -358,8 +374,9 @@ pub fn __stop_until(
 
 /// One initialized channel. Linux numbering: channels 0 and 1 have 8-beat FIFOs.
 #[derive(Debug)]
-pub struct Channel<const N: u8> {
+pub struct Channel<const N: u8, G = ()> {
     state: State,
+    gate: G,
     _local: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 
@@ -391,13 +408,14 @@ pub const fn max_block_bytes(width_log2: u32) -> u32 {
     }
 }
 
-impl<const N: u8> Channel<N> {
+impl<const N: u8, G: Gate> Channel<N, G> {
     /// Starts one local SRAM-to-SRAM block. Admission errors leave both leases as they were.
     pub fn try_start<'t>(
         &'t mut self,
         src: &'t mut Lease<'_>,
         dst: &'t mut Lease<'_>,
     ) -> Result<Transfer<'t>, Error> {
+        self.gate.check()?;
         start_leased(&mut Mmio, N, &mut self.state, src, dst)
     }
 
@@ -409,6 +427,7 @@ impl<const N: u8> Channel<N> {
         dst: &mut Lease<'_>,
         timeout: Duration,
     ) -> Result<(), Error> {
+        self.gate.check()?;
         copy_leases(N, &mut self.state, src, dst, timeout)
     }
 
@@ -429,6 +448,7 @@ impl<const N: u8> Channel<N> {
         dst: BusAddr,
         len: u32,
     ) -> Result<RawTransfer<'_>, Error> {
+        self.gate.check()?;
         start_block(&mut Mmio, N, &mut self.state, src, dst, len)?;
         Ok(RawTransfer::new(N, &mut self.state))
     }
@@ -440,6 +460,7 @@ impl<const N: u8> Channel<N> {
     /// a cleared enable bit and a CPU barrier alone do not establish that condition.
     pub unsafe fn acknowledge_external_abort(&mut self) -> Result<(), Error> {
         let mut io = Mmio;
+        self.gate.mask(&mut io)?;
         let c = channel_base(N);
         if enabled(&mut io, N) || io.read(c + ch::INTSTATUS) & int::CH_ABORTED == 0 {
             return Err(Error::Recovering);
@@ -461,6 +482,7 @@ impl<const N: u8> Channel<N> {
     }
 
     fn recover(&mut self, io: &mut impl Registers) -> Result<(), Error> {
+        self.gate.mask(io)?;
         if self.state == State::Idle {
             return if enabled(io, N) {
                 Err(Error::Busy)
@@ -762,6 +784,73 @@ fn start_block(
     io.write_relaxed(
         c + ch::CFG_H,
         (u32::from(n) << cfg2::PRIORITY_SHIFT) | cfg2::HS_SEL_SRC | cfg2::HS_SEL_DST,
+    );
+    io.write_relaxed(c + ch::INTCLEAR, int::ALL);
+    io.write_relaxed(c + ch::INTSIGNAL_ENA, 0);
+    io.write_relaxed(
+        c + ch::INTSTATUS_ENA,
+        int::DMA_TFR_DONE | int::ALL_ERR | int::CH_SUSPENDED | int::CH_DISABLED | int::CH_ABORTED,
+    );
+    // The channel registers above are posted in order on the same AHB port. The barrier
+    // completes earlier CPU stores to the source buffer (and keeps the compiler from sinking
+    // them) before the enable; `write` is followed by `dsb` as well.
+    rp1_proto::barrier();
+    // If W1C has not retired the previous status, do not arm a new operation.
+    if io.read(c + ch::INTSTATUS) != 0 {
+        return Err(Error::Recovering);
+    }
+    *state = State::Active;
+    io.write(
+        BASE + common::CHEN,
+        (1 << n) | (1 << (n as u32 + common::CHEN_WE_SHIFT)),
+    );
+    Ok(())
+}
+
+struct Block {
+    src: BusAddr,
+    dst: BusAddr,
+    count: u32,
+    ctl_l: u32,
+    ctl_h: u32,
+    cfg_l: u32,
+    cfg_h: u32,
+}
+
+#[inline(always)]
+fn program_block(
+    io: &mut impl Registers,
+    n: u8,
+    state: &mut State,
+    block: Block,
+) -> Result<(), Error> {
+    if *state != State::Idle {
+        return Err(Error::Recovering);
+    }
+    if enabled(io, n) {
+        return Err(Error::Busy);
+    }
+    let c = channel_base(n);
+    for (offset, v) in [
+        (ch::SAR, block.src.0),
+        (ch::DAR, block.dst.0),
+        (ch::BLOCK_TS, u64::from(block.count - 1)),
+    ] {
+        io.write_relaxed(c + offset, v as u32);
+        io.write_relaxed(c + offset + 4, (v >> 32) as u32);
+    }
+    io.write_relaxed(
+        c + ch::CTL_L,
+        ctl_l::NONPOSTED_LAST_WRITE_EN
+            | (ctl_l::AW_CACHE_NONBUFFERABLE << ctl_l::AW_CACHE_SHIFT)
+            | block.ctl_l,
+    );
+    io.write_relaxed(c + ch::CTL_H, block.ctl_h);
+    io.write_relaxed(c + ch::CFG_L, block.cfg_l);
+    // Priority = channel number (Linux `snps,priority`).
+    io.write_relaxed(
+        c + ch::CFG_H,
+        (u32::from(n) << cfg2::PRIORITY_SHIFT) | block.cfg_h,
     );
     io.write_relaxed(c + ch::INTCLEAR, int::ALL);
     io.write_relaxed(c + ch::INTSIGNAL_ENA, 0);
