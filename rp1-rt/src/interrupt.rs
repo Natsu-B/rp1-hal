@@ -462,8 +462,8 @@ mod tests {
         // SAFETY: The host test owns these tokens and only inspects their fields.
         let (low, high) = unsafe { (Binding::<(), 31, 0>::new(), Binding::<(), 32, 0>::new()) };
         let (low, high) = (low.into_owned_line(), high.into_owned_line());
-        assert_eq!((low.bank_offset, low.bit), (0, 1 << 31));
-        assert_eq!((high.bank_offset, high.bit), (4, 1));
+        assert_eq!((low.bank_offset, low.bit.get()), (0, 1 << 31));
+        assert_eq!((high.bank_offset, high.bit.get()), (4, 1));
     }
 
     #[test]
