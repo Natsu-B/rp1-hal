@@ -11,6 +11,8 @@ use std::{
 
 #[path = "commands.rs"]
 mod commands;
+#[path = "rtt_trace.rs"]
+mod rtt_trace;
 
 const ROUNDS: u32 = 5_000;
 
@@ -27,6 +29,9 @@ pub fn run(args: &[String]) -> Result<()> {
         "poll" => false,
         _ => return Err("expected irq, poll or wake".into()),
     };
+    if std::env::var_os("RP1_PING_MLOCK").as_deref() == Some("1".as_ref()) {
+        rtt_trace::lock_memory()?;
+    }
     check_note(irq, strict)?;
     let opened = Instant::now();
     let fw = Firmware::open()?;
@@ -184,11 +189,16 @@ fn check_note(irq: bool, strict: bool) -> Result<()> {
 
 fn strict_rtt(client: &mut Client<u32, u32>, rounds: u32) -> Result<()> {
     let mut nanos = Vec::with_capacity(rounds as usize);
+    let mut trace = rtt_trace::Trace::from_env(rounds)?;
     let mut failed = 0;
     for value in 0..rounds {
+        let observation = trace.as_ref().map(|trace| trace.begin(client));
         let start = Instant::now();
         let reply = client.call_until(&value, start + CALL_TIMEOUT);
         let ns = start.elapsed().as_nanos();
+        if let (Some(trace), Some(observation)) = (&mut trace, observation) {
+            trace.end(client, observation, value, start, ns);
+        }
         let ok = matches!(reply, Ok(echo) if echo == value);
         println!("PING_SAMPLE seq={value} ns={ns} ok={}", u8::from(ok));
         if ok {
@@ -200,6 +210,9 @@ fn strict_rtt(client: &mut Client<u32, u32>, rounds: u32) -> Result<()> {
                 break;
             }
         }
+    }
+    if let Some(trace) = trace {
+        trace.report()?;
     }
     nanos.sort_unstable();
     let rank = |percent: usize| {
