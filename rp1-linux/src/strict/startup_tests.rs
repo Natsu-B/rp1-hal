@@ -129,6 +129,50 @@ fn stale_boot_cannot_ack_cancel_or_force_on_reopen() {
 }
 
 #[test]
+fn startup_replaces_a_request_left_by_a_previous_boot() {
+    let page = page();
+    page.write(mailbox::REQUEST_EPOCH, 4);
+    page.write(mailbox::REQUEST_SEQ, 42);
+    page.write(mailbox::REQUIRED_CAPS, wake::CREDIT_WAKE);
+    page.write(link::SHM_REQUEST, mailbox::REQUEST_OPCODE);
+    let (listener, _peer) = listener();
+    let at_force = page.clone();
+    crate::notify::fake_doorbell::hook(move || {
+        assert_eq!(at_force.read(mailbox::REQUEST_EPOCH), 2);
+        assert_eq!(at_force.read(mailbox::REQUEST_SEQ), mailbox::FIRST_REQUEST);
+        assert_eq!(
+            at_force.read(mailbox::REQUIRED_CAPS),
+            wake::IRQ_STARTUP_CAPS
+        );
+        assert_eq!(at_force.read(link::SHM_REQUEST), mailbox::REQUEST_OPCODE);
+        at_force.write(mailbox::SEQ, 1);
+        ready(&at_force);
+    });
+    assert_eq!(
+        startup(&profile(), &page, &listener)
+            .unwrap()
+            .0
+            .generation(),
+        2
+    );
+    assert_eq!(page.read(mailbox::ACK), 1);
+}
+
+#[test]
+fn unadvertised_window_reports_restart_before_arming() {
+    let page = page();
+    let (listener, _peer) = listener();
+    for word in [0, 3] {
+        page.write(mailbox::BOOT_EPOCH, word);
+        assert!(matches!(
+            startup(&profile(), &page, &listener),
+            Err(Error::PeerDown(PeerDown::Restarted))
+        ));
+        assert_eq!(page.read(mailbox::WAIT), 0);
+    }
+}
+
+#[test]
 fn startup_rejects_capability_mismatch_and_prioritizes_window_loss() {
     let page = page();
     let (listener, _peer) = listener();

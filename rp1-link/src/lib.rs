@@ -41,6 +41,8 @@ pub enum OpenError<Init> {
 #[derive(Debug)]
 pub enum OpenUntilError {
     Open(OpenError<core::convert::Infallible>),
+    /// The startup owner committed a rejection, including its request deadline.
+    Rejected(rp1_proto::wake::StartupError),
     Wait(rp1_hal::timer::Error),
 }
 

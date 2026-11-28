@@ -235,12 +235,23 @@ pub fn open_until<I, T>(
                 None
             }
             Err(OpenError::Reset) => Some(Err(OpenUntilError::Open(OpenError::Reset))),
-            Err(OpenError::Attach(error)) => {
-                Some(Err(OpenUntilError::Open(OpenError::Attach(error))))
-            }
+            Err(OpenError::Attach(error)) => Some(Err(startup_open_error(error, read_status))),
             Ok(endpoints) => Some(Ok(endpoints)),
         })
         .map_err(OpenUntilError::Wait)?
+}
+
+fn startup_open_error(error: Error, status: impl FnOnce() -> u32) -> OpenUntilError {
+    if error == Error::Invalid {
+        let status = status();
+        if status == link::SHM_WINDOW_LOST {
+            return OpenUntilError::Open(OpenError::Reset);
+        }
+        if let Some(rejected) = StartupError::from_status(status) {
+            return OpenUntilError::Rejected(rejected);
+        }
+    }
+    OpenUntilError::Open(OpenError::Attach(error))
 }
 
 pub(crate) fn read_status() -> u32 {
@@ -413,8 +424,14 @@ fn startup_request(
         return None;
     }
     barrier();
+    let epoch = read(mailbox::REQUEST_EPOCH);
+    if epoch != boot.word() {
+        return None;
+    }
+    // A replacement of a retained request commits its fields with REQUEST_EPOCH.
+    barrier();
     let request = Request {
-        epoch: read(mailbox::REQUEST_EPOCH),
+        epoch,
         seq: read(mailbox::REQUEST_SEQ),
         required_caps: read(mailbox::REQUIRED_CAPS),
     };
@@ -423,7 +440,6 @@ fn startup_request(
         .map_err(|error| {
             StartupEnableError::Rejected(match error {
                 SessionError::Unsupported => StartupError::Unsupported,
-                SessionError::Restarted => StartupError::StaleRequest,
                 _ => StartupError::InvalidRequest,
             })
         });
@@ -682,7 +698,7 @@ mod startup_tests {
     use rp1_proto::{status, wake::IRQ_STARTUP_CAPS};
 
     #[test]
-    fn startup_admits_a_preexisting_request_once_and_rejects_old_or_bad_requests() {
+    fn startup_admits_a_preexisting_request_once_and_rejects_bad_requests() {
         let boot = BootEpoch::new(2).unwrap();
         let offered = IRQ_STARTUP_CAPS;
         let req = |opcode, epoch, seq, caps, status_word| {
@@ -716,7 +732,6 @@ mod startup_tests {
         for (opcode, epoch, seq, caps, error) in [
             (1, 2, 1, offered, StartupError::Unsupported),
             (2, 2, 1, offered, StartupError::Unsupported),
-            (3, 4, 1, offered, StartupError::StaleRequest),
             (3, 2, 0, offered, StartupError::InvalidRequest),
             (3, 2, 1, offered | 4, StartupError::Unsupported),
             (3, 2, 1, offered & !2, StartupError::Unsupported),
@@ -733,6 +748,38 @@ mod startup_tests {
         assert_eq!(
             req(3, 2, 1, offered, link::SHM_WINDOW_LOST),
             Some(Err(EnableError::WindowLost.into())),
+        );
+    }
+
+    #[test]
+    fn stale_request_stays_pending_until_replaced_for_this_boot() {
+        let boot = BootEpoch::new(4).unwrap();
+        let read_request = |epoch| {
+            startup_request(
+                |offset| match offset {
+                    status::PLAT_PCIE => status::PLAT_PCIE_UP,
+                    link::SHM_STATUS => 0,
+                    link::SHM_REQUEST => mailbox::REQUEST_OPCODE,
+                    mailbox::REQUEST_EPOCH => epoch,
+                    mailbox::REQUEST_SEQ if epoch == 4 => mailbox::FIRST_REQUEST,
+                    mailbox::REQUIRED_CAPS if epoch == 4 => IRQ_STARTUP_CAPS,
+                    _ => panic!("read fields before acquiring the current epoch"),
+                },
+                boot,
+                IRQ_STARTUP_CAPS,
+            )
+        };
+        assert_eq!(read_request(2), None);
+        assert_eq!(
+            read_request(4),
+            Some(Ok((
+                Request {
+                    epoch: 4,
+                    seq: mailbox::FIRST_REQUEST,
+                    required_caps: IRQ_STARTUP_CAPS,
+                },
+                IRQ_STARTUP_CAPS,
+            )))
         );
     }
 
@@ -758,5 +805,32 @@ mod startup_tests {
             assert_eq!(&words[..256], &[0; 256]);
             assert_eq!(&words[256..], &[1; 257]);
         }
+    }
+
+    #[test]
+    fn proc1_distinguishes_rejection_from_an_invalid_layout() {
+        for (status, expected) in [
+            (0x11, StartupError::Unsupported),
+            (0x12, StartupError::StaleRequest),
+            (0x13, StartupError::InvalidRequest),
+            (0x14, StartupError::Timeout),
+            (0x15, StartupError::Initialization),
+        ] {
+            let Err(OpenError::Attach(error)) = open_with((), || status, || Ok(())) else {
+                panic!("unexpected attachment result");
+            };
+            assert!(matches!(
+                startup_open_error(error, || status),
+                OpenUntilError::Rejected(error) if error == expected
+            ));
+        }
+        assert!(matches!(
+            startup_open_error(Error::Invalid, || link::SHM_READY),
+            OpenUntilError::Open(OpenError::Attach(Error::Invalid))
+        ));
+        assert!(matches!(
+            startup_open_error(Error::Invalid, || link::SHM_WINDOW_LOST),
+            OpenUntilError::Open(OpenError::Reset)
+        ));
     }
 }

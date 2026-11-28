@@ -22,14 +22,15 @@ pub enum StartupError {
 
 impl StartupError {
     pub fn from_status(status: u32) -> Option<Self> {
-        match status {
-            0x11 => Some(Self::Unsupported),
-            0x12 => Some(Self::StaleRequest),
-            0x13 => Some(Self::InvalidRequest),
-            0x14 => Some(Self::Timeout),
-            0x15 => Some(Self::Initialization),
-            _ => None,
-        }
+        [
+            Self::Unsupported,
+            Self::StaleRequest,
+            Self::InvalidRequest,
+            Self::Timeout,
+            Self::Initialization,
+        ]
+        .into_iter()
+        .find(|&error| error as u32 == status)
     }
 }
 
@@ -43,7 +44,7 @@ pub mod mailbox {
     // word last, so a reader can distinguish mailbox admission from status startup.
     pub const BOOT_EPOCH: usize = START;
     pub const OFFERED_CAPS: usize = START + 4;
-    // Linux commits these fields by publishing link::SHM_REQUEST.
+    // Linux commits an empty slot with link::SHM_REQUEST and a stale slot with REQUEST_EPOCH.
     pub const REQUEST_EPOCH: usize = START + 8;
     pub const REQUEST_SEQ: usize = START + 12;
     pub const REQUIRED_CAPS: usize = START + 16;

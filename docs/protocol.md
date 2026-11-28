@@ -423,15 +423,21 @@ IRQ と絶対期限を使う。schema 2 の旧 client は従来の再確認を�
 |---|---|---|---|
 | `0xc0` | `BOOT_EPOCH` | proc0 | `BOOT_EPOCH` |
 | `0xc4` | `OFFERED_CAPS` | proc0 | `BOOT_EPOCH` |
-| `0xc8` | `REQUEST_EPOCH` | Linux | `SHM_REQUEST`（`0x20`、opcode 3） |
-| `0xcc` | `REQUEST_SEQ` | Linux | `SHM_REQUEST` |
-| `0xd0` | `REQUIRED_CAPS` | Linux | `SHM_REQUEST` |
+| `0xc8` | `REQUEST_EPOCH` | Linux | `SHM_REQUEST`（`0x20`、opcode 3）。旧 epoch の要求を置換する場合はこの語 |
+| `0xcc` | `REQUEST_SEQ` | Linux | `SHM_REQUEST` または置換時の `REQUEST_EPOCH` |
+| `0xd0` | `REQUIRED_CAPS` | Linux | `SHM_REQUEST` または置換時の `REQUEST_EPOCH` |
 | `0xd4` | `ACCEPTED_CAPS` | proc0 | `SHM_STATUS`（`0x1c`） |
 | `0xd8` | `RESULT_SEQ` | proc0 | `SHM_STATUS` |
 | `0xdc` | `WAIT` (arm) | Linux | 同じ語を readback |
 | `0xe0` | `SEQ` | vector owner | 同じ語を readback、次いで pulse |
 | `0xe4` | `ACK` | Linux | 同じ語を readback |
 | `0xe8..0xff` | 予約 0 | proc0 (初期化) | — |
+
+proc0 は現 boot と epoch が異なる要求を無視し、同じ期限で待つ。Linux の writer は UIO
+の排他ロックを保持したまま、旧 epoch の opcode 3 が残っていれば `REQUEST_SEQ` と
+`REQUIRED_CAPS` を書き、barrier 後の `REQUEST_EPOCH` で置換を commit する。proc0 は
+現 epoch を acquire してから置換後のフィールドを読む。同じ boot の不正要求を拒否した結果は
+その boot に保持する。
 
 `RESULT_SEQ` は応答した `REQUEST_SEQ` と同じ値を使う。Linux は `SHM_STATUS` の acquire 後、
 同じ boot epoch/request の結果を使う。要求を受け取る前に期限が切れた場合の `RESULT_SEQ`

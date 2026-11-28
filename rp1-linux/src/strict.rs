@@ -62,9 +62,8 @@ impl Profile {
         if word == u32::MAX {
             return Err(Error::LinkDown);
         }
-        // proc0 advertises before PCIe bring-up, so BAR2 availability implies
-        // the mailbox is already published.
-        let epoch = BootEpoch::new(word)?;
+        // A warm reload can clear the mailbox while BAR2 is still mapped.
+        let epoch = BootEpoch::new(word).map_err(|_| Error::PeerDown(PeerDown::Restarted))?;
         if self.epoch.get().is_some_and(|old| old != epoch) {
             return Err(Error::PeerDown(PeerDown::Restarted));
         }
@@ -117,23 +116,26 @@ impl Profile {
         let epoch = BootEpoch::new(request.epoch)?;
         check_epoch(page, epoch)?;
         check_status_epoch(page, epoch)?;
-        match page.read(link::SHM_REQUEST) {
-            0 => {
-                page.write(mailbox::REQUEST_EPOCH, request.epoch);
-                page.write(mailbox::REQUEST_SEQ, request.seq);
-                page.write(
-                    mailbox::REQUIRED_CAPS,
-                    request.required_caps | (offered & wake::RPC_REPLY_WAKE),
-                );
-                barrier();
-                page.write(link::SHM_REQUEST, mailbox::REQUEST_OPCODE);
-            }
+        let publish = match page.read(link::SHM_REQUEST) {
+            0 => true,
+            mailbox::REQUEST_OPCODE if page.read(mailbox::REQUEST_EPOCH) != request.epoch => true,
             // An exited launcher can leave the request committed before it rang.
-            mailbox::REQUEST_OPCODE
-                if page.read(mailbox::REQUEST_EPOCH) == request.epoch
-                    && page.read(mailbox::REQUEST_SEQ) == request.seq => {}
+            mailbox::REQUEST_OPCODE if page.read(mailbox::REQUEST_SEQ) == request.seq => false,
             u32::MAX => return Err(Error::PeerDown(PeerDown::LinkDown)),
             _ => return Err(Error::Unsupported),
+        };
+        if publish {
+            page.write(mailbox::REQUEST_SEQ, request.seq);
+            page.write(
+                mailbox::REQUIRED_CAPS,
+                request.required_caps | (offered & wake::RPC_REPLY_WAKE),
+            );
+            // The listener lock serializes Linux writers. With a retained opcode,
+            // the new epoch makes the replacement visible to proc0.
+            barrier();
+            page.write(mailbox::REQUEST_EPOCH, request.epoch);
+            barrier();
+            page.write(link::SHM_REQUEST, mailbox::REQUEST_OPCODE);
         }
         let _ = page.read(link::SHM_REQUEST);
         barrier();
