@@ -11,6 +11,8 @@ PINDIRS_DECAY_NS = (7_000, 12_000)
 
 # (pulse count, divider INT:FRAC, cycles, drive ns, nominal period ns,
 #  bounds for 1,000 rising intervals in us)
+# A period in ns has the same numeric value as 1,000 periods in us.
+# At 10 MHz the same 1,000-period span contains period_ns * 10 samples.
 CASES = {
     "1khz": (10000, "10000:0", 20, 500000, 1000000, 990000, 1010000),
     "10khz": (10000, "1000:0", 20, 50000, 100000, 99000, 101000),

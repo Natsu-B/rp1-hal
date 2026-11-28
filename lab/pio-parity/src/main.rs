@@ -81,17 +81,26 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
 }
 
 fn input_only<const N: u8>(_pin: PioPin<N>) -> bool {
+    const IO_BANK0_RESET_CLEAR: *mut u32 = 0x4001_7004 as *mut u32;
+    const IO_BANK0_RESET: u32 = 1 << 19;
+    const RIO_OE_CLEAR: *mut u32 = 0x400e_3004 as *mut u32;
+    const PAD_INPUT: u32 = (1 << 7) | (1 << 6) | (1 << 2) | (1 << 1);
+    const FUNCSEL_RIO: u32 = 5;
+    const ROUTE_MASK: u32 = (0x3f << 12) | 0x1f;
+    const XOR_ALIAS: usize = 0x1000;
     // Isolate the declared pad before changing its mux.
     let io = unsafe { &*pac::IO_BANK0::PTR.cast::<pac::generated::io_bank0::RegisterBlock>() };
     let pads =
         unsafe { &*pac::PADS_BANK0::PTR.cast::<pac::generated::pads_bank0::RegisterBlock>() };
     let ctrl = io.gpio_ctrl(N.into());
     let disable = pac::generated::io_bank0::gpio_ctrl::oeover::DISABLE;
+    let ctrl_xor = (pac::IO_BANK0::PTR.addr() + XOR_ALIAS + 4 + usize::from(N) * 8) as *mut u32;
     unsafe {
-        (0x4001_7004 as *mut u32).write_volatile(1 << 19);
-        pads.gpio(N.into()).write_bits_unchecked(0xc6);
-        (0x400e_3004 as *mut u32).write_volatile(1 << N);
-        ctrl.write_bits_unchecked((disable << 14) | 5);
+        IO_BANK0_RESET_CLEAR.write_volatile(IO_BANK0_RESET);
+        pads.gpio(N.into()).write_bits_unchecked(PAD_INPUT);
+        RIO_OE_CLEAR.write_volatile(1 << N);
+        let route = (disable << 14) | FUNCSEL_RIO;
+        ctrl_xor.write_volatile((ctrl.read().bits() ^ route) & ROUTE_MASK);
     };
     let pad = pads.gpio(N.into()).read();
     pad.ie().bits() && pad.od().bits() && ctrl.read().oeover().bits() == disable

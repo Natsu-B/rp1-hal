@@ -434,6 +434,7 @@ pub(crate) fn pio_output(n: u8, enabled: bool) {
 
 pub(crate) fn pio_release(n: u8) {
     // RIO OE has remained clear since pio_prepare, and OD is still set.
+    // PIO (7) to RIO (5) clears FUNCSEL bit 1.
     write(CLR + ctrl(n), FUNCSEL_PIO & !FUNCSEL_RIO);
 }
 
