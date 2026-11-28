@@ -563,10 +563,13 @@ impl Declaration {
                 if !core.instances.contains_key(irq.instance) {
                     return Err(format!("E5: {owner}.{} needs {}", irq.custom, irq.instance).into());
                 }
-                let mut has_route = false;
-                for candidate in custom.clone().filter(|other| other.custom == irq.custom) {
-                    has_route |= candidate.line(index)?.is_some();
-                }
+                // PIO has two driver rows for one custom handler flag.
+                let has_route = custom
+                    .clone()
+                    .filter(|other| other.custom == irq.custom)
+                    .try_fold(false, |found, candidate| -> Result<bool> {
+                        Ok(found | candidate.line(index)?.is_some())
+                    })?;
                 if !has_route {
                     return Err(format!("E5: {owner}.{} has no verified route", irq.custom).into());
                 }

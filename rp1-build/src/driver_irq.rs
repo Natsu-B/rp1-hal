@@ -42,12 +42,24 @@ impl DriverIrq {
     }
 
     pub fn number(&self, line: &board::VerifiedIrq) -> Result<u8> {
-        if self.module == "pio" {
-            return Ok(line.irq - rp1_proto::board::PIO_IRQ0 as u8);
+        if let Some(index) = self.line_index(line) {
+            return Ok(index);
         }
         board::find_instance(self.instance)
             .map(|instance| instance.number)
             .ok_or_else(|| format!("unknown IRQ-owning instance {}", self.instance).into())
+    }
+
+    pub fn handler_stem(&self, line: &board::VerifiedIrq) -> String {
+        if self.line_index(line).is_some() {
+            line.name.to_ascii_lowercase()
+        } else {
+            self.instance.into()
+        }
+    }
+
+    fn line_index(&self, line: &board::VerifiedIrq) -> Option<u8> {
+        (self.module == "pio").then(|| line.irq - rp1_proto::board::PIO_IRQ0 as u8)
     }
 
     pub fn is_managed(&self, core: &Core) -> bool {

@@ -60,6 +60,7 @@ the moved tokens. Recover them with `sm.uninit(rx, tx)` and `Pins::take`.
 ## rp-hal API differences
 
 - `split`, `build` and `start` return `Result` and return ownership on error.
+- **HW (2026-11-28).** `build()` clears the selected SM's sticky FDEBUG flags.
 - `in_pin_base` and `in_count` describe the relative input range. On RP1,
   `in_count` bounds validation of PIO v0 programs in software.
 - `program.uninstall()` uses the originating PIO borrowed by the allocation.

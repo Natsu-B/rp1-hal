@@ -432,11 +432,7 @@ fn resources(
         for (irq, line) in &managed {
             let vector = line.name;
             let module = irq.module;
-            let instance = if module == "pio" {
-                vector.to_ascii_lowercase()
-            } else {
-                irq.instance.into()
-            };
+            let instance = irq.handler_stem(line);
             let n = irq.number(line)?;
             writeln!(
                 s,
@@ -1278,7 +1274,14 @@ mod tests {
         let managed = render(&declaration(1, "wait_timer='ALARM0'"));
         let no_alarm = render(&declaration(1, ""));
         let alarm_elsewhere = render(&declaration(1, "[proc0]\nwait_timer='ALARM0'"));
-        let wrong_core = render(&declaration(0, "wait_timer='ALARM0'"));
+        let proc0_with_timer = declaration(0, "wait_timer='ALARM0'");
+        let wrong_core = render(&proc0_with_timer);
+        assert!(
+            proc0_with_timer
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("blocking() is unavailable on proc0"))
+        );
         let wrong_custom = declaration(0, "wait_timer='ALARM0'\ncustom_pio_handler=true");
         assert!(
             wrong_custom

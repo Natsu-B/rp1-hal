@@ -157,13 +157,14 @@ macro_rules! service_source {
 
 // Share the wait body with the host model. Expanding it at the call site
 // preserves the size of existing serial waiters.
+// Evaluate `now:` afresh on each arm attempt.
 macro_rules! wait_source {
     (state: $slot:ident, io: $io:ident,
-     alarm: $context:ident.$wait:ident, deadline: $end:ident,
+     alarm: ($wait:path, $context:expr), deadline: $end:ident,
      sources: $mask:expr, probe: $probe:ident, now: $now:expr, error: $error:ty $(,)?) => {{
         let mut active = false;
         let mut post_alarm_probe = true;
-        let result = $context.$wait($end, |final_probe| {
+        let result = $wait($context, $end, |final_probe| {
             if final_probe {
                 return $probe($io);
             }
@@ -247,7 +248,7 @@ pub(crate) fn wait_for<S: Source<I>, L: DeviceLine, const CORE: u8, I, T>(
     };
     wait_source! {
         state: slot, io: io,
-        alarm: context.wait_accepted, deadline: end,
+        alarm: (timer::WaitContext::wait_accepted, &mut context), deadline: end,
         sources: mask, probe: probe,
         now: Timer::new().now(), error: S::Error,
     }

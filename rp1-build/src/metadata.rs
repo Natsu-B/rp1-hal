@@ -149,6 +149,9 @@ impl Declaration {
         if !self.linux.kept().contains_key("uart1") {
             warnings.push("linux.keep omits uart1: GPIO 0/1 are available to RP1 on rpi-cm5");
         }
+        if self.proc0.instances.contains_key("pio") && self.proc0.wait_timer.is_some() {
+            warnings.push("proc0.pio: blocking() is unavailable on proc0; use polling()");
+        }
         warnings
     }
     /// SHA-256 of the declaration, recorded in the note's FIRMWARE record.

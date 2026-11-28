@@ -200,7 +200,7 @@ fn run(slot: &TestSlot, model: &Model) -> (Result<u32, WaitError>, bool, u8) {
     let result = (|| {
         wait_source! {
             state: slot, io: io,
-            alarm: alarm.wait, deadline: end,
+            alarm: (Alarm::wait, &mut alarm), deadline: end,
             sources: RX, probe: probe,
             now: model.time(), error: WaitError,
         }
