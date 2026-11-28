@@ -104,7 +104,7 @@ mod sealed {
     impl<const N: u8, P: super::CompletePins<N>, I> Bus for super::Polling<'_, N, P, I> {}
     impl<B: Bus + ?Sized> Bus for &mut B {}
     impl<P: super::CompletePins<N>, const CORE: u8, const N: u8> Bus
-        for super::Blocking<'_, P, CORE, N>
+        for super::Blocking<'_, N, P, CORE>
     {
     }
     /// Lets a [`super::Bus::admit`] call through; only `spi` can make one, so code outside

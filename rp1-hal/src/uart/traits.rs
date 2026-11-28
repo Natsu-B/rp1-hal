@@ -139,9 +139,9 @@ mod io07 {
     }
 
     forward_io!(Polling<T>; T);
-    forward_io!(Blocking<CORE, N>; const CORE: u8, const N: u8);
-    forward_io!(BlockingRx<CORE, N>; const CORE: u8, const N: u8);
-    forward_io!(BlockingTx<CORE, N>; const CORE: u8, const N: u8);
+    forward_io!(Blocking<N, CORE>; const CORE: u8, const N: u8);
+    forward_io!(BlockingRx<N, CORE>; const CORE: u8, const N: u8);
+    forward_io!(BlockingTx<N, CORE>; const CORE: u8, const N: u8);
 }
 
 #[cfg(any(feature = "eh-nb", feature = "eh02"))]
@@ -266,10 +266,10 @@ mod tests {
         write::<Polling<'_, Tx<2, 4>>>();
         read::<Polling<'_, Uart<2, PinTuple<4, 5>>>>();
         write::<Polling<'_, Uart<2, PinTuple<4, 5>>>>();
-        read::<BlockingRx<'_, 0>>();
-        write::<BlockingTx<'_, 0>>();
-        read::<Blocking<'_, 0>>();
-        write::<Blocking<'_, 0>>();
+        read::<BlockingRx<'_, 1, 0>>();
+        write::<BlockingTx<'_, 1, 0>>();
+        read::<Blocking<'_, 1, 0>>();
+        write::<Blocking<'_, 1, 0>>();
     }
 
     #[cfg(feature = "embedded-io-07")]
@@ -277,8 +277,8 @@ mod tests {
     fn both_versions_are_available_on_the_same_adapter() {
         fn read<T: embedded_io::Read + embedded_io_07::Read + embedded_io_07::ReadReady>() {}
         fn write<T: embedded_io::Write + embedded_io_07::Write + embedded_io_07::WriteReady>() {}
-        read::<BlockingRx<'_, 0>>();
-        write::<BlockingTx<'_, 0>>();
+        read::<BlockingRx<'_, 1, 0>>();
+        write::<BlockingTx<'_, 1, 0>>();
         read::<Polling<'_, Uart<2, PinTuple<4, 5>>>>();
         write::<Polling<'_, Uart<2, PinTuple<4, 5>>>>();
     }

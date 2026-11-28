@@ -28,11 +28,11 @@ note: associated function defined here
    |
   ::: src/uart/irq_wait.rs
    |
-   | / driver_irq::device_irq!(State, Registers,
+   | / driver_irq::device_irq!(State, Registers, wait_device,
+   | |     (instance: u8, wait: &mut WaitTimer, end: Deadline, operation: Operation<'_>) -> Result<usize, Error>;
    | |     0 => Uart0, UART0;
    | |     1 => Uart1, UART1;
-   | |     2 => Uart2, UART2;
-   | |     3 => Uart3, UART3;
+...  |
    | |     4 => Uart4, UART4;
    | | );
    | |_- in this macro invocation
@@ -56,11 +56,11 @@ note: associated function defined here
    |
   ::: src/uart/irq_wait.rs
    |
-   | / driver_irq::device_irq!(State, Registers,
+   | / driver_irq::device_irq!(State, Registers, wait_device,
+   | |     (instance: u8, wait: &mut WaitTimer, end: Deadline, operation: Operation<'_>) -> Result<usize, Error>;
    | |     0 => Uart0, UART0;
    | |     1 => Uart1, UART1;
-   | |     2 => Uart2, UART2;
-   | |     3 => Uart3, UART3;
+...  |
    | |     4 => Uart4, UART4;
    | | );
    | |_- in this macro invocation

@@ -1,7 +1,7 @@
 //! Core-local delivery for generator-owned synchronous device IRQs.
 
 use crate::timer::{self, Deadline, Timer, WaitTimer};
-use rp1_rt::interrupt::{Line, Priority, Slot};
+use rp1_rt::interrupt::{Line, OwnedLine, Priority, Slot};
 
 const CEILING: u8 = 4;
 const PRIORITY: Priority = Priority::new(CEILING).unwrap();
@@ -27,21 +27,57 @@ pub(crate) trait Source<I> {
     fn retire(&mut self, io: &mut I);
 }
 
-enum Delivery<const IRQ: u8> {
-    Unavailable,
-    Unstarted(Line<IRQ>),
-    Started(Line<IRQ>),
+pub(crate) trait DeviceLine {
+    fn is_enabled(&self) -> bool;
+    fn start(&mut self);
 }
 
-pub(crate) struct Managed<S, const IRQ: u8> {
-    line: Delivery<IRQ>,
+impl<const IRQ: u8> DeviceLine for Line<IRQ> {
+    fn is_enabled(&self) -> bool {
+        self.is_enabled()
+    }
+
+    fn start(&mut self) {
+        self.set_priority(PRIORITY);
+        self.enable();
+    }
+}
+
+pub(crate) struct SlotLine(OwnedLine);
+
+// The line stays inside the private Slot, which only lends it on its owning core.
+unsafe impl Send for SlotLine {}
+
+impl SlotLine {
+    pub(crate) fn new<S, const IRQ: u8, const CORE: u8>(
+        line: rp1_rt::interrupt::Binding<S, IRQ, CORE>,
+    ) -> Self {
+        // Startup sets priority 4. The generator gives the waiter exclusive ownership.
+        Self(line.into_owned_line())
+    }
+}
+
+impl DeviceLine for SlotLine {
+    fn is_enabled(&self) -> bool {
+        self.0.is_enabled()
+    }
+
+    fn start(&mut self) {
+        self.0.enable();
+    }
+}
+
+pub(crate) struct Managed<S, L> {
+    line: Option<L>,
+    started: bool,
     source: S,
 }
 
-impl<S, const IRQ: u8> Managed<S, IRQ> {
+impl<S, L: DeviceLine> Managed<S, L> {
     pub(crate) const fn new(source: S) -> Self {
         Self {
-            line: Delivery::Unavailable,
+            line: None,
+            started: false,
             source,
         }
     }
@@ -49,117 +85,99 @@ impl<S, const IRQ: u8> Managed<S, IRQ> {
     // Only the first arm may enable the NVIC line. Later removal is an error.
     fn check_line(&self) -> Result<(), Error> {
         match &self.line {
-            Delivery::Unstarted(_) => Ok(()),
-            Delivery::Started(line) if line.is_enabled() => Ok(()),
+            Some(line) if !self.started || line.is_enabled() => Ok(()),
             _ => Err(Error::IrqUnavailable),
         }
     }
 
     fn start_line(&mut self) {
-        if matches!(self.line, Delivery::Unstarted(_))
-            && let Delivery::Unstarted(mut line) =
-                core::mem::replace(&mut self.line, Delivery::Unavailable)
+        if !self.started
+            && let Some(line) = &mut self.line
         {
-            line.set_priority(PRIORITY);
-            line.enable();
-            self.line = Delivery::Started(line);
+            line.start();
+            self.started = true;
         }
     }
 }
 
-// Each device instance has its own static in core-local DSRAM. Slot also
-// checks the core in the generated handler and resource constructor.
-pub(crate) type CoreState<S, const IRQ: u8, const CORE: u8> = Slot<Managed<S, IRQ>, CORE, CEILING>;
+pub(crate) type CoreState<S, L, const CORE: u8> = Slot<Managed<S, L>, CORE, CEILING>;
 
-// Separate statics allow the linker to discard a core's unused slot.
-pub(crate) trait Instance<const IRQ: u8>: Sized + 'static {
-    const PROC0: &'static CoreState<Self, IRQ, 0>;
-    const PROC1: &'static CoreState<Self, IRQ, 1>;
+#[inline(always)]
+pub(crate) fn bind<S, L: DeviceLine, const CORE: u8>(slot: &CoreState<S, L, CORE>, line: L) {
+    let stored = slot.try_with(|state| {
+        state.line = Some(line);
+        state.started = false;
+    });
+    debug_assert!(stored.is_some());
 }
 
-pub(crate) struct PerCore<S, const IRQ: u8>(core::marker::PhantomData<S>);
+#[inline(never)]
+pub(crate) fn check<S, L: DeviceLine, const CORE: u8>(
+    slot: &CoreState<S, L, CORE>,
+) -> Result<(), Error> {
+    slot.try_with(|state| state.check_line())
+        .ok_or(Error::Busy)?
+}
 
-impl<S: Instance<IRQ>, const IRQ: u8> PerCore<S, IRQ> {
-    #[inline(always)]
-    fn with<const CORE: u8, T>(f: impl FnOnce(&mut Managed<S, IRQ>) -> T) -> Option<T> {
-        const { assert!(CORE < 2) };
-        if CORE == 0 {
-            S::PROC0.try_with(f)
-        } else {
-            S::PROC1.try_with(f)
+#[inline(always)]
+pub(crate) fn on_interrupt<S: Source<I>, L: DeviceLine, const CORE: u8, I>(
+    slot: &CoreState<S, L, CORE>,
+    io: &mut I,
+) -> u32 {
+    let pending = slot.try_with(|state| state.source.service(io)).unwrap_or(0);
+    if pending != 0 {
+        rp1_rt::send_event();
+    }
+    pending
+}
+
+#[inline]
+pub(crate) fn wait_for<S: Source<I>, L: DeviceLine, const CORE: u8, I, T>(
+    slot: &CoreState<S, L, CORE>,
+    io: &mut I,
+    wait: &mut WaitTimer,
+    limit: Limit,
+    mask: u32,
+    mut probe: impl FnMut(&mut I) -> Option<Result<T, S::Error>>,
+) -> Result<T, S::Error> {
+    let mut context = wait.thread_context()?;
+    check(slot)?;
+    let end = match limit {
+        Limit::Absolute(end) => {
+            end.check(Timer::new().now())?;
+            end
         }
-    }
-
-    #[inline(always)]
-    pub(crate) fn bind<const CORE: u8>(line: Line<IRQ>) {
-        let stored = Self::with::<CORE, _>(|state| state.line = Delivery::Unstarted(line));
-        debug_assert!(stored.is_some());
-    }
-
-    #[inline(always)]
-    pub(crate) fn check<const CORE: u8>() -> Result<(), Error> {
-        Self::with::<CORE, _>(|state| state.check_line()).ok_or(Error::Busy)?
-    }
-
-    #[inline(always)]
-    pub(crate) fn on_interrupt<const CORE: u8, I>(io: &mut I) -> u32
-    where
-        S: Source<I>,
-    {
-        let pending = Self::with::<CORE, _>(|state| state.source.service(io)).unwrap_or(0);
-        if pending != 0 {
-            rp1_rt::send_event();
+        // Relative calls already checked the deadline at their entry tick.
+        Limit::Relative(end) => end,
+    };
+    let mut active = false;
+    let mut post_alarm_probe = true;
+    let result = context.wait_accepted(end, |final_probe| {
+        if final_probe {
+            return probe(io);
         }
-        pending
-    }
-
-    #[inline]
-    pub(crate) fn wait_for<const CORE: u8, I, T>(
-        io: &mut I,
-        wait: &mut WaitTimer,
-        limit: Limit,
-        mask: u32,
-        mut probe: impl FnMut(&mut I) -> Option<Result<T, S::Error>>,
-    ) -> Result<T, S::Error>
-    where
-        S: Source<I>,
-    {
-        let mut context = wait.thread_context()?;
-        Self::check::<CORE>()?;
-        let end = match limit {
-            Limit::Absolute(end) => {
-                end.check(Timer::new().now())?;
-                end
-            }
-            // Relative calls already checked the deadline at their entry tick.
-            Limit::Relative(end) => end,
-        };
-        let mut active = false;
-        let mut post_alarm_probe = true;
-        let result = context.wait_accepted(end, |final_probe| {
-            if final_probe {
+        if active {
+            // The first probe after alarm arm closes the arm/check race.
+            // If it misses, a device IRQ can still leave an event for WFE.
+            if core::mem::take(&mut post_alarm_probe) {
                 return probe(io);
             }
-            if active {
-                // The first probe after alarm arm closes the arm/check race.
-                // If it misses, a device IRQ can still leave an event for WFE.
-                if core::mem::take(&mut post_alarm_probe) {
-                    return probe(io);
-                }
-                let fired =
-                    Self::with::<CORE, _>(|state| !state.source.is_armed()).unwrap_or(false);
-                if !fired {
-                    // Unrelated events do not turn an armed wait into polling.
-                    return None;
-                }
+            let fired = slot
+                .try_with(|state| !state.source.is_armed())
+                .unwrap_or(false);
+            if !fired {
+                // Unrelated events do not turn an armed wait into polling.
+                return None;
             }
-            probe_and_arm(io, &mut probe, |io| {
-                // Arming can start device work. A preemption before that
-                // point can span a timer wrap.
-                if Timer::new().now() >= end.instant() {
-                    return Ok(false);
-                }
-                let armed = Self::with::<CORE, _>(|state| {
+        }
+        probe_and_arm(io, &mut probe, |io| {
+            // Arming can start device work. A preemption before that
+            // point can span a timer wrap.
+            if Timer::new().now() >= end.instant() {
+                return Ok(false);
+            }
+            let armed = slot
+                .try_with(|state| {
                     let armed = state.source.arm(io, mask)?;
                     if armed {
                         state.start_line();
@@ -167,18 +185,17 @@ impl<S: Instance<IRQ>, const IRQ: u8> PerCore<S, IRQ> {
                     Ok::<_, S::Error>(armed)
                 })
                 .ok_or(Error::Busy)??;
-                active |= armed;
-                Ok(armed)
-            })
-        });
-        if active {
-            // Thread admission prevents overlapping borrows with the ISR.
-            Self::with::<CORE, _>(|state| state.source.retire(io)).ok_or(Error::Busy)?;
-        }
-        result?
+            active |= armed;
+            Ok(armed)
+        })
+    });
+    if active {
+        // Thread admission prevents overlapping borrows with the ISR.
+        slot.try_with(|state| state.source.retire(io))
+            .ok_or(Error::Busy)?;
     }
+    result?
 }
-
 pub(crate) fn probe_and_arm<I, T, E>(
     io: &mut I,
     mut probe: impl FnMut(&mut I) -> Option<Result<T, E>>,
@@ -194,24 +211,41 @@ pub(crate) fn probe_and_arm<I, T, E>(
     }
 }
 
-// The match is on a const parameter, so an image only links the slots and
-// wait code for the instances and cores it declares.
+// Only declared slots and thin entry points are linked. Each block's waiter
+// takes a runtime slot and MMIO address, regardless of the instance number.
 macro_rules! device_irq {
-    ($source:ident, $io:ident, $($n:literal => $block:ident, $vector:ident;) +) => {
-        $(
-            impl $crate::driver_irq::Instance<{ $crate::pac::Interrupt::$vector as u8 }> for $source<$n> {
-                const PROC0: &'static $crate::driver_irq::CoreState<Self, { $crate::pac::Interrupt::$vector as u8 }, 0> = {
-                    static STATE: $crate::driver_irq::CoreState<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }, 0> =
-                        rp1_rt::interrupt::Slot::new($crate::driver_irq::Managed::new($source::new()));
-                    &STATE
-                };
-                const PROC1: &'static $crate::driver_irq::CoreState<Self, { $crate::pac::Interrupt::$vector as u8 }, 1> = {
-                    static STATE: $crate::driver_irq::CoreState<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }, 1> =
-                        rp1_rt::interrupt::Slot::new($crate::driver_irq::Managed::new($source::new()));
-                    &STATE
-                };
-            }
+    ($source:ident, $io:ident, $wait:path, ($($arg:ident: $ty:ty),+) -> $output:ty;
+     $($n:literal => $block:ident, $vector:ident;)+) => {
+        type IrqState<const CORE: u8> =
+            $crate::driver_irq::CoreState<$source, $crate::driver_irq::SlotLine, CORE>;
 
+        #[inline(always)]
+        fn irq_state0<const N: u8>() -> &'static IrqState<0> {
+            const { assert!($(N == $n)||+) };
+            match N {
+                $($n => {
+                    static STATE: IrqState<0> =
+                        rp1_rt::interrupt::Slot::new($crate::driver_irq::Managed::new($source::new($n)));
+                    &STATE
+                },)+
+                _ => unreachable!(),
+            }
+        }
+
+        #[inline(always)]
+        fn irq_state1<const N: u8>() -> &'static IrqState<1> {
+            const { assert!($(N == $n)||+) };
+            match N {
+                $($n => {
+                    static STATE: IrqState<1> =
+                        rp1_rt::interrupt::Slot::new($crate::driver_irq::Managed::new($source::new($n)));
+                    &STATE
+                },)+
+                _ => unreachable!(),
+            }
+        }
+
+        $(
             impl<P: CompletePins<$n>, const CORE: u8> Parts<$n, P, Irq<$n, CORE>> {
                 /// # Safety
                 /// The generator must install the matching handler on CORE
@@ -226,45 +260,45 @@ macro_rules! device_irq {
                         CORE,
                     >,
                 ) -> Self {
-                    $crate::driver_irq::PerCore::<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }>
-                        ::bind::<CORE>(line.into_line());
+                    const { assert!(CORE < 2) };
+                    let line = $crate::driver_irq::SlotLine::new(line);
+                    if CORE == 0 {
+                        $crate::driver_irq::bind(irq_state0::<$n>(), line);
+                    } else {
+                        $crate::driver_irq::bind(irq_state1::<$n>(), line);
+                    }
                     Self { token, pins, irq: Irq(PhantomData) }
                 }
             }
         )+
 
-        // UART checks on admission to the shared waiter.
+        // SPI and I2C also check before starting a transfer. UART checks in the waiter.
         #[allow(dead_code)]
         #[inline(always)]
         fn check_irq<const N: u8, const CORE: u8>() -> Result<(), $crate::driver_irq::Error> {
-            const { assert!($(N == $n)||+) };
-            match N {
-                $($n => $crate::driver_irq::PerCore::<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }>::check::<CORE>(),)+
-                _ => unreachable!(),
+            if CORE == 0 {
+                $crate::driver_irq::check(irq_state0::<N>())
+            } else {
+                $crate::driver_irq::check(irq_state1::<N>())
             }
         }
 
         #[inline(always)]
         fn service_irq<const N: u8, const CORE: u8, I: $io>(io: &mut I) -> u32 {
-            const { assert!($(N == $n)||+) };
-            match N {
-                $($n => $crate::driver_irq::PerCore::<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }>::on_interrupt::<CORE, _>(io),)+
-                _ => unreachable!(),
+            const { assert!(CORE < 2) };
+            if CORE == 0 {
+                $crate::driver_irq::on_interrupt(irq_state0::<N>(), io)
+            } else {
+                $crate::driver_irq::on_interrupt(irq_state1::<N>(), io)
             }
         }
 
         #[inline(always)]
-        fn wait_for_irq<const N: u8, const CORE: u8, I: $io, T>(
-            io: &mut I,
-            wait: &mut $crate::timer::WaitTimer,
-            limit: $crate::driver_irq::Limit,
-            mask: u32,
-            probe: impl FnMut(&mut I) -> Option<Result<T, Error>>,
-        ) -> Result<T, Error> {
-            const { assert!($(N == $n)||+) };
-            match N {
-                $($n => $crate::driver_irq::PerCore::<$source<$n>, { $crate::pac::Interrupt::$vector as u8 }>::wait_for::<CORE, _, _>(io, wait, limit, mask, probe),)+
-                _ => unreachable!(),
+        fn wait_for_irq<const N: u8, const CORE: u8>($($arg: $ty),+) -> $output {
+            if CORE == 0 {
+                $wait(irq_state0::<N>(), $($arg),+)
+            } else {
+                $wait(irq_state1::<N>(), $($arg),+)
             }
         }
 

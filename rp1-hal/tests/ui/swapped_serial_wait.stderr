@@ -1,0 +1,32 @@
+error[E0308]: mismatched types
+ --> tests/ui/swapped_serial_wait.rs:4:39
+  |
+4 |     let _: uart::Blocking<'_, 0, 1> = uart.blocking(timer);
+  |            ------------------------   ^^^^^^^^^^^^^^^^^^^^ expected `0`, found `1`
+  |            |
+  |            expected due to this
+  |
+  = note: expected struct `Blocking<'_, 0, 1>`
+             found struct `Blocking<'_, 1, 0>`
+
+error[E0308]: mismatched types
+  --> tests/ui/swapped_serial_wait.rs:11:66
+   |
+11 |     let _: spi::Blocking<'_, 0, (Pin<11>, Pin<10>, Pin<9>), 1> = spi.blocking(timer);
+   |            ---------------------------------------------------   ^^^^^^^^^^^^^^^^^^^ expected `0`, found `1`
+   |            |
+   |            expected due to this
+   |
+   = note: expected struct `Blocking<'_, 0, (Pin<11>, Pin<10>, Pin<9>), 1>`
+              found struct `Blocking<'_, 1, (Pin<21>, Pin<20>, Pin<19>), 0>`
+
+error[E0308]: mismatched types
+  --> tests/ui/swapped_serial_wait.rs:18:56
+   |
+18 |     let _: i2c::Blocking<'_, 0, (Pin<8>, Pin<9>), 1> = i2c.blocking(timer);
+   |            -----------------------------------------   ^^^^^^^^^^^^^^^^^^^ expected `0`, found `1`
+   |            |
+   |            expected due to this
+   |
+   = note: expected struct `Blocking<'_, 0, (Pin<8>, Pin<9>), 1>`
+              found struct `Blocking<'_, 1, (Pin<2>, Pin<3>), 0>`

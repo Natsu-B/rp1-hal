@@ -9,7 +9,8 @@ use crate::{
 /// Capability carried by SPI parts when the declaration reserves the IRQ for the HAL.
 pub struct Irq<const N: u8, const CORE: u8>(PhantomData<core::cell::Cell<()>>);
 
-driver_irq::device_irq!(SpiSource, Io,
+driver_irq::device_irq!(SpiSource, Io, wait_device,
+    (timer: &mut WaitTimer, io: &mut Mmio, mask: u32, end: Deadline) -> Result<u32, Error>;
     0 => Spi0, SPI0;
     1 => Spi1, SPI1;
     3 => Spi3, SPI3;
@@ -37,17 +38,17 @@ impl From<driver_irq::Error> for Error {
     }
 }
 
-struct SpiSource<const N: u8> {
+struct SpiSource {
     mask: u32,
 }
 
-impl<const N: u8> SpiSource<N> {
-    const fn new() -> Self {
+impl SpiSource {
+    const fn new(_instance: u8) -> Self {
         Self { mask: 0 }
     }
 }
 
-impl<const N: u8, I: Io> Source<I> for SpiSource<N> {
+impl<I: Io> Source<I> for SpiSource {
     type Error = Error;
 
     fn is_armed(&self) -> bool {
@@ -95,7 +96,7 @@ impl<const N: u8, I: Io> Source<I> for SpiSource<N> {
 }
 
 /// Synchronous SPI controller access using the FIFO/error IRQ, a dedicated wait alarm and WFE.
-pub struct Blocking<'a, P: CompletePins<N>, const CORE: u8, const N: u8 = 0> {
+pub struct Blocking<'a, const N: u8, P: CompletePins<N>, const CORE: u8> {
     spi: &'a mut Spi<N, P, Controller, Irq<N, CORE>>,
     timer: &'a mut WaitTimer,
     config: WaitConfig,
@@ -104,7 +105,7 @@ pub struct Blocking<'a, P: CompletePins<N>, const CORE: u8, const N: u8 = 0> {
 impl<P: CompletePins<N>, const CORE: u8, const N: u8> Spi<N, P, Controller, Irq<N, CORE>> {
     /// Borrow the controller for the normal IRQ-backed synchronous operations.
     /// Each operation checks thread context and IRQ delivery before accessing the bus.
-    pub fn blocking<'a>(&'a mut self, timer: &'a mut WaitTimer) -> Blocking<'a, P, CORE, N> {
+    pub fn blocking<'a>(&'a mut self, timer: &'a mut WaitTimer) -> Blocking<'a, N, P, CORE> {
         Blocking {
             spi: self,
             timer,
@@ -145,7 +146,7 @@ where
     }
 }
 
-impl<P: CompletePins<N>, const CORE: u8, const N: u8> Blocking<'_, P, CORE, N> {
+impl<P: CompletePins<N>, const CORE: u8, const N: u8> Blocking<'_, N, P, CORE> {
     pub fn with_wait_config(mut self, config: WaitConfig) -> Self {
         self.config = config;
         self
@@ -252,7 +253,7 @@ impl<P: CompletePins<N>, const CORE: u8, const N: u8> Blocking<'_, P, CORE, N> {
                 let watermark = in_flight.min(transfer.depth.div_ceil(2)) as u32 - 1;
                 io.write(RXFTLR, watermark);
                 watermark_changed = watermark != 0;
-                match wait_for::<CORE, N>(self.timer, &mut io, int::RXFI, end) {
+                match wait_for_irq::<N, CORE>(self.timer, &mut io, int::RXFI, end) {
                     Ok(_) => {}
                     Err(Error::Timeout) => {
                         // Drain a final ready batch only. No new frame may start.
@@ -289,7 +290,7 @@ fn flush<const CORE: u8, const N: u8>(
         return Ok(());
     }
     let empty = if status & sr::TFE == 0 {
-        wait_for::<CORE, N>(timer, io, int::TXEI, end)?
+        wait_for_irq::<N, CORE>(timer, io, int::TXEI, end)?
     } else {
         io.now_low()
     };
@@ -351,14 +352,17 @@ fn frame_delay(bits: u8, hz: u32) -> Duration {
 }
 
 #[rp1_rt::isram]
-fn wait_for<const CORE: u8, const N: u8>(
+fn wait_device<const CORE: u8>(
+    state: &IrqState<CORE>,
     timer: &mut WaitTimer,
     io: &mut Mmio,
     mask: u32,
     end: Deadline,
 ) -> Result<u32, Error> {
     let mask = mask | ERRORS;
-    wait_for_irq::<N, CORE, _, _>(io, timer, Limit::Absolute(end), mask, |io| ready(io, mask))
+    driver_irq::wait_for(state, io, timer, Limit::Absolute(end), mask, |io| {
+        ready(io, mask)
+    })
 }
 
 fn ready(io: &mut impl Io, mask: u32) -> Option<Result<u32, Error>> {
@@ -374,7 +378,7 @@ fn ready(io: &mut impl Io, mask: u32) -> Option<Result<u32, Error>> {
     })
 }
 
-impl<W: Word, P: CompletePins<N>, const CORE: u8, const N: u8> Bus<W> for Blocking<'_, P, CORE, N> {
+impl<W: Word, P: CompletePins<N>, const CORE: u8, const N: u8> Bus<W> for Blocking<'_, N, P, CORE> {
     fn admit(
         &mut self,
         _: sealed::Key,
@@ -429,7 +433,7 @@ impl<W: Word, P: CompletePins<N>, const CORE: u8, const N: u8> Bus<W> for Blocki
     }
 }
 
-spi_bus!([P: CompletePins<N>, const CORE: u8, const N: u8], Blocking<'_, P, CORE, N>);
+spi_bus!([P: CompletePins<N>, const CORE: u8, const N: u8], Blocking<'_, N, P, CORE>);
 
 #[cfg(test)]
 mod tests {
@@ -440,14 +444,7 @@ mod tests {
     fn instance_routes_match_register_base_and_clock() {
         use crate::pac;
 
-        assert_eq!(
-            IRQ_ROUTES,
-            &[
-                (0, 16, 19),
-                (1, 17, 20),
-                (3, 19, 22)
-            ]
-        );
+        assert_eq!(IRQ_ROUTES, &[(0, 16, 19), (1, 17, 20), (3, 19, 22)]);
         for (n, address, clock) in [
             (0, pac::SPI0::PTR, pac::SPI0::CLOCK_DEPENDENCY),
             (1, pac::SPI1::PTR, pac::SPI1::CLOCK_DEPENDENCY),
@@ -463,7 +460,7 @@ mod tests {
     #[test]
     fn stray_irq_is_masked_without_waking_or_disarming_the_wait() {
         let mut io = Model::new(4);
-        let mut source = SpiSource::<0>::new();
+        let mut source = SpiSource::new(0);
         io.imr = int::TXEI;
         io.risr = int::TXEI;
         assert_eq!(source.service(&mut io), 0);
@@ -480,7 +477,7 @@ mod tests {
     #[test]
     fn source_retires_and_rearms_without_stale_completion() {
         let mut io = Model::new(4);
-        let mut source = SpiSource::<0>::new();
+        let mut source = SpiSource::new(0);
         assert_eq!(source.arm(&mut io, int::TXEI | ERRORS), Ok(true));
         io.risr = int::TXEI;
         assert_eq!(source.service(&mut io), int::TXEI);

@@ -2,16 +2,17 @@
 
 use super::*;
 use crate::{
-    driver_irq::{self, CoreState, Instance, Limit, Managed, PerCore, Source},
+    driver_irq::{self, CoreState, Limit, Managed, Source},
     timer::{WaitConfig, WaitTimer},
 };
 use core::marker::PhantomData;
-use rp1_rt::interrupt::{Binding, BlockIrq, Slot};
+use rp1_rt::interrupt::{Binding, BlockIrq, Line, Slot};
 
 const ADC: u8 = 0;
 const ADC_IRQ: u8 = crate::pac::Interrupt::ADC_FIFO as u8;
 const FIFO_IRQ: u32 = 1;
-type Line<const CORE: u8> = Binding<BlockIrq<{ rp1_proto::BlockId::Adc as u16 }>, ADC_IRQ, CORE>;
+type FifoBinding<const CORE: u8> =
+    Binding<BlockIrq<{ rp1_proto::BlockId::Adc as u16 }>, ADC_IRQ, CORE>;
 
 /// Capability carried by parts when the declaration reserves ADC_FIFO for the HAL.
 pub struct Irq<const N: u8, const CORE: u8>(PhantomData<core::cell::Cell<()>>);
@@ -21,8 +22,12 @@ impl<const CORE: u8> Parts<Irq<ADC, CORE>> {
     /// Only the generated resource constructor may consume this line. It must
     /// install the matching ADC_FIFO handler on CORE.
     #[doc(hidden)]
-    pub unsafe fn __new(line: Line<CORE>) -> Self {
-        StateSlots::bind::<CORE>(line.into_line());
+    pub unsafe fn __new(line: FifoBinding<CORE>) -> Self {
+        if CORE == 0 {
+            driver_irq::bind(&PROC0, line.into_line());
+        } else {
+            driver_irq::bind(&PROC1, line.into_line());
+        }
         Self {
             _irq: Irq(PhantomData),
             _not_sync: PhantomData,
@@ -34,17 +39,10 @@ struct FifoSource {
     armed: bool,
 }
 
-static PROC0: CoreState<FifoSource, ADC_IRQ, 0> =
+static PROC0: CoreState<FifoSource, Line<ADC_IRQ>, 0> =
     Slot::new(Managed::new(FifoSource { armed: false }));
-static PROC1: CoreState<FifoSource, ADC_IRQ, 1> =
+static PROC1: CoreState<FifoSource, Line<ADC_IRQ>, 1> =
     Slot::new(Managed::new(FifoSource { armed: false }));
-type StateSlots = PerCore<FifoSource, ADC_IRQ>;
-
-impl Instance<ADC_IRQ> for FifoSource {
-    const PROC0: &'static CoreState<Self, ADC_IRQ, 0> = &PROC0;
-    const PROC1: &'static CoreState<Self, ADC_IRQ, 1> = &PROC1;
-}
-
 impl From<driver_irq::Error> for Error {
     fn from(error: driver_irq::Error) -> Self {
         match error {
@@ -148,13 +146,18 @@ impl<I: Registers> Source<WaitIo<'_, I>> for FifoSource {
 #[doc(hidden)]
 #[inline(always)]
 pub unsafe fn __on_interrupt<const N: u8, const CORE: u8>() -> u32 {
-    const { assert!(N == ADC) };
+    const { assert!(N == ADC && CORE < 2) };
     // The HAL never asserts ADC reset, and RESET_DONE cannot indicate readiness.
-    StateSlots::on_interrupt::<CORE, _>(&mut WaitIo {
+    let mut io = WaitIo {
         regs: Mmio,
         request: None,
         prepared: false,
-    })
+    };
+    if CORE == 0 {
+        driver_irq::on_interrupt(&PROC0, &mut io)
+    } else {
+        driver_irq::on_interrupt(&PROC1, &mut io)
+    }
 }
 
 /// Synchronous ADC access using ADC_FIFO, a dedicated wait alarm and WFE.
@@ -202,8 +205,11 @@ impl<const CORE: u8> Blocking<'_, CORE> {
             request: Some((&mut self.adc.state, channel)),
             prepared: false,
         };
-        let result =
-            StateSlots::wait_for::<CORE, _, _>(&mut io, self.timer, limit, FIFO_IRQ, WaitIo::probe);
+        let result = if CORE == 0 {
+            driver_irq::wait_for(&PROC0, &mut io, self.timer, limit, FIFO_IRQ, WaitIo::probe)
+        } else {
+            driver_irq::wait_for(&PROC1, &mut io, self.timer, limit, FIFO_IRQ, WaitIo::probe)
+        };
         if io.prepared
             && matches!(self.adc.state, State::Converting(_))
             && (result != Err(Error::Timeout)

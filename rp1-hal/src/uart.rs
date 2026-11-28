@@ -49,6 +49,7 @@ const DIVISOR_PER_BIT_US: u32 = crate::clocks::XOSC_HZ / 250_000;
 const LCR_H_8N1_FIFO: u32 = 0x70;
 /// UARTEN, TXE, RXE.
 const CR_ENABLE: u32 = 0x301;
+const CR_LBE: u32 = 1 << 7;
 /// RESETS CTRL1 through its set and clear aliases: one bit per UART, so asserting or releasing
 /// this UART's reset leaves the sibling UARTs (possibly Linux's) and every other block alone.
 const RESETS: usize = 0x4001_4000;
@@ -392,15 +393,46 @@ where
         clocks: &Clocks,
         config: impl Into<Config>,
     ) -> Result<Uart<N, PinTuple<TX, RX>, I>, InitError<N, PinTuple<TX, RX>, I>> {
+        self.init_with_route(clocks, config.into(), false)
+    }
+
+    /// Initialize PL011 internal loopback with both pads disconnected.
+    /// Free and reinitialize the UART to connect it to the pads.
+    pub fn init_loopback(
+        self,
+        clocks: &Clocks,
+        config: impl Into<Config>,
+    ) -> Result<Uart<N, PinTuple<TX, RX>, I>, InitError<N, PinTuple<TX, RX>, I>> {
+        self.init_with_route(clocks, config.into(), true)
+    }
+
+    fn init_with_route(
+        self,
+        clocks: &Clocks,
+        config: Config,
+        loopback: bool,
+    ) -> Result<Uart<N, PinTuple<TX, RX>, I>, InitError<N, PinTuple<TX, RX>, I>> {
         if !clocks.still_current() {
             return Err(InitError::new(Error::Precondition, self));
         }
-        self.init_on(&mut Mmio, clocks.uart(), config.into(), |tx, rx| {
-            (
-                tx.into_alternate(<Pin<TX> as TxPin<N>>::FUNC, IDLE_PAD, TX_PAD),
-                rx.into_alternate(<Pin<RX> as RxPin<N>>::FUNC, IDLE_PAD, IDLE_PAD),
-            )
-        })
+        let uart = self.init_on(&mut Mmio, clocks.uart(), config, |tx, rx| {
+            if loopback {
+                const DISCONNECTED: u8 = 31;
+                (
+                    tx.into_alternate(DISCONNECTED, 0, 0x80),
+                    rx.into_alternate(DISCONNECTED, 0, 0x80),
+                )
+            } else {
+                (
+                    tx.into_alternate(<Pin<TX> as TxPin<N>>::FUNC, IDLE_PAD, TX_PAD),
+                    rx.into_alternate(<Pin<RX> as RxPin<N>>::FUNC, IDLE_PAD, IDLE_PAD),
+                )
+            }
+        })?;
+        if loopback {
+            Mmio.write(base(N) + CR, CR_ENABLE | CR_LBE);
+        }
+        Ok(uart)
     }
 
     fn init_on(
@@ -838,6 +870,19 @@ where
     /// Selects the synchronous polling engine.
     pub fn polling(&mut self) -> Polling<'_, Self> {
         Polling(self)
+    }
+
+    /// Feed transmitted data back into RX. Change this while RX is quiescent
+    /// and the transmitter is idle. The GPIO routing stays as configured.
+    pub fn set_loopback(&mut self, on: bool) -> Result<(), Error> {
+        let mut io = Mmio;
+        let base = base(N);
+        if self.halves.0.state.resetting || io.read(base + FR) & FR_BUSY != 0 {
+            return Err(Error::Busy);
+        }
+        let cr = io.read(base + CR);
+        io.write(base + CR, (cr & !CR_LBE) | if on { CR_LBE } else { 0 });
+        Ok(())
     }
 
     /// See [`Tx::try_write_byte`].

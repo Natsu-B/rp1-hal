@@ -14,7 +14,7 @@ use rp1_hal::{
     spi::{Blocking, Device, Error},
     timer::WaitTimer,
 };
-type Dev<'a> = Device<Blocking<'a, rp1::Spi0Pins, 1>, 8>;
+type Dev<'a> = Device<Blocking<'a, 0, rp1::Spi0Pins, 1>, 8>;
 pub type Parts = (rp1::Spi0, Pin<8>);
 
 pub fn prove(

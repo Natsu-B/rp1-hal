@@ -186,26 +186,26 @@ impl<const IRQ: u8> Line<IRQ> {
 #[doc(hidden)]
 pub struct OwnedLine {
     bank_offset: usize,
-    bit: u32,
+    bit: core::num::NonZeroU32,
     _core: core::marker::PhantomData<*mut ()>,
 }
 
 impl OwnedLine {
     #[doc(hidden)]
     pub fn is_enabled(&self) -> bool {
-        Hardware.read(ISER + self.bank_offset) & self.bit != 0
+        Hardware.read(ISER + self.bank_offset) & self.bit.get() != 0
     }
 
     pub fn disable(&mut self) {
-        Hardware.write(ICER + self.bank_offset, self.bit);
+        Hardware.write(ICER + self.bank_offset, self.bit.get());
     }
 
     pub fn enable(&mut self) {
-        Hardware.write(ISER + self.bank_offset, self.bit);
+        Hardware.write(ISER + self.bank_offset, self.bit.get());
     }
 
     pub fn unpend(&mut self) {
-        Hardware.write(ICPR + self.bank_offset, self.bit);
+        Hardware.write(ICPR + self.bank_offset, self.bit.get());
     }
 }
 
@@ -237,7 +237,7 @@ impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
     pub fn into_owned_line(self) -> OwnedLine {
         OwnedLine {
             bank_offset: irq_bank_offset(IRQ),
-            bit: irq_bit(IRQ),
+            bit: core::num::NonZeroU32::new(irq_bit(IRQ)).unwrap(),
             _core: core::marker::PhantomData,
         }
     }

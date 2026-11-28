@@ -46,7 +46,7 @@ fn check(step: &'static str, bytes: &[u8]) -> Result<(), Failure> {
         Some((i, b)) => Err(Failure::Data(step, i, *b)),
     }
 }
-fn prove(bus: &mut Blocking<'_, rp1::I2c1Pins, 0>) -> Result<(), Failure> {
+fn prove(bus: &mut Blocking<'_, 1, rp1::I2c1Pins, 0>) -> Result<(), Failure> {
     let timer = Timer::new();
     let mut frame = core::array::from_fn::<_, 16, _>(|i| i as u8);
     frame[..4].copy_from_slice(&0x5244_3144u32.to_le_bytes());
@@ -113,7 +113,7 @@ fn prove(bus: &mut Blocking<'_, rp1::I2c1Pins, 0>) -> Result<(), Failure> {
         .unwrap();
     Ok(())
 }
-fn measure(bus: &mut Blocking<'_, rp1::I2c1Pins, 0>, request: u32) -> Result<(), Error> {
+fn measure(bus: &mut Blocking<'_, 1, rp1::I2c1Pins, 0>, request: u32) -> Result<(), Error> {
     let speed = match request {
         101 => Speed::Standard,
         102 => Speed::Fast,

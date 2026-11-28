@@ -17,7 +17,7 @@ help: the following other types implement trait `SpiBus<Word>`
   |         impl<W: Word, $($generic)*> SpiBus<W> for $adapter {
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |         |
-  |         `rp1_hal::spi::Blocking<'_, P, CORE, N>` implements `SpiBus<W>`
+  |         `rp1_hal::spi::Blocking<'_, N, P, CORE>` implements `SpiBus<W>`
   |         `rp1_hal::spi::Polling<'_, N, P, I>` implements `SpiBus<W>`
 ...
   | spi_bus!([const N: u8, P: CompletePins<N>, I], Polling<'_, N, P, I>);
@@ -25,7 +25,7 @@ help: the following other types implement trait `SpiBus<Word>`
   |
  ::: src/spi/irq_wait.rs
   |
-  | spi_bus!([P: CompletePins<N>, const CORE: u8, const N: u8], Blocking<'_, P, CORE, N>);
+  | spi_bus!([P: CompletePins<N>, const CORE: u8, const N: u8], Blocking<'_, N, P, CORE>);
   | ------------------------------------------------------------------------------------- in this macro invocation
 note: required by a bound in `needs_sync_bus`
  --> tests/ui/polling_required.rs:4:26
@@ -51,8 +51,8 @@ help: the following other types implement trait `embedded_hal::i2c::I2c<A>`
  ::: src/i2c/irq_wait.rs
   |
   | / impl<P: CompletePins<N>, const CORE: u8, const N: u8> embedded_hal::i2c::I2c
-  | |     for Blocking<'_, P, CORE, N>
-  | |________________________________^ `rp1_hal::i2c::Blocking<'_, P, CORE, N>` implements `embedded_hal::i2c::I2c`
+  | |     for Blocking<'_, N, P, CORE>
+  | |________________________________^ `rp1_hal::i2c::Blocking<'_, N, P, CORE>` implements `embedded_hal::i2c::I2c`
   |
  ::: $CARGO/embedded-hal-$VERSION/src/i2c.rs
   |
@@ -74,8 +74,8 @@ help: the following other types implement trait `embedded_hal::i2c::ErrorType`
  ::: src/i2c/irq_wait.rs
   |
   | / impl<P: CompletePins<N>, const CORE: u8, const N: u8> embedded_hal::i2c::ErrorType
-  | |     for Blocking<'_, P, CORE, N>
-  | |________________________________^ `rp1_hal::i2c::Blocking<'_, P, CORE, N>`
+  | |     for Blocking<'_, N, P, CORE>
+  | |________________________________^ `rp1_hal::i2c::Blocking<'_, N, P, CORE>`
   |
  ::: $CARGO/embedded-hal-$VERSION/src/i2c.rs
   |
