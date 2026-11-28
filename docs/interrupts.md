@@ -34,7 +34,7 @@ STATIC。数値が小さいほど先に実行される。各コアの NVIC は�
 | 0 | proc0 PCIE_OUT (53) | PERSTn 検出時に共有窓を Lost として公開 |
 | 1 | 両コアの構成可能 fault | 終端の記録と封じ込め |
 | 2–4 | 宣言したコアの制御 IRQ | 例: 周期アラーム、PWM |
-| 4 | 所有コアの wait alarm、生成 UART/SPI/I²C/ADC ハンドラ、raw IRQ の既定値 | deadline 通知とデバイス待機の解除 |
+| 4 | 所有コアの wait alarm、生成 UART/SPI/I²C/ADC ハンドラ、proc1 の管理 PIO_0/PIO_1 ハンドラ、raw IRQ の既定値 | deadline 通知とデバイス待機の解除 |
 | 5 | 所有コアの生成 IO_BANK0 (0) | Linux からのドアベルを ack し、スレッドを起こす |
 | 6 | proc0 PROC_MISC (57) | SCMI クロック要求を処理して Linux に応答 |
 | 2–7 | 所有コアのアプリ独自 IRQ | `Priority::new` で選択。5 はドアベル、proc0 の 6 は SCMI と同じ優先度で、相互に割り込めない |
@@ -52,7 +52,7 @@ Lost はソフトウェアの利用停止通知で、IRQ53 は outbound iATU を
 窓公開時の短い PRIMASK 区間は IRQ53 も保留する。新しいホストとの復旧には RP1 の再ロードが必要。
 
 SCMI は IRQ57 内で全処理する。制御・デバイス ISR は IRQ57 に割り込める。
-既定のスレッド継続は、実行中の IRQ57 の残りも待つ。
+既定のスレッド継続は、実行中の IRQ57 の残りも待つ（HW: Linux 負荷下の計測で IRQ57 本体は最大 25 µs）。
 スレッドの継続を遅延させたくない場合は、短いデバイス待機から継続までを
 `platform::with_scmi_deferred` で囲む。IRQ57 だけを保留し、出口で配送を再開する。
 Linux の応答が必要な処理はスコープの外に置く。

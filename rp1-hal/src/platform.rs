@@ -84,7 +84,7 @@ pub fn scmi_stats(_pcie: &Pcie) -> ScmiStats {
 /// eligible between scopes. In any 10 ms, spend at most 2.5 ms combined with
 /// IRQ57 blocked by deferral, masks or higher-priority work. This budgets up
 /// to 5 ms for a reply against the Linux mailbox timeout of 30 ms. The caller
-/// budgets its workload. The IRQ priority lab checks its own timing.
+/// budgets its workload.
 /// Keep waits that depend on Linux outside the scope.
 ///
 /// Requires unmasked thread mode. A terminal panic or fault inside the closure
