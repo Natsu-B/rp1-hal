@@ -324,10 +324,13 @@ The embedded-hal `SetDutyCycle` adapter works in either state.
 
 ## Serial IRQ waits
 
-STATIC. Spell the blocking adapters as `spi::Blocking<'a, N, Pins, CORE>`,
-`i2c::Blocking<'a, N, Pins, CORE>` and `uart::Blocking<'a, N, CORE>`
-(including the UART half adapters). The instance now precedes the core.
-Supply both const arguments when naming an adapter type.
+STATIC. The blocking adapter type parameters changed order. Supply both
+const arguments when naming an adapter type.
+
+| Adapter | Before | After |
+| --- | --- | --- |
+| SPI or I²C | `Blocking<'a, Pins, CORE, N>` | `Blocking<'a, N, Pins, CORE>` |
+| UART, including the half adapters | `Blocking<'a, CORE, N>` | `Blocking<'a, N, CORE>` |
 
 SPI2 and SPI5 use polling. Their managed IRQ and raw `p.irq.SPI2` /
 `p.irq.SPI5` routes and `custom_spi2_handler` / `custom_spi5_handler`

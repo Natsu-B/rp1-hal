@@ -52,10 +52,15 @@ DesignWare register slice for all seven instances, I2C0..6.
 
 | Controller | Hardware evidence |
 |---|---|
-| I2C0 | HW, NVIC pending sweep. The open-drain GPIO8/9 route is suitable for a no-target TX_ABRT test. |
+| I2C0 | HW, AddressNack through TX_ABRT on open-drain GPIO8/9 with no target. |
 | I2C1 | HW, IRQ waits with an ESP32 target at 100 and 400 kHz. |
 | I2C2 | HW, AddressNack through TX_ABRT on the open-drain jumper bus. |
 | I2C3 | HW, AddressNack through TX_ABRT on the open-drain jumper bus. |
+
+HW (2026-11). I2C0/2/3 each delivered 100 no-target NACKs and re-armed
+after a timeout. At 100 kHz, the first call took 474–479 µs. Proc1 measured
+332 µs from enable confirmation to the first SCL edge, versus 9–10 µs on a
+steady call. The fixture gates the first call separately.
 
 I²C target mode is the next PR for full transfers over the I2C2–I2C3 jumper bus.
 
