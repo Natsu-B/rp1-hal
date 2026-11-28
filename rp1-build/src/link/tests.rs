@@ -485,6 +485,12 @@ fn free_subset(dma: rp1::Proc1DmaChannels) -> Result<rp1::Proc1Dma,
 }}
 fn gpio(p: rp1::Proc0Resources) -> rp1_hal::gpio::Pin<22> {{ p.pins.gpio22 }}
 const _: () = assert!(rp1::PioParts::SM_MASK == 9);
+fn pio_sms(parts: rp1::PioParts, clocks: &rp1_hal::clocks::Clocks) {{
+    use rp1_hal::pio::PIOExt;
+    let (_, sms) = parts.split(clocks).unwrap();
+    let _: rp1_hal::pio::UninitStateMachine<0> = sms.sm0;
+    let _: rp1_hal::pio::UninitStateMachine<3> = sms.sm3;
+}}
 fn pio(p: rp1::Proc1Resources) -> (rp1::PioParts, rp1_hal::gpio::Pin<12>) {{ (p.pio, p.pins.gpio12) }}
 #[rp1_rt::interrupt(proc0)]
 fn IO_BANK0() {{}}
@@ -505,6 +511,12 @@ fn take(_: rp1::PioParts) {}
 fn twice(p: rp1::Proc1Resources) {
     take(p.pio);
     take(p.pio);
+}
+fn missing_pin(p: rp1::Proc1Resources) {
+    let _ = p.pins.gpio22;
+}
+fn missing_sm(p: rp1::PioStateMachines) {
+    let _ = p.sm1;
 }
 fn send<T: Send>() {}
 fn pass_between_cores() {

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["rp1-pac", "rp1-regdb", "rp1-pinmux", "rp1-proto", "rp1-dt", "rp1-macros", "rp1-rt", "rp1-hal", "rp1-link", "rp1-build", "rp1-linux", "cargo-rp1", "examples/dual-core", "examples/peripherals", "examples/linux-ping", "examples/linux-status", "lab/shm-firmware", "lab/pwm-loopback", "lab/timer-parity", "lab/pio-parity", "lab/uart-parity", "lab/spi-parity", "lab/spi-tail", "lab/i2c-parity", "lab/adc-parity", "lab/dma-parity", "lab/irq-proof", "lab/irq-sweep", "lab/scmi-starvation", "lab/fault-inject", "lab/shm-linux", "lab/stack-paths", "lab/link-wake", "boot/rp1boot"]
+members = ["rp1-pac", "rp1-regdb", "rp1-pinmux", "rp1-proto", "rp1-dt", "rp1-macros", "rp1-rt", "rp1-hal", "rp1-link", "rp1-build", "rp1-linux", "cargo-rp1", "examples/dual-core", "examples/peripherals", "examples/linux-ping", "examples/linux-status", "lab/shm-firmware", "lab/pwm-loopback", "lab/timer-parity", "lab/pio-parity", "lab/pio-sm-parity", "lab/uart-parity", "lab/spi-parity", "lab/spi-tail", "lab/i2c-parity", "lab/adc-parity", "lab/dma-parity", "lab/irq-proof", "lab/irq-sweep", "lab/scmi-starvation", "lab/fault-inject", "lab/shm-linux", "lab/stack-paths", "lab/link-wake", "boot/rp1boot"]
 default-members = ["rp1-pac", "rp1-regdb", "rp1-pinmux", "rp1-proto", "rp1-dt", "rp1-dt", "rp1-macros", "rp1-rt", "rp1-hal", "rp1-link", "rp1-build", "rp1-linux", "cargo-rp1", "examples/linux-ping", "examples/linux-status", "lab/shm-linux", "lab/stack-paths", "boot/rp1boot"]
 
 [workspace.package]
@@ -17,3 +17,6 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
+[profile.release.package.pio-sm-parity]
+opt-level = "z"

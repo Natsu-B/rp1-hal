@@ -1,0 +1,41 @@
+[package]
+name = "pio-sm-parity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pio-sm-parity"
+test = false
+bench = false
+
+[dependencies]
+rp1-hal = { path = "../../rp1-hal" }
+rp1-link = { path = "../../rp1-link" }
+rp1-proto = { path = "../../rp1-proto" }
+rp1-rt = { path = "../../rp1-rt" }
+
+[build-dependencies]
+rp1-build = { path = "../../rp1-build" }
+
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+log = { sink = "uart0", baudrate = 115200 }
+stack = { proc1 = "4KiB" }
+
+[package.metadata.rp1.proc0]
+timer = ["ALARM1"]
+
+[package.metadata.rp1.proc1]
+pio = { sms = [0, 1, 2, 3], pins = [12, 13, 22, 23] }
+
+[[package.metadata.rp1.shm]]
+name = "ping"
+kind = "rpc"
+core = "proc1"
+message = "PingWord"
+reply = "PingWord"
+depth = 8
+notify = "poll"

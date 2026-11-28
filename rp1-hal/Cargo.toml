@@ -14,6 +14,7 @@ eh02-adc = ["dep:embedded-hal-0-2", "dep:nb"]
 unstable-ring-dma = ["rp1-proto/unstable-ring-dma"]
 
 [dependencies]
+pio = { version = "0.3", default-features = false }
 rp1-pac = { path = "../rp1-pac" }
 # The application picks the critical-section implementation (rp1-rt's default feature or its
 # own), so this crate must not switch the default on.

@@ -154,7 +154,7 @@ impl PadConfig {
         self
     }
 
-    fn bits(self) -> u32 {
+    pub(crate) fn bits(self) -> u32 {
         self.pull as u32 | (self.drive as u32) << 4 | (self.schmitt as u32) << 1 | self.slew as u32
     }
 
@@ -396,6 +396,30 @@ impl InputPin for ErasedPin<Input> {
     fn is_low(&mut self) -> Result<bool, Self::Error> {
         Ok(!input_high(self.number))
     }
+}
+
+/// Disconnect both the pad and the mux before handing a GPIO to PIO.
+pub(crate) fn pio_prepare(n: u8, pad_bits: u8) {
+    write(0x4001_7004, 1 << 19);
+    write(pad(n), 0xc0 | u32::from(pad_bits));
+    write(0x400e_3004, 1 << n);
+    write(ctrl(n), (2 << 14) | 7);
+}
+
+pub(crate) fn pio_output(n: u8, enabled: bool) {
+    // Use aliases so an independent GPIO IRQ token retains its event masks.
+    if enabled {
+        write(CLR + ctrl(n), 2 << 14);
+        write(CLR + pad(n), 1 << 7);
+    } else {
+        write(SET + pad(n), 1 << 7);
+        write(SET + ctrl(n), 2 << 14);
+    }
+}
+
+pub(crate) fn pio_release(n: u8) {
+    // RIO OE has remained clear since pio_prepare, and OD is still set.
+    write(ctrl(n), (2 << 14) | 5);
 }
 
 #[cfg(test)]

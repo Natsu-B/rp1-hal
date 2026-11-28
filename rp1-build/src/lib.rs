@@ -672,17 +672,28 @@ fn instance_resource(
         Instance::Dma(_) => unreachable!("DMA has a declaration-specific channel set"),
         Instance::Pio(pio) => {
             let mask = pio.sms.iter().fold(0u8, |mask, &sm| mask | (1 << sm));
+            let pins = pio.pins.iter().fold(0u32, |mask, &pin| mask | (1 << pin));
             writeln!(
                 source,
-                "/// Exclusive ownership of both PIO windows.\npub struct PioParts {{\n\
-                 _private: ::core::marker::PhantomData<*mut ()>,\n}}\n\
-                 impl PioParts {{\n    /// Bitmap of declared state machines.\n\
-                 pub const SM_MASK: u8 = {mask};\n}}"
+                "/// The declared state machines.\npub struct PioStateMachines {{"
+            )?;
+            let mut sms = String::new();
+            for &sm in &pio.sms {
+                writeln!(
+                    source,
+                    "pub sm{sm}: ::rp1_hal::pio::UninitStateMachine<{sm}>,"
+                )?;
+                write!(sms, "sm{sm}: ::rp1_hal::pio::UninitStateMachine::__new(),")?;
+            }
+            writeln!(
+                source,
+                "}}\n/// Exclusive ownership of both PIO windows.\n\
+                 pub type PioParts = ::rp1_hal::pio::PioParts<{mask}, PioStateMachines>;"
             )?;
             // Pins remain unconfigured in ProcNPins until the application selects their roles.
             return Ok((
                 "PioParts".into(),
-                "PioParts { _private: ::core::marker::PhantomData }".into(),
+                format!("unsafe {{ PioParts::__new(PioStateMachines {{ {sms} }}, {pins:#x}) }}"),
                 Vec::new(),
             ));
         }

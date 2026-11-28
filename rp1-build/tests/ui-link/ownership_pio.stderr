@@ -6,28 +6,52 @@ error[E0609]: no field `pio` on type `Proc0Resources`
   |
   = note: available fields are: `pins`, `irq`, `host_irq`, `link`, `proc1`, `platform`
 
+error[E0609]: no field `gpio22` on type `Proc1Pins`
+  --> $CASE:14:20
+   |
+14 |     let _ = p.pins.gpio22;
+   |                    ^^^^^^ unknown field
+   |
+help: a field with a similar name exists
+   |
+14 -     let _ = p.pins.gpio22;
+14 +     let _ = p.pins.gpio12;
+   |
+
+error[E0609]: no field `sm1` on type `PioStateMachines`
+  --> $CASE:17:15
+   |
+17 |     let _ = p.sm1;
+   |               ^^^ unknown field
+   |
+help: a field with a similar name exists
+   |
+17 -     let _ = p.sm1;
+17 +     let _ = p.sm0;
+   |
+
 error[E0277]: `*mut ()` cannot be sent between threads safely
-   --> $CASE:15:12
-    |
- 15 |     send::<rp1::PioParts>();
-    |            ^^^^^^^^^^^^^ `*mut ()` cannot be sent between threads safely
-    |
-    = help: within `PioParts`, the trait `Send` is not implemented for `*mut ()`
+  --> $CASE:21:12
+   |
+21 |     send::<rp1::PioParts>();
+   |            ^^^^^^^^^^^^^ `*mut ()` cannot be sent between threads safely
+   |
+   = help: within `rp1_hal::pio::PioParts<9, PioStateMachines>`, the trait `Send` is not implemented for `*mut ()`
 note: required because it appears within the type `PhantomData<*mut ()>`
-   --> $RUST/core/src/marker.rs
-    |
-    | pub struct PhantomData<T: PointeeSized>;
-    |            ^^^^^^^^^^^
-note: required because it appears within the type `PioParts`
-   --> $GENERATED:280:12
-    |
-280 | pub struct PioParts {
-    |            ^^^^^^^^
+  --> $RUST/core/src/marker.rs
+   |
+   | pub struct PhantomData<T: PointeeSized>;
+   |            ^^^^^^^^^^^
+note: required because it appears within the type `rp1_hal::pio::PioParts<9, PioStateMachines>`
+  --> $WORKSPACE/rp1-hal/src/pio.rs
+   |
+   | pub struct PioParts<const MASK: u8, S> {
+   |            ^^^^^^^^
 note: required by a bound in `send`
-   --> $CASE:13:12
-    |
- 13 | fn send<T: Send>() {}
-    |            ^^^^ required by this bound in `send`
+  --> $CASE:19:12
+   |
+19 | fn send<T: Send>() {}
+   |            ^^^^ required by this bound in `send`
 
 error[E0382]: use of moved value: `p.pio`
   --> $CASE:11:10
@@ -37,4 +61,4 @@ error[E0382]: use of moved value: `p.pio`
 11 |     take(p.pio);
    |          ^^^^^ value used here after move
    |
-   = note: move occurs because `p.pio` has type `PioParts`, which does not implement the `Copy` trait
+   = note: move occurs because `p.pio` has type `rp1_hal::pio::PioParts<9, PioStateMachines>`, which does not implement the `Copy` trait

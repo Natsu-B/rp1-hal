@@ -101,6 +101,7 @@ pub mod i2c;
 pub mod linux_blocks;
 pub mod logging;
 mod pinmux;
+pub mod pio;
 pub mod platform;
 pub mod pwm;
 pub mod scmi;
