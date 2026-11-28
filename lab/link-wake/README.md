@@ -35,3 +35,12 @@ A legacy executable needs the matching schema-2 boot set. With the
 `linux-ping` lab build, run
 `lab/ping/legacy-launch.sh ./linux-ping irq ./old-client`. The launcher
 waits for Ready, releases its mappings and then executes the client.
+
+## Follow-up on DDR store width and coverage
+
+**STATIC.** The schema-2 initialization store loop still runs from shared SRAM.
+**HW · 2026-11-28.** A two-byte shift of the shared-SRAM v3 loop changed fill
+time by about 8 ms in a controlled build. Account for this placement sensitivity
+when comparing schema-2 builds. The v3 ISRAM loop took 40.572 ms to fill the
+1 MiB reservation, including its per-chunk checks. Use that measurement as the
+v3 reference when evaluating store width or which bytes need initialization.
