@@ -56,6 +56,7 @@ SCMI は IRQ57 内で全処理する。制御・デバイス ISR は IRQ57 に�
 `platform::with_scmi_deferred` で囲む。IRQ57 だけを保留し、出口で配送を再開する。
 Linux の応答が必要な処理はスコープの外に置き、連続呼び出しの間に SCMI が実行できる時間を残す。
 スタックの見積もりには IRQ57 と、そこへネストする制御・デバイス IRQ を含める。
+終端停止では制御・デバイス IRQ をマスクし、配送が有効で実行中でない IRQ57 を優先度 1 に上げて応答を続ける。
 
 ## 2. 所有
 
@@ -173,8 +174,10 @@ PWM0 と TIMER_3 は試作ファームでの観測を根拠に `IRQ_VERIFIED` �
 
 SCMI（57）は `platform::init` が proc0 に設定する（STATIC）。
 
-PCIe（53）は `platform::init` の最後に proc0 で PERSTn の検出器として武装する（優先度 0、STATIC。
-HW 未確認）。`PCIE_INTE` を bit 1（PERSTn の辺）だけにし、入場で `PCIE_INTS` に何か立っていれば
+PCIe（53）は `platform::init` の最後に proc0 で PERSTn の検出器として武装する（優先度 0、STATIC）。
+RAM 上で動く Linux から RP1 の PCIe コントローラを unbind した試験では、IRQ53 が 1 回入り、
+本体の測定値は 3 µs、共有窓の状態は Lost になった（HW、2026-11）。
+`PCIE_INTE` を bit 1（PERSTn の辺）だけにし、入場で `PCIE_INTS` に何か立っていれば
 窓を失ったとして `SHM_STATUS = SHM_WINDOW_LOST`、`PLAT_PCIE = Lost` を書いて線を止める。回復はしない
 （RP1 の再ロード）。`PCIE_INTS` が 0 の入場が 16 回続くと検出器を止める（`DetectorOff`）。状態は
 `platform::pcie_state()`（両コア）と `Pcie::lost_detail()`（proc0）で読める。
