@@ -172,14 +172,22 @@ the RP1 `+0x108` output gate and unmasks the selected sources.
 | SPI0 | HW, IRQ waits, internal loopback, wire idle and deadline re-arm |
 | SPI1 | HW, DW SSI loopback, RX/TX IRQs, shifter idle and deadline re-arm |
 | SPI2 | STATIC route, polling only. Bench GPIO2/3 connect to the ESP32 I²C controller. |
-| SPI3 | HW, DW SSI loopback, RX/TX IRQs, shifter idle and deadline re-arm |
+| SPI3 | HW, DW SSI loopback, RX/TX IRQs and deadline re-arm. The 1 MHz idle-lag gate failed on one of two original boots (17 µs against 3 µs). |
 | SPI5 | STATIC route, polling only. Bench GPIO15 connects to FTDI TX. |
 
 STATIC (2026-11-27). `lab/spi-parity` checks internal loopback, RX/TX delivery,
 timeouts, shifter idle and sensed CS levels with the RP1 timer.
-`lab/verify-spi-parity.py` checks the firmware transcript. It can also check
+`lab/verify-spi-parity.py --instance N` checks the firmware transcript. It can also check
 an optional wire CSV from a bench with a MOSI/MISO loopback and a sample rate
 of at least 100 MS/s. The measurements below used the previous polling driver.
+
+STATIC. Lower priority numbers preempt higher ones. The managed SPI IRQ
+and the wait alarm run at priority 4. On proc0, PCIE_OUT (IRQ53, priority 0)
+and SCMI (IRQ57, priority 1) can preempt SPI and thread mode. The 3 µs
+idle-to-return bound excludes time spent in those platform handlers. The
+lab brackets shifter idle on proc1 and stamps proc0 ISR entry and exit.
+Only handler time overlapping the idle-to-return window is credited, with
+nested time counted once.
 
 `lab/shm-firmware` declares SPI0 on proc1 (GPIO8 chip select). proc1 runs `spi_proof` at boot
 and on Linux's request: with loopback off MISO reads all zeros (pad pull-down; the lab wiring

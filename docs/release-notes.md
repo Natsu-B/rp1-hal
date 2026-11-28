@@ -321,3 +321,14 @@ and has a separate native compare path. Import `pwm::{Config, DutyTicks}` and
 Use `e.into_driver()` to retry, or `e.into_parts()` to recover the state and error.
 `Output` and `Channel` default to `Disabled`. Specify `Running` for an enabled one.
 The embedded-hal `SetDutyCycle` adapter works in either state.
+
+## Serial IRQ waits
+
+STATIC. Spell the blocking adapters as `spi::Blocking<'a, N, Pins, CORE>`,
+`i2c::Blocking<'a, N, Pins, CORE>` and `uart::Blocking<'a, N, CORE>`
+(including the UART half adapters). The instance now precedes the core.
+Supply both const arguments when naming an adapter type.
+
+SPI2 and SPI5 use polling. Their managed IRQ and raw `p.irq.SPI2` /
+`p.irq.SPI5` routes and `custom_spi2_handler` / `custom_spi5_handler`
+declaration keys were removed.

@@ -120,7 +120,7 @@ NVIC だけを見ている。proc1 で受けたのは TIMER_1・IO_BANK0・SPI0 
 | IO_BANK0（0） | proc0 は GPIO22 の force で 100 回、proc1 は Linux からの GPIO27 ドアベルで 1000 回 | HW（同上） |
 | IO_BANK0（0）、`Doorbell` | proc0 の GPIO26 と proc1 の GPIO27: `raise` → ハンドラ 1 回（IPSR 16、前後の pending 0）。Linux からの SET 別名（`0x2108` / `0x2114`）で `down0` 10^4 件・`down1` 10^6 件を欠落・停止 0 で処理 | HW（2026-11-26、cold boot 1 回、lab/irq-proof、9a41f28） |
 | I2C1 / SPI0（8 / 19） | `+0x108` 閉で pending 0、開でハンドラ 1 回 | HW（2026-11、cold boot 2 回） |
-| SPI0 / SPI1 / SPI3（19 / 20 / 22） | DW SSI 内部ループバックで proc0 の RX / TX IRQ、データ一致、タイムアウト後の転送を確認 | HW（2026-11、各 1 起動） |
+| SPI0 / SPI1 / SPI3（19 / 20 / 22） | DW SSI 内部ループバックで proc0 の RX / TX IRQ、データ一致、タイムアウト後の転送を確認。SPI3 の 1 MHz 復帰時間は 2 起動中 1 回で上限 3 µs 超過（17 µs） | HW（2026-11） |
 | critical section | 割り込みと競合させて torn 0、最長マスク 4 µs 以下 | HW（同上） |
 | I2C0 / I2C2 / I2C3（7 / 9 / 10）、SPI1 / SPI3（20 / 22） | TX FIFO 空を源に、`+0x108` 閉で 0/3、開で 3/3 | HW（2026-11、2 種のイメージで各 2 起動、同じ結果） |
 | I2C2 / I2C3（9 / 10） | オープンドレインのジャンパ配線で TX_ABRT を proc0 に配送し、AddressNack を確認 | HW（2026-11） |

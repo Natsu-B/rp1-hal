@@ -52,7 +52,7 @@ DesignWare register slice for all seven instances, I2C0..6.
 
 | Controller | Hardware evidence |
 |---|---|
-| I2C0 | HW, NVIC pending sweep. The available pin pairs have no safe peer on the bench. |
+| I2C0 | HW, NVIC pending sweep. The open-drain GPIO8/9 route is suitable for a no-target TX_ABRT test. |
 | I2C1 | HW, IRQ waits with an ESP32 target at 100 and 400 kHz. |
 | I2C2 | HW, AddressNack through TX_ABRT on the open-drain jumper bus. |
 | I2C3 | HW, AddressNack through TX_ABRT on the open-drain jumper bus. |
