@@ -1,0 +1,44 @@
+[package]
+name = "pio-irq-parity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pio-irq-parity"
+test = false
+bench = false
+
+[dependencies]
+embedded-hal = "1"
+rp1-hal = { path = "../../rp1-hal", features = ["pio-asm"] }
+rp1-link = { path = "../../rp1-link" }
+rp1-proto = { path = "../../rp1-proto" }
+rp1-rt = { path = "../../rp1-rt" }
+
+[build-dependencies]
+rp1-build = { path = "../../rp1-build" }
+
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+log = { sink = "uart0", baudrate = 115200 }
+stack = { proc1 = "4KiB" }
+
+[package.metadata.rp1.proc0]
+timer = ["ALARM1"]
+gpio = [12, 23]
+
+[package.metadata.rp1.proc1]
+pio = { sms = [0, 1, 2, 3], pins = [13, 22] }
+wait_timer = "ALARM0"
+
+[[package.metadata.rp1.shm]]
+name = "ping"
+kind = "rpc"
+core = "proc1"
+message = "PingWord"
+reply = "PingWord"
+depth = 8
+notify = "poll"

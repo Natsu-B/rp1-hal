@@ -325,10 +325,10 @@ impl<'program, 'pio> PIOBuilder<'program, 'pio> {
             | u32::from(self.autopush) << 16)
     }
 
-    pub fn build<const N: u8>(
+    pub fn build<const N: u8, I>(
         self,
-        sm: UninitStateMachine<N>,
-    ) -> Result<Configured<'program, 'pio, N>, BuildFailure<N>> {
+        sm: UninitStateMachine<N, I>,
+    ) -> Result<Configured<'program, 'pio, N, I>, BuildFailure<N, I>> {
         let buffers = self.buffers;
         match self.configure(N) {
             Ok(machine) => Ok((
@@ -389,10 +389,11 @@ impl<'program, 'pio> PIOBuilder<'program, 'pio> {
     }
 }
 
-pub type BuildFailure<const N: u8> = FreeError<(UninitStateMachine<N>, Pins), BuildError>;
+pub type BuildFailure<const N: u8, I = ()> =
+    FreeError<(UninitStateMachine<N, I>, Pins), BuildError>;
 
-pub type Configured<'program, 'pio, const N: u8> =
-    (StateMachine<'program, 'pio, N, Stopped>, Rx<N>, Tx<N>);
+pub type Configured<'program, 'pio, const N: u8, I = ()> =
+    (StateMachine<'program, 'pio, N, Stopped>, Rx<N, I>, Tx<N, I>);
 
 fn clear_fifos(n: u8, shiftctrl: u32, mut write: impl FnMut(usize, u32)) {
     // Changing either JOIN bit resets both FIFOs. Keep the intermediate mode valid.
@@ -533,12 +534,12 @@ impl<'program, 'pio, const N: u8> StateMachine<'program, 'pio, N, Stopped> {
     }
 
     /// Reset both FIFOs while this SM is stopped.
-    pub fn clear_fifos(&mut self, _rx: &mut Rx<N>, _tx: &mut Tx<N>) {
+    pub fn clear_fifos<I>(&mut self, _rx: &mut Rx<N, I>, _tx: &mut Tx<N, I>) {
         clear_fifos(N, read(sm_reg(N, SHIFTCTRL)), write);
     }
 
     /// Release a stopped SM and its GPIOs after taking back both FIFO handles.
-    pub fn uninit(mut self, _rx: Rx<N>, _tx: Tx<N>) -> (UninitStateMachine<N>, Pins) {
+    pub fn uninit<I>(mut self, _rx: Rx<N, I>, _tx: Tx<N, I>) -> (UninitStateMachine<N, I>, Pins) {
         let pins = self.machine.release();
         // The typed StateMachine consumed the original token for exactly N.
         (unsafe { UninitStateMachine::__new() }, pins)

@@ -21,7 +21,8 @@ error[E0277]: `*mut ()` cannot be sent between threads safely
    |            ^^^^^^^^^^^^^^^^^^^^^ `*mut ()` cannot be sent between threads safely
    |
    = help: within `UninitStateMachine<0>`, the trait `Send` is not implemented for `*mut ()`
-note: required because it appears within the type `PhantomData<*mut ()>`
+   = note: required because it appears within the type `(*mut (), ())`
+note: required because it appears within the type `PhantomData<(*mut (), ())>`
   --> $RUST/core/src/marker.rs
    |
    | pub struct PhantomData<T: PointeeSized>;
@@ -29,7 +30,7 @@ note: required because it appears within the type `PhantomData<*mut ()>`
 note: required because it appears within the type `UninitStateMachine<0>`
   --> src/pio.rs
    |
-   | pub struct UninitStateMachine<const N: u8>(PhantomData<*mut ()>);
+   | pub struct UninitStateMachine<const N: u8, I = ()>(PhantomData<(*mut (), I)>);
    |            ^^^^^^^^^^^^^^^^^^
 note: required by a bound in `send`
   --> tests/ui/pio_ownership.rs:21:16
@@ -44,7 +45,8 @@ error[E0277]: `*mut ()` cannot be sent between threads safely
    |            ^^^^^ `*mut ()` cannot be sent between threads safely
    |
    = help: within `rp1_hal::pio::Tx<0>`, the trait `Send` is not implemented for `*mut ()`
-note: required because it appears within the type `PhantomData<*mut ()>`
+   = note: required because it appears within the type `(*mut (), ())`
+note: required because it appears within the type `PhantomData<(*mut (), ())>`
   --> $RUST/core/src/marker.rs
    |
    | pub struct PhantomData<T: PointeeSized>;
@@ -52,7 +54,7 @@ note: required because it appears within the type `PhantomData<*mut ()>`
 note: required because it appears within the type `rp1_hal::pio::Tx<0>`
   --> src/pio/fifo.rs
    |
-   | pub struct Tx<const N: u8> {
+   | pub struct Tx<const N: u8, I = ()> {
    |            ^^
 note: required by a bound in `send`
   --> tests/ui/pio_ownership.rs:21:16
@@ -115,7 +117,7 @@ error[E0061]: this method takes 2 arguments but 1 argument was supplied
 note: method defined here
   --> src/pio/sm.rs
    |
-   |     pub fn uninit(mut self, _rx: Rx<N>, _tx: Tx<N>) -> (UninitStateMachine<N>, Pins) {
+   |     pub fn uninit<I>(mut self, _rx: Rx<N, I>, _tx: Tx<N, I>) -> (UninitStateMachine<N, I>, Pins) {
    |            ^^^^^^
 help: provide the argument
    |
@@ -135,7 +137,7 @@ error[E0308]: mismatched types
 note: method defined here
   --> src/pio/sm.rs
    |
-   |     pub fn uninit(mut self, _rx: Rx<N>, _tx: Tx<N>) -> (UninitStateMachine<N>, Pins) {
+   |     pub fn uninit<I>(mut self, _rx: Rx<N, I>, _tx: Tx<N, I>) -> (UninitStateMachine<N, I>, Pins) {
    |            ^^^^^^
 
 error[E0599]: no method named `uninit` found for struct `StateMachine<'_, '_, 0, rp1_hal::pio::Running>` in the current scope

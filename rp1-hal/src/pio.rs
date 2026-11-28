@@ -1,12 +1,16 @@
 #![doc = include_str!("../../docs/pio.md")]
 
 mod fifo;
+mod irq_wait;
 mod program;
 mod sm;
 
 #[cfg(feature = "pio-asm")]
 pub use ::pio::{pio_asm, pio_file};
-pub use fifo::{Buffers, Rx, Tx};
+pub use fifo::{Buffers, Polling, Rx, Tx, WaitError};
+#[cfg(test)]
+pub(crate) use irq_wait::FifoSource;
+pub use irq_wait::{__bind_irq, __on_interrupt, Blocking, Irq};
 pub use pio_core::Program;
 pub use program::{InstallError, InstalledProgram};
 pub use sm::{
@@ -75,11 +79,12 @@ impl<const N: u8> PioPin<N> {
 }
 
 /// An unconfigured state machine. A declaration issues each selected SM once.
-pub struct UninitStateMachine<const N: u8>(PhantomData<*mut ()>);
+pub struct UninitStateMachine<const N: u8, I = ()>(PhantomData<(*mut (), I)>);
 
-impl<const N: u8> UninitStateMachine<N> {
+impl<const N: u8, I> UninitStateMachine<N, I> {
     /// # Safety
     /// Only the declaration may issue this token, once for the PIO owner and SM N.
+    /// It must install and bind the handlers for any IRQ capability in I.
     #[doc(hidden)]
     pub const unsafe fn __new() -> Self {
         assert!(N < 4);

@@ -1,7 +1,7 @@
 use super::{LIMIT_US, LabResult, dma_enables, now, reg};
 use rp1_hal::{
     pio::{Buffers, PIO, PIOBuilder, Program, UninitStateMachine, pio_asm},
-    timer::Timer,
+    timer::{Duration, Timer},
 };
 
 #[inline(never)]
@@ -70,20 +70,13 @@ pub fn echo_example(
     let (sm, mut rx, mut tx) = PIOBuilder::from_installed_program(&program)
         .build(slot.take().ok_or("echo sm")?)
         .map_err(|_| "echo build")?;
-    let sent = tx.write(21);
     let running = sm.start().map_err(|_| "echo start")?;
-    let start = now(timer);
-    let word = loop {
-        if let Some(word) = rx.read() {
-            break Some(word);
-        }
-        if now(timer).wrapping_sub(start) >= 1_000 {
-            break None;
-        }
-    };
+    let deadline = timer.now() + Duration::from_ticks(1_000);
+    let sent = tx.polling().write_until(21, deadline);
+    let word = rx.polling().read_until(deadline);
     *slot = Some(running.stop().uninit(rx, tx).0);
     program.uninstall().map_err(|_| "echo uninstall")?;
-    if !sent || word != Some(21) {
+    if sent.is_err() || word != Ok(21) {
         return Err("echo data");
     }
     log!("PIO_B_ECHO word=21\n").unwrap();

@@ -305,7 +305,8 @@ fn check_irq_tables(file: &object::File<'_>, note: &Note<'_>) -> Result<()> {
             if address == default || (matches!(irq, 53 | 57) && core == 0) {
                 continue;
             }
-            let route = rp1_build::board::irq_routes().find(|line| usize::from(line.irq) == irq);
+            let route =
+                rp1_build::board::irq_routes_for(core).find(|line| usize::from(line.irq) == irq);
             if let Some(line) = route
                 && claims.iter().any(|c| {
                     let (kind, id) = line.owner.ownership();

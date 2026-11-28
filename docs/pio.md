@@ -15,7 +15,7 @@ pio = { sms = [0], pins = [] }
 use rp1_hal::pio::pio_asm;
 # #[cfg(not(feature = "pio-asm"))]
 # use pio::pio_asm;
-use rp1_hal::{pio::{PIOBuilder, PIOExt}, timer::Timer};
+use rp1_hal::{pio::{PIOBuilder, PIOExt}, timer::{Deadline, Duration}};
 
 # struct Sms { sm0: UninitStateMachine<0> }
 # fn echo_once(parts: PioParts<1, Sms>, clocks: &Clocks) {
@@ -24,14 +24,10 @@ let echo = pio_asm!("pull block", "mov isr, osr", "push block", "park:", "jmp pa
 let program = pio.install(&echo.program).unwrap();
 let (sm, mut rx, mut tx) = PIOBuilder::from_installed_program(&program)
     .build(sms.sm0).unwrap();
-assert!(tx.write(21));
 let running = sm.start().unwrap();
-let timer = Timer::new();
-let start = timer.now_32().ticks();
-let word = loop {
-    if let Some(word) = rx.read() { break word; }
-    assert!(timer.now_32().ticks().wrapping_sub(start) < 1_000, "PIO echo timed out");
-};
+let end = Deadline::after(Duration::from_ticks(1_000)).unwrap();
+tx.polling().write_until(21, end).unwrap();
+let word = rx.polling().read_until(end).unwrap();
 assert_eq!(word, 21);
 running.stop().uninit(rx, tx);
 program.uninstall().unwrap();
@@ -40,7 +36,8 @@ program.uninstall().unwrap();
 
 `split_wait` polls through reset with a 1 ms deadline per transition.
 `split` gives the parts back on `NotReady` for applications that schedule
-their own retries. FIFO access is immediate. Use `Buffers::OnlyTx` or
+their own retries. `try_read` and `try_write` are immediate. Select
+`polling()` for a deadline-bounded busy wait. Use `Buffers::OnlyTx` or
 `Buffers::OnlyRx` to join the FIFOs.
 
 `Pins` accepts only `PioPin<N>` tokens generated for `pio.pins`. Input pads
@@ -51,6 +48,7 @@ the moved tokens. Recover them with `sm.uninit(rx, tx)` and `Pins::take`.
 
 ## rp-hal API differences
 
+- `split`, `build` and `start` return `Result` and return ownership on error.
 - `in_pin_base` and `in_count` describe the relative input range. On RP1,
   `in_count` bounds validation of PIO v0 programs in software.
 - `program.uninstall()` uses the originating PIO borrowed by the allocation.
@@ -65,5 +63,8 @@ the moved tokens. Recover them with `sm.uninit(rx, tx)` and `Pins::take`.
   restarts a running SM at its wrap target.
   [rp2040-hal source](https://docs.rs/rp2040-hal/0.12.0/rp2040_hal/pio/struct.StateMachine.html#method.restart)
 
-Parity follow-ups include scoped cross-SM IRQ flags and `MOV x, PINS`,
-which reads the whole PIO v0 input window.
+Parity follow-ups include scoped cross-SM IRQ flags, `MOV x, PINS`
+(which reads the whole PIO v0 input window), and sharing IN, JMP and WAIT
+inputs between SMs. Shared inputs need a pad owner that keeps the mux
+configured until the last reader releases it and preserves exclusive drive
+ownership.

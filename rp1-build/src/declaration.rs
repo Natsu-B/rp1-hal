@@ -545,7 +545,10 @@ impl Declaration {
             validate_pin(pin)?;
             claim_pin(&mut pins, pin, "proc0.startup_doorbell".into())?;
         }
-        for (owner, core) in [("proc0", &self.proc0), ("proc1", &self.proc1)] {
+        for (index, (owner, core)) in [("proc0", &self.proc0), ("proc1", &self.proc1)]
+            .into_iter()
+            .enumerate()
+        {
             for pin in &core.gpio {
                 validate_pin(*pin)?;
                 claim_pin(&mut pins, *pin, format!("{owner}.gpio"))?;
@@ -556,6 +559,13 @@ impl Declaration {
             for irq in crate::driver_irq::DRIVERS {
                 if irq.is_custom(core) && !core.instances.contains_key(irq.instance) {
                     return Err(format!("E5: {owner}.{} needs {}", irq.custom, irq.instance).into());
+                }
+                if irq.is_custom(core)
+                    && !crate::driver_irq::DRIVERS
+                        .iter()
+                        .any(|other| other.custom == irq.custom && other.line(index).is_some())
+                {
+                    return Err(format!("E5: {owner}.{} has no verified route", irq.custom).into());
                 }
             }
             if let Some(pin) = core.doorbell {

@@ -31,17 +31,20 @@ pub(crate) const DRIVERS: &[DriverIrq] = drivers! {
     "spi": "spi0" => "SPI0", "spi1" => "SPI1", "spi3" => "SPI3";
     "i2c": "i2c0" => "I2C0", "i2c1" => "I2C1", "i2c2" => "I2C2", "i2c3" => "I2C3";
     "adc": "adc" => "ADC_FIFO";
+    "pio": "pio" => "PIO_0", "pio" => "PIO_1";
 };
 
 impl DriverIrq {
-    pub fn line(&self) -> Result<&'static board::VerifiedIrq> {
-        let ownership = metadata::peripheral_id(&self.instance.to_ascii_uppercase())?;
-        board::irq_routes()
+    pub fn line(&self, core: usize) -> Option<&'static board::VerifiedIrq> {
+        let ownership = metadata::peripheral_id(&self.instance.to_ascii_uppercase()).ok()?;
+        board::irq_routes_for(core)
             .find(|line| line.name == self.vector && line.owner.ownership() == ownership)
-            .ok_or_else(|| format!("{} has no declared {} IRQ", self.instance, self.vector).into())
     }
 
-    pub fn number(&self) -> Result<u8> {
+    pub fn number(&self, line: &board::VerifiedIrq) -> Result<u8> {
+        if self.module == "pio" {
+            return Ok(line.irq - rp1_proto::board::PIO_IRQ0 as u8);
+        }
         board::find_instance(self.instance)
             .map(|instance| instance.number)
             .ok_or_else(|| format!("unknown IRQ-owning instance {}", self.instance).into())
@@ -65,9 +68,12 @@ mod tests {
     #[test]
     fn driver_bindings_match_the_board_and_pac() {
         for driver in DRIVERS {
-            let line = driver.line().unwrap();
+            let Some(line) = driver.line(1) else {
+                assert_eq!(driver.module, "pio");
+                continue;
+            };
             assert_eq!(rp1_pac::INTERRUPT_NAMES[usize::from(line.irq)], line.name);
-            assert!(driver.number().is_ok());
+            assert!(driver.number(line).is_ok());
         }
     }
 }

@@ -1,4 +1,5 @@
 use super::{BASE, FLEVEL, FLEVEL2, FSTAT};
+use crate::timer::{self, Deadline, Instant, Timer};
 use crate::{read, write_relaxed};
 use core::marker::PhantomData;
 
@@ -28,15 +29,34 @@ impl Buffers {
     }
 }
 
-pub struct Tx<const N: u8> {
+pub struct Tx<const N: u8, I = ()> {
     buffers: Buffers,
-    local: PhantomData<*mut ()>,
+    local: PhantomData<(*mut (), I)>,
 }
 
-pub struct Rx<const N: u8> {
+pub struct Rx<const N: u8, I = ()> {
     buffers: Buffers,
-    local: PhantomData<*mut ()>,
+    local: PhantomData<(*mut (), I)>,
 }
+
+/// An error from a deadline-bounded FIFO operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum WaitError {
+    /// The FIFO has zero capacity in the current JOIN mode.
+    Disabled,
+    Busy,
+    Timer(timer::Error),
+}
+
+impl From<timer::Error> for WaitError {
+    fn from(error: timer::Error) -> Self {
+        Self::Timer(error)
+    }
+}
+
+/// An explicitly selected polling FIFO wait.
+pub struct Polling<'a, F>(&'a mut F);
 
 fn level(read: impl Fn(usize) -> u32, sm: u8, rx: bool, capacity: u8) -> u8 {
     if capacity == 0 {
@@ -55,7 +75,7 @@ fn level(read: impl Fn(usize) -> u32, sm: u8, rx: bool, capacity: u8) -> u8 {
 
 macro_rules! fifo {
     ($type:ident, $rx:expr, $full:expr, $empty:expr) => {
-        impl<const N: u8> $type<N> {
+        impl<const N: u8, I> $type<N, I> {
             pub(super) fn new(buffers: Buffers) -> Self {
                 Self {
                     buffers,
@@ -80,16 +100,27 @@ macro_rules! fifo {
             pub fn is_full(&self) -> bool {
                 self.capacity() == 0 || read(FSTAT) & (1 << (N + $full)) != 0
             }
+
+            /// Borrow this FIFO for deadline-bounded polling.
+            pub fn polling(&mut self) -> Polling<'_, Self> {
+                Polling(self)
+            }
         }
     };
 }
 fifo!(Tx, false, 16, 24);
 fifo!(Rx, true, 0, 8);
 
-impl<const N: u8> Tx<N> {
+impl<const N: u8, I> Tx<N, I> {
     /// Write a word immediately, returning false if the FIFO cannot accept it.
     #[inline]
     pub fn write(&mut self, word: u32) -> bool {
+        self.try_write(word)
+    }
+
+    /// Write one word if space is available.
+    #[inline]
+    pub fn try_write(&mut self, word: u32) -> bool {
         if self.is_full() {
             return false;
         }
@@ -98,17 +129,95 @@ impl<const N: u8> Tx<N> {
     }
 }
 
-impl<const N: u8> Rx<N> {
+impl<const N: u8, I> Rx<N, I> {
     /// Pop a word immediately, returning None if no word is available.
     #[inline]
     pub fn read(&mut self) -> Option<u32> {
+        self.try_read()
+    }
+
+    /// Pop one word if available.
+    #[inline]
+    pub fn try_read(&mut self) -> Option<u32> {
         (!self.is_empty()).then(|| read(BASE + 0x24 + usize::from(N) * 4))
+    }
+}
+
+impl<const N: u8, I> Polling<'_, Tx<N, I>> {
+    /// Write one word by an absolute deadline.
+    pub fn write_until(&mut self, word: u32, end: impl Into<Deadline>) -> Result<(), WaitError> {
+        rp1_rt::interrupt::ThreadGuard::new().map_err(timer::Error::from)?;
+        poll(
+            self.0.capacity(),
+            end.into(),
+            || Timer::new().now(),
+            || self.0.try_write(word).then_some(()),
+        )
+    }
+}
+
+impl<const N: u8, I> Polling<'_, Rx<N, I>> {
+    /// Read one word by an absolute deadline.
+    pub fn read_until(&mut self, end: impl Into<Deadline>) -> Result<u32, WaitError> {
+        rp1_rt::interrupt::ThreadGuard::new().map_err(timer::Error::from)?;
+        poll(
+            self.0.capacity(),
+            end.into(),
+            || Timer::new().now(),
+            || self.0.try_read(),
+        )
+    }
+}
+
+fn poll<T>(
+    capacity: u8,
+    end: Deadline,
+    mut now: impl FnMut() -> Instant,
+    mut probe: impl FnMut() -> Option<T>,
+) -> Result<T, WaitError> {
+    end.check(now())?;
+    if capacity == 0 {
+        return Err(WaitError::Disabled);
+    }
+    loop {
+        if let Some(value) = probe() {
+            return Ok(value);
+        }
+        if now() >= end.instant() {
+            return probe().ok_or(timer::Error::Timeout.into());
+        }
+        core::hint::spin_loop();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::cell::Cell;
+
+    #[test]
+    fn polling_admission_precedes_fifo_access_and_deadline_has_a_final_probe() {
+        let now = Cell::new(2);
+        let tick = || Instant::from_ticks(now.get());
+        let end = Deadline::at(Instant::from_ticks(2));
+        assert_eq!(
+            poll::<()>(8, end, tick, || panic!("probed an expired wait")),
+            Err(WaitError::Timer(timer::Error::Timeout))
+        );
+        now.set(1);
+        assert_eq!(
+            poll::<()>(0, end, tick, || panic!("probed a disabled FIFO")),
+            Err(WaitError::Disabled)
+        );
+        let reads = Cell::new(0);
+        let result = poll(8, end, tick, || {
+            reads.set(reads.get() + 1);
+            now.set(2);
+            (reads.get() == 2).then_some(42)
+        });
+        assert_eq!(result, Ok(42));
+        assert_eq!(reads.get(), 2);
+    }
 
     #[test]
     fn joined_level_distinguishes_15_and_16_in_every_lane() {

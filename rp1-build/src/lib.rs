@@ -317,7 +317,10 @@ fn custom_irq_assertions(d: &metadata::Declaration) -> String {
                 "ASSERT(__rp1_p{core}_IO_BANK0 != __rp1_default_irq, \"proc{core} needs a custom IO_BANK0 handler\");\n"
             ));
         }
-        for irq in driver_irq::DRIVERS.iter().filter(|irq| irq.is_custom(c)) {
+        for irq in driver_irq::DRIVERS
+            .iter()
+            .filter(|irq| irq.is_custom(c) && irq.line(core).is_some())
+        {
             let vector = irq.vector;
             checks.push_str(&format!(
                 "ASSERT(__rp1_p{core}_{vector} != __rp1_default_irq, \"proc{core} needs a custom {vector} handler\");\n"
@@ -421,13 +424,17 @@ fn resources(
         let managed: Vec<_> = driver_irq::DRIVERS
             .iter()
             .filter(|irq| irq.is_managed(c))
-            .map(|irq| Ok((irq, irq.line()?)))
-            .collect::<Result<Vec<_>>>()?;
+            .filter_map(|irq| irq.line(index).map(|line| (irq, line)))
+            .collect();
         for (irq, line) in &managed {
             let vector = line.name;
             let module = irq.module;
-            let instance = irq.instance;
-            let n = irq.number()?;
+            let instance = if module == "pio" {
+                vector.to_ascii_lowercase()
+            } else {
+                irq.instance.into()
+            };
+            let n = irq.number(line)?;
             writeln!(
                 s,
                 "#[unsafe(export_name = \"__rp1_p{index}_{vector}\")]\n\
@@ -458,6 +465,15 @@ fn resources(
                 metadata::Instance::Dma(channels) => {
                     dma_resource(&mut s, index, channels.selected())
                 }
+                metadata::Instance::Pio(pio) => pio_resource(
+                    &mut s,
+                    index,
+                    pio,
+                    managed
+                        .iter()
+                        .copied()
+                        .filter(|(irq, _)| irq.instance == name),
+                ),
                 _ => instance_resource(
                     &mut s,
                     name,
@@ -495,7 +511,7 @@ fn resources(
         for (pin, ty, _) in &pins {
             writeln!(s, "pub gpio{pin}: ::rp1_hal::{ty}<{pin}>,")?;
         }
-        let lines: Vec<_> = board::irq_routes()
+        let lines: Vec<_> = board::irq_routes_for(index)
             .filter(|line| {
                 !managed
                     .iter()
@@ -715,6 +731,55 @@ fn resources(
     Ok(s)
 }
 
+fn pio_resource(
+    source: &mut String,
+    core: usize,
+    pio: &metadata::PioSelection,
+    lines: impl Iterator<Item = (&'static driver_irq::DriverIrq, &'static board::VerifiedIrq)>,
+) -> Result<(String, String, Vec<u8>)> {
+    let mut bindings = String::new();
+    let mut routes = 0u8;
+    for (driver, line) in lines {
+        let number = driver.number(line)?;
+        routes |= 1 << number;
+        let irq = line.irq;
+        let owner = line.owner.source_type();
+        write!(
+            bindings,
+            "::rp1_hal::pio::__bind_irq::<{number}, {irq}, {core}>(::rp1_rt::interrupt::Binding::<::rp1_rt::interrupt::{owner}, {irq}, {core}>::new());"
+        )?;
+    }
+    let capability = if routes == 0 {
+        String::new()
+    } else {
+        format!(", ::rp1_hal::pio::Irq<{core}, {routes}>")
+    };
+    let mask = pio.sms.iter().fold(0u8, |mask, &sm| mask | (1 << sm));
+    writeln!(
+        source,
+        "/// The declared state machines.\npub struct PioStateMachines {{"
+    )?;
+    let mut sms = String::new();
+    for &sm in &pio.sms {
+        writeln!(
+            source,
+            "pub sm{sm}: ::rp1_hal::pio::UninitStateMachine<{sm}{capability}>,"
+        )?;
+        write!(sms, "sm{sm}: ::rp1_hal::pio::UninitStateMachine::__new(),")?;
+    }
+    writeln!(
+        source,
+        "}}\n/// Exclusive ownership of both PIO windows.\n\
+         pub type PioParts = ::rp1_hal::pio::PioParts<{mask}, PioStateMachines>;"
+    )?;
+    // Pins remain unconfigured in ProcNPins until the application selects their roles.
+    Ok((
+        "PioParts".into(),
+        format!("unsafe {{ {bindings}PioParts::__new(PioStateMachines {{ {sms} }}) }}"),
+        Vec::new(),
+    ))
+}
+
 /// Field type, initializer and bundled pins of an instance's resource.
 /// UART, SPI and I²C also emit aliases for the required pin tuple and driver in `rp1`.
 /// Managed ADC emits an alias for its pinless parts and initialized driver.
@@ -747,32 +812,7 @@ fn instance_resource(
             ));
         }
         Instance::Dma(_) => unreachable!("DMA has a declaration-specific channel set"),
-        Instance::Pio(pio) => {
-            let mask = pio.sms.iter().fold(0u8, |mask, &sm| mask | (1 << sm));
-            writeln!(
-                source,
-                "/// The declared state machines.\npub struct PioStateMachines {{"
-            )?;
-            let mut sms = String::new();
-            for &sm in &pio.sms {
-                writeln!(
-                    source,
-                    "pub sm{sm}: ::rp1_hal::pio::UninitStateMachine<{sm}>,"
-                )?;
-                write!(sms, "sm{sm}: ::rp1_hal::pio::UninitStateMachine::__new(),")?;
-            }
-            writeln!(
-                source,
-                "}}\n/// Exclusive ownership of both PIO windows.\n\
-                 pub type PioParts = ::rp1_hal::pio::PioParts<{mask}, PioStateMachines>;"
-            )?;
-            // Pins remain unconfigured in ProcNPins until the application selects their roles.
-            return Ok((
-                "PioParts".into(),
-                format!("unsafe {{ PioParts::__new(PioStateMachines {{ {sms} }}) }}"),
-                Vec::new(),
-            ));
-        }
+        Instance::Pio(_) => unreachable!("PIO has a declaration-specific SM set"),
         Instance::Adc {} => {
             let Some((line, core)) = managed else {
                 let ty = "::rp1_hal::adc::Token";
@@ -1197,6 +1237,73 @@ mod tests {
                     expects_assertion
                 );
             }
+        }
+    }
+
+    #[test]
+    fn pio_wait_generation_obeys_the_route_and_alarm() {
+        let declaration = |core: usize, timer: &str| {
+            let input = format!("schema=2\n[proc{core}]\npio={{sms=[0,3]}}\n{timer}");
+            toml::from_str::<metadata::Declaration>(&input).unwrap()
+        };
+        let render = |d: &metadata::Declaration| {
+            d.validate().unwrap();
+            resources(d, &[], &d.shm_layout().unwrap()).unwrap()
+        };
+
+        let published: Vec<_> = board::irq_routes()
+            .filter(|line| {
+                matches!(
+                    line.owner,
+                    board::IrqOwner::Instance(rp1_proto::BlockId::Pio)
+                )
+            })
+            .collect();
+        let mask = published.iter().fold(0, |mask, line| {
+            mask | (1 << (line.irq - rp1_proto::board::PIO_IRQ0 as u8))
+        });
+        let managed = render(&declaration(1, "wait_timer='ALARM0'"));
+        let no_alarm = render(&declaration(1, ""));
+        let alarm_elsewhere = render(&declaration(1, "[proc0]\nwait_timer='ALARM0'"));
+        let wrong_core = render(&declaration(0, "wait_timer='ALARM0'"));
+        let wrong_custom = declaration(0, "wait_timer='ALARM0'\ncustom_pio_handler=true");
+        assert!(
+            wrong_custom
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("proc0.custom_pio_handler has no verified route")
+        );
+        let custom = declaration(1, "wait_timer='ALARM0'\ncustom_pio_handler=true");
+        assert!(no_alarm.contains("pub sm3: ::rp1_hal::pio::UninitStateMachine<3>,"));
+        for source in [&no_alarm, &alarm_elsewhere, &wrong_core] {
+            assert!(!source.contains("::rp1_hal::pio::Irq<"));
+            assert!(!source.contains("::rp1_hal::pio::__bind_irq"));
+        }
+        assert!(!irq_fields(&wrong_core, 0).contains("pub PIO_"));
+        assert!(!wrong_core.contains("impl sealed::Admitted for PIO_"));
+
+        if published.is_empty() {
+            assert!(!managed.contains("::rp1_hal::pio::__bind_irq"));
+            assert!(custom.validate().is_err());
+            return;
+        }
+        let custom_source = render(&custom);
+        let custom_checks = custom_irq_assertions(&custom);
+        assert!(!custom_source.contains("::rp1_hal::pio::__bind_irq"));
+        for line in published {
+            let vector = line.name;
+            let number = line.irq - rp1_proto::board::PIO_IRQ0 as u8;
+            assert!(managed.contains(&format!("__rp1_p1_{vector}")));
+            assert!(managed.contains(&format!("pio::__on_interrupt::<{number}, 1>")));
+            assert!(managed.contains(&format!("pio::Irq<1, {mask}>")));
+            assert!(!managed.contains(&format!("impl sealed::Admitted for {vector}")));
+            assert!(!irq_fields(&managed, 1).contains(&format!("pub {vector}")));
+            for source in [&no_alarm, &alarm_elsewhere, &custom_source] {
+                assert!(irq_fields(source, 1).contains(&format!("pub {vector}")));
+                assert!(!source.contains(&format!("__rp1_p1_{vector}")));
+            }
+            assert!(custom_checks.contains(&format!("__rp1_p1_{vector} != __rp1_default_irq")));
         }
     }
 

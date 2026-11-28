@@ -222,6 +222,17 @@ pub fn irq_routes() -> impl Iterator<Item = &'static VerifiedIrq> {
     IRQ_VERIFIED.iter()
 }
 
+/// Routes that may be bound by an application on this core.
+pub fn irq_routes_for(core: usize) -> impl Iterator<Item = &'static VerifiedIrq> {
+    irq_routes().filter(move |line| line.supports_core(core))
+}
+
+impl VerifiedIrq {
+    pub(crate) fn supports_core(&self, core: usize) -> bool {
+        core == 1 || !matches!(self.owner, IrqOwner::Instance(BlockId::Pio))
+    }
+}
+
 pub(crate) fn find_instance(name: &str) -> Option<&'static BoardInstance> {
     INSTANCES.iter().find(|i| i.name == name)
 }
