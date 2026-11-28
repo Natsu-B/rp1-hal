@@ -101,6 +101,12 @@ jobs:
         run: cargo rp1 build --locked -p ${{ matrix.package }} --target thumbv7m-none-eabi --release ${{ matrix.features }}
       - name: cargo rp1 check
         run: cargo rp1 check target/thumbv7m-none-eabi/release/${{ matrix.package }} ${{ matrix.package == 'dual-core' && matrix.name != 'ping-poll' && '--require-link-irq' || '' }}
+      - name: Check v3 startup fill placement
+        if: matrix.package == 'dual-core' && matrix.name == 'link-wake'
+        run: |
+          arm-none-eabi-objdump -t -C target/thumbv7m-none-eabi/release/dual-core |
+            awk '$3 == "F" && $4 == ".isram" && $6 == "rp1_link::generated::zero_words" { print; found = 1 }
+                 END { if (!found) { print "Missing startup zero_words function in .isram" > "/dev/stderr"; exit 1 } }'
       - name: Inspect the native PWM duty path
         if: matrix.package == 'pwm-loopback' && matrix.name == 'motor-api'
         run: python3 lab/check-pwm-native.py target/thumbv7m-none-eabi/release/pwm-loopback
