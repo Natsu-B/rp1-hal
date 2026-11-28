@@ -848,8 +848,13 @@ over SHM. Build the Linux reader with
 --bin uart-parity-report --features uart0-report`.
 
 Build `spi-parity` with `--features spi1` or `spi3` for DW SSI loopback.
-Proc1 brackets the SPI status transition with read-only MMIO samples. Build
-`i2c-parity` with `--features i2c2` or `i2c3` for the fixed
+Proc1 brackets the SPI status transition with read-only MMIO samples.
+`spi-tail` interleaves SPI0, SPI1 and SPI3 in one boot, with IRQ53/57 overlap
+stamps. After Linux reaches multi-user, write `0x54495053` to the 32-bit
+word at `0x1f0040c028` from Linux for the second cohort. After
+`TAIL_AWAIT_REPEAT`, write `0x52495053` for the 5,000-trial SPI3 repeat.
+
+Build `i2c-parity` with `--features i2c2` or `i2c3` for the fixed
 GPIO12↔22 and GPIO13↔23 open-drain jumper fixture. Only the declared controller
 uses the I²C mux. Both ends use weak pull-ups. The fixture samples SCL and
 checks 100 address NACKs through TX_ABRT.

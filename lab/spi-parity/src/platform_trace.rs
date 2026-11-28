@@ -1,12 +1,11 @@
 //! Lab-only wrappers for the live proc0 platform vectors.
-use super::{N, log, now, rp1};
+use super::{log, now, rp1};
 use core::{
     arch::asm,
     sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
 };
 
 const PLATFORM: [u32; 2] = [53, 57];
-const SPI_IRQ: u32 = if N == 0 { 19 } else { 22 };
 const ISER: *const u32 = 0xe000_e100 as *const u32;
 const IPR: *const u8 = 0xe000_e400 as *const u8;
 // An SCMI burst can span a whole flush and contain many separate entries.
@@ -74,7 +73,6 @@ fn stamp(line: usize, handler: impl FnOnce()) {
 }
 
 pub(super) fn install() {
-    const { assert!(matches!(N, 0 | 3)) };
     // Platform init has checked and installed the original vectors. Only the
     // lab modifies the writable table, with proc0 interrupts briefly masked.
     rp1_rt::interrupt::__primask_free(|| unsafe {
@@ -94,16 +92,21 @@ pub(super) fn install() {
     });
 }
 
-pub(super) fn inventory() {
+pub(super) fn inventory(devices: &[u32], alarms: &[u32]) {
     let enabled =
         unsafe { ISER.read_volatile() as u64 | (ISER.add(1).read_volatile() as u64) << 32 };
     let irq_mask = |irq| 1u64 << irq;
-    let allowed = [26u32, 27, SPI_IRQ, PLATFORM[0], PLATFORM[1]]
+    let allowed = PLATFORM
         .into_iter()
+        .chain(devices.iter().copied())
+        .chain(alarms.iter().copied())
         .map(irq_mask)
         .fold(0, |a, b| a | b);
     assert_eq!(enabled & !allowed, 0, "unstamped enabled IRQs");
-    for (irq, priority) in [(53u32, 0), (57, 1), (26, 4), (27, 4), (SPI_IRQ, 4)] {
+    for (irq, priority) in [(53u32, 0), (57, 1)]
+        .into_iter()
+        .chain(devices.iter().chain(alarms).map(|&irq| (irq, 4)))
+    {
         let raw = unsafe { IPR.add(irq as usize).read_volatile() };
         assert_eq!(raw, priority << 5);
         log!(
@@ -115,9 +118,13 @@ pub(super) fn inventory() {
 }
 
 pub(super) fn wait_for_linux() {
-    log!("ATTR_AWAIT_LINUX\n").unwrap();
+    wait_for_host("ATTR_AWAIT_LINUX", START);
+}
+
+pub(super) fn wait_for_host(marker: &str, value: u32) {
+    log!("{marker}\n").unwrap();
     // The root console writes this only after Linux reaches multi-user.
-    while unsafe { TRIGGER.read_volatile() } != START {
+    while unsafe { TRIGGER.read_volatile() } != value {
         core::hint::spin_loop();
     }
 }
@@ -237,35 +244,6 @@ pub(super) fn assess(totals: &mut Summary, hz: u32, trial: usize, flush: Flush) 
         }
     }
     upper.min(255) as u8
-}
-
-pub(super) fn report(hz: u32, samples: &[u8; TRIALS], totals: Summary) {
-    // UART output between flushes would spread the boot cohort over Linux startup.
-    for (index, chunk) in samples.chunks(64).enumerate() {
-        struct Hex<'a>(&'a [u8]);
-        impl core::fmt::Display for Hex<'_> {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                for value in self.0 {
-                    write!(f, "{value:02x}")?;
-                }
-                Ok(())
-            }
-        }
-        log!(
-            "ATTR_DATA hz={hz} offset={} upper={}\n",
-            index * 64,
-            Hex(chunk)
-        )
-        .unwrap();
-    }
-    log!(
-        "ATTR_RATE hz={hz} trials={TRIALS} preempted={} max_plain={} max_preempted={} failed={}\n",
-        totals.preempted,
-        totals.max_plain,
-        totals.max_preempted,
-        totals.failed
-    )
-    .unwrap();
 }
 
 pub(super) fn platform_totals() {

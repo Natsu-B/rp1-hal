@@ -174,11 +174,12 @@ fn traced_flushes(
     timer: &mut WaitTimer,
     gate: &mut Pin<8, Output>,
 ) -> Result<(), Error> {
+    const { assert!(matches!(N, 0 | 3)) };
     log!("ATTR_BEGIN instance={N} phase={phase}\n").unwrap();
-    platform_trace::inventory();
+    platform_trace::inventory(&[u32::from(N) + 19], &[26, 27]);
     tx_flush(spi, timer, gate, 1_000_000, false)?;
     tx_flush(spi, timer, gate, 100_000, true)?;
-    platform_trace::inventory();
+    platform_trace::inventory(&[u32::from(N) + 19], &[26, 27]);
     platform_trace::platform_totals();
     assert_eq!(INJECTED_AT.load(Relaxed), 0);
     log!("ATTR_END instance={N} phase={phase}\n").unwrap();
@@ -218,7 +219,10 @@ fn tx_flush(
         let tx = TX.load(Relaxed);
         let alarms = WAIT_ALARM.load(Relaxed);
         let end = Deadline::after(100.millis())?;
-        let window = idle_probe::arm(burst_us);
+        let window = idle_probe::arm(
+            spi_reg(offset_of!(pac::dw_ssi::RegisterBlock, sr)),
+            burst_us,
+        );
         let launch = now();
         select_wire(true);
         gate.set_high().unwrap();
@@ -250,7 +254,7 @@ fn tx_flush(
             hz, trial, elapsed, from_launch, late, tx_irq, tail_alarms
         )
         .unwrap();
-            idle_probe::report(window, returned, hz, trial);
+            report_idle(window, returned, hz, trial);
         }
         #[cfg(feature = "isr-trace")]
         {
@@ -283,7 +287,7 @@ fn tx_flush(
     }
     let stray = STRAY.load(Relaxed) - stray_before;
     #[cfg(feature = "isr-trace")]
-    platform_trace::report(hz, &samples, summary);
+    report_attribution(hz, &samples, summary);
     log!(
         "SPI_TX_TRIALS hz={} tx_trials={} depth={} tx_irq={} tail_trials={} flush_max_us={} flush_late_max_us={} stray={} errors=0\n",
         hz, trials, depth, TX.load(Relaxed) - tx_before, tail_trials, flush_max, late_max, stray
@@ -535,4 +539,50 @@ fn idle() -> ! {
     loop {
         rp1_rt::wait_for_event();
     }
+}
+
+#[cfg(not(feature = "isr-trace"))]
+fn report_idle(window: u32, returned: u32, hz: u32, trial: u32) {
+    let (last_busy, first_idle) = idle_probe::bracket(window, returned);
+    assert!(last_busy != 0 && first_idle.wrapping_sub(last_busy) <= 6);
+    let upper = returned.wrapping_sub(last_busy) + 1;
+    let lower = (returned.wrapping_sub(first_idle) as i32 - 1).max(0);
+    log!(
+        "OBS_SPI_IDLE hz={} trial={} last_busy={} first_idle={} returned={} lower_us={} upper_us={}\n",
+        hz, trial, last_busy, first_idle, returned, lower, upper
+    ).unwrap();
+}
+
+#[cfg(feature = "isr-trace")]
+fn report_attribution(
+    hz: u32,
+    samples: &[u8; platform_trace::TRIALS],
+    totals: platform_trace::Summary,
+) {
+    // UART output between flushes would spread the boot cohort over Linux startup.
+    for (index, chunk) in samples.chunks(64).enumerate() {
+        struct Hex<'a>(&'a [u8]);
+        impl core::fmt::Display for Hex<'_> {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                for value in self.0 {
+                    write!(f, "{value:02x}")?;
+                }
+                Ok(())
+            }
+        }
+        log!(
+            "ATTR_DATA hz={hz} offset={} upper={}\n",
+            index * 64,
+            Hex(chunk)
+        )
+        .unwrap();
+    }
+    log!(
+        "ATTR_RATE hz={hz} trials={TRIALS} preempted={} max_plain={} max_preempted={} failed={}\n",
+        totals.preempted,
+        totals.max_plain,
+        totals.max_preempted,
+        totals.failed
+    )
+    .unwrap();
 }

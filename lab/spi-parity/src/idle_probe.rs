@@ -1,7 +1,5 @@
 //! Independent proc1 bracket of the controller's wire-idle bit.
-#[cfg(not(feature = "isr-trace"))]
-use super::{log, rp1};
-use super::{now, spi_status};
+use super::now;
 use core::sync::atomic::{
     AtomicU32,
     Ordering::{Acquire, Relaxed, Release},
@@ -9,6 +7,8 @@ use core::sync::atomic::{
 use rp1_hal::pac::dw_ssi::sr;
 use rp1_rt::{send_event, wait_for_event};
 
+#[unsafe(link_section = ".shared")]
+static STATUS: AtomicU32 = AtomicU32::new(0);
 #[unsafe(link_section = ".shared")]
 static WINDOW: AtomicU32 = AtomicU32::new(0);
 #[unsafe(link_section = ".shared")]
@@ -18,7 +18,8 @@ static LAST_BUSY: AtomicU32 = AtomicU32::new(0);
 #[unsafe(link_section = ".shared")]
 static FIRST_IDLE: AtomicU32 = AtomicU32::new(0);
 
-pub(super) fn arm(burst_us: u32) -> u32 {
+pub(super) fn arm(status: *const u32, burst_us: u32) -> u32 {
+    STATUS.store(status as u32, Relaxed);
     let window = now().wrapping_add(burst_us - 24);
     WINDOW.store(window, Release);
     send_event();
@@ -35,6 +36,7 @@ pub(super) fn observe() -> ! {
             continue;
         }
         previous = window;
+        let status = STATUS.load(Relaxed) as *const u32;
         while (now().wrapping_sub(window) as i32) < 0 {
             // Limit APB contention before the sampling window.
             unsafe { core::arch::asm!(".rept 48", "nop", ".endr", options(nostack, nomem)) };
@@ -42,7 +44,8 @@ pub(super) fn observe() -> ! {
         let mut last_busy = 0;
         loop {
             let stamp = now();
-            if spi_status() & (sr::BUSY | sr::TFE) == sr::TFE {
+            // The controller and this register remain live until bracket() returns.
+            if unsafe { status.read_volatile() } & (sr::BUSY | sr::TFE) == sr::TFE {
                 LAST_BUSY.store(last_busy, Relaxed);
                 FIRST_IDLE.store(now(), Relaxed);
                 OBSERVED.store(window, Release);
@@ -58,16 +61,4 @@ pub(super) fn bracket(window: u32, returned: u32) -> (u32, u32) {
         assert!(now().wrapping_sub(returned) < 1_000);
     }
     (LAST_BUSY.load(Relaxed), FIRST_IDLE.load(Relaxed))
-}
-
-#[cfg(not(feature = "isr-trace"))]
-pub(super) fn report(window: u32, returned: u32, hz: u32, trial: u32) {
-    let (last_busy, first_idle) = bracket(window, returned);
-    assert!(last_busy != 0 && first_idle.wrapping_sub(last_busy) <= 6);
-    let upper = returned.wrapping_sub(last_busy) + 1;
-    let lower = (returned.wrapping_sub(first_idle) as i32 - 1).max(0);
-    log!(
-        "OBS_SPI_IDLE hz={} trial={} last_busy={} first_idle={} returned={} lower_us={} upper_us={}\n",
-        hz, trial, last_busy, first_idle, returned, lower, upper
-    ).unwrap();
 }

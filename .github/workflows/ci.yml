@@ -70,6 +70,7 @@ jobs:
           - { package: dma-parity }
           - { package: uart-parity }
           - { package: spi-parity }
+          - { package: spi-tail }
           - { package: i2c-parity }
           - { package: adc-parity }
           - { package: irq-proof }
