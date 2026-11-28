@@ -77,9 +77,10 @@ class SpiParityTest(unittest.TestCase):
     def test_uart_instance_header(self):
         for instance in (0, 1, 3):
             text = f"SPI_INSTANCE instance={instance}\n" + LOG
-            self.assertEqual(verify["verify_uart"](text)[:2], (16, [101, 102]))
-        with self.assertRaises(ValueError):
-            verify["verify_uart"]("SPI_INSTANCE instance=2\n" + LOG)
+            self.assertEqual(verify["verify_uart"](text, instance)[:2], (16, [101, 102]))
+        for bad in (LOG, "SPI_INSTANCE instance=0\n" + LOG, "SPI_INSTANCE instance=2\n" + LOG):
+            with self.assertRaises(ValueError):
+                verify["verify_uart"](bad, 1)
 
     def test_uart_counts_order_and_timing(self):
         self.assertEqual(verify["verify_uart"](LOG)[:2], (16, [101, 102]))

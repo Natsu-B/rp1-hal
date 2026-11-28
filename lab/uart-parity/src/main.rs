@@ -115,3 +115,11 @@ mod loopback;
 
 #[cfg(feature = "uart0")]
 use loopback::Report;
+
+#[cfg(any(
+    feature = "uart0",
+    feature = "uart2",
+    feature = "uart3",
+    feature = "uart4"
+))]
+use loopback::observe_wait_alarm;

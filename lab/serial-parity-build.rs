@@ -43,7 +43,7 @@ pub fn configure(
         &format!("{call};"),
         &format!("crate::observe_device(|| {call});"),
     );
-    if block != "uart" {
+    if block != "uart" || n != default {
         let timer = "unsafe { ::rp1_hal::timer::WaitTimer::__on_interrupt::<1>() };";
         assert_eq!(source.matches(timer).count(), 1);
         source = source.replace(timer, "crate::observe_wait_alarm();");

@@ -1,5 +1,7 @@
 //! Independent proc1 bracket of the controller's wire-idle bit.
-use super::{log, now, rp1, spi_status};
+#[cfg(not(feature = "isr-trace"))]
+use super::{log, rp1};
+use super::{now, spi_status};
 use core::sync::atomic::{
     AtomicU32,
     Ordering::{Acquire, Relaxed, Release},
@@ -51,12 +53,16 @@ pub(super) fn observe() -> ! {
     }
 }
 
-pub(super) fn report(window: u32, returned: u32, hz: u32, trial: u32) {
+pub(super) fn bracket(window: u32, returned: u32) -> (u32, u32) {
     while OBSERVED.load(Acquire) != window {
         assert!(now().wrapping_sub(returned) < 1_000);
     }
-    let last_busy = LAST_BUSY.load(Relaxed);
-    let first_idle = FIRST_IDLE.load(Relaxed);
+    (LAST_BUSY.load(Relaxed), FIRST_IDLE.load(Relaxed))
+}
+
+#[cfg(not(feature = "isr-trace"))]
+pub(super) fn report(window: u32, returned: u32, hz: u32, trial: u32) {
+    let (last_busy, first_idle) = bracket(window, returned);
     assert!(last_busy != 0 && first_idle.wrapping_sub(last_busy) <= 6);
     let upper = returned.wrapping_sub(last_busy) + 1;
     let lower = (returned.wrapping_sub(first_idle) as i32 - 1).max(0);

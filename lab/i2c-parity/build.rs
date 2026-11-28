@@ -2,5 +2,5 @@
 mod build;
 
 fn main() {
-    build::configure("i2c", 1, &[2, 3], &[]);
+    build::configure("i2c", 1, &[0, 2, 3], &[]);
 }

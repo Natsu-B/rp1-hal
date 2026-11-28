@@ -10,6 +10,7 @@ test = false
 bench = false
 
 [features]
+i2c0 = []
 i2c2 = []
 i2c3 = []
 

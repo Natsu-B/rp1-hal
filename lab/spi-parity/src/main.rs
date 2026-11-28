@@ -6,10 +6,9 @@ use core::{
     mem::offset_of,
     sync::atomic::{AtomicU32, Ordering::Relaxed},
 };
-use embedded_hal::{
-    digital::OutputPin,
-    spi::{MODE_0, Operation, SpiBus, SpiDevice},
-};
+#[cfg(not(feature = "isr-trace"))]
+use embedded_hal::spi::{Operation, SpiBus, SpiDevice};
+use embedded_hal::{digital::OutputPin, spi::MODE_0};
 use rp1_hal::{
     fugit::{ExtU32, RateExtU32},
     gpio::{Output, Pin},
@@ -37,10 +36,14 @@ static CS_LAST_RX: AtomicU32 = AtomicU32::new(0);
 
 const TRIALS: u32 = 100;
 const BATCH: usize = 1_000;
+#[cfg(not(feature = "isr-trace"))]
 const CS_TRIALS: u16 = 1_000;
+#[cfg(not(feature = "isr-trace"))]
 const BLOCKED_US: u32 = 500;
+#[cfg(not(feature = "isr-trace"))]
 const INJECT_US: u32 = 250;
 const SLACK_US: u32 = 100;
+#[cfg(not(feature = "isr-trace"))]
 const CS_DELAY_US: u32 = 4;
 const CS0_HIGH: u32 = 1 << 12;
 const CS1_HIGH: u32 = 1 << 13;
@@ -161,6 +164,25 @@ fn bulk(bus: &mut Bus<'_>, gate: &mut Pin<8, Output>, hz: u32) -> Result<(), Err
 }
 
 mod idle_probe;
+#[cfg(feature = "isr-trace")]
+mod platform_trace;
+
+#[cfg(feature = "isr-trace")]
+fn traced_flushes(
+    phase: &str,
+    spi: &mut Driver,
+    timer: &mut WaitTimer,
+    gate: &mut Pin<8, Output>,
+) -> Result<(), Error> {
+    log!("ATTR_BEGIN instance={N} phase={phase}\n").unwrap();
+    platform_trace::inventory();
+    tx_flush(spi, timer, gate, 1_000_000, false)?;
+    tx_flush(spi, timer, gate, 100_000, true)?;
+    platform_trace::inventory();
+    platform_trace::platform_totals();
+    log!("ATTR_END instance={N} phase={phase}\n").unwrap();
+    Ok(())
+}
 
 fn tx_flush(
     spi: &mut Driver,
@@ -178,7 +200,15 @@ fn tx_flush(
     let mut tail_trials = 0;
     let tx_before = TX.load(Relaxed);
     let stray_before = STRAY.load(Relaxed);
-    for trial in 0..TRIALS {
+    #[cfg(feature = "isr-trace")]
+    let trials = platform_trace::TRIALS as u32;
+    #[cfg(not(feature = "isr-trace"))]
+    let trials = TRIALS;
+    #[cfg(feature = "isr-trace")]
+    let mut samples = [0; platform_trace::TRIALS];
+    #[cfg(feature = "isr-trace")]
+    let mut summary = platform_trace::Summary::default();
+    for trial in 0..trials {
         select_wire(false);
         for i in 0..depth {
             assert_eq!(spi.try_write_word(i as u8)?, Try::Ready(()));
@@ -191,13 +221,19 @@ fn tx_flush(
         let launch = now();
         select_wire(true);
         gate.set_high().unwrap();
+        #[cfg(feature = "isr-trace")]
+        let start = platform_trace::begin();
+        #[cfg(not(feature = "isr-trace"))]
         let start = now();
         spi.blocking(timer).flush_until(end)?;
+        #[cfg(feature = "isr-trace")]
+        let returned = platform_trace::end();
+        #[cfg(not(feature = "isr-trace"))]
         let returned = now();
         // TFE and !BUSY establish that both the FIFO and shifter are empty at return.
         let status = spi_status();
-        let elapsed = now().wrapping_sub(start);
-        let from_launch = now().wrapping_sub(launch);
+        let elapsed = returned.wrapping_sub(start);
+        let from_launch = returned.wrapping_sub(launch);
         gate.set_low().unwrap();
         assert_eq!(status & (sr::BUSY | sr::TFE), sr::TFE);
         let tx_irq = TX.load(Relaxed) - tx;
@@ -206,12 +242,28 @@ fn tx_flush(
         // tick for phase. The 100 us slack is measured from the earliest end.
         let earliest = burst_us - (1_000_000 / hz) - 1;
         let late = from_launch.saturating_sub(earliest) + 1;
-        log!(
+        #[cfg(not(feature = "isr-trace"))]
+        {
+            log!(
             "SPI_TX_SAMPLE hz={} trial={} flush_us={} launch_us={} late_us={} tx_irq={} tail_alarms={} idle=1\n",
             hz, trial, elapsed, from_launch, late, tx_irq, tail_alarms
         )
         .unwrap();
-        idle_probe::report(window, returned, hz, trial);
+            idle_probe::report(window, returned, hz, trial);
+        }
+        #[cfg(feature = "isr-trace")]
+        {
+            let (last_busy, first_idle) = idle_probe::bracket(window, returned);
+            samples[trial as usize] = platform_trace::assess(
+                &mut summary,
+                hz,
+                trial as usize,
+                start,
+                returned,
+                last_busy,
+                first_idle,
+            );
+        }
         assert!(from_launch >= earliest && late <= SLACK_US && elapsed <= burst_us + SLACK_US);
         assert_eq!(tx_irq, 1);
         if require_tail_alarm {
@@ -226,14 +278,17 @@ fn tx_flush(
         late_max = late_max.max(late);
     }
     let stray = STRAY.load(Relaxed) - stray_before;
+    #[cfg(feature = "isr-trace")]
+    platform_trace::report(hz, &samples, summary);
     log!(
         "SPI_TX_TRIALS hz={} tx_trials={} depth={} tx_irq={} tail_trials={} flush_max_us={} flush_late_max_us={} stray={} errors=0\n",
-        hz, TRIALS, depth, TX.load(Relaxed) - tx_before, tail_trials, flush_max, late_max, stray
+        hz, trials, depth, TX.load(Relaxed) - tx_before, tail_trials, flush_max, late_max, stray
     ).unwrap();
     assert_eq!(stray, 0);
     Ok(())
 }
 
+#[cfg(not(feature = "isr-trace"))]
 fn timeout_rearm(spi: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
     spi.blocking(timer).set_frequency(1.MHz())?;
     let mut max_timeout = 0;
@@ -273,6 +328,7 @@ fn timeout_rearm(spi: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(not(feature = "isr-trace"))]
 fn selected<const N: u8>(
     bus: &mut Bus<'_>,
     cs: Pin<N>,
@@ -324,6 +380,7 @@ fn selected<const N: u8>(
     Ok((dev.free().1, delay, upper))
 }
 
+#[cfg(not(feature = "isr-trace"))]
 fn devices(bus: &mut Bus<'_>, mut cs0: Pin<22>, mut cs1: Pin<23>) -> Result<(), Error> {
     let mut delay_min = u32::MAX;
     let mut delay_upper = 0;
@@ -386,6 +443,8 @@ fn devices(bus: &mut Bus<'_>, mut cs0: Pin<22>, mut cs1: Pin<23>) -> Result<(), 
 fn run(core: &mut Proc0, mut p: rp1::Proc0Resources) -> Result<(), Error> {
     let sys = rp1::platform::init(core, p.platform).unwrap();
     p.proc1.launch(core).unwrap();
+    #[cfg(feature = "isr-trace")]
+    platform_trace::install();
     log!(
         "SPI_INSTANCE instance={}
 ",
@@ -408,39 +467,48 @@ fn run(core: &mut Proc0, mut p: rp1::Proc0Resources) -> Result<(), Error> {
     let mut gate = p.pins.gpio8.into_output(false);
     let _sense0 = p.pins.gpio12.into_input();
     let _sense1 = p.pins.gpio13.into_input();
-    let cs0 = Device::new((), p.pins.gpio22).free().1;
-    let cs1 = Device::new((), p.pins.gpio23).free().1;
+    let _cs0 = Device::new((), p.pins.gpio22).free().1;
+    let _cs1 = Device::new((), p.pins.gpio23).free().1;
     assert_eq!(cs_sense(), CS_IDLE);
     log!("SPI_PARITY_READY\n").unwrap();
 
     let mut bus = spi.blocking(wait);
     bulk(&mut bus, &mut gate, 1_000_000)?;
     bulk(&mut bus, &mut gate, 10_000_000)?;
-    tx_flush(&mut spi, wait, &mut gate, 1_000_000, false)?;
-    // The slower fixed rate leaves time after TXEI to exercise the tail
-    // one-shot even if the shifter has already finished at 1 MHz.
-    tx_flush(&mut spi, wait, &mut gate, 100_000, true)?;
-    timeout_rearm(&mut spi, wait)?;
-    devices(&mut spi.blocking(wait), cs0, cs1)?;
+    #[cfg(feature = "isr-trace")]
+    {
+        traced_flushes("early", &mut spi, wait, &mut gate)?;
+        platform_trace::wait_for_linux();
+        traced_flushes("linux", &mut spi, wait, &mut gate)?;
+    }
+    #[cfg(not(feature = "isr-trace"))]
+    {
+        tx_flush(&mut spi, wait, &mut gate, 1_000_000, false)?;
+        // The slower fixed rate leaves time after TXEI to exercise the tail
+        // one-shot even if the shifter has already finished at 1 MHz.
+        tx_flush(&mut spi, wait, &mut gate, 100_000, true)?;
+        timeout_rearm(&mut spi, wait)?;
+        devices(&mut spi.blocking(wait), _cs0, _cs1)?;
 
-    let bytes: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(37));
-    let mut rx = [0; 32];
-    let mut compare = |bus: &mut dyn SpiBus<u8, Error = Error>| -> Result<u32, Error> {
-        let start = now();
-        bus.transfer(&mut rx, &bytes)?;
-        bus.flush()?;
-        assert_eq!(rx, bytes);
-        Ok(now().wrapping_sub(start))
-    };
-    let irq_us = compare(&mut spi.blocking(wait))?;
-    let poll_us = compare(&mut spi.polling())?;
-    log!(
-        "SPI_POLL_COMPARISON hz=1000000 frames=32 irq_us={} polling_us={} stray={} errors=0\n",
-        irq_us,
-        poll_us,
-        STRAY.load(Relaxed)
-    )
-    .unwrap();
+        let bytes: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(37));
+        let mut rx = [0; 32];
+        let mut compare = |bus: &mut dyn SpiBus<u8, Error = Error>| -> Result<u32, Error> {
+            let start = now();
+            bus.transfer(&mut rx, &bytes)?;
+            bus.flush()?;
+            assert_eq!(rx, bytes);
+            Ok(now().wrapping_sub(start))
+        };
+        let irq_us = compare(&mut spi.blocking(wait))?;
+        let poll_us = compare(&mut spi.polling())?;
+        log!(
+            "SPI_POLL_COMPARISON hz=1000000 frames=32 irq_us={} polling_us={} stray={} errors=0\n",
+            irq_us,
+            poll_us,
+            STRAY.load(Relaxed)
+        )
+        .unwrap();
+    }
     assert_eq!(STRAY.load(Relaxed), 0);
     Ok(())
 }

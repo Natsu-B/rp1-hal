@@ -22,7 +22,7 @@ CS_DELAY_US = 4
 MIN_SAMPLE_HZ = 100_000_000
 
 
-def verify_uart(text):
+def verify_uart(text, expected_instance=None):
     require(not re.search(r"SPI_PARITY_FAIL|panicked|panic at|EXAMPLE_FAIL|fault-continuation|HardFault", text),
             "firmware recorded a failure")
     records = iter(line for line in text.splitlines() if line.startswith("SPI_"))
@@ -34,7 +34,11 @@ def verify_uart(text):
         return tuple(map(int, match.groups()))
 
     first = next(records, "")
-    if re.fullmatch(r"SPI_INSTANCE instance=[013]", first):
+    header = re.fullmatch(r"SPI_INSTANCE instance=([013])", first)
+    if expected_instance is not None:
+        require(header is not None and int(header[1]) == expected_instance,
+                f"expected SPI instance {expected_instance}, got {first!r}")
+    if header:
         read(r"SPI_PARITY_READY")
     else:
         require(first == "SPI_PARITY_READY", f"unexpected first SPI record {first!r}")
@@ -237,10 +241,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("uart", type=Path)
     parser.add_argument("wire", type=Path, nargs="?")
+    parser.add_argument("--instance", type=int, choices=(0, 1, 3), required=True)
     args = parser.parse_args()
     try:
         depth, (rx1, rx10), flush, timeout, delay_min, delay_upper, fault_min, fault_max = verify_uart(
-            args.uart.read_text())
+            args.uart.read_text(), args.instance)
         if args.wire:
             with args.wire.open(newline="") as stream:
                 rx_tail, wire_flush = verify_wire(stream, depth)

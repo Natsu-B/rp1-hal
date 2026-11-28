@@ -3,7 +3,28 @@ use super::*;
 const TRIALS: usize = 100;
 const TIMEOUT_US: u32 = 10_000;
 const TX_SAMPLE: usize = 34;
-pub(crate) type Report = [u32; 16];
+const MAX_TAIL_ALARMS: u32 = 32;
+pub(crate) type Report = [u32; 17];
+
+static WAIT_ALARMS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+use core::sync::atomic::Ordering::Relaxed;
+
+pub(super) fn observe_wait_alarm() {
+    // SAFETY: this is the generated ALARM1 handler on the owning core.
+    unsafe { WaitTimer::__on_interrupt::<1>() };
+    WAIT_ALARMS.store(WAIT_ALARMS.load(Relaxed) + 1, Relaxed);
+}
+
+fn flush(io: &mut uart::Blocking<'_, N, 0>, end: Deadline, peak: &mut u32, min_alarms: u32) {
+    let before = WAIT_ALARMS.load(Relaxed);
+    io.flush_until(end).unwrap();
+    let alarms = WAIT_ALARMS.load(Relaxed) - before;
+    assert!(
+        (min_alarms..=MAX_TAIL_ALARMS).contains(&alarms),
+        "tail alarms: {alarms}"
+    );
+    *peak = (*peak).max(alarms);
+}
 
 #[derive(Clone, Copy)]
 struct Range(u32, u32);
@@ -42,6 +63,7 @@ fn run(uart: &mut Driver, timer: &mut WaitTimer, clock: u32) -> Report {
     let mut rt_time = rx_time;
     let mut tx_time = rx_time;
     let mut bytes = 0;
+    let mut tail_max = 0;
 
     for trial in 0..TRIALS {
         let data: [u8; TX_SAMPLE] = core::array::from_fn(|i| (37 * i + 19 * trial) as u8);
@@ -54,7 +76,7 @@ fn run(uart: &mut Driver, timer: &mut WaitTimer, clock: u32) -> Report {
             io.write_all_until(&data[..len], end).unwrap();
             io.read_exact_until(&mut received[..len], end).unwrap();
             let us = irq_latency(source, start);
-            io.flush_until(end).unwrap();
+            flush(&mut io, end, &mut tail_max, 0);
             assert_eq!(received[..len], data[..len]);
             let delta = counts().since(before);
             if source == int::RX {
@@ -104,7 +126,7 @@ fn run(uart: &mut Driver, timer: &mut WaitTimer, clock: u32) -> Report {
         let mut received = [0; TX_SAMPLE];
         // Make room in RX while the remaining frames are still shifting.
         io.read_exact_until(&mut received[..8], end).unwrap();
-        io.flush_until(end).unwrap();
+        flush(&mut io, end, &mut tail_max, 1);
         io.read_exact_until(&mut received[8..], end).unwrap();
         assert_eq!(counts().since(before), delta);
         assert_eq!(received, data);
@@ -151,6 +173,7 @@ fn run(uart: &mut Driver, timer: &mut WaitTimer, clock: u32) -> Report {
         timeout,
         1,
         clock,
+        tail_max,
     ]
 }
 
@@ -184,10 +207,11 @@ fn main(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
             timeout,
             rearm,
             clock,
+            tail_max,
         ] = report;
         rp1_hal::log!(
-            "UART_LOOPBACK instance={} clock={} divisor={} bytes={} rx_irq={} rt_irq={} tx_irq={} stray={} rx_us={}..{} rt_us={}..{} tx_us={}..{} timeout_us={} rearm={} result=PASS\n",
-            N, clock, divisor, bytes, rx, rt, tx, stray, rx_min, rx_max, rt_min, rt_max, tx_min, tx_max, timeout, rearm
+            "UART_LOOPBACK instance={} clock={} divisor={} bytes={} rx_irq={} rt_irq={} tx_irq={} stray={} rx_us={}..{} rt_us={}..{} tx_us={}..{} timeout_us={} rearm={} tail_alarms_max={} result=PASS\n",
+            N, clock, divisor, bytes, rx, rt, tx, stray, rx_min, rx_max, rt_min, rt_max, tx_min, tx_max, timeout, rearm, tail_max
         ).unwrap();
     }
     park()

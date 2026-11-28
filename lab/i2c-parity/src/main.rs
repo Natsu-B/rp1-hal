@@ -1,4 +1,4 @@
-//! I2C controller parity, with an ESP32 peer or an open-drain jumper bus.
+//! I2C controller parity, with an ESP32 peer or an open-drain bus with no target.
 #![no_std]
 #![no_main]
 
@@ -26,7 +26,7 @@ static OTHER: AtomicU32 = AtomicU32::new(0);
 static STRAY: AtomicU32 = AtomicU32::new(0);
 static ALARM: AtomicU32 = AtomicU32::new(0);
 static FIRST_ALARM: AtomicU32 = AtomicU32::new(0);
-#[cfg(any(feature = "i2c2", feature = "i2c3"))]
+#[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
 static ABORT_AT: AtomicU32 = AtomicU32::new(0);
 static TOTAL_STRAY: AtomicU32 = AtomicU32::new(0);
 static TOTAL_OTHER: AtomicU32 = AtomicU32::new(0);
@@ -34,10 +34,12 @@ static TOTAL_OTHER: AtomicU32 = AtomicU32::new(0);
 #[inline(always)]
 fn observe_device(dispatch: impl FnOnce() -> u32) {
     use pac::dw_i2c::intr::{RX_FULL, STOP_DET, TX_ABRT, TX_EMPTY};
+    #[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
+    let entered = Timer::new().now_32().ticks();
     let bits = dispatch();
-    #[cfg(any(feature = "i2c2", feature = "i2c3"))]
+    #[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
     if bits & TX_ABRT != 0 {
-        ABORT_AT.store(Timer::new().now_32().ticks(), Relaxed);
+        ABORT_AT.store(entered, Relaxed);
     }
     for (counter, seen) in [
         (&RX, bits & RX_FULL != 0),
@@ -90,12 +92,12 @@ fn levels() -> u32 {
 fn main(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let sys = rp1::platform::init(&mut core, p.platform).unwrap();
     let mut bus = parts!(p).init(&sys.clocks, Speed::Standard).unwrap();
-    #[cfg(not(any(feature = "i2c2", feature = "i2c3")))]
+    #[cfg(not(any(feature = "i2c0", feature = "i2c2", feature = "i2c3")))]
     let result = esp32::run(&mut bus, &mut p.wait_timer);
-    #[cfg(any(feature = "i2c2", feature = "i2c3"))]
+    #[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
     let result = {
-        use rp1_hal::gpio::{PadConfig, Pull};
-        let pull_up = PadConfig::INPUT_DEFAULT.with_pull(Pull::Up);
+        #[cfg(any(feature = "i2c2", feature = "i2c3"))]
+        let pull_up = rp1_hal::gpio::PadConfig::INPUT_DEFAULT.with_pull(rp1_hal::gpio::Pull::Up);
         #[cfg(feature = "i2c2")]
         let _peer = (
             p.pins.gpio22.into_input_with_pad(pull_up),
@@ -106,7 +108,8 @@ fn main(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
             p.pins.gpio12.into_input_with_pad(pull_up),
             p.pins.gpio13.into_input_with_pad(pull_up),
         );
-        jumpers(&mut bus, &mut p.wait_timer)
+        p.proc1.launch(&mut core).unwrap();
+        absent_target(&mut bus, &mut p.wait_timer)
     };
     let _ = log!(
         "I2C_FIXTURE_END stray={} other={} result={:?}\n",
@@ -119,7 +122,7 @@ fn main(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     }
 }
 
-#[cfg(not(any(feature = "i2c2", feature = "i2c3")))]
+#[cfg(not(any(feature = "i2c0", feature = "i2c2", feature = "i2c3")))]
 mod esp32;
 
 fn clear_observations() {
@@ -128,108 +131,91 @@ fn clear_observations() {
     }
 }
 
-#[cfg(any(feature = "i2c2", feature = "i2c3"))]
-fn address_clocks(bus: &mut Driver, address: Address7) -> Result<(u32, u32), Error> {
-    use rp1_hal::i2c::Try;
+#[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
+mod phases;
 
-    let scl = if N == 2 { 13 } else { 23 };
-    let mut ops = [Operation::Write(&[0xa5])];
-    let end = Deadline::after(DEADLINE_US.micros())?;
-    let mut transfer = bus.try_start_transaction(address, &mut ops, end)?;
-    let mut high = true;
-    let mut rising = [0; 10];
-    let mut count = 0;
-    let result = loop {
-        let level = levels() & (1 << scl) != 0;
-        if level && !high {
-            if let Some(slot) = rising.get_mut(count) {
-                *slot = Timer::new().now_32().ticks();
-            }
-            count += 1;
-        }
-        high = level;
-        match transfer.try_complete() {
-            Ok(Try::WouldBlock) => {}
-            Ok(Try::Ready(())) => break Ok(()),
-            Err(error) => break Err(error),
-        }
-    };
-    let (mut lo, mut hi) = (u32::MAX, 0);
-    for pair in rising[..9].windows(2) {
-        let ticks = pair[1].wrapping_sub(pair[0]);
-        lo = lo.min(ticks);
-        hi = hi.max(ticks);
+#[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
+const SCL: u32 = match N {
+    0 => 1 << 9,
+    2 => 1 << 13,
+    _ => 1 << 23,
+};
+#[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
+const LINES: u32 = if N == 0 {
+    3 << 8
+} else {
+    (3 << 12) | (3 << 22)
+};
+#[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
+const ABSENT: Address7 = Address7::new_const::<0x55>();
+
+#[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
+fn nack(
+    bus: &mut Driver,
+    timer: &mut WaitTimer,
+    phase: &str,
+    bounds: core::ops::RangeInclusive<u32>,
+    sample: bool,
+) -> (u32, u32) {
+    clear_observations();
+    if sample {
+        phases::arm();
     }
-    log!(
-        "I2C_JUMPER_SCL instance={N} rising_edges={count} period_us={lo}..{hi} result={result:?}\n"
-    )
-    .unwrap();
-    // The address and NACK consume nine edges. STOP can release SCL once more.
-    assert_eq!(result, Err(Error::AddressNack));
-    assert!((9..=10).contains(&count) && lo > 0 && hi <= DEADLINE_US / 9);
-    Ok((lo, hi))
+    let start = Timer::new().now();
+    let result = bus.blocking(timer).transaction_until(
+        ABSENT,
+        &mut [Operation::Write(&[0xa5])],
+        Deadline::at(start + DEADLINE_US.micros()),
+    );
+    let us = (Timer::new().now() - start).ticks() as u32;
+    let abrt = ABORT.load(Relaxed);
+    let irq_us = ABORT_AT.load(Relaxed).wrapping_sub(start.ticks() as u32);
+    let rx = RX.load(Relaxed);
+    let tx = TX.load(Relaxed);
+    let other = OTHER.load(Relaxed);
+    let stray = STRAY.load(Relaxed);
+    let idle = idle();
+    let pads = levels() & LINES;
+    if sample {
+        phases::report(phase, start.ticks() as u32, irq_us, us);
+    }
+    assert!(
+        result == Err(Error::AddressNack)
+            && abrt == 1
+            && rx + tx + other + stray == 0
+            && (70..=us).contains(&irq_us)
+            && bounds.contains(&us)
+            && idle
+            && pads == LINES,
+        "I2C{N} {phase} NACK {result:?} {us} us (bound {bounds:?}), IRQ {irq_us} us, TX_ABRT={abrt} rx={rx} tx={tx} other={other} stray={stray} idle={idle} pads={pads:#x}"
+    );
+    (us, irq_us)
 }
 
-#[cfg(any(feature = "i2c2", feature = "i2c3"))]
-fn jumpers(bus: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
-    const LINES: u32 = (3 << 12) | (3 << 22);
-    const ABSENT: Address7 = Address7::new_const::<0x55>();
+#[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
+fn absent_target(bus: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
     timer.delay(10.micros())?;
     let idle_levels = levels() & LINES;
     assert_eq!(idle_levels, LINES);
-    log!("I2C_JUMPER_IDLE instance={N} pad_levels={idle_levels:#x} pull_up=1\n").unwrap();
-    let (period_min, period_max) = address_clocks(bus, ABSENT)?;
-    // Eight intervals separate the first address edge from the NACK. Include
-    // START, STOP and thread/IRQ overhead when bounding delivery from admission.
-    let irq_bounds = (8 * period_min).saturating_sub(2)..=13 * period_max + 100;
-    let mut latency = (u32::MAX, 0);
-    let mut irq_latency = (u32::MAX, 0);
-    let mut nack = |bus: &mut Driver, timer: &mut WaitTimer| {
-        clear_observations();
-        let start = Timer::new().now();
-        let result = bus.blocking(timer).transaction_until(
-            ABSENT,
-            &mut [Operation::Write(&[0xa5])],
-            Deadline::at(start + DEADLINE_US.micros()),
-        );
-        let us = (Timer::new().now() - start).ticks() as u32;
-        let abrt = ABORT.load(Relaxed);
-        let irq_us = ABORT_AT.load(Relaxed).wrapping_sub(start.ticks() as u32);
-        let rx = RX.load(Relaxed);
-        let tx = TX.load(Relaxed);
-        let other = OTHER.load(Relaxed);
-        let stray = STRAY.load(Relaxed);
-        let idle = idle();
-        let pads = levels() & LINES;
-        if result != Err(Error::AddressNack)
-            || abrt != 1
-            || rx + tx + other + stray != 0
-            || !irq_bounds.contains(&irq_us)
-            || !(irq_us..=irq_us + 1_020).contains(&us)
-            || !idle
-            || pads != LINES
-        {
-            log!(
-                "I2C_JUMPER_FAIL instance={N} step=nack result={result:?} us={us} irq_us={irq_us} tx_abrt={abrt} rx={rx} tx={tx} other={other} stray={stray} idle={idle} pads={pads:#x}\n"
-            )
-            .unwrap();
-            panic!("I2C jumper NACK");
-        }
-        latency = (latency.0.min(us), latency.1.max(us));
-        irq_latency = (irq_latency.0.min(irq_us), irq_latency.1.max(irq_us));
-    };
-
-    for _ in 0..FAULT_TRIALS {
-        nack(bus, timer);
+    log!("I2C_NACK_IDLE instance={N} pad_levels={idle_levels:#x} pull_up=1\n").unwrap();
+    let (first, _) = nack(bus, timer, "first", 100..=550, true);
+    let mut lo = u32::MAX;
+    let mut hi = 0;
+    let mut irq_lo = u32::MAX;
+    let mut irq_hi = 0;
+    for trial in 1..FAULT_TRIALS {
+        let (us, irq_us) = nack(bus, timer, "steady", 100..=220, trial == 1);
+        lo = lo.min(us);
+        hi = hi.max(us);
+        irq_lo = irq_lo.min(irq_us);
+        irq_hi = irq_hi.max(irq_us);
     }
-    let (lo, hi) = latency;
-    let (irq_lo, irq_hi) = irq_latency;
     log!(
-        "I2C_JUMPER_NACK instance={N} hz=100000 trials={FAULT_TRIALS} tx_abrt={FAULT_TRIALS} min_us={lo} max_us={hi} irq_us={irq_lo}..{irq_hi}\n"
+        "I2C_NACK_IRQ instance={N} hz=100000 trials={FAULT_TRIALS} tx_abrt={FAULT_TRIALS} first_us={first} steady_us={lo}..{hi} steady_irq_us={irq_lo}..{irq_hi}\n"
     )
     .unwrap();
 
-    // Expire before the ninth SCL edge while leaving both controllers open drain.
+    // Expire before the ninth SCL edge, then verify the IRQ can arm again.
     const SHORT_US: u32 = 40;
     clear_observations();
     let start = Timer::new().now();
@@ -240,47 +226,24 @@ fn jumpers(bus: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
     );
     let alarm_us = FIRST_ALARM.load(Relaxed).wrapping_sub(start.ticks() as u32);
     let device_irqs = ABORT.load(Relaxed) + RX.load(Relaxed) + TX.load(Relaxed);
-    if result != Err(Error::Timeout)
-        || device_irqs != 0
-        || !(SHORT_US..=SHORT_US + 4).contains(&alarm_us)
-    {
-        log!(
-            "I2C_JUMPER_FAIL instance={N} step=timeout result={result:?} alarm_us={alarm_us} device_irqs={device_irqs}\n"
-        )
-        .unwrap();
-        panic!("I2C jumper timeout");
-    }
+    assert!(
+        result == Err(Error::Timeout)
+            && device_irqs == 0
+            && (SHORT_US..=SHORT_US + 4).contains(&alarm_us),
+        "I2C{N} timeout {result:?} alarm_us={alarm_us} device_irqs={device_irqs}"
+    );
     bus.try_recover()?;
     assert!(idle() && levels() & LINES == LINES);
-    nack_after_timeout(bus, timer, ABSENT)?;
-    log!(
-        "I2C_JUMPER_REARM instance={N} alarm_us={alarm_us} tx_abrt=1 result=PASS
-"
-    )
-    .unwrap();
-    Ok(())
-}
-
-#[cfg(any(feature = "i2c2", feature = "i2c3"))]
-fn nack_after_timeout(
-    bus: &mut Driver,
-    timer: &mut WaitTimer,
-    address: Address7,
-) -> Result<(), Error> {
-    clear_observations();
-    let end = Deadline::after(DEADLINE_US.micros())?;
-    assert_eq!(
-        bus.blocking(timer)
-            .transaction_until(address, &mut [Operation::Write(&[0xa5])], end),
-        Err(Error::AddressNack)
-    );
-    assert_eq!(ABORT.load(Relaxed), 1);
-    assert!(idle());
+    nack(bus, timer, "rearm", 100..=550, true);
+    log!("I2C_NACK_REARM instance={N} alarm_us={alarm_us} tx_abrt=1 result=PASS\n").unwrap();
     Ok(())
 }
 
 #[entry(proc1)]
 fn parked(_core: Proc1, _p: rp1::Proc1Resources) -> ! {
+    #[cfg(any(feature = "i2c0", feature = "i2c2", feature = "i2c3"))]
+    phases::observe();
+    #[cfg(not(any(feature = "i2c0", feature = "i2c2", feature = "i2c3")))]
     loop {
         rp1_rt::wait_for_event();
     }

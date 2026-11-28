@@ -9,6 +9,6 @@ fn main() {
         "uart",
         1,
         &[0, 2, 3, 4],
-        &[("Report", rp1_build::metadata::TypeInfo::of::<[u32; 16]>())],
+        &[("Report", rp1_build::metadata::TypeInfo::of::<[u32; 17]>())],
     );
 }
