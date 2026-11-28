@@ -839,6 +839,21 @@ required kind and `PLAT_VERDICT` for the full matrix and static stack bound.
 Exit 0 is PASS, 1 is FAIL, and 3 is INCOMPLETE. Missing evidence or a
 nonce collision across distinct captures needs a fresh capture. `FAULT_DIAG` and `PLAT_LOST=INCOMPLETE` are observational.
 
+## Serial instance fixtures
+
+Build `uart-parity` with `--features uart0`, `uart2`, `uart3` or `uart4` for
+internal PL011 loopback with disconnected pads. UART0 publishes its summary
+over SHM. Build the Linux reader with
+`cargo build --release --target aarch64-unknown-linux-musl -p uart-parity
+--bin uart-parity-report --features uart0-report`.
+
+Build `spi-parity` with `--features spi1` or `spi3` for DW SSI loopback.
+Proc1 brackets the SPI status transition with read-only MMIO samples. Build
+`i2c-parity` with `--features i2c2` or `i2c3` for the fixed
+GPIO12↔22 and GPIO13↔23 open-drain jumper fixture. Only the declared controller
+uses the I²C mux. Both ends use weak pull-ups. The fixture samples SCL and
+checks 100 address NACKs through TX_ABRT.
+
 ## UART1 IRQ parity
 
 `cargo rp1 build --locked -p uart-parity --target thumbv7m-none-eabi --release`

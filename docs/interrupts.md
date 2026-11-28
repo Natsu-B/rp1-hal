@@ -41,7 +41,7 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | raw `spi0` / `spi1` / `spi3` | `SPIn: Line<{19+n}>` |
 | `timer = ["ALARMn"]` | `TIMER_n: Line<{26+n}>` |
 | `wait_timer = "ALARMn"` | `ProcNResources.wait_timer: WaitTimer` と自動 TIMER_n ハンドラ |
-| UART / SPI / I2C と同じコアの `wait_timer` | インスタンスの Parts が線を所有し、ISRAM のハンドラを生成 |
+| UART0〜4 / SPI0・1・3 / I2C0〜3 と同じコアの `wait_timer` | インスタンスの Parts が線を所有し、ISRAM のハンドラを生成 |
 | raw `uart0`〜`uart4` | `UART0: Line<25>`、`UART1`〜`UART4`: 42〜45 |
 | `adc` と同じコアの `wait_timer` | `rp1::AdcParts` が線を所有し、ISRAM の ADC_FIFO ハンドラを生成 |
 | raw `adc` | `ADC_FIFO: Line<52>` |
@@ -120,12 +120,16 @@ NVIC だけを見ている。proc1 で受けたのは TIMER_1・IO_BANK0・SPI0 
 | IO_BANK0（0） | proc0 は GPIO22 の force で 100 回、proc1 は Linux からの GPIO27 ドアベルで 1000 回 | HW（同上） |
 | IO_BANK0（0）、`Doorbell` | proc0 の GPIO26 と proc1 の GPIO27: `raise` → ハンドラ 1 回（IPSR 16、前後の pending 0）。Linux からの SET 別名（`0x2108` / `0x2114`）で `down0` 10^4 件・`down1` 10^6 件を欠落・停止 0 で処理 | HW（2026-11-26、cold boot 1 回、lab/irq-proof、9a41f28） |
 | I2C1 / SPI0（8 / 19） | `+0x108` 閉で pending 0、開でハンドラ 1 回 | HW（2026-11、cold boot 2 回） |
+| SPI0 / SPI1 / SPI3（19 / 20 / 22） | DW SSI 内部ループバックで proc0 の RX / TX IRQ、データ一致、タイムアウト後の転送を確認 | HW（2026-11、各 1 起動） |
 | critical section | 割り込みと競合させて torn 0、最長マスク 4 µs 以下 | HW（同上） |
 | I2C0 / I2C2 / I2C3（7 / 9 / 10）、SPI1 / SPI3（20 / 22） | TX FIFO 空を源に、`+0x108` 閉で 0/3、開で 3/3 | HW（2026-11、2 種のイメージで各 2 起動、同じ結果） |
+| I2C2 / I2C3（9 / 10） | オープンドレインのジャンパ配線で TX_ABRT を proc0 に配送し、AddressNack を確認 | HW（2026-11） |
 | ADC_FIFO（52） | force と内部温度の実変換の両方で 3/3 | HW（同上） |
 | PWM1（41） | force で 3/3 | HW（同上） |
 | IO_BANK1 / IO_BANK2（1 / 2） | proc0 の INTF force で 3/3 | HW（同上）。ピンが Linux のものなので公開しない |
-| PWM0（5）、UART1〜4（42〜45） | 番号を実機で確認（ハンドラへの配送は上の試験に含まない） | HW（rp1-hal より前の試作ファーム。rp1-hal では再確認していない） |
+| UART0（25） | ログ無効の PL011 内部ループバックで proc0 の RX / RT / TX を各 100 回受信。結果は SHM で取得 | HW（2026-11、1 起動） |
+| UART2〜4（43〜45） | PL011 内部ループバックで proc0 の RX / RT / TX を各 100 回受信。タイムアウト後に再受信 | HW（2026-11、各 1 起動） |
+| PWM0（5）、UART1（42） | 試作ファームで番号を確認。UART1 は FT230X 対向試験でハンドラへの配送も確認 | HW（試作ファームおよび `lab/uart-parity`） |
 | TIMER_3（29） | rp1-hal では `TIMER.INTF` bit 3 で Linux の MSI-X vector 29 が起きるのを確認（`host_irq`、design.md §6.2）。NVIC 29 に届いたのは試作ファームでだけ | MSI-X は HW（2026-11）、NVIC は HW（試作ファーム）。rp1-hal では NVIC を再確認していない |
 | Linux に残したブロック（上の表を立てた rp1-hal ファーム） | Linux 側で割り込みが届くのを見たのは I2C2 / I2C6 / SPI1 / ETH / USB。I2C0/3/4/5、SPI2..8、I2S は値が標準ファームと同じことまで | HW（2026-11、cold boot と再起動で各 1 回） |
 | DMA（40）、PIO（50 / 51）、CLOCKS（59）、VBUS（60） | 安全な刺激が無く未確認 | 公開しない |

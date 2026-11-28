@@ -134,9 +134,9 @@ probe, leaving the controller disabled and the pins untouched for a retry.
 Build `Config` with `Config::new(frequency, mode)` and the `with_*` setters. The frequency
 is a `HertzU32`. Dropping the controller leaves it enabled and the pins muxed.
 `try_free()` checks TX FIFO empty and BUSY clear before disabling. `free_polling()`
-waits up to 100 ms for the same wire-idle condition. IRQ-capable controllers also have `free_until()`.
-All return the controller in `FreeError` when stop cannot be
-confirmed. `try_cancel()` requests disable immediately and may truncate a
+waits up to 100 ms for the same wire-idle condition. IRQ-capable controllers also
+have `free_until()`. All return the controller in `FreeError` when stop cannot
+be confirmed. `try_cancel()` requests disable immediately and may truncate a
 frame and discard both FIFOs. Both synchronous adapters report `Busy` during
 recovery, and raw interrupt controls cannot reopen the wrapper. Restore the
 configuration with `try_recover()`, or collect the parts with `try_free()`
@@ -166,6 +166,14 @@ the RP1 `+0x108` output gate and unmasks the selected sources.
 `clear_interrupt` is available on both resource types. See [Interrupts](interrupts.md).
 
 ## Hardware proof
+
+| Controller | Hardware evidence |
+|---|---|
+| SPI0 | HW, IRQ waits, internal loopback, wire idle and deadline re-arm |
+| SPI1 | HW, DW SSI loopback, RX/TX IRQs, shifter idle and deadline re-arm |
+| SPI2 | STATIC route, polling only. Bench GPIO2/3 connect to the ESP32 I²C controller. |
+| SPI3 | HW, DW SSI loopback, RX/TX IRQs, shifter idle and deadline re-arm |
+| SPI5 | STATIC route, polling only. Bench GPIO15 connects to FTDI TX. |
 
 STATIC (2026-11-27). `lab/spi-parity` checks internal loopback, RX/TX delivery,
 timeouts, shifter idle and sensed CS levels with the RP1 timer.

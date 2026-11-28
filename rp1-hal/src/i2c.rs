@@ -208,7 +208,7 @@ impl State {
 /// Marker for a controller whose IRQ is available to the application.
 pub struct NoIrq;
 
-/// Initialized controller. Use [`I2c::blocking`] on managed I2C1, or select [`I2c::polling`].
+/// Initialized controller. Use [`I2c::blocking`] with a managed IRQ or [`I2c::polling`].
 pub struct I2c<const N: u8, P: CompletePins<N>, Role = Controller, I = NoIrq> {
     pins: P::Active,
     rx_depth: usize,

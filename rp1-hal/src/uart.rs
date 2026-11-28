@@ -6,6 +6,14 @@
 //! waits through [`Uart::blocking`]. Use [`Uart::polling`] for explicit polling
 //! and `try_*` for immediate I/O. The wait timer serializes the split halves.
 //! UART0 is available to the driver when the declaration leaves out the log sink.
+//!
+//! | UART | Hardware evidence |
+//! |---|---|
+//! | UART0 | HW, PL011 loopback with RX, RT and TX IRQs and SHM reporting |
+//! | UART1 | HW, IRQ waits and exact data with an FT230X peer |
+//! | UART2 | HW, PL011 loopback with RX, RT and TX IRQs, deadline and re-arm |
+//! | UART3 | HW, PL011 loopback with RX, RT and TX IRQs, deadline and re-arm |
+//! | UART4 | HW, PL011 loopback with RX, RT and TX IRQs, deadline and re-arm |
 use crate::{
     clocks::Clocks,
     gpio::{Alternate, Pin},

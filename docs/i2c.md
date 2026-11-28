@@ -50,6 +50,15 @@ DesignWare register slice for all seven instances, I2C0..6.
 | I2C3 | 6, 14, 22 | 7, 15, 23 |
 | I2C4–6 | — | — |
 
+| Controller | Hardware evidence |
+|---|---|
+| I2C0 | HW, NVIC pending sweep. The available pin pairs have no safe peer on the bench. |
+| I2C1 | HW, IRQ waits with an ESP32 target at 100 and 400 kHz. |
+| I2C2 | HW, AddressNack through TX_ABRT on the open-drain jumper bus. |
+| I2C3 | HW, AddressNack through TX_ABRT on the open-drain jumper bus. |
+
+I²C target mode is the next PR for full transfers over the I2C2–I2C3 jumper bus.
+
 Use explicit polling without a same-core wait timer. For an application IRQ on I2C1, declare
 `custom_i2c1_handler = true` and define `#[rp1_rt::interrupt(procN)] fn I2C1()`
 to own the raw IRQ in the application. This exposes `p.irq.I2C1` and the
