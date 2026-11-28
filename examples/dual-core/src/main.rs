@@ -77,6 +77,7 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let bss = bss_check(0xb55_0000 | private);
     log!("proc0 ready private={} bss=0x{:x}\n", private, bss).unwrap();
     LOCAL.get(&core).set(1);
+    // SCLK/MOSI/MISO = GPIO11/10/9, GPIO8 as chip select.
     // v3 polls only this startup ID probe (one 100 ms deadline) to fit the ISRAM reply loop.
     let mut bus = p
         .spi0

@@ -1,6 +1,9 @@
 use crate::{
     Error, Firmware, Mapping, Message, Note, Result, RingRx, RingTx, ShmKind, ShmRegion,
-    check_type, find_region, notify::listener::poll_until, proto, strict::StrictSession,
+    check_type, find_region,
+    notify::{Doorbell, listener::poll_until},
+    proto,
+    strict::StrictSession,
 };
 use rp1_proto::{
     note::{RPC, rpc_name},
@@ -22,7 +25,7 @@ impl Firmware {
     /// Open the named RPC for one caller at a time.
     pub fn client<Req: Message, Rep: Message>(&self, name: &str) -> Result<Client<Req, Rep>> {
         let (Channel { tx, rx }, depth, request_wake) = self.open_pair(name, true, Self::map)?;
-        Ok(Client::new(tx, rx, depth, request_wake))
+        Client::new(tx, rx, depth, request_wake)
     }
 
     fn open_pair<Tx: Message, Rx: Message>(
@@ -148,17 +151,20 @@ pub struct Client<Req, Rep> {
     tx: RingTx<Req>,
     rx: RingRx<Rep>,
     depth: u32,
-    request_wake: bool,
+    request_wake: Option<Doorbell>,
 }
 
 impl<Req: Message, Rep: Message> Client<Req, Rep> {
-    pub(crate) fn new(tx: RingTx<Req>, rx: RingRx<Rep>, depth: u32, request_wake: bool) -> Self {
-        Self {
+    pub(crate) fn new(tx: RingTx<Req>, rx: RingRx<Rep>, depth: u32, direct: bool) -> Result<Self> {
+        let request_wake = direct
+            .then(|| tx.doorbell.clone().ok_or(Error::Unsupported))
+            .transpose()?;
+        Ok(Self {
             tx,
             rx,
             depth,
             request_wake,
-        }
+        })
     }
 
     /// Notification statistics for replies received by this client.
@@ -184,8 +190,10 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
 
     /// Publish and await a reply under a single absolute deadline. If the reply
     /// is present at the deadline, return it even if the IRQ count is delayed.
+    /// After a deadline or on a shared vector, one late count may wake the
+    /// next wait once with no data.
     pub fn call_until(&mut self, request: &Req, end: Instant) -> Result<Rep> {
-        if self.request_wake {
+        if self.request_wake.is_some() {
             let session = self.rx.session.clone();
             let strict = session
                 .strict
@@ -223,9 +231,7 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
             return Err(Error::Busy);
         }
         check_deadline()?;
-        if self.request_wake
-            && let Some(doorbell) = &self.tx.doorbell
-        {
+        if let Some(doorbell) = &self.request_wake {
             self.tx.inner.push_request(request, end.is_some())?;
             self.tx.force_request(doorbell)?;
         } else {
@@ -278,9 +284,8 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
                 .link
                 .write(self.rx.ctrl_offset + RPC_WAIT_HEAD, index.wrapping_add(1));
             ticket.arm()?;
-            if let Some(doorbell) = &self.tx.doorbell {
-                self.tx.force_request(doorbell)?;
-            }
+            let doorbell = self.request_wake.as_ref().ok_or(Error::Unsupported)?;
+            self.tx.force_request(doorbell)?;
         }
         let mut pfd = [libc::pollfd {
             fd: strict.listener.as_fd().as_raw_fd(),

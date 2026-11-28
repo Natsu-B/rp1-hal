@@ -413,7 +413,7 @@ MSI-X vector 29 の owner は 1 コア。v3 の `rp1-to-linux` ring で `notify 
 各語は aligned LE `u32` で、初期化後は単一 writer。proc0 の `rp1-rt::status` 初期化は
 `0xc0..0xff` をゼロ化する。proc0 は提供 caps を書いてから `BOOT_EPOCH` を公開する。
 `BOOT_EPOCH` は status の `EPOCH` のコピーで、mailbox と提供 caps の公開を示す。
-B2 は request/result を照合し、起動時は従来の 1 ms / 10 ms 再確認を使う。
+v3 は request/result を照合し、起動時は従来の 1 ms / 10 ms 再確認を使う。
 startup doorbell と Ready のイベント配送は後続の実装に残る。
 
 | Offset | Field | Writer | Commit |
@@ -441,6 +441,7 @@ startup doorbell と Ready のイベント配送は後続の実装に残る。
 |---|---|---|---|
 | RX | `ctrl+64`（読み手） | `data+68`（書き手） | `ctrl+68`（読み手） |
 | credit（reject） | `data+72`（書き手） | `ctrl+72`（読み手） | `data+76`（書き手） |
+| RPC reply head | `ctrl+76 RPC_WAIT_HEAD`（読み手） | RX と共用 | RX と共用 |
 
 1. 待機側は次の奇数を arm し、同じアドレスの readback を済ませてから条件を再確認する。
 2. 通知側は data/tail/terminal の commit を同じ窓の readback で完了し、arm を読む。新しい
@@ -511,4 +512,5 @@ pulse を送らない。
 通知付き返信が未消費なら、その ticket に一度だけ pulse を送る。再度の force は
 arm より先に返信を公開した場合にもこの確認を起こす。Linux は count を取り込み、
 ticket を確認して返信を取得する。期限時には count がなくても返信を取得できる。
+期限切れの後や shared vector 上では、遅れて届いた count が次の待機をデータなしで一度だけ起こす場合がある。
 通知できる owner は終端状態も同じ vector で伝える。Linux は起床時と期限時に検証する。

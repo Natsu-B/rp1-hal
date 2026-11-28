@@ -498,7 +498,8 @@ impl Firmware {
             _map: map,
             session,
         };
-        if direct_rpc && let Some(doorbell) = &tx.doorbell {
+        if direct_rpc {
+            let doorbell = tx.doorbell.as_ref().ok_or(Error::Unsupported)?;
             // Resume a request that the former caller committed before forcing.
             if tx.inner.free() != r.depth {
                 tx.force_request(doorbell)?;

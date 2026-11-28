@@ -108,6 +108,7 @@ pub(crate) struct Doorbell {
 impl Doorbell {
     /// Map `rp1:doorbell` for `pin` of `core` (0 = proc0).
     pub(crate) fn open(core: usize, pin: u8) -> Result<Self> {
+        // Tests substitute only the UIO mapping and observe the completed force.
         #[cfg(test)]
         if let Some(page) = fake_doorbell::PAGE.with(|page| page.borrow().clone()) {
             return Ok(Self::new(page, core, pin));

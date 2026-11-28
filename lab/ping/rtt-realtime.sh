@@ -5,11 +5,23 @@ set -eu
 cpu=/sys/devices/system/cpu
 irq=/proc/irq
 housekeeping=0-1,3
+housekeeping_mask=b # Bits 0, 1 and 3.
 isolated=2
+
+require() {
+    message=$1
+    shift
+    if ! "$@"; then
+        printf '%s\n' "$message" >&2
+        exit 1
+    fi
+}
+
 cat /proc/cmdline
-test "$(cat "$cpu/isolated")" = "$isolated"
+require "expected isolated CPU $isolated" test "$(cat "$cpu/isolated")" = "$isolated"
 mask=$(cat "$irq/default_smp_affinity")
-test "$((0x$mask))" -eq 11
+require "expected default IRQ mask $housekeeping_mask, got $mask" \
+    test "$((0x$mask))" -eq "$((0x$housekeeping_mask))"
 printf 'isolated=%s default_irq_mask=%s\n' "$isolated" "$mask"
 
 if command -v systemctl >/dev/null && systemctl is-active --quiet irqbalance; then
@@ -18,13 +30,14 @@ fi
 
 workqueue=/sys/devices/virtual/workqueue/cpumask
 if [ -w "$workqueue" ]; then
-    echo b > "$workqueue"
+    echo "$housekeeping_mask" > "$workqueue"
     printf 'unbound_workqueue_mask=%s\n' "$(cat "$workqueue")"
 fi
 for policy in "$cpu"/cpufreq/policy*; do
     [ -d "$policy" ] || continue
     echo performance > "$policy/scaling_governor"
-    test "$(cat "$policy/scaling_governor")" = performance
+    require "expected performance governor in $policy" \
+        test "$(cat "$policy/scaling_governor")" = performance
     printf '%s governor=performance\n' "$policy"
 done
 

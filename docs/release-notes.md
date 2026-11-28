@@ -115,7 +115,7 @@ Default manifests continue to generate the schema-2 wire profile.
 The caller arms a reply ticket only if its local reply scan is empty.
 The earlier v3 profile uses the ticket fallback in protocol §10.4.
 
-The B2 RTT profile runs back-to-back RPCs with the dual-core lab service
+The v3 RTT profile runs back-to-back RPCs with the dual-core lab service
 loop in ISRAM. The schema-2 template uses its regular service loop in shared
 SRAM. Place a comparable service loop in ISRAM with `#[rp1_rt::isram]`.
 A call that blocks also pays for notification and kernel dispatch.

@@ -103,7 +103,7 @@ impl Rig {
                 })
             })
             .unwrap();
-        Client::new(tx, rx, depth, request_wake)
+        Client::new(tx, rx, depth, request_wake).unwrap()
     }
 
     fn server(&self) -> (shm::RingRx<u32>, shm::RingTx<u32>) {
@@ -323,7 +323,7 @@ mod direct {
                     })
                 })?;
             assert!(direct);
-            Ok(Client::new(tx, rx, depth, direct))
+            Client::new(tx, rx, depth, direct)
         }
 
         fn hook(
