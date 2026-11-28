@@ -1,6 +1,6 @@
-use rp1_rt::interrupt::{Binding, Bank0Irq, Priority, priority};
+use rp1_rt::interrupt::{Bank0Irq, Binding, FixedDoorbell, Priority};
 
-fn raise(line: &mut Binding<Bank0Irq, 0, 0, { priority::DOORBELL }>) {
+fn raise(line: &mut Binding<Bank0Irq, 0, 0, FixedDoorbell>) {
     line.set_priority(Priority::control::<2>());
 }
 

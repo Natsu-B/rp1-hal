@@ -64,10 +64,10 @@ fn generated_resources_only_reference_their_link_features() {
     assert!(full.contains("pub link: link::Proc1LinkInit"));
     assert!(full.contains("fn doorbell_proc1()"));
     assert!(full.contains(
-        "pub type IO_BANK0 = ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 1, { ::rp1_rt::interrupt::priority::DOORBELL }>;"
+        "pub type IO_BANK0 = ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 1, ::rp1_rt::interrupt::FixedDoorbell>;"
     ));
     assert!(full.contains(
-        "pub fn open(self, irq: &mut ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 1, { ::rp1_rt::interrupt::priority::DOORBELL }>)"
+        "pub fn open(self, irq: &mut ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 1, ::rp1_rt::interrupt::FixedDoorbell>)"
     ));
     assert!(!full.contains("fn doorbell_proc0()"));
     assert!(full.contains(r#"export_name = "__rp1_p1_IO_BANK0""#));

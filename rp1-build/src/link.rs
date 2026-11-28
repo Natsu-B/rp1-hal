@@ -74,7 +74,7 @@ pub(crate) fn generate(
             writeln!(
                 output,
                 "/// Wait for the startup doorbell and commit the link result by `end`.\n\
-                 pub fn enable(pcie: &mut Pcie, startup_doorbell: &mut generated::Binding<generated::Bank0Irq, 0, 0, {{ ::rp1_rt::interrupt::priority::DOORBELL }}>, context: &mut ::rp1_hal::timer::WaitContext<'_>, end: ::rp1_hal::timer::Deadline) -> Result<u32, ::rp1_link::StartupEnableError> {{\n\
+                 pub fn enable(pcie: &mut Pcie, startup_doorbell: &mut generated::Binding<generated::Bank0Irq, 0, 0, ::rp1_rt::interrupt::FixedDoorbell>, context: &mut ::rp1_hal::timer::WaitContext<'_>, end: ::rp1_hal::timer::Deadline) -> Result<u32, ::rp1_link::StartupEnableError> {{\n\
                      let layout = generated::StartupLayout {{ area: AREA, regions: &REGIONS, digest: &DIGEST }};\n\
                      unsafe {{ generated::enable_v3(pcie, startup_doorbell, context, end, layout, || ::rp1_link::notify::__kick_startup_owner::<{pin}, {}>()) }}\n\
                  }}",
@@ -335,7 +335,7 @@ fn write_core(
         let priority = if custom {
             ""
         } else {
-            ", { ::rp1_rt::interrupt::priority::DOORBELL }"
+            ", ::rp1_rt::interrupt::FixedDoorbell"
         };
         format!(
             "irq: &mut ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, {core}{priority}>"

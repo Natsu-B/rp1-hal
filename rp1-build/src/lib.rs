@@ -567,7 +567,7 @@ fn resources(
             } = line;
             let source = owner.source_type();
             let priority = if doorbell && *irq == 0 {
-                ", { ::rp1_rt::interrupt::priority::DOORBELL }"
+                ", ::rp1_rt::interrupt::FixedDoorbell"
             } else {
                 ""
             };

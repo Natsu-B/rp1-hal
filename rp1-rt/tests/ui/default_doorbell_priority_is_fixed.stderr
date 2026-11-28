@@ -1,5 +1,5 @@
-error[E0599]: no method named `set_priority` found for mutable reference `&mut Binding<Bank0Irq, 0, 0, 5>` in the current scope
+error[E0599]: no method named `set_priority` found for mutable reference `&mut Binding<Bank0Irq, 0, 0, FixedDoorbell>` in the current scope
  --> tests/ui/default_doorbell_priority_is_fixed.rs:4:10
   |
 4 |     line.set_priority(Priority::control::<2>());
-  |          ^^^^^^^^^^^^ method not found in `&mut Binding<Bank0Irq, 0, 0, 5>`
+  |          ^^^^^^^^^^^^ method not found in `&mut Binding<Bank0Irq, 0, 0, FixedDoorbell>`

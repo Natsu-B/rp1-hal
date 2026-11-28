@@ -344,13 +344,13 @@ declaration keys were removed.
 
 STATIC (2026-11-28). See [Interrupt priorities](interrupts.md#優先度).
 
-- `Line<IRQ, FIXED>` and `Binding<S, IRQ, CORE, FIXED>` have a trailing fixed-priority
-  parameter. Existing ordinary line and binding types can omit it. The generated
-  doorbell binding fixes priority at 5 and has no `set_priority`. Enable it or pass
+- `Line<IRQ, P>` and `Binding<S, IRQ, CORE, P>` have a trailing priority policy type.
+  Ordinary line and binding types can omit it. The generated doorbell uses
+  `FixedDoorbell` at priority 5 and has no `set_priority`. Enable it or pass
   it to the generated `link.open`; a custom doorbell handler can set its priority.
 - Let the compiler infer the parameters of `WaitTimer::wait_irq_until`,
-  `WaitTimer::check_irq` and `ThreadGuard::check_irq`. With explicit parameters,
-  insert `FIXED` after `CORE` and before the return type parameter, when present.
+  `WaitContext::check_irq` and `ThreadGuard::check_irq`. With explicit parameters,
+  insert `P` after `CORE` and before the return type parameter, when present.
 - Use `Priority::control::<P>()` for priorities 2–4. A handler using a core-local Slot
   can use `Binding::set_slot_priority::<P, _, _>(&slot)` or
   `Slot::control_priority::<P>()` to check its ceiling at compile time.

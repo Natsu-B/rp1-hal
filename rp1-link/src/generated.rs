@@ -374,7 +374,7 @@ pub struct StartupLayout<'a> {
 /// `notify` must signal the generated vector owner on this boot.
 pub unsafe fn enable_v3(
     pcie: &mut Pcie,
-    irq: &mut Binding<Bank0Irq, 0, 0, { rp1_rt::interrupt::priority::DOORBELL }>,
+    irq: &mut Binding<Bank0Irq, 0, 0, rp1_rt::interrupt::FixedDoorbell>,
     context: &mut WaitContext<'_>,
     end: Deadline,
     layout: StartupLayout<'_>,

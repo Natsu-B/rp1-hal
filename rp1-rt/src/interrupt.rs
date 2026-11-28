@@ -158,7 +158,31 @@ impl Default for Priority {
     }
 }
 
-const UNFIXED: u8 = u8::MAX;
+mod line_priority {
+    pub trait Sealed {}
+}
+
+/// Priority policy of a generated NVIC line.
+#[doc(hidden)]
+pub trait LinePriority: line_priority::Sealed {
+    const FIXED: Option<Priority>;
+}
+
+/// A line whose priority is configured by its owner.
+pub enum Configurable {}
+
+impl line_priority::Sealed for Configurable {}
+impl LinePriority for Configurable {
+    const FIXED: Option<Priority> = None;
+}
+
+/// The generated doorbell line, fixed at [`priority::DOORBELL`].
+pub enum FixedDoorbell {}
+
+impl line_priority::Sealed for FixedDoorbell {}
+impl LinePriority for FixedDoorbell {
+    const FIXED: Option<Priority> = Some(Priority(priority::DOORBELL));
+}
 
 /// Unique ownership of one core's NVIC line.
 ///
@@ -166,12 +190,11 @@ const UNFIXED: u8 = u8::MAX;
 /// the default handler masks it and records [`unhandled`].
 /// The line stays on its owning core. Share it with that core's handlers through a [`Slot`].
 /// It implements neither `SharedSafe` nor `Message`, so it cannot cross cores.
-/// The default `FIXED = 255` is outside the NVIC priority range.
-pub struct Line<const IRQ: u8, const FIXED: u8 = UNFIXED> {
-    _core: core::marker::PhantomData<core::cell::Cell<()>>,
+pub struct Line<const IRQ: u8, P: LinePriority = Configurable> {
+    _core: core::marker::PhantomData<(core::cell::Cell<()>, P)>,
 }
 
-impl<const IRQ: u8, const FIXED: u8> Line<IRQ, FIXED> {
+impl<const IRQ: u8, P: LinePriority> Line<IRQ, P> {
     /// Construct the line token for generated resources.
     ///
     /// # Safety
@@ -182,7 +205,7 @@ impl<const IRQ: u8, const FIXED: u8> Line<IRQ, FIXED> {
         const {
             assert!(IRQ < 64, "NVIC IRQ must be in 0..64");
             assert!(
-                FIXED == UNFIXED || (IRQ == 0 && FIXED == priority::DOORBELL),
+                IRQ == 0 || P::FIXED.is_none(),
                 "only the generated doorbell has a fixed line priority"
             );
         };
@@ -194,8 +217,8 @@ impl<const IRQ: u8, const FIXED: u8> Line<IRQ, FIXED> {
     /// Enable delivery on this core. Peripheral interrupt masks are unchanged.
     pub fn enable(&mut self) {
         let nvic = Nvic(Hardware);
-        if FIXED != UNFIXED {
-            nvic.set_priority(IRQ, Priority(FIXED));
+        if let Some(priority) = P::FIXED {
+            nvic.set_priority(IRQ, priority);
         }
         nvic.enable(IRQ);
     }
@@ -270,12 +293,12 @@ impl OwnedLine {
 
 /// A verified NVIC line assigned to a declaration's source and core.
 /// The source's device operations remain on the source token.
-pub struct Binding<S, const IRQ: u8, const CORE: u8, const FIXED: u8 = UNFIXED> {
-    line: Line<IRQ, FIXED>,
+pub struct Binding<S, const IRQ: u8, const CORE: u8, P: LinePriority = Configurable> {
+    line: Line<IRQ, P>,
     _source: core::marker::PhantomData<S>,
 }
 
-impl<S, const IRQ: u8, const CORE: u8, const FIXED: u8> Binding<S, IRQ, CORE, FIXED> {
+impl<S, const IRQ: u8, const CORE: u8, P: LinePriority> Binding<S, IRQ, CORE, P> {
     /// # Safety
     /// Generated resources only, once on CORE for the verified route from S to IRQ.
     #[doc(hidden)]
@@ -311,17 +334,17 @@ impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
         }
     }
 }
-impl<S, const IRQ: u8, const CORE: u8, const FIXED: u8> core::ops::Deref
-    for Binding<S, IRQ, CORE, FIXED>
+impl<S, const IRQ: u8, const CORE: u8, P: LinePriority> core::ops::Deref
+    for Binding<S, IRQ, CORE, P>
 {
-    type Target = Line<IRQ, FIXED>;
+    type Target = Line<IRQ, P>;
 
     fn deref(&self) -> &Self::Target {
         &self.line
     }
 }
-impl<S, const IRQ: u8, const CORE: u8, const FIXED: u8> core::ops::DerefMut
-    for Binding<S, IRQ, CORE, FIXED>
+impl<S, const IRQ: u8, const CORE: u8, P: LinePriority> core::ops::DerefMut
+    for Binding<S, IRQ, CORE, P>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.line
@@ -376,9 +399,9 @@ impl ThreadGuard {
     }
 
     /// Check whether this source's line can preempt the current thread.
-    pub fn check_irq<S, const IRQ: u8, const CORE: u8, const FIXED: u8>(
+    pub fn check_irq<S, const IRQ: u8, const CORE: u8, P: LinePriority>(
         &self,
-        _binding: &Binding<S, IRQ, CORE, FIXED>,
+        _binding: &Binding<S, IRQ, CORE, P>,
     ) -> Result<(), ContextError> {
         self.check_number(IRQ)
     }

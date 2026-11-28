@@ -75,7 +75,7 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | 宣言 | `ProcNIrq` のフィールド |
 |---|---|
 | `gpio_irq = [..]` | `IO_BANK0: Line<0>` と各ピンの `gpioN: PinIrq<N, CORE>` |
-| `doorbell = N` | 既定は `IO_BANK0: Line<0, { priority::DOORBELL }>`（`gpio_irq` と共用で 1 本）。ドアベル自体は `ProcNResources.doorbell: rp1::DoorbellK` |
+| `doorbell = N` | 既定は `IO_BANK0: Line<0, FixedDoorbell>`（`gpio_irq` と共用で 1 本）。ドアベル自体は `ProcNResources.doorbell: rp1::DoorbellK` |
 | `pwm0` / `pwm1` | `PWM0: Line<5>` / `PWM1: Line<41>` |
 | `i2c0`〜`i2c3` | `I2C0: Line<7>`、`I2C1: Line<8>`、`I2C2: Line<9>`、`I2C3: Line<10>` |
 | raw `spi0` / `spi1` / `spi3` | `SPIn: Line<{19+n}>` |

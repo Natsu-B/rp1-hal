@@ -9,7 +9,7 @@ use crate::{linux_blocks::Mmio, scmi::Registers, write_relaxed};
 use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 use embedded_hal::delay::DelayNs;
 use rp1_rt::{
-    interrupt::{AlarmIrq, Binding, ContextError, OwnedLine, ThreadGuard},
+    interrupt::{AlarmIrq, Binding, ContextError, LinePriority, OwnedLine, ThreadGuard},
     send_event, wait_for_event,
 };
 
@@ -103,9 +103,9 @@ impl WaitTimer {
     /// The handler publishes retained state and sends an event after publishing.
     /// The dedicated deadline alarm bounds the wait if the IRQ never arrives.
     /// See [`WaitContext::wait_until`] for the probe and deadline contract.
-    pub fn wait_irq_until<S, const IRQ: u8, const CORE: u8, const FIXED: u8, T>(
+    pub fn wait_irq_until<S, const IRQ: u8, const CORE: u8, P: LinePriority, T>(
         &mut self,
-        irq: &Binding<S, IRQ, CORE, FIXED>,
+        irq: &Binding<S, IRQ, CORE, P>,
         end: impl Into<Deadline>,
         probe: impl FnMut() -> Option<T>,
     ) -> Result<T, Error> {
@@ -134,9 +134,9 @@ pub struct WaitContext<'a> {
 
 impl<'timer> WaitContext<'timer> {
     /// Validate an additional wake source at the entrance to a blocking operation.
-    pub fn check_irq<S, const IRQ: u8, const CORE: u8, const FIXED: u8>(
+    pub fn check_irq<S, const IRQ: u8, const CORE: u8, P: LinePriority>(
         &self,
-        irq: &Binding<S, IRQ, CORE, FIXED>,
+        irq: &Binding<S, IRQ, CORE, P>,
     ) -> Result<(), Error> {
         self.guard.check_irq(irq).map_err(Error::from)
     }
