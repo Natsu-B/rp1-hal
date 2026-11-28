@@ -703,6 +703,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pio-dma-parity"
+version = "0.1.0"
+dependencies = [
+ "rp1-build",
+ "rp1-hal",
+ "rp1-link",
+ "rp1-proto",
+ "rp1-rt",
+]
+
+[[package]]
 name = "pio-irq-parity"
 version = "0.1.0"
 dependencies = [
