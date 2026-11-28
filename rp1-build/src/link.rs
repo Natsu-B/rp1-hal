@@ -25,8 +25,12 @@ pub(crate) fn generate(
         )
     } else {
         let mut imports = String::from("use ::rp1_link::generated::{ShmArea, ShmRegion};\n");
-        if wake.is_some_and(|wake| wake.startup_doorbell.is_some()) {
-            imports.push_str("use ::rp1_hal::platform::Pcie;\nuse ::rp1_link::generated;\n");
+        let startup = wake.is_some_and(|wake| wake.startup_doorbell.is_some());
+        if startup {
+            imports.push_str("use ::rp1_hal::platform::Pcie;\n");
+        }
+        if startup || !shm.regions.is_empty() {
+            imports.push_str("use ::rp1_link::generated;\n");
         }
         if !shm.regions.is_empty() {
             imports.push_str("use ::rp1_link::{self as transport, Message, OpenError};\nuse ::rp1_link::generated::ShmKind;\n");

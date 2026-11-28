@@ -182,15 +182,12 @@ fn experimental_route_respects_the_existing_ownership_checks() {
             false,
         ),
     ] {
-        let startup = if cores.contains("ALARM1") {
-            "startup_doorbell=26\n"
+        let profile = if cores.contains("ALARM1") {
+            "link_wake='experimental'\nstartup_doorbell=26"
         } else {
-            ""
+            "link_wake='delivery-fixture'"
         };
-        let d: Declaration = toml::from_str(&format!(
-            "schema=2\nlink_wake='experimental'\n{startup}{cores}"
-        ))
-        .unwrap();
+        let d: Declaration = toml::from_str(&format!("schema=2\n{profile}\n{cores}")).unwrap();
         assert_eq!(d.validate().is_ok(), valid, "{cores}");
     }
 }

@@ -21,6 +21,10 @@ impl Listener {
             .write(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(dev)?;
+        Self::claim(file)
+    }
+
+    fn claim(file: File) -> Result<Self> {
         lock_exclusive(&file)?;
         Self::enable(file)
     }
@@ -111,6 +115,43 @@ mod tests {
         os::{fd::OwnedFd, unix::net::UnixStream},
         time::Duration,
     };
+
+    #[test]
+    fn a_competing_open_does_not_enable_the_vector() {
+        use std::io::{Seek, SeekFrom};
+        let path = std::env::temp_dir().join(format!("rp1-listener-{}", std::process::id()));
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let listener = Listener::claim(file.try_clone().unwrap()).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(&42u32.to_ne_bytes()).unwrap();
+        let duplicate = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(matches!(
+            Listener::claim(duplicate),
+            Err(crate::Error::Busy)
+        ));
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut word = [0; 4];
+        file.read_exact(&mut word).unwrap();
+        assert_eq!(u32::from_ne_bytes(word), 42);
+        drop(listener);
+        drop(file);
+        let reopened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(Listener::claim(reopened).is_ok());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn initial_enable_eagain_count_wrap_reenable_and_short_read() {

@@ -507,10 +507,13 @@ fn v3_reset_wins_over_ready_and_explicit_error_at_each_commit_access() {
             .iter()
             .position(|op| *op == Op::Write(SHM_STATUS, status))
             .unwrap();
-        let reads_latch = clean_ops[..commit]
+        let details = clean_ops
             .iter()
-            .rposition(|op| matches!(op, Op::Read(PCIE_INTR, _)))
+            .position(|op| *op == Op::Write(word(mailbox::RESULT_SEQ), seq))
             .unwrap();
+        let reads_latch = (details + 1..commit)
+            .find(|&at| matches!(clean_ops[at], Op::Read(PCIE_INTR, _)))
+            .expect("check the reset latch again after publishing the result details");
         // An edge through the last latch read blocks the store outright. The
         // remaining masked boundaries are superseded by IRQ53 on unmask.
         let until = clean_ops.iter().position(|op| *op == Op::Unmask).unwrap();

@@ -1,7 +1,8 @@
 # Link-wake delivery fixture
 
 **STATIC · 2026-11-27.** This image uses experimental NOTE v3 and the single
-vector owner on proc1. The build and ELF checks run in CI.
+vector owner on proc1. Its `delivery-fixture` profile exercises terminal
+delivery and raw vector pulses. The build and ELF checks run in CI.
 
 ```sh
 cargo rp1 build --locked -p link-wake-fixture --features firmware --target thumbv7m-none-eabi --release

@@ -48,6 +48,8 @@ impl Default for InputDeclaration {
 #[serde(rename_all = "kebab-case")]
 pub enum LinkWakeProfile {
     Experimental,
+    #[doc(hidden)]
+    DeliveryFixture,
 }
 
 /// Normalized schema 2 declaration.
@@ -522,7 +524,9 @@ impl Declaration {
             return Err("experimental link_wake requires one host_irq owner".into());
         }
         if self.startup_doorbell.is_some() {
-            if self.link_wake.is_none() || self.proc0.wait_timer.is_none() {
+            if !matches!(self.link_wake, Some(LinkWakeProfile::Experimental))
+                || self.proc0.wait_timer.is_none()
+            {
                 return Err("startup_doorbell requires link_wake and proc0.wait_timer".into());
             }
             for core in [&self.proc0, &self.proc1]
@@ -533,8 +537,8 @@ impl Declaration {
                     return Err("startup_doorbell needs the generated IO_BANK0 dispatcher".into());
                 }
             }
-        } else if self.link_wake.is_some() && !self.shm.is_empty() {
-            return Err("v3 shared memory requires startup_doorbell".into());
+        } else if matches!(self.link_wake, Some(LinkWakeProfile::Experimental)) {
+            return Err("experimental link_wake requires startup_doorbell".into());
         }
         let mut names = BTreeSet::new();
         let mut region_count = 0;
