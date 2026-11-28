@@ -58,6 +58,8 @@ fn check_registers<const SM: u8>() {
                 ch.start_fifo(&mut io, &mut lease, &mut tx)
             }
             .unwrap();
+            // A rejected register mutation must unwind without touching real MMIO.
+            let _transfer = ManuallyDrop::new(transfer);
             let c = channel_base(0);
             let fifo = 0x4017_8000 + u32::from(sm) * 4 + if rx { 16 } else { 0 };
             let (sar, dar, no_inc, request, flow, control, threshold) = if rx {
@@ -99,7 +101,6 @@ fn check_registers<const SM: u8>() {
             assert_eq!(io.writes[0], (dreq, 0));
             assert_eq!(io.writes[io.writes.len() - 2], (BASE + common::CHEN, 0x101));
             assert_eq!(io.writes.last(), Some(&(dreq, 0x8000_0000 | threshold)));
-            forget(transfer);
         }
     }
 }
@@ -134,15 +135,16 @@ fn pio_polling_accepts_completion_at_deadline_and_retires_request() {
     let pool = pool::fake_pool::<1>();
     let mut lease = pool.lease(0, 36).unwrap();
     let mut held = false;
-    let mut transfer = ch
+    let transfer = ch
         .start_pio(&mut io, &mut lease, &mut held, 8, endpoint(true, 3))
         .unwrap();
+    let mut transfer = ManuallyDrop::new(transfer);
     let deadline = Deadline::at(Instant::from_ticks(io.now + 1));
     io.stop(0, int::DMA_TFR_DONE);
     assert_eq!(transfer.wait_accepted(&mut io, deadline), Ok(()));
     assert_eq!(reg(&io, 0xf000_0148), 0);
     transfer.release_on_drop(&mut io);
-    forget(transfer);
+    let _ = transfer;
     assert!(!held && !lease.is_quarantined());
 }
 
