@@ -57,6 +57,21 @@ def verify(path):
         assert 0 < elapsed(value(end, "end"), value(end, "start")) < 30_000_000
         assert value(end, "safety") == 15 and value(end, "dma") == 0
         assert value(end, "stack_free") > 0 and value(entries("STACK")[0], "free") > 0
+        sm0_debug, sm1_debug, sm1_rxunder = 0x01010101, 0x02020202, 0x200
+        stale, fresh = entries("FDEBUG")
+        initial_clear, stale_clear = entries("FDEBUG_CLEAR")
+        cleared = value(initial_clear, "value")
+        assert value(stale_clear, "value") == cleared
+        assert cleared & (sm0_debug | sm1_debug) == sm1_rxunder
+        for row in (stale, fresh):
+            assert value(row, "latched") == value(row, "retired") == cleared | sm0_debug
+        assert [kind for _, kind in sorted(
+            (line, kind) for kind in ("FDEBUG_CLEAR", "FDEBUG", "FDEBUG_END")
+            for line, _ in rows[kind]
+        )] == ["FDEBUG_CLEAR", "FDEBUG", "FDEBUG_CLEAR", "FDEBUG", "FDEBUG_END"]
+        debug_end, = entries("FDEBUG_END")
+        assert value(debug_end, "target_reset") == cleared
+        assert value(debug_end, "neighbor_reset") == cleared & ~sm1_rxunder
         echo, = entries("ECHO")
         assert value(echo, "word") == 21
         assert len(entries("FIFO")) == 4

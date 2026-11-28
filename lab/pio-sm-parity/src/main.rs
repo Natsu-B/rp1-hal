@@ -106,6 +106,7 @@ fn check(pio: &PIO, bench: &mut wave::Bench, timer: &Timer) -> LabResult<()> {
     if pad_state() != 0xf || dma_enables() != 0 {
         return Err("unsafe entry");
     }
+    fifo::debug_w1c(pio, &mut bench.sm0, &mut bench.sm1, timer)?;
     fifo::echo_example(pio, &mut bench.sm0, timer)?;
     fifo::lifecycle(pio, &mut bench.sm0, timer)?;
     fifo::lifecycle(pio, &mut bench.sm1, timer)?;

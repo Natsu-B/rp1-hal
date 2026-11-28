@@ -5,6 +5,14 @@ use rp1_hal::{
 };
 
 const FDEBUG: usize = 0xf000_0008;
+const RXF: usize = 0xf000_0024;
+const TXF: usize = 0xf000_0014;
+const RXSTALL: u32 = 1 << 0;
+const RXUNDER: u32 = 1 << 8;
+const TXOVER: u32 = 1 << 16;
+const TXSTALL: u32 = 1 << 24;
+const SM0_DEBUG: u32 = RXSTALL | RXUNDER | TXOVER | TXSTALL;
+const SM1_RXUNDER: u32 = RXUNDER << 1;
 
 #[inline(never)]
 fn configuration(mode: usize) -> (Program<32>, u8, Buffers) {
@@ -52,6 +60,105 @@ fn configuration(mode: usize) -> (Program<32>, u8, Buffers) {
             Buffers::OnlyRx,
         ),
     }
+}
+
+fn wait_for_debug(timer: &Timer, flag: u32) -> LabResult<()> {
+    let start = now(timer);
+    while reg(FDEBUG) & flag == 0 {
+        if now(timer).wrapping_sub(start) >= 1_000 {
+            return Err("FIFO stall flag timeout");
+        }
+    }
+    Ok(())
+}
+
+#[inline(never)]
+pub fn debug_w1c(
+    pio: &PIO,
+    sm0: &mut Option<UninitStateMachine<0>>,
+    sm1: &mut Option<UninitStateMachine<1>>,
+    timer: &Timer,
+) -> LabResult<()> {
+    let p = pio_asm!(
+        "pull block",
+        "set x, 8",
+        "again:",
+        "push block",
+        "jmp x-- again",
+        "park:",
+        "jmp park"
+    );
+    let program = pio.install(&p.program).map_err(|_| "debug install")?;
+    let (neighbor, rx, tx) = PIOBuilder::from_installed_program(&program)
+        .build(sm1.take().ok_or("missing debug neighbor")?)
+        .map_err(|_| "debug neighbor build")?;
+    // Pop the empty neighbor FIFO to check that SM0's clear preserves SM1.
+    if !rx.is_empty() {
+        return Err("debug neighbor RX not empty");
+    }
+    let _ = reg(RXF + 4);
+    *sm1 = Some(neighbor.uninit(rx, tx).0);
+    let neighbor_debug = reg(FDEBUG);
+    if neighbor_debug & (SM0_DEBUG << 1) != SM1_RXUNDER {
+        return Err("debug neighbor flag missing");
+    }
+
+    for _ in 0..2 {
+        let (stopped, rx, mut tx) = PIOBuilder::from_installed_program(&program)
+            .build(sm0.take().ok_or("missing debug SM")?)
+            .map_err(|_| "debug build")?;
+        let cleared = reg(FDEBUG);
+        log!("PIO_B_FDEBUG_CLEAR value={cleared:#x}\n").unwrap();
+        if cleared != neighbor_debug & !SM0_DEBUG || !rx.is_empty() || !tx.is_empty() {
+            return Err("debug build baseline");
+        }
+        let _ = reg(RXF);
+        let running = stopped.start().map_err(|_| "debug start")?;
+        let result = wait_for_debug(timer, TXSTALL).and_then(|()| {
+            if !tx.write(1) {
+                return Err("debug release pull");
+            }
+            wait_for_debug(timer, RXSTALL)
+        });
+        let stopped = running.stop();
+        result?;
+        if rx.level() != rx.capacity() || !tx.is_empty() {
+            return Err("debug stalled FIFO levels");
+        }
+        for _ in 0..tx.capacity() {
+            if !tx.write(0) {
+                return Err("debug fill TX");
+            }
+        }
+        // Bypass the checked FIFO API once to overflow a full, stopped TX.
+        unsafe { (TXF as *mut u32).write_volatile(0) };
+        let latched = reg(FDEBUG);
+        *sm0 = Some(stopped.uninit(rx, tx).0);
+        let retired = reg(FDEBUG);
+        log!("PIO_B_FDEBUG latched={latched:#x} retired={retired:#x}\n").unwrap();
+        if latched != cleared | SM0_DEBUG || retired != latched {
+            return Err("debug flag did not latch or survive uninit");
+        }
+    }
+
+    let (stopped, rx, tx) = PIOBuilder::from_installed_program(&program)
+        .build(sm0.take().ok_or("missing debug SM")?)
+        .map_err(|_| "debug cleanup build")?;
+    let target_reset = reg(FDEBUG);
+    *sm0 = Some(stopped.uninit(rx, tx).0);
+    let (neighbor, rx, tx) = PIOBuilder::from_installed_program(&program)
+        .build(sm1.take().ok_or("missing debug neighbor")?)
+        .map_err(|_| "debug neighbor cleanup build")?;
+    let neighbor_reset = reg(FDEBUG);
+    *sm1 = Some(neighbor.uninit(rx, tx).0);
+    program.uninstall().map_err(|_| "debug uninstall")?;
+    log!("PIO_B_FDEBUG_END target_reset={target_reset:#x} neighbor_reset={neighbor_reset:#x}\n")
+        .unwrap();
+    if target_reset != neighbor_debug & !SM0_DEBUG || neighbor_reset != target_reset & !SM1_RXUNDER
+    {
+        return Err("debug cleanup flags");
+    }
+    Ok(())
 }
 
 /// Run the echo from the HAL's PIO quickstart on the bench.

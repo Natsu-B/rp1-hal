@@ -30,6 +30,7 @@ const RESET_TIMEOUT_US: u32 = 1_000;
 const BASE: usize = 0xf000_0000;
 const CTRL: usize = BASE;
 const FSTAT: usize = BASE + 4;
+const FDEBUG: usize = BASE + 8;
 const FLEVEL: usize = BASE + 0x0c;
 const FLEVEL2: usize = BASE + 0x10;
 const IRQ: usize = BASE + 0x34;

@@ -122,6 +122,15 @@ fn lifecycle_never_writes_dma_thresholds() {
     let reset = [0xe020, 0xe040, 0xe001, 0xe080, 31];
     assert_eq!(instructions, [reset, reset].concat());
     assert_eq!(sm_writes(0x08).count(), 5); // FIFO JOIN transitions at configure and release.
+    assert_eq!(
+        trace
+            .writes
+            .iter()
+            .filter(|&&(address, _)| address == FDEBUG)
+            .copied()
+            .collect::<std::vec::Vec<_>>(),
+        [(FDEBUG, 0x0404_0404)]
+    );
     for n in 0..4 {
         for offset in [0x18, 0x1c] {
             let register = sm_reg(n, offset);

@@ -1,5 +1,5 @@
 use super::{Buffers, Rx, Tx};
-use super::{IRQ, InstalledProgram, PioPin, UninitStateMachine, control, sm_reg};
+use super::{FDEBUG, IRQ, InstalledProgram, PioPin, UninitStateMachine, control, sm_reg};
 use crate::{
     Error, FreeError,
     fugit::HertzU32,
@@ -14,6 +14,11 @@ const SHIFTCTRL: usize = 8;
 const ADDR: usize = 12;
 const INSTR: usize = 16;
 const PINCTRL: usize = 20;
+
+const RXSTALL: u32 = 1 << 0;
+const RXUNDER: u32 = 1 << 8;
+const TXOVER: u32 = 1 << 16;
+const TXSTALL: u32 = 1 << 24;
 
 /// Owned GPIOs and their electrical settings. Output GPIOs may also be sampled.
 #[derive(Default)]
@@ -378,6 +383,8 @@ impl<'program, 'pio> PIOBuilder<'program, 'pio> {
         program.pio.active[usize::from(n)].set(program.mask);
         write(sm_reg(n, CLKDIV), divider);
         clear_fifos(n, shiftctrl, write);
+        // FIFO reset leaves the sticky diagnostics from the previous SM lifecycle.
+        write(FDEBUG, (RXSTALL | RXUNDER | TXOVER | TXSTALL) << n);
         let mut machine = Machine {
             n,
             program,
