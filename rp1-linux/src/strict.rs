@@ -63,7 +63,7 @@ impl Profile {
             return Err(Error::LinkDown);
         }
         // A warm reload can clear the mailbox while BAR2 is still mapped.
-        let epoch = BootEpoch::new(word).map_err(|_| Error::PeerDown(PeerDown::Restarted))?;
+        let epoch = BootEpoch::new(word)?;
         if self.epoch.get().is_some_and(|old| old != epoch) {
             return Err(Error::PeerDown(PeerDown::Restarted));
         }
