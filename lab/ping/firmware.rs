@@ -26,7 +26,6 @@ use {
         timer::{Deadline, WaitTimer},
     },
     rp1_link::notify::VectorOwner,
-    rp1_rt::interrupt::{Bank0Irq, Binding},
 };
 #[cfg(feature = "link-wake")]
 struct PanicFlag(AtomicBool);
@@ -148,7 +147,7 @@ fn now() -> u32 {
 #[cfg(feature = "link-wake")]
 pub fn enable_startup(
     pcie: &mut Pcie,
-    mut irq: Binding<Bank0Irq, 0, 0>,
+    mut irq: rp1::proc0_irq::IO_BANK0,
     mut timer: WaitTimer,
     end: Deadline,
 ) {
@@ -161,7 +160,7 @@ pub fn enable_startup(
 #[cfg(feature = "link-wake")]
 pub fn open_and_run(
     link: rp1::link::Proc1LinkInit,
-    mut irq: Binding<Bank0Irq, 0, 1>,
+    mut irq: rp1::proc1_irq::IO_BANK0,
     mut timer: WaitTimer,
     end: Deadline,
     owner: VectorOwner,
