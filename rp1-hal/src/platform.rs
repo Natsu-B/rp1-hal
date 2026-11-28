@@ -58,6 +58,7 @@ pub struct System {
 
 /// The PCIe endpoint init brought up. proc0 only (not `Send`).
 pub struct Pcie {
+    // Keep the handle in proc0 thread mode so its IRQ57 state readers cannot move into a Slot.
     _proc0: PhantomData<*mut ()>,
     /// The SHM transaction published the reservation, or outbound region 0 read back wrong:
     /// the window stays as it is until RP1 is reloaded.
@@ -79,9 +80,12 @@ pub fn scmi_stats(_pcie: &Pcie) -> ScmiStats {
 /// Run bounded proc0 thread work with SCMI delivery deferred.
 ///
 /// Include the device wait and its latency-sensitive continuation in the closure.
-/// Pending SCMI requests can run as soon as the closure exits. Bound the closure
-/// and leave gaps between calls so Linux can receive replies. Keep waits that
-/// depend on Linux outside this scope.
+/// Limit each scope to 2.1 ms elapsed and allow at least 100 µs with IRQ57
+/// eligible between scopes. In any 10 ms, spend at most 2.5 ms combined with
+/// IRQ57 blocked by deferral, masks or higher-priority work. This budgets up
+/// to 5 ms for a reply against the Linux mailbox timeout of 30 ms. The caller
+/// budgets its workload. The IRQ priority lab checks its own timing.
+/// Keep waits that depend on Linux outside the scope.
 ///
 /// Requires unmasked thread mode. A terminal panic or fault inside the closure
 /// leaves SCMI disabled until reload.

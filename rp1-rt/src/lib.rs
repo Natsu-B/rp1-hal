@@ -33,7 +33,8 @@
 //! | proc1 thread or user ISR with a configurable fault and a valid MSP frame | Records `Fault` for proc1 and parks it. proc0 can continue. |
 //! | Stacking or unstacking error, INVPC, or a PSP frame | Terminal without frame access. Recording is best effort. IRQ53 may still run on proc0, while IRQ57 cannot preempt the priority-1 handler. A broken stack can lock up the core. |
 //! | Imprecise BusFault taken in a containable context | Returns to the same wait loop. The saved CFSR includes IMPRECISERR. The stacked PC and parked context may differ from the cause. |
-//! | Panic or configurable fault in IRQ57 | The context parks. SCMI stops and IRQ53 remains eligible to run. |
+//! | Panic in IRQ57 or a configurable fault in IRQ57 at its normal priority 6 | The context parks. SCMI stops and IRQ53 remains eligible to run. |
+//! | Fault in IRQ57 after it was promoted to priority 1 | Escalates to terminal HardFault because a configurable fault at priority 1 cannot preempt it. |
 //! | Fault in IRQ53 or while PRIMASK is set or BASEPRI masks priority 1 (0x20), or HardFault | Terminal on the affected core. HardFault attempts to record CFSR and the stacked PC when stack status and EXC_RETURN allow it. IRQ53/57 cannot preempt it. |
 //! | Infinite loop holding PRIMASK or BASEPRI | No fault containment or watchdog recovery. Linux can detect a stalled heartbeat if configured. |
 use core::{cell::UnsafeCell, marker::PhantomData};

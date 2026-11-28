@@ -63,6 +63,12 @@ fn generated_resources_only_reference_their_link_features() {
     assert!(full.contains("pub link: link::Proc0LinkInit"));
     assert!(full.contains("pub link: link::Proc1LinkInit"));
     assert!(full.contains("fn doorbell_proc1()"));
+    assert!(full.contains(
+        "pub type IO_BANK0 = ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 1, { ::rp1_rt::interrupt::priority::DOORBELL }>;"
+    ));
+    assert!(full.contains(
+        "pub fn open(self, irq: &mut ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 1, { ::rp1_rt::interrupt::priority::DOORBELL }>)"
+    ));
     assert!(!full.contains("fn doorbell_proc0()"));
     assert!(full.contains(r#"export_name = "__rp1_p1_IO_BANK0""#));
     assert_eq!(
@@ -80,6 +86,9 @@ fn generated_resources_only_reference_their_link_features() {
     d.proc1.custom_doorbell_handler = true;
     let custom = resources(&d, &[], &d.shm_layout().unwrap()).unwrap();
     assert!(!custom.contains("fn doorbell_proc1()"));
+    assert!(custom.contains(
+        "pub type IO_BANK0 = ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::Bank0Irq, 0, 1>;"
+    ));
     assert_eq!(
         custom.matches("impl sealed::Admitted for IO_BANK0").count(),
         1

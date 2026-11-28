@@ -151,7 +151,7 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
     let after = scmi_stats(&sys.pcie);
     let serving = matches!(scmi_state(), ScmiState::Serving { .. });
     log!(
-        "SCMI_STARVE_END elapsed_us={} ticks={} preempted_holds={} requests_before={} requests_after={} duplicates={} spurious57={} max_serve_all_us={} clean_n={} max_serve_clean_us={} serving={}\n",
+        "SCMI_STARVE_END elapsed_us={} ticks={} preempted_holds={} requests_before={} requests_after={} duplicates={} spurious57={} max_serve_all_us={} serve_without_irq53_n={} max_serve_without_irq53_us={} serving={}\n",
         elapsed,
         TICKS.load(Relaxed),
         PREEMPTED_HOLDS.load(Relaxed),
@@ -160,8 +160,8 @@ fn main0(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
         after.duplicates,
         after.spurious57,
         after.max_serve_all_us,
-        after.clean_n,
-        after.max_serve_clean_us,
+        after.serve_without_irq53_n,
+        after.max_serve_without_irq53_us,
         u8::from(serving)
     )
     .unwrap();

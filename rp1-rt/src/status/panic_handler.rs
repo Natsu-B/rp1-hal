@@ -70,7 +70,7 @@ mod tests {
             assert_eq!(words(), self.expected_words);
             assert_eq!(self.basepri, 0x20);
             assert!(self.primask);
-            self.basepri = 0x40;
+            crate::interrupt::mask_for_park_with(|mask| self.basepri = mask, || {});
         }
 
         fn enable_interrupts(&mut self) {

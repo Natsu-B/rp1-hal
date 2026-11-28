@@ -241,6 +241,7 @@ impl Registers for FakeRp1 {
         self.boundary();
         let value = match address {
             TIMER_RAWL => self.bus.borrow().now,
+            ISER => u32::from(self.enabled) * IRQ_BIT,
             _ => self.get(address),
         };
         self.bus
@@ -567,7 +568,7 @@ fn irq53_inside_a_serve_keeps_it_out_of_the_clean_maximum() {
         f
     };
     let baseline = serve(None);
-    assert_eq!(baseline.counters.stats.clean_n, 1);
+    assert_eq!(baseline.counters.stats.serve_without_irq53_n, 1);
     // The boundaries of the two entries53 reads. An IRQ53 at a read's boundary runs before it.
     let brackets: Vec<_> = baseline
         .trace()
@@ -587,10 +588,45 @@ fn irq53_inside_a_serve_keeps_it_out_of_the_clean_maximum() {
         assert_eq!(stats.requests, 1);
         assert_eq!(f.get(SHMEM + 4 * PAYLOAD), 0, "answered");
         let dirty = before < boundary && boundary <= after;
-        assert_eq!(stats.clean_n, u32::from(!dirty), "boundary {boundary}");
+        assert_eq!(
+            stats.serve_without_irq53_n,
+            u32::from(!dirty),
+            "boundary {boundary}"
+        );
         if dirty {
-            assert_eq!(stats.max_serve_clean_us, 0);
+            assert_eq!(stats.max_serve_without_irq53_us, 0);
         }
-        assert!(stats.max_serve_clean_us <= stats.max_serve_all_us);
+        assert!(stats.max_serve_without_irq53_us <= stats.max_serve_all_us);
+    }
+}
+
+#[test]
+fn deferral_preserves_pending_and_restores_only_an_enabled_line() {
+    for enabled in [false, true] {
+        let mut f = FakeRp1::ready(Delivery::Pulse, 0);
+        f.enabled = enabled;
+        // Test an already pending line in the disabled case, as in a nested scope.
+        f.pending = !enabled;
+        f.bus.borrow_mut().trace.clear();
+
+        assert_eq!(defer_with(&mut f, || 42), 42);
+
+        assert_eq!(f.enabled, enabled);
+        assert_eq!(f.pending, !enabled);
+        let trace = &f.bus.borrow().trace;
+        if enabled {
+            assert_eq!(
+                trace.iter().map(|&(_, op)| op).collect::<Vec<_>>(),
+                [
+                    Op::Read(ISER, IRQ_BIT),
+                    Op::Write(ICER, IRQ_BIT),
+                    Op::Barrier,
+                    Op::Write(ISER, IRQ_BIT),
+                    Op::Barrier,
+                ]
+            );
+        } else {
+            assert_eq!(trace.as_slice(), &[(Context::Init, Op::Read(ISER, 0))]);
+        }
     }
 }

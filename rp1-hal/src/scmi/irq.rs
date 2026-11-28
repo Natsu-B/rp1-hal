@@ -1,8 +1,7 @@
 //! SCMI on proc0 IRQ57. Init finishes writing the handler's DSRAM state and
 //! published state word before ISER. Only IRQ57 writes them after ISER (rule E1).
 //!
-//! IRQ53 (priority 0) can preempt IRQ57. A serve time is "clean" when IRQ53's entry count is
-//! the same before and after it. Other IRQs can contribute to this elapsed time.
+//! IRQ53, control and device IRQs can preempt IRQ57.
 
 use super::{
     CHANNEL, ClockHardware, HOST_EVENTS_SET, PROC_EVENTS, PROC_EVENTS_CLR, RP1_CLOCKS, Registers,
@@ -53,9 +52,9 @@ pub struct ScmiStats {
     /// The longest elapsed serve time, including preemption.
     pub max_serve_all_us: u32,
     /// Entries that IRQ53 did not preempt.
-    pub clean_n: u32,
-    /// The longest elapsed serve time among the `clean_n` entries.
-    pub max_serve_clean_us: u32,
+    pub serve_without_irq53_n: u32,
+    /// The longest elapsed serve time without IRQ53 preemption, including other preemption.
+    pub max_serve_without_irq53_us: u32,
 }
 
 #[derive(Default)]
@@ -138,8 +137,8 @@ fn handle(server: &mut Server<'_, impl ClockHardware>, c: &mut Counters, io: &mu
     }
     let elapsed = io.read(TIMER_RAWL).wrapping_sub(start);
     if io.entries53() == entries53 {
-        c.stats.clean_n = c.stats.clean_n.saturating_add(1);
-        c.stats.max_serve_clean_us = c.stats.max_serve_clean_us.max(elapsed);
+        c.stats.serve_without_irq53_n = c.stats.serve_without_irq53_n.saturating_add(1);
+        c.stats.max_serve_without_irq53_us = c.stats.max_serve_without_irq53_us.max(elapsed);
     }
     c.stats.max_serve_all_us = c.stats.max_serve_all_us.max(elapsed);
     if c.streak >= MAX_EMPTY_STREAK {
@@ -208,26 +207,31 @@ pub(crate) unsafe fn install(held: u32) {
 
 pub(crate) fn defer<T>(f: impl FnOnce() -> T) -> T {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
-    let _restore = {
-        struct Restore;
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                crate::write_relaxed(ISER, IRQ_BIT);
-                rp1_proto::barrier();
-            }
-        }
+    return defer_with(&mut Mmio, f);
+    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
+    f()
+}
 
-        // IRQ57 can quarantine itself. Keep the enabled read and disable indivisible
-        // with respect to that handler, and keep pending requests latched.
-        rp1_rt::interrupt::__with_scmi_masked(|| {
-            if crate::read(ISER) & IRQ_BIT == 0 {
-                return None;
-            }
-            crate::write_relaxed(ICER, IRQ_BIT);
-            rp1_proto::barrier();
-            Some(Restore)
-        })
-    };
+#[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
+fn defer_with<T, R: Io>(io: &mut R, f: impl FnOnce() -> T) -> T {
+    struct Restore<'a, R: Io>(&'a mut R);
+    impl<R: Io> Drop for Restore<'_, R> {
+        fn drop(&mut self) {
+            self.0.write(ISER, IRQ_BIT);
+            self.0.barrier();
+        }
+    }
+
+    // IRQ57 can quarantine itself. Sample ISER and mask delivery as one operation
+    // with respect to that handler, leaving pending requests latched.
+    let _restore = rp1_rt::interrupt::__with_scmi_masked(|| {
+        if io.read(ISER) & IRQ_BIT == 0 {
+            return None;
+        }
+        io.write(ICER, IRQ_BIT);
+        io.barrier();
+        Some(Restore(io))
+    });
     f()
 }
 

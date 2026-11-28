@@ -37,7 +37,7 @@ STATIC。数値が小さいほど先に実行される。各コアの NVIC は�
 | 4 | 所有コアの wait alarm、生成 UART/SPI/I²C/ADC ハンドラ、raw IRQ の既定値 | deadline 通知とデバイス待機の解除 |
 | 5 | 所有コアの生成 IO_BANK0 (0) | Linux からのドアベルを ack し、スレッドを起こす |
 | 6 | proc0 PROC_MISC (57) | SCMI クロック要求を処理して Linux に応答 |
-| 2–7 | 所有コアのアプリ独自 IRQ | `Priority::new` で選択 |
+| 2–7 | 所有コアのアプリ独自 IRQ | `Priority::new` で選択。5 はドアベル、proc0 の 6 は SCMI と同じ優先度で、相互に割り込めない |
 
 `Priority::control::<P>()` は 2〜4 を検査する。`Binding::set_slot_priority::<P, _, _>(&slot)`
 は加えて `P >= CEILING` と同一コアを検査する。複数の Slot を参照するハンドラは全ての ceiling
@@ -52,9 +52,17 @@ Lost はソフトウェアの利用停止通知で、IRQ53 は outbound iATU を
 窓公開時の短い PRIMASK 区間は IRQ53 も保留する。新しいホストとの復旧には RP1 の再ロードが必要。
 
 SCMI は IRQ57 内で全処理する。制御・デバイス ISR は IRQ57 に割り込める。
+既定のスレッド継続は、実行中の IRQ57 の残りも待つ。
 スレッドの継続を遅延させたくない場合は、短いデバイス待機から継続までを
 `platform::with_scmi_deferred` で囲む。IRQ57 だけを保留し、出口で配送を再開する。
-Linux の応答が必要な処理はスコープの外に置き、連続呼び出しの間に SCMI が実行できる時間を残す。
+Linux の応答が必要な処理はスコープの外に置く。
+
+DOC / STATIC。Linux の [SCMI mailbox transport](https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/firmware/arm_scmi/transports/mailbox.c)
+は転送に 30 ms の応答時間を許す。RP1 の応答目標は 5 ms。各スコープは経過時間 2.1 ms 以下とし、
+次までに IRQ57 が実行できる時間を 100 µs 以上確保する。任意の 10 ms で、スコープ、割り込みマスク、
+上位または同優先度の ISR が IRQ57 を止める時間は合計 2.5 ms 以下とする。これはアプリの時間予算であり、
+HAL はスコープの入口で実行文脈を検査する。実機ラボはスコープ、間隔、スコープの占有時間、
+IRQ57 の pending からの応答時間および Linux 側の応答時間を検査する。
 スタックの見積もりには IRQ57 と、そこへネストする制御・デバイス IRQ を含める。
 終端停止では制御・デバイス IRQ をマスクし、配送が有効で実行中でない IRQ57 を優先度 1 に上げて応答を続ける。
 
@@ -67,7 +75,7 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | 宣言 | `ProcNIrq` のフィールド |
 |---|---|
 | `gpio_irq = [..]` | `IO_BANK0: Line<0>` と各ピンの `gpioN: PinIrq<N, CORE>` |
-| `doorbell = N` | `IO_BANK0: Line<0>`（`gpio_irq` と共用で 1 本）。ドアベル自体は `ProcNResources.doorbell: rp1::DoorbellK` |
+| `doorbell = N` | 既定は `IO_BANK0: Line<0, { priority::DOORBELL }>`（`gpio_irq` と共用で 1 本）。ドアベル自体は `ProcNResources.doorbell: rp1::DoorbellK` |
 | `pwm0` / `pwm1` | `PWM0: Line<5>` / `PWM1: Line<41>` |
 | `i2c0`〜`i2c3` | `I2C0: Line<7>`、`I2C1: Line<8>`、`I2C2: Line<9>`、`I2C3: Line<10>` |
 | raw `spi0` / `spi1` / `spi3` | `SPIn: Line<{19+n}>` |

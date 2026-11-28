@@ -4,7 +4,14 @@ use crate::timer::{self, Deadline, Timer, WaitTimer};
 use rp1_rt::interrupt::{Line, OwnedLine, Priority, Slot};
 
 const CEILING: u8 = rp1_rt::interrupt::priority::DEVICE;
-const PRIORITY: Priority = Priority::control::<CEILING>();
+const PRIORITY: Priority = Priority::new(CEILING).unwrap();
+
+#[cfg(test)]
+#[test]
+fn device_priority_matches_its_slot_ceiling() {
+    assert_eq!(PRIORITY.value(), 4);
+    assert_eq!(PRIORITY.value(), CEILING);
+}
 
 pub(crate) enum Error {
     Busy,

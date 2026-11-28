@@ -67,7 +67,10 @@ impl FaultCpu for Fake {
     }
 
     fn mask_for_park(&self) {
-        self.events.borrow_mut().push(Basepri(0x40));
+        crate::interrupt::mask_for_park_with(
+            |mask| self.events.borrow_mut().push(Basepri(u32::from(mask))),
+            || {},
+        );
     }
 
     fn sync(&self) {

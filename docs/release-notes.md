@@ -339,3 +339,25 @@ const arguments when naming an adapter type.
 SPI2 and SPI5 use polling. Their managed IRQ and raw `p.irq.SPI2` /
 `p.irq.SPI5` routes and `custom_spi2_handler` / `custom_spi5_handler`
 declaration keys were removed.
+
+## Interrupt priorities
+
+STATIC (2026-11-28). See [Interrupt priorities](interrupts.md#優先度).
+
+- `Line<IRQ, FIXED>` and `Binding<S, IRQ, CORE, FIXED>` have a trailing fixed-priority
+  parameter. Existing ordinary line and binding types can omit it. The generated
+  doorbell binding fixes priority at 5 and has no `set_priority`. Enable it or pass
+  it to the generated `link.open`; a custom doorbell handler can set its priority.
+- Let the compiler infer the parameters of `WaitTimer::wait_irq_until`,
+  `WaitTimer::check_irq` and `ThreadGuard::check_irq`. With explicit parameters,
+  insert `FIXED` after `CORE` and before the return type parameter, when present.
+- Use `Priority::control::<P>()` for priorities 2–4. A handler using a core-local Slot
+  can use `Binding::set_slot_priority::<P, _, _>(&slot)` or
+  `Slot::control_priority::<P>()` to check its ceiling at compile time.
+- `platform::with_scmi_deferred(&pcie, || ...)` defers IRQ57 during bounded proc0
+  thread work. Keep SCMI-dependent calls outside the scope.
+- `Pcie` no longer implements `Send`. Retain it in proc0 thread mode. Use
+  `pcie_state()` or `scmi_state()` for the published state from either core.
+- `ScmiStats::clean_n` and `max_serve_clean_us` become `serve_without_irq53_n` and
+  `max_serve_without_irq53_us`. The latter reports elapsed time excluding entries
+  interrupted by IRQ53. Control and device preemption can extend both maxima.

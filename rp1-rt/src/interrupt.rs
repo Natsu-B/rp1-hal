@@ -158,13 +158,16 @@ impl Default for Priority {
     }
 }
 
+const UNFIXED: u8 = u8::MAX;
+
 /// Unique ownership of one core's NVIC line.
 ///
 /// Device interrupt masks are separate. Enabling a line without a handler is safe:
 /// the default handler masks it and records [`unhandled`].
 /// The line stays on its owning core. Share it with that core's handlers through a [`Slot`].
 /// It implements neither `SharedSafe` nor `Message`, so it cannot cross cores.
-pub struct Line<const IRQ: u8, const FIXED: u8 = 0> {
+/// The default `FIXED = 255` is outside the NVIC priority range.
+pub struct Line<const IRQ: u8, const FIXED: u8 = UNFIXED> {
     _core: core::marker::PhantomData<core::cell::Cell<()>>,
 }
 
@@ -179,7 +182,7 @@ impl<const IRQ: u8, const FIXED: u8> Line<IRQ, FIXED> {
         const {
             assert!(IRQ < 64, "NVIC IRQ must be in 0..64");
             assert!(
-                FIXED == 0 || (IRQ == 0 && FIXED == priority::DOORBELL),
+                FIXED == UNFIXED || (IRQ == 0 && FIXED == priority::DOORBELL),
                 "only the generated doorbell has a fixed line priority"
             );
         };
@@ -191,7 +194,7 @@ impl<const IRQ: u8, const FIXED: u8> Line<IRQ, FIXED> {
     /// Enable delivery on this core. Peripheral interrupt masks are unchanged.
     pub fn enable(&mut self) {
         let nvic = Nvic(Hardware);
-        if FIXED != 0 {
+        if FIXED != UNFIXED {
             nvic.set_priority(IRQ, Priority(FIXED));
         }
         nvic.enable(IRQ);
@@ -225,7 +228,8 @@ impl<const IRQ: u8, const FIXED: u8> Line<IRQ, FIXED> {
 
 impl<const IRQ: u8> Line<IRQ> {
     /// Set this line's user priority without changing neighboring lines.
-    /// Keep it at or below the urgency of any [`Slot`] the handler uses.
+    /// For a handler using a [`Slot`], prefer [`Binding::set_slot_priority`] to check
+    /// the priority against its ceiling.
     pub fn set_priority(&mut self, priority: Priority) {
         Nvic(Hardware).set_priority(IRQ, priority);
     }
@@ -266,7 +270,7 @@ impl OwnedLine {
 
 /// A verified NVIC line assigned to a declaration's source and core.
 /// The source's device operations remain on the source token.
-pub struct Binding<S, const IRQ: u8, const CORE: u8, const FIXED: u8 = 0> {
+pub struct Binding<S, const IRQ: u8, const CORE: u8, const FIXED: u8 = UNFIXED> {
     line: Line<IRQ, FIXED>,
     _source: core::marker::PhantomData<S>,
 }
@@ -482,13 +486,18 @@ pub(crate) fn reset_all_lines() {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub(crate) fn mask_for_park() {
-    crate::cpu::set_basepri(priority::encode(priority::CONTROL_MIN));
+    mask_for_park_with(crate::cpu::set_basepri, || {
+        Nvic(Hardware).keep_scmi_on_park()
+    });
+    crate::cpu::sync();
+}
 
+#[cfg(any(test, all(target_arch = "arm", target_os = "none")))]
+pub(crate) fn mask_for_park_with(set_basepri: impl FnOnce(u8), keep_scmi: impl FnOnce()) {
+    set_basepri(priority::encode(priority::CONTROL_MIN));
     // A parked context never resumes. Preserve SCMI only when IRQ57 has a fresh frame
     // available; an IRQ57 already active below the parked context cannot finish.
-    let nvic = Nvic(Hardware);
-    nvic.keep_scmi_on_park();
-    crate::cpu::sync();
+    keep_scmi();
 }
 
 struct Nvic<R>(R);
@@ -586,7 +595,7 @@ mod tests {
         assert!(nvic.0.writes.take().is_empty());
         nvic.enable(IRQ);
         nvic.0.writes.take();
-        nvic.keep_scmi_on_park();
+        mask_for_park_with(|mask| assert_eq!(mask, 0x40), || nvic.keep_scmi_on_park());
         assert_eq!(nvic.0.writes.take(), [(IPR + usize::from(IRQ), 0x20, 1)]);
         nvic.write_bit(0xe000_e300, IRQ);
         nvic.0.writes.take();

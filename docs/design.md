@@ -247,8 +247,8 @@ RMW atomic のメソッドは持たない。
   には触れない（serial@34000 は probe、UART1 送受信も合格）。
   - `host_irq = true` は 1 コアだけが宣言できる。生成された `HostIrq` は大きさ 0 で `Copy` なので、
     同じコアの IRQ 端点に持たせられる。SET と CLR の間に同じコアの別のパルスが入るとエッジが 1 回消えるため、
-    2 回の書き込みを 1 つの critical section で囲む（STATIC）。優先度 0 / 1 の PERSTn と SCMI はこの区間にも入れるが、
-    `HostIrq` を使わない。proc0 の main と TIMER_0 ハンドラが同じ vector を使う `mix-irq` は late 0 %（HW 2026-11-26）。
+    2 回の書き込みを 1 つの critical section で囲む（STATIC）。優先度 0 の PERSTn（IRQ53）はこの区間にも入れるが、
+    `HostIrq` を使わない。SCMI（IRQ57、優先度 6）は保留される。proc0 の main と TIMER_0 ハンドラが同じ vector を使う `mix-irq` は late 0 %（HW 2026-11-26）。
   - 端点を通らない SRAM のデータは `HostIrq::pulse_after_sram_write` で知らせる。DDR への posted 書き込みは
     先に `rp1_link::flush_window` で完了させる（STATIC、protocol.md §3.1）。
   - **割り込み源（TIMER アラーム 3）**: vector 29 の源は `TIMER.INTS` bit 3 =（INTR & INTE）| INTF（DOC、RP2040 と同じ形）。
@@ -383,6 +383,7 @@ Linux 側 uncached の block 読み 約 335 MB/s、書き 約 247 MB/s。M3 側�
 
 | 日付 | 決定 | 理由 |
 |---|---|---|
+| 2026-11-28 | [割り込み優先度](interrupts.md#優先度)を定義する。IRQ57（SCMI）は 1 → 6、生成ドアベルは 5 固定、制御は 2–4、デバイスは 4、IRQ53（PERSTn）は 0 | Linux の SCMI は ms 単位の遅延を許容する（DOC、mailbox の 30 ms timeout）。制御とデバイスの ISR は処理途中の IRQ57 にも割り込める（STATIC）。IRQ53 は Lost 公開前の共有窓アクセス可能区間を延ばさない（STATIC、実機観測は割り込みの根拠表） |
 | 2026-10-23 | 新リポジトリで作る。旧スタンドアロン系列は別名のリポジトリに退避 | PoC の診断コードと feature を持ち込まない |
 | 2026-10-23 | RTOS を載せない | RPMsg を外すと必要性がない |
 | 2026-10-23 | Linux はカーネル内部 API に依存しない（DT + ユーザープロセス） | カーネル版ごとの変化に追従しない |
