@@ -16,6 +16,17 @@ use rp1_proto::{Message, shm};
 ///
 /// Batches whose slot images are smaller than the threshold use the CPU path
 /// ([`RingTx::push_slice`], posted word stores), which is faster for them.
+///
+/// The experimental copier is available on legacy endpoints. A strict
+/// endpoint cannot publish slots with this copier.
+///
+/// ```compile_fail
+/// use rp1_link::{RingTx, notify::TicketIrq, ring_dma::{RingDma, SlotCopy}};
+///
+/// fn send<C: SlotCopy>(tx: &mut RingTx<u32, TicketIrq>, dma: &mut RingDma<'_>, copy: &mut C) {
+///     let _ = tx.send_slice_dma(dma, copy, &[1]);
+/// }
+/// ```
 pub struct RingDma<'s> {
     stage: &'s mut [u8],
     threshold: usize,
@@ -336,7 +347,7 @@ mod tests {
     #[test]
     fn send_slice_dma_wakes_and_a_lost_window_is_untouched() {
         use crate::mmio::fake::{self, Access};
-        use crate::notify::{HostIrq, sealed::Notify};
+        use crate::notify::{HostIrq, sealed::Claim};
         use rp1_proto::{LINK_START, link};
         const STATUS: usize = LINK_START as usize + link::SHM_STATUS;
         const MSIX_SET: usize = 0x4010_8008 + 4 * rp1_proto::irq::VECTOR as usize + 0x800;
