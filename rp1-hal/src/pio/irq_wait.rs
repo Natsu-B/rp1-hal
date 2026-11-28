@@ -78,22 +78,16 @@ impl From<driver_irq::Error> for WaitError {
     }
 }
 
-type State<const CORE: u8> = CoreState<FifoSource, SlotLine, CORE>;
+type State = CoreState<FifoSource, SlotLine, 1>;
 
-macro_rules! states {
-    ($name:ident, $core:literal) => {
-        fn $name(line: IrqLine) -> &'static State<$core> {
-            static ZERO: State<$core> = Slot::new(Managed::new(FifoSource::new(IRQ0_INTE)));
-            static ONE: State<$core> = Slot::new(Managed::new(FifoSource::new(IRQ1_INTE)));
-            match line {
-                Irq0 => &ZERO,
-                Irq1 => &ONE,
-            }
-        }
-    };
+fn proc1(line: IrqLine) -> &'static State {
+    static ZERO: State = Slot::new(Managed::new(FifoSource::new(IRQ0_INTE)));
+    static ONE: State = Slot::new(Managed::new(FifoSource::new(IRQ1_INTE)));
+    match line {
+        Irq0 => &ZERO,
+        Irq1 => &ONE,
+    }
 }
-states!(proc0, 0);
-states!(proc1, 1);
 
 const fn route<const LINE: u8>() -> IrqLine {
     const { assert!(LINE < 2) };
@@ -101,33 +95,24 @@ const fn route<const LINE: u8>() -> IrqLine {
 }
 
 /// # Safety
-/// The declaration must bind LINE once on its PIO-owning CORE and install the
-/// matching handler. The route must be validated before applications receive a binding.
+/// The proc1 PIO declaration must bind LINE once and install the matching handler.
 #[doc(hidden)]
 pub unsafe fn __bind_irq<const LINE: u8, const IRQ: u8, const CORE: u8>(
     binding: Binding<BlockIrq<PIO>, IRQ, CORE>,
 ) {
-    const { assert!(IRQ == IRQ0 + LINE && CORE < 2) };
-    let line = SlotLine::new(binding);
-    if CORE == 0 {
-        driver_irq::bind(proc0(route::<LINE>()), line);
-    } else {
-        driver_irq::bind(proc1(route::<LINE>()), line);
-    }
+    const { assert!(CORE == 1, "PIO IRQ delivery requires proc1") };
+    const { assert!(IRQ == IRQ0 + LINE) };
+    driver_irq::bind(proc1(route::<LINE>()), SlotLine::new(binding));
 }
 
 /// # Safety
-/// Only the matching PIO handler on the declaring core may call this with
-/// LINE, after the corresponding NVIC line is bound.
+/// Only the matching proc1 PIO handler may call this with LINE, after the
+/// corresponding NVIC line is bound.
 #[doc(hidden)]
 #[inline(always)]
 pub unsafe fn __on_interrupt<const LINE: u8, const CORE: u8>() -> u32 {
-    const { assert!(CORE < 2) };
-    if CORE == 0 {
-        driver_irq::on_interrupt(proc0(route::<LINE>()), &mut Mmio)
-    } else {
-        driver_irq::on_interrupt(proc1(route::<LINE>()), &mut Mmio)
-    }
+    const { assert!(CORE == 1, "PIO IRQ delivery requires proc1") };
+    driver_irq::on_interrupt(proc1(route::<LINE>()), &mut Mmio)
 }
 
 /// An IRQ-backed FIFO wait using the core's dedicated alarm.
@@ -139,7 +124,7 @@ pub struct Blocking<'a, F> {
 
 macro_rules! blocking {
     ($fifo:ident) => {
-        impl<const N: u8, const CORE: u8, const LINES: u8> $fifo<N, Irq<CORE, LINES>> {
+        impl<const N: u8, const LINES: u8> $fifo<N, Irq<1, LINES>> {
             /// Borrow this FIFO and the alarm for an IRQ-backed wait.
             pub fn blocking<'a>(&'a mut self, timer: &'a mut WaitTimer) -> Blocking<'a, Self> {
                 Blocking {
@@ -150,7 +135,7 @@ macro_rules! blocking {
             }
         }
 
-        impl<const N: u8, const CORE: u8> Blocking<'_, $fifo<N, Irq<CORE, 3>>> {
+        impl<const N: u8> Blocking<'_, $fifo<N, Irq<1, 3>>> {
             /// Route this wait to PIO_1. The default uses PIO_0.
             pub fn on_irq1(mut self) -> Self {
                 self.line = Irq1;
@@ -162,36 +147,36 @@ macro_rules! blocking {
 blocking!(Rx);
 blocking!(Tx);
 
-impl<const N: u8, const CORE: u8, const LINES: u8> Blocking<'_, Rx<N, Irq<CORE, LINES>>> {
+impl<const N: u8, const LINES: u8> Blocking<'_, Rx<N, Irq<1, LINES>>> {
     /// Read one word by an absolute deadline.
-    pub fn read_until(&mut self, end: impl Into<Deadline>) -> Result<u32, WaitError> {
-        wait::<CORE, _>(
+    pub fn read_until(&mut self, end: Deadline) -> Result<u32, WaitError> {
+        wait(
             self.fifo.capacity(),
             self.line,
             self.timer,
-            end.into(),
+            end,
             1 << N,
-            || self.fifo.try_read(),
+            || self.fifo.read(),
         )
     }
 }
 
-impl<const N: u8, const CORE: u8, const LINES: u8> Blocking<'_, Tx<N, Irq<CORE, LINES>>> {
+impl<const N: u8, const LINES: u8> Blocking<'_, Tx<N, Irq<1, LINES>>> {
     /// Write one word by an absolute deadline.
-    pub fn write_until(&mut self, word: u32, end: impl Into<Deadline>) -> Result<(), WaitError> {
-        wait::<CORE, _>(
+    pub fn write_until(&mut self, word: u32, end: Deadline) -> Result<(), WaitError> {
+        wait(
             self.fifo.capacity(),
             self.line,
             self.timer,
-            end.into(),
+            end,
             1 << (4 + N),
-            || self.fifo.try_write(word).then_some(()),
+            || self.fifo.write(word).then_some(()),
         )
     }
 }
 
 #[inline]
-fn wait<const CORE: u8, T>(
+fn wait<T>(
     capacity: u8,
     line: IrqLine,
     timer: &mut WaitTimer,
@@ -204,9 +189,5 @@ fn wait<const CORE: u8, T>(
     }
     let probe = |_: &mut Mmio| probe().map(Ok);
     let limit = Limit::Absolute(end);
-    if CORE == 0 {
-        driver_irq::wait_for(proc0(line), &mut Mmio, timer, limit, source, probe)
-    } else {
-        driver_irq::wait_for(proc1(line), &mut Mmio, timer, limit, source, probe)
-    }
+    driver_irq::wait_for(proc1(line), &mut Mmio, timer, limit, source, probe)
 }

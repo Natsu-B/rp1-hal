@@ -1,21 +1,5 @@
 error[E0599]: no method named `blocking` found for mutable reference `&mut rp1_hal::pio::Rx<0>` in the current scope
- --> tests/ui/pio_wait_admission.rs:5:16
+ --> tests/ui/pio_wait_admission.rs:4:16
   |
-5 |     let _ = rx.blocking(alarm_from_elsewhere);
+4 |     let _ = rx.blocking(alarm_from_elsewhere);
   |                ^^^^^^^^ method not found in `&mut rp1_hal::pio::Rx<0>`
-
-error[E0308]: mismatched types
- --> tests/ui/pio_wait_admission.rs:9:51
-  |
-9 |     unsafe { rp1_hal::pio::__bind_irq::<0, 50, 1>(raw) };
-  |              ------------------------------------ ^^^ expected `1`, found `0`
-  |              |
-  |              arguments to this function are incorrect
-  |
-  = note: expected struct `Binding<BlockIrq<66>, 50, 1>`
-             found struct `Binding<BlockIrq<66>, 50, 0>`
-note: function defined here
- --> src/pio/irq_wait.rs
-  |
-  | pub unsafe fn __bind_irq<const LINE: u8, const IRQ: u8, const CORE: u8>(
-  |               ^^^^^^^^^^

@@ -424,7 +424,7 @@ fn sample<const N: u8>(
     let mut sent = 0;
     if !rx_direction {
         while sent < 8 {
-            if !tx.try_write(sent) {
+            if !tx.write(sent) {
                 return Err("fill");
             }
             sent += 1;
@@ -529,14 +529,14 @@ fn sample<const N: u8>(
                 break;
             }
             if rx_direction {
-                if rx.try_read().is_some() {
+                if rx.read().is_some() {
                     result = Err("extra RX data");
                     break;
                 }
             } else {
                 let end = Deadline::at(Instant::from_ticks(Timer::new().now().ticks() + 100));
                 if rx.polling().read_until(end) != Ok(sent - 8)
-                    || rx.try_read().is_some()
+                    || rx.read().is_some()
                     || tx.level() != 8
                 {
                     result = Err("TX consumed word");

@@ -1,0 +1,45 @@
+error[E0080]: evaluation panicked: PIO IRQ delivery requires proc1
+ --> $RUST/core/src/panic.rs
+  |
+  |         $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `rp1_hal::pio::__bind_irq::<0, 50, 0>::{constant#0}` failed here
+  |
+ ::: src/pio/irq_wait.rs
+  |
+  |     const { assert!(CORE == 1, "PIO IRQ delivery requires proc1") };
+  |             ----------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/pio/irq_wait.rs
+  |
+  |     const { assert!(CORE == 1, "PIO IRQ delivery requires proc1") };
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn rp1_hal::pio::__bind_irq::<0, 50, 0>`
+ --> tests/ui/pio_wait_core.rs:7:9
+  |
+7 |         rp1_hal::pio::__bind_irq::<0, 50, 0>(line);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0080]: evaluation panicked: PIO IRQ delivery requires proc1
+ --> $RUST/core/src/panic.rs
+  |
+  |         $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `rp1_hal::pio::__on_interrupt::<0, 0>::{constant#0}` failed here
+  |
+ ::: src/pio/irq_wait.rs
+  |
+  |     const { assert!(CORE == 1, "PIO IRQ delivery requires proc1") };
+  |             ----------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/pio/irq_wait.rs
+  |
+  |     const { assert!(CORE == 1, "PIO IRQ delivery requires proc1") };
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+note: the above error was encountered while instantiating `fn rp1_hal::pio::__on_interrupt::<0, 0>`
+ --> tests/ui/pio_wait_core.rs:8:9
+  |
+8 |         rp1_hal::pio::__on_interrupt::<0, 0>();
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

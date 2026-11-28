@@ -1,7 +1,7 @@
 use super::{LIMIT_US, LabResult, dma_enables, now, reg};
 use rp1_hal::{
     pio::{Buffers, PIO, PIOBuilder, Program, UninitStateMachine, pio_asm},
-    timer::{Duration, Timer},
+    timer::{Deadline, Duration, Timer},
 };
 
 const FDEBUG: usize = 0xf000_0008;
@@ -73,7 +73,7 @@ pub fn echo_example(
         .build(slot.take().ok_or("echo sm")?)
         .map_err(|_| "echo build")?;
     let debug_before = reg(FDEBUG);
-    let deadline = timer.now() + Duration::from_ticks(1_000);
+    let deadline = Deadline::at(timer.now() + Duration::from_ticks(1_000));
     let sent = tx.polling().write_until(21, deadline);
     let running = sm.start().map_err(|_| "echo start")?;
     let word = rx.polling().read_until(deadline);

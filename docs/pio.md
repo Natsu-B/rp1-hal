@@ -39,11 +39,12 @@ program.uninstall().unwrap();
 `split` gives the parts back on `NotReady` for applications that schedule
 their own retries. Use `Buffers::OnlyTx` or `Buffers::OnlyRx` to join the FIFOs.
 
-**STATIC.** `try_read` and `try_write` are immediate. Select `polling()` for
+**STATIC.** `read` and `write` are immediate. Select `polling()` for
 an explicit busy wait. With a proc1 PIO declaration and its own `wait_timer`,
 `blocking(&mut wait_timer)` uses PIO_0 and WFE. Call `on_irq1()` on the
 blocking adapter to select PIO_1 for that operation.
-An expired deadline at entry leaves the FIFO untouched. Once a wait starts,
+A disabled FIFO returns `Disabled` even if the deadline has expired. An
+expired deadline at entry leaves the FIFO untouched. Once a wait starts,
 data available at its final probe wins over timeout. Waits require thread mode
 with interrupts unmasked.
 
@@ -77,4 +78,5 @@ Parity follow-ups include scoped cross-SM IRQ flags, `MOV x, PINS`
 (which reads the whole PIO v0 input window), and sharing IN, JMP and WAIT
 inputs between SMs. Shared inputs need a pad owner that keeps the mux
 configured until the last reader releases it and preserves exclusive drive
-ownership.
+ownership. Whether RP1 PIO can sample an input with a different FUNCSEL is
+unverified (HYP).
