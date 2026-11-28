@@ -4,6 +4,8 @@ use rp1_hal::{
     timer::{Duration, Timer},
 };
 
+const FDEBUG: usize = 0xf000_0008;
+
 #[inline(never)]
 fn configuration(mode: usize) -> (Program<32>, u8, Buffers) {
     match mode {
@@ -70,13 +72,14 @@ pub fn echo_example(
     let (sm, mut rx, mut tx) = PIOBuilder::from_installed_program(&program)
         .build(slot.take().ok_or("echo sm")?)
         .map_err(|_| "echo build")?;
-    let running = sm.start().map_err(|_| "echo start")?;
+    let debug_before = reg(FDEBUG);
     let deadline = timer.now() + Duration::from_ticks(1_000);
     let sent = tx.polling().write_until(21, deadline);
+    let running = sm.start().map_err(|_| "echo start")?;
     let word = rx.polling().read_until(deadline);
     *slot = Some(running.stop().uninit(rx, tx).0);
     program.uninstall().map_err(|_| "echo uninstall")?;
-    if sent.is_err() || word != Ok(21) {
+    if sent.is_err() || word != Ok(21) || reg(FDEBUG) != debug_before {
         return Err("echo data");
     }
     log!("PIO_B_ECHO word=21\n").unwrap();
@@ -144,7 +147,7 @@ pub fn lifecycle<const N: u8>(
         if rx.read().is_some()
             || !rx.is_empty()
             || dma_enables() != 0
-            || reg(0xf000_0008) & (0x0101_0101 << N) != 0
+            || reg(FDEBUG) & (0x0101_0101 << N) != 0
         {
             return Err("fifo empty, stall or dreq enabled");
         }
