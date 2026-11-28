@@ -16,7 +16,7 @@ const TIMEOUT_US: u32 = 1_000;
 const QUIET_US: u32 = 1_000;
 const RESET_PIO: u32 = 1 << 27;
 const RX_EMPTY: u32 = 1 << 8;
-const DREQ_ENABLED_OR_ACTIVE: u32 = (1 << 31) | (1 << 30);
+const DREQ_ENABLE_MASK: u16 = 0xaaaa;
 const NVIC_PIO: u32 = (1 << (50 - 32)) | (1 << (51 - 32));
 const RESET_FSTAT: u32 = 0x0f00_0f00;
 const PROGRAM: [u32; 4] = [0xe035, 0xa0c1, 0x8020, 0x0003];
@@ -30,7 +30,8 @@ struct Trial {
     release_at: u32,
     done_at: u32,
     raw_irq: u32,
-    raw_dreq: u32,
+    raw_dreq: u16,
+    reset_dreq: u16,
     reset_done: bool,
     pc: u8,
     rx: u32,
@@ -44,7 +45,7 @@ impl Trial {
         self.done_at.wrapping_sub(self.release_at).saturating_add(1)
     }
 
-    fn passed(self) -> bool {
+    fn completed(self) -> bool {
         self.reset_done
             && self.upper_us() <= TIMEOUT_US
             && self.pc == 3
@@ -53,7 +54,11 @@ impl Trial {
             && self.popped
             && self.empty
             && self.raw_irq == 0
-            && self.raw_dreq == 0
+            && self.raw_dreq & DREQ_ENABLE_MASK == 0
+    }
+
+    fn passed(self) -> bool {
+        self.completed() && self.raw_dreq == 0
     }
 }
 
@@ -109,39 +114,42 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     log!("PIO_READY core=1 pads_ie_od_oeoff={pads:?} clk_hz=200000000 clkdiv=1.0\n").unwrap();
     loop {
         let mut outcome = None;
-        ping.serve(1, |value| {
-            run += 1;
-            if !pads_ok {
-                return !value;
-            }
-            let timer = Timer::new();
-            let start = timer.now_32().ticks();
-            let entry_done = probe.done();
-            let mut count = 0;
-            for trial in &mut trials {
-                *trial = probe.trial(&timer);
-                count += 1;
-                if !trial.passed() {
-                    break;
+        let _ = ping
+            .serve(1, |value| {
+                run += 1;
+                if !pads_ok {
+                    return !value;
                 }
-            }
-            // Flush FIFOs and instruction state before restoring the entry reset condition.
-            let restored = probe.reset(&timer, false) && (!entry_done || probe.reset(&timer, true));
-            let end = timer.now_32().ticks();
-            let pass = restored
-                && count == TRIALS
-                && trials.iter().all(|trial| trial.passed())
-                && end.wrapping_sub(start) < 30_000_000;
-            outcome = Some((count, start, end, entry_done, restored, pass));
-            if pass { value } else { !value }
-        })
-        .unwrap();
+                let timer = Timer::new();
+                let start = timer.now_32().ticks();
+                let entry_done = probe.done();
+                let mut count = 0;
+                for trial in &mut trials {
+                    *trial = probe.trial(&timer);
+                    count += 1;
+                    if !trial.completed() {
+                        break;
+                    }
+                }
+                // Flush FIFOs and instruction state before restoring the entry reset condition.
+                let restored =
+                    probe.reset(&timer, false) && (!entry_done || probe.reset(&timer, true));
+                let end = timer.now_32().ticks();
+                let pass = restored
+                    && count == TRIALS
+                    && trials.iter().all(|trial| trial.passed())
+                    && end.wrapping_sub(start) < 30_000_000;
+                outcome = Some((count, start, end, entry_done, restored, pass));
+                // The reply acknowledges the trigger; the UART records determine the verdict.
+                value
+            })
+            .unwrap();
         if let Some((count, start, end, entry_done, restored, pass)) = outcome {
             for (index, t) in trials[..count].iter().enumerate() {
                 log!(
-                    "PIO_TRIAL run={run} i={index} release={} done={} seen={} upper={} pc={} rx={} push={} pop={} empty={} irq={:#x} dreq={:#x}\n",
+                    "PIO_TRIAL run={run} i={index} release={} done={} seen={} upper={} pc={} rx={} push={} pop={} empty={} irq={:#x} dreq={:#x} reset_dreq={:#x}\n",
                     t.release_at, t.done_at, u8::from(t.reset_done), t.upper_us(), t.pc, t.rx,
-                    t.pushed, u8::from(t.popped), u8::from(t.empty), t.raw_irq, t.raw_dreq,
+                    t.pushed, u8::from(t.popped), u8::from(t.empty), t.raw_irq, t.raw_dreq, t.reset_dreq,
                 ).unwrap();
             }
             let bounds = trials[..count].iter().map(|trial| trial.upper_us());
@@ -207,10 +215,18 @@ impl Probe {
         let pending = unsafe { (0xe000_e204 as *const u32).read_volatile() };
         trial.raw_irq |=
             pio.irq0_ints().read().bits() | pio.irq1_ints().read().bits() | (pending & NVIC_PIO);
+        trial.raw_dreq |= self.dreq();
+    }
+
+    fn dreq(&self) -> u16 {
+        let mut flags = 0;
+        // Pack bits 31:30 per direction: TX0..3, then RX0..3.
         for sm in 0..4 {
-            trial.raw_dreq |= (pio.sm_dmatx(sm).read().bits() | pio.sm_dmarx(sm).read().bits())
-                & DREQ_ENABLED_OR_ACTIVE;
+            let tx = (self.pio.sm_dmatx(sm).read().bits() >> 30) as u16;
+            let rx = (self.pio.sm_dmarx(sm).read().bits() >> 30) as u16;
+            flags |= tx << (2 * sm) | rx << (8 + 2 * sm);
         }
+        flags
     }
 
     fn trial(&self, timer: &Timer) -> Trial {
@@ -238,11 +254,28 @@ impl Probe {
         {
             return t;
         }
+        t.reset_dreq = self.dreq();
+        if t.reset_dreq & DREQ_ENABLE_MASK != 0 {
+            return t;
+        }
+        // Keep TX threshold zero and RX above both FIFO levels exercised here.
+        // Leave all DREQ enables clear.
+        for sm in 0..4 {
+            unsafe {
+                pio.sm_dmatx(sm).write_bits_unchecked(0);
+                pio.sm_dmarx(sm).write_bits_unchecked(2);
+            }
+            if pio.sm_dmatx(sm).read().bits() & 0x1f != 0
+                || pio.sm_dmarx(sm).read().bits() & 0x1f != 2
+            {
+                return t;
+            }
+        }
         let quiet = timer.now_32().ticks();
         while timer.now_32().ticks().wrapping_sub(quiet) < QUIET_US {
             self.sample_quiet(&mut t);
         }
-        // Keep the reset IRQ and DMA masks. SM0 uses no pins, side-set, autopush or JOIN.
+        // SM0 uses no pins, side-set, autopush or JOIN.
         unsafe {
             pio.sm_pinctrl(0).write_bits_unchecked(0);
             pio.sm_clkdiv(0).write_bits_unchecked(0x0001_0000);

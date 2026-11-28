@@ -34,6 +34,7 @@ def verify(path):
         for i, (n, row, _) in enumerate(cohort):
             expect = dict(run=run, i=i, seen=1, pc=3, rx=21, push=1, pop=1, empty=1, irq=0, dreq=0)
             require(all(row.get(k) == v for k, v in expect.items()), f"trial rejected at line {n}")
+            require(row["reset_dreq"] & 0xaaaa == 0, f"DREQ was enabled at reset at line {n}")
             upper = ((row["done"] - row["release"]) & 0xffffffff) + 1
             require(0 < upper <= 1000 and row["upper"] == upper, f"reset bound failed at line {n}")
         upper = [row["upper"] for _, row, _ in cohort]
