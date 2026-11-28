@@ -363,10 +363,8 @@ fn resources(
             };
             writeln!(
                 s,
-                "#[unsafe(export_name = \"__rp1_p{index}_IO_BANK0\")]
-\
-                 #[unsafe(link_section = \".isram.text.__rp1_p{index}_IO_BANK0\")]
-\
+                "#[unsafe(export_name = \"__rp1_p{index}_IO_BANK0\")]\n\
+                 #[unsafe(link_section = \".isram.text.__rp1_p{index}_IO_BANK0\")]\n\
                  unsafe extern \"C\" fn doorbell_proc{index}() {{"
             )?;
             if let Some(pin) = startup_pin {
@@ -385,10 +383,7 @@ fn resources(
             if data_bell {
                 writeln!(s, "unsafe {{ Doorbell{index}::new() }}.{ack}();")?;
             }
-            s.push_str(
-                "}
-",
-            );
+            s.push_str("}\n");
         }
         let wait_alarm = c
             .wait_timer
@@ -593,10 +588,12 @@ fn resources(
                 s.push_str("pub platform: ::rp1_hal::platform::Token,\n");
             }
         }
-        let resource_init = match (startup_pin, index) {
-            (_, _) if owner_kick => "let mut resources = Self",
-            (Some(_), 0) => "let resources = Self",
-            _ => "Self",
+        let resource_init = if owner_kick {
+            "let mut resources = Self"
+        } else if startup_pin.is_some() && index == 0 {
+            "let resources = Self"
+        } else {
+            "Self"
         };
         s.push_str(&format!("_core: ::core::marker::PhantomData<::rp1_rt::Proc{index}>,\n}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub(crate) unsafe fn new() -> Self {{ {resource_init} {{ _core: ::core::marker::PhantomData, pins: Proc{index}Pins {{\n_private: ::core::marker::PhantomData,\n"));
         for (pin, ty, constructor) in &pins {

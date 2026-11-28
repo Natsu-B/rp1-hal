@@ -16,12 +16,9 @@ pub(crate) fn generate(
     let experimental_wake = wake.is_some();
     let mut output = if !experimental_wake {
         String::from(
-            "use ::rp1_hal::platform::Pcie;
-\
-             use ::rp1_link::{self as transport, EnableError, Message, OpenError};
-\
-             use ::rp1_link::generated::{self, ShmArea, ShmKind, ShmRegion};
-",
+            "use ::rp1_hal::platform::Pcie;\n\
+             use ::rp1_link::{self as transport, EnableError, Message, OpenError};\n\
+             use ::rp1_link::generated::{self, ShmArea, ShmKind, ShmRegion};\n",
         )
     } else {
         let mut imports = String::from("use ::rp1_link::generated::{ShmArea, ShmRegion};\n");
@@ -75,46 +72,30 @@ pub(crate) fn generate(
         if let Some(pin) = wake.startup_doorbell {
             writeln!(
                 output,
-                "/// Wait for the startup doorbell and commit the link result by `end`.
-\
-                 pub fn enable(pcie: &mut Pcie, startup_doorbell: &mut generated::Binding<generated::Bank0Irq, 0, 0>, context: &mut ::rp1_hal::timer::WaitContext<'_>, end: ::rp1_hal::timer::Deadline) -> Result<u32, ::rp1_link::StartupEnableError> {{
-\
-                     unsafe {{ generated::enable_v3(pcie, startup_doorbell, context, end, (AREA, &REGIONS, &DIGEST), || ::rp1_link::notify::__kick_startup_owner::<{pin}, {}>()) }}
-\
+                "/// Wait for the startup doorbell and commit the link result by `end`.\n\
+                 pub fn enable(pcie: &mut Pcie, startup_doorbell: &mut generated::Binding<generated::Bank0Irq, 0, 0>, context: &mut ::rp1_hal::timer::WaitContext<'_>, end: ::rp1_hal::timer::Deadline) -> Result<u32, ::rp1_link::StartupEnableError> {{\n\
+                     let layout = generated::StartupLayout {{ area: AREA, regions: &REGIONS, digest: &DIGEST }};\n\
+                     unsafe {{ generated::enable_v3(pcie, startup_doorbell, context, end, layout, || ::rp1_link::notify::__kick_startup_owner::<{pin}, {}>()) }}\n\
                  }}",
                 wake.owner
             )?;
         }
     } else {
         output.push_str(
-            "/// Map and publish the declared reservation in response to Linux's request.
-\
-             pub fn try_enable(pcie: &mut Pcie) -> Result<u32, EnableError> {
-\
-                 unsafe { generated::try_enable(pcie, AREA, &SRAM_RANGES, &DIGEST) }
-\
-             }
-\
-             /// Wait for Linux's request and publish Ready. The alarm and its matching disabled
-\
-             /// NVIC line must be idle. Call in thread mode with IRQs enabled. The alarm
-\
-             /// rechecks requests from older clients every 10 ms until startup completes.
-\
-             pub fn enable<const N: u8, const IRQ: u8>(pcie: &mut Pcie, alarm: &mut ::rp1_hal::timer::Alarm<N>, line: &mut ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::AlarmIrq<N>, IRQ, 0>) -> Result<u32, EnableError> {
-\
-                 generated::enable(alarm, line, || try_enable(pcie))
-\
-             }
-\
-             #[doc(hidden)]
-\
-             pub fn __map_for_probe(pcie: &mut Pcie) -> Result<u32, EnableError> {
-\
-                 unsafe { generated::map_probe(pcie, AREA) }
-\
-             }
-",
+            "/// Map and publish the declared reservation in response to Linux's request.\n\
+             pub fn try_enable(pcie: &mut Pcie) -> Result<u32, EnableError> {\n\
+                 unsafe { generated::try_enable(pcie, AREA, &SRAM_RANGES, &DIGEST) }\n\
+             }\n\
+             /// Wait for Linux's request and publish Ready. The alarm and its matching disabled\n\
+             /// NVIC line must be idle. Call in thread mode with IRQs enabled. The alarm\n\
+             /// rechecks requests from older clients every 10 ms until startup completes.\n\
+             pub fn enable<const N: u8, const IRQ: u8>(pcie: &mut Pcie, alarm: &mut ::rp1_hal::timer::Alarm<N>, line: &mut ::rp1_rt::interrupt::Binding<::rp1_rt::interrupt::AlarmIrq<N>, IRQ, 0>) -> Result<u32, EnableError> {\n\
+                 generated::enable(alarm, line, || try_enable(pcie))\n\
+             }\n\
+             #[doc(hidden)]\n\
+             pub fn __map_for_probe(pcie: &mut Pcie) -> Result<u32, EnableError> {\n\
+                 unsafe { generated::map_probe(pcie, AREA) }\n\
+             }\n",
         );
     }
     for (index, r) in regions.iter().enumerate() {
@@ -346,14 +327,10 @@ fn write_core(
         let enable = if irq { "irq.enable();" } else { "" };
         writeln!(
             output,
-            "/// Wait for the window using this core's one-shot deadline.
-\
-             pub fn open_until(self, {irq_arg}context: &mut ::rp1_hal::timer::WaitContext<'_>, end: ::rp1_hal::timer::Deadline) -> Result<Proc{core}Link, ::rp1_link::OpenUntilError> {{
-\
-                 {enable}
-\
-                 generated::open_until(self, context, end, Self::try_open)
-\
+            "/// Wait for the window using this core's one-shot deadline.\n\
+             pub fn open_until(self, {irq_arg}context: &mut ::rp1_hal::timer::WaitContext<'_>, end: ::rp1_hal::timer::Deadline) -> Result<Proc{core}Link, ::rp1_link::OpenUntilError> {{\n\
+                 {enable}\n\
+                 generated::open_until(self, context, end, Self::try_open)\n\
              }}"
         )?;
     } else if irq {

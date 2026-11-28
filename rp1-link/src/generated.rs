@@ -352,6 +352,12 @@ pub unsafe fn startup_advertise(offered: u32) {
     barrier();
 }
 
+pub struct StartupLayout<'a> {
+    pub area: ShmArea,
+    pub regions: &'a [ShmRegion<'a>],
+    pub digest: &'a [u8; 32],
+}
+
 /// # Safety
 /// Generated proc0 startup only. The reservation and its caps come from the NOTE.
 /// `notify` must signal the generated vector owner on this boot.
@@ -360,7 +366,7 @@ pub unsafe fn enable_v3(
     irq: &mut Binding<Bank0Irq, 0, 0>,
     context: &mut WaitContext<'_>,
     end: Deadline,
-    layout: (ShmArea, &[ShmRegion<'_>], &[u8; 32]),
+    layout: StartupLayout<'_>,
     notify: impl FnOnce(),
 ) -> Result<u32, StartupEnableError> {
     let boot = BootEpoch::new(read_link(mailbox::BOOT_EPOCH)).map_err(|_| EnableError::NotReady)?;
@@ -431,12 +437,12 @@ fn startup_request(
     }))
 }
 
-fn check_initialization(end: Deadline) -> Result<(), StartupError> {
-    if !rp1_hal::platform::__startup_window_live() {
+fn check_initialization(live: bool, expired: impl FnOnce() -> bool) -> Result<(), StartupError> {
+    if !live {
         // The commit gate gives a reset priority over this local error.
         return Err(StartupError::Initialization);
     }
-    if Timer::new().now() >= end.instant() {
+    if expired() {
         return Err(StartupError::Timeout);
     }
     Ok(())
@@ -444,27 +450,41 @@ fn check_initialization(end: Deadline) -> Result<(), StartupError> {
 
 unsafe fn initialize_v3(
     pcie: &mut Pcie,
-    (area, regions, digest): (ShmArea, &[ShmRegion<'_>], &[u8; 32]),
+    StartupLayout {
+        area,
+        regions,
+        digest,
+    }: StartupLayout<'_>,
     boot: BootEpoch,
     caps: u32,
     end: Deadline,
 ) -> Result<(u32, u32), StartupError> {
-    check_initialization(end)?;
+    let expired = || Timer::new().now() >= end.instant();
+    let gate = || check_initialization(rp1_hal::platform::__startup_window_live(), expired);
+    gate()?;
     unsafe { pcie.__map_startup_window(area.phys, area.size) }
         .map_err(|_| StartupError::Initialization)?;
-    check_initialization(end)?;
+    gate()?;
     let base = SHM_WINDOW as usize;
     let header = unsafe { HeaderInit::begin_v2(base as *mut u8, boot) }
         .map_err(|_| StartupError::Initialization)?;
-    zero_chunks(base + HEADER_SIZE, area.size as usize - HEADER_SIZE, end)?;
+    // IRQ53 stays unmasked during the fill. Its state bounds reset detection to
+    // one chunk without reading PCIe registers between bursts of posted writes.
+    let check_chunk =
+        || check_initialization(rp1_hal::platform::pcie_state() == PcieState::Up, expired);
+    zero_chunks(
+        base + HEADER_SIZE,
+        area.size as usize - HEADER_SIZE,
+        check_chunk,
+    )?;
     for region in regions {
         let start = LINK_START as usize + usize::from(region.sram_offset);
-        zero_chunks(start, usize::from(region.sram_len), end)?;
+        zero_chunks(start, usize::from(region.sram_len), check_chunk)?;
     }
-    check_initialization(end)?;
+    gate()?;
     // Complete the fill before publishing the DDR header's even generation.
     unsafe { flush_mapped_window() };
-    check_initialization(end)?;
+    gate()?;
     let session = unsafe {
         header.publish_v2(
             LINK_START as *mut u8,
@@ -478,10 +498,14 @@ unsafe fn initialize_v3(
     Ok((session.generation(), caps))
 }
 
-fn zero_chunks(start: usize, bytes: usize, end: Deadline) -> Result<(), StartupError> {
+fn zero_chunks(
+    start: usize,
+    bytes: usize,
+    mut check_chunk: impl FnMut() -> Result<(), StartupError>,
+) -> Result<(), StartupError> {
     const CHUNK: usize = 1024;
     for offset in (0..bytes).step_by(CHUNK) {
-        check_initialization(end)?;
+        check_chunk()?;
         for word in (offset..(offset + CHUNK).min(bytes)).step_by(4) {
             write(start + word, 0);
         }
@@ -710,5 +734,29 @@ mod startup_tests {
             req(3, 2, 1, offered, link::SHM_WINDOW_LOST),
             Some(Err(EnableError::WindowLost.into())),
         );
+    }
+
+    #[test]
+    fn reset_or_deadline_stops_the_fill_before_the_next_chunk() {
+        for (live, expected) in [
+            (false, StartupError::Initialization),
+            (true, StartupError::Timeout),
+        ] {
+            let mut words = [1u32; 513];
+            let mut checks = 0;
+            let mut deadline_checks = 0;
+            let result = zero_chunks(words.as_mut_ptr() as usize, size_of_val(&words), || {
+                checks += 1;
+                check_initialization(checks == 1 || live, || {
+                    deadline_checks += 1;
+                    checks > 1
+                })
+            });
+            assert_eq!(result, Err(expected));
+            assert_eq!(checks, 2);
+            assert_eq!(deadline_checks, 1 + usize::from(live));
+            assert_eq!(&words[..256], &[0; 256]);
+            assert_eq!(&words[256..], &[1; 257]);
+        }
     }
 }
