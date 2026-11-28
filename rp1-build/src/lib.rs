@@ -671,6 +671,22 @@ fn instance_resource(
             ));
         }
         Instance::Dma(_) => unreachable!("DMA has a declaration-specific channel set"),
+        Instance::Pio(pio) => {
+            let mask = pio.sms.iter().fold(0u8, |mask, &sm| mask | (1 << sm));
+            writeln!(
+                source,
+                "/// Exclusive ownership of both PIO windows.\npub struct PioParts {{\n\
+                 _private: ::core::marker::PhantomData<*mut ()>,\n}}\n\
+                 impl PioParts {{\n    /// Bitmap of declared state machines.\n\
+                 pub const SM_MASK: u8 = {mask};\n}}"
+            )?;
+            // Pins remain unconfigured in ProcNPins until the application selects their roles.
+            return Ok((
+                "PioParts".into(),
+                "PioParts { _private: ::core::marker::PhantomData }".into(),
+                Vec::new(),
+            ));
+        }
         Instance::Adc {} => {
             let Some((line, core)) = managed else {
                 let ty = "::rp1_hal::adc::Token";

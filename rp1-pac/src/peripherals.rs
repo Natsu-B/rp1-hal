@@ -951,9 +951,8 @@ impl core::ops::Deref for PCIE_APBS {
 
 unsafe impl Send for PCIE_APBS {}
 
-/// Programmable I/O block built from state machines. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000.
+/// DOC: APB FIFO window (Linux rp1.dtsi and rp1-pio driver). DMA uses bus address 0xc040178000. Atomic aliases are address-map metadata; FIFO accesses use the base window.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
-/// Address-only or externally delegated block; unknown register layout is intentionally hidden.
 #[allow(non_camel_case_types)]
 pub struct PIO {
     _private: (),
@@ -961,13 +960,53 @@ pub struct PIO {
 pub type Pio = PIO;
 impl PIO {
     pub const PTR: *const u8 = 0x40178000 as *const u8;
+    /// Alternate MMIO window of this peripheral.
+    #[inline(always)]
+    pub fn pio_m3(&self) -> &crate::generated::pio_m3::RegisterBlock {
+        unsafe { &*(PIO_M3::PTR.cast()) }
+    }
     #[inline(always)]
     pub const fn ptr() -> *const u8 {
         Self::PTR
     }
 }
 
+impl core::ops::Deref for PIO {
+    type Target = crate::generated::pio::RegisterBlock;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*(Self::PTR.cast()) }
+    }
+}
+
 unsafe impl Send for PIO {}
+
+/// STATIC: M3 control window (MichaelBell/rp1-hacking PIO.md and stock firmware register accesses). FIFO views share the APB window's owner.
+#[allow(non_camel_case_types)]
+pub struct PIO_M3 {
+    _private: (),
+}
+pub type PioM3 = PIO_M3;
+impl PIO_M3 {
+    pub const PTR: *const u8 = 0xf0000000 as *const u8;
+    pub const CLOCK_DEPENDENCY: &str = "clk_sys";
+    pub const RESET_DEPENDENCY: &str = "RESETS CTRL0 PIO_APBS";
+    pub const PINMUX_DEPENDENCY: &str = "Bank 0 FUNCSEL 7";
+    #[inline(always)]
+    pub const fn ptr() -> *const u8 {
+        Self::PTR
+    }
+}
+
+impl core::ops::Deref for PIO_M3 {
+    type Target = crate::generated::pio_m3::RegisterBlock;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*(Self::PTR.cast()) }
+    }
+}
+
+unsafe impl Send for PIO_M3 {}
 
 /// RP1 PLL_AUDIO register block with supplemental register semantics. Alias behavior: normal read/write access. PLL layout recovered from the Linux RP1 common-clock driver. Unknown offsets remain split RAW arrays.
 /// Atomic view: Rp1Native alias windows; ownership remains with this logical peripheral.
@@ -2316,6 +2355,10 @@ mod layout_tests {
     #[test]
     fn pio_base() {
         assert_eq!(super::PIO::PTR as usize, 0x40178000);
+    }
+    #[test]
+    fn pio_m3_base() {
+        assert_eq!(super::PIO_M3::PTR as usize, 0xf0000000);
     }
     #[test]
     fn pll_audio_base() {

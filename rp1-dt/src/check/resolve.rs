@@ -1,5 +1,5 @@
 //! STATIC: ownership resolution for a final, merged board DTB. No hardware access.
-use super::{block_label, check, final_conflicts, reserved_gpios};
+use super::{PIO_BLOCK, block_label, check, final_conflicts, reserved_gpios};
 use crate::{Result, fdt::Fdt};
 use alloc::{
     collections::{BTreeMap, BTreeSet},
@@ -146,7 +146,7 @@ pub fn resolve(after: &Fdt, note: &[u8], policy: Policy) -> Result<Plan> {
     let protected = if conflicts.nodes.is_empty() {
         BTreeMap::new()
     } else {
-        let (protected, console) = protected_nodes(after)?;
+        let (protected, console) = protected_nodes(after, conflicts.blocks.contains(&PIO_BLOCK))?;
         if let Some(why) = console
             && conflicts.nodes.iter().any(|(n, r)| !policy_only(n, r))
         {
@@ -374,6 +374,9 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
             }
             _ => {}
         }
+    }
+    if out.blocks.contains(&PIO_BLOCK) {
+        pio_conflicts(fdt, &mut out)?;
     }
     provider_consumers(fdt, &mut out)?;
     let reserved = reserved_gpios(fdt)?;
@@ -628,7 +631,7 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
         }
         // Interrupt users: pinctrl-rp1 rewrites the pin's CTRL event bits when Linux maps
         // the IRQ, which would clear an RP1 gpio_irq's setup and pending events.
-        for (prop, pin) in rp1_irq_lines(fdt, n, gpio, gpio_handle, &mut out.unresolved)? {
+        for (prop, pin) in irq_lines(fdt, n, gpio, "rp1_gpio", &mut out.unresolved)? {
             if withheld.contains(&pin) {
                 out.add(
                     n,
@@ -643,20 +646,15 @@ pub(super) fn node_conflicts(fdt: &Fdt, own: &[u8]) -> Result<Conflicts> {
     Ok(out)
 }
 
-/// RP1 GPIO lines `n` takes as interrupts: `interrupts-extended` entries on rp1_gpio, or
-/// `interrupts` when the (inherited) `interrupt-parent` is rp1_gpio. Strict for rp1_gpio
-/// specifiers; another controller's entries that cannot be parsed are skipped unless the
-/// rest may name rp1_gpio (then a reason goes to `unresolved`).
-fn rp1_irq_lines(
+/// Interrupt specifiers for this domain, including an inherited interrupt parent.
+/// An undecodable entry on another domain is relevant if the tail may name this domain.
+fn irq_lines(
     fdt: &Fdt,
     n: usize,
-    gpio: usize,
-    gpio_handle: Option<u32>,
+    domain: usize,
+    label: &str,
     unresolved: &mut Vec<String>,
 ) -> Result<Vec<(&'static str, u32)>> {
-    let Some(handle) = gpio_handle else {
-        return Ok(Vec::new()); // nothing can refer to rp1_gpio
-    };
     let irq_cells = |ctrl: usize| -> Option<usize> {
         match fdt.cells(ctrl, "#interrupt-cells")?.as_slice() {
             [c] if *c > 0 => Some(*c as usize),
@@ -664,17 +662,19 @@ fn rp1_irq_lines(
         }
     };
     let rp1_cells = || {
-        irq_cells(gpio)
-            .ok_or_else(|| String::from("rp1_gpio: missing or unsupported #interrupt-cells"))
+        irq_cells(domain).ok_or_else(|| format!("{label}: missing or unsupported #interrupt-cells"))
     };
     let mut lines = Vec::new();
     if fdt.prop(n, "interrupts-extended").is_some() {
+        let Some(handle) = fdt.phandle_of(domain) else {
+            return Ok(lines);
+        };
         let prop = "interrupts-extended";
         let Some(values) = fdt.cells(n, prop) else {
             let raw = fdt.prop(n, prop).unwrap_or_default();
             if names_handle(raw.as_chunks::<4>().0.iter().map(be32), Some(handle)) {
                 unresolved.push(format!(
-                    "{} {prop}: malformed list may name rp1_gpio",
+                    "{} {prop}: malformed list may name {label}",
                     fdt.path(n)
                 ));
             }
@@ -690,7 +690,7 @@ fn rp1_irq_lines(
             let Some((is_rp1, count)) = layout else {
                 if names_handle(tail.iter().copied(), Some(handle)) {
                     unresolved.push(format!(
-                        "{} {prop}: phandle {h:#x} cannot be parsed and a later entry may name rp1_gpio",
+                        "{} {prop}: phandle {h:#x} cannot be parsed and a later entry may name {label}",
                         fdt.path(n)
                     ));
                 }
@@ -699,7 +699,7 @@ fn rp1_irq_lines(
             let Some(spec) = tail.get(..count) else {
                 if is_rp1 {
                     return Err(format!(
-                        "{} {prop}: truncated rp1_gpio specifier",
+                        "{} {prop}: truncated {label} specifier",
                         fdt.path(n)
                     ));
                 }
@@ -715,14 +715,14 @@ fn rp1_irq_lines(
     if fdt.prop(n, "interrupts").is_none() {
         return Ok(lines);
     }
-    if irq_parent(fdt, n) != Some(gpio) {
+    if irq_parent(fdt, n) != Some(domain) {
         return Ok(lines);
     }
     let count = rp1_cells()?;
     let values = cells(fdt, n, "interrupts")?;
     if values.is_empty() || !values.len().is_multiple_of(count) {
         return Err(format!(
-            "{} interrupts: malformed rp1_gpio specifier",
+            "{} interrupts: malformed {label} specifier",
             fdt.path(n)
         ));
     }
@@ -732,6 +732,68 @@ fn rp1_irq_lines(
             .map(|spec| ("interrupts", spec[0])),
     );
     Ok(lines)
+}
+
+fn pio_conflicts(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
+    let metadata = fdt
+        .find("/rp1-firmware")
+        .ok_or("DTB has no /rp1-firmware")?;
+    if string(fdt, metadata, "rp1,gpiomem")? == Some("keep") {
+        out.unresolved
+            .push("PIO requires rp1,gpiomem = disable".into());
+    }
+    let stock = ["rp1_firmware", "rp1_fw_shmem"].map(|label| {
+        let node = fdt.label(label);
+        if node.is_none() {
+            out.unresolved
+                .push(format!("board DTB has no node labelled {label}"));
+        }
+        node
+    });
+    let pio = fdt.label(rp1_proto::board::PIO_LABEL);
+    let rp1 = fdt
+        .label("rp1")
+        .ok_or("board DTB has no node labelled rp1")?;
+    for n in (0..fdt.nodes.len()).filter(|&n| fdt.enabled(n) && !metadata_node(fdt, n)) {
+        if Some(n) == pio {
+            // The canonical node is handled by the block resolver and protected list.
+            continue;
+        }
+        let compat = fdt.strings(n, "compatible");
+        let stock_firmware =
+            stock.contains(&Some(n)) || compat.iter().any(|c| c == "raspberrypi,rp1-firmware");
+        let client = compat.iter().any(|c| {
+            c.strip_prefix("raspberrypi,").is_some_and(|c| {
+                c == "rp1-pio" || c.ends_with("-pio-rp1") || c.starts_with("rp1-pio-")
+            })
+        }) || fdt.cells(n, "firmware").is_some_and(|refs| {
+            refs.iter().any(|&h| {
+                fdt.phandle(h).is_some_and(|target| {
+                    Some(target) == pio
+                        || stock[0] == Some(target)
+                        || fdt.strings(target, "compatible").iter().any(|c| {
+                            matches!(
+                                c.as_str(),
+                                "raspberrypi,rp1-firmware" | "raspberrypi,rp1-pio"
+                            )
+                        })
+                })
+            })
+        });
+        if stock_firmware || client {
+            out.unresolved.push(format!(
+                "{} is an enabled stock RP1 firmware or PIO client",
+                fdt.path(n)
+            ));
+        }
+        for (prop, irq) in irq_lines(fdt, n, rp1, "rp1", &mut out.unresolved)? {
+            if matches!(irq, 50 | 51) {
+                out.unresolved
+                    .push(format!("{} {prop} uses PIO IRQ {irq}", fdt.path(n)));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A disabled PWM or DMA provider must not leave its Linux consumers eligible to probe
@@ -748,8 +810,11 @@ fn provider_consumers(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
     let dma_disable = fdt
         .find("/rp1-firmware")
         .map_or_else(Vec::new, |node| fdt.strings(node, "rp1,allow-dma-disable"));
+    let pio = out.blocks.contains(&PIO_BLOCK);
+    let rp1_dma = fdt.label("rp1_dma");
+    let pio_node = fdt.label(rp1_proto::board::PIO_LABEL);
     for (prop, cells_prop, owned) in KINDS {
-        if !out.blocks.iter().any(|id| owned(*id)) {
+        if !out.blocks.iter().any(|id| owned(*id)) && !(pio && prop == "dmas") {
             continue;
         }
         for n in 0..fdt.nodes.len() {
@@ -774,6 +839,15 @@ fn provider_consumers(fdt: &Fdt, out: &mut Conflicts) -> Result<()> {
                 };
                 if count > values.len() - at {
                     return Err(format!("{} {prop}: truncated specifier", fdt.path(n)));
+                }
+                if pio && prop == "dmas" && Some(n) != pio_node && Some(provider) == rp1_dma {
+                    let [request] = values[at..at + count] else {
+                        return Err("rp1_dma must have #dma-cells = <1>".into());
+                    };
+                    if (56..=63).contains(&request) {
+                        out.unresolved
+                            .push(format!("{} dmas uses PIO DREQ {request}", fdt.path(n)));
+                    }
                 }
                 if let Some(label) = out.owned_blocks.get(&provider) {
                     let reason = format!("{prop} uses RP1-owned block {label}");
@@ -802,7 +876,7 @@ fn signal_block(signal: rp1_pinmux::Signal) -> Option<u16> {
         Signal::I2c(n, _) => 32 + u16::from(n),
         Signal::Pwm(n, _) => 48 + u16::from(n),
         Signal::I2s(n, _) => 56 + u16::from(n),
-        Signal::Pio(_) => 66,
+        Signal::Pio(_) => PIO_BLOCK,
         _ => return None,
     })
 }
@@ -850,7 +924,10 @@ fn metadata_node(fdt: &Fdt, node: usize) -> bool {
 }
 
 /// The nodes a disable must not touch, and why the console could not be found, if so.
-fn protected_nodes(fdt: &Fdt) -> Result<(BTreeMap<usize, String>, Option<String>)> {
+fn protected_nodes(
+    fdt: &Fdt,
+    direct_pio: bool,
+) -> Result<(BTreeMap<usize, String>, Option<String>)> {
     let mut protected = BTreeMap::new();
     // Protect ancestors too: disabling a bus would otherwise hide a protected child.
     let mut protect = |n: usize, why: String| {
@@ -864,7 +941,8 @@ fn protected_nodes(fdt: &Fdt) -> Result<(BTreeMap<usize, String>, Option<String>
     // GPIO controller and the SCMI transport the generated overlay depends on.
     let board = rp1_proto::board::LINUX_BLOCKS
         .iter()
-        .map(|(_, label)| *label);
+        .map(|(_, label)| *label)
+        .filter(|label| !(direct_pio && *label == rp1_proto::board::PIO_LABEL));
     for label in board.chain([
         "rp1_gpio",
         "rp1_scmi",

@@ -192,7 +192,8 @@ impl Default for Stack {
 }
 pub use crate::board::{Gpiomem, Linux, OnConflict};
 pub use crate::declaration::{
-    Core, DmaChannels, DmaPool, Heartbeat, I2cPins, Instance, PwmPins, SpiPins, UartPins,
+    Core, DmaChannels, DmaPool, Heartbeat, I2cPins, Instance, PioSelection, PwmPins, SpiPins,
+    UartPins,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -385,6 +386,7 @@ pub fn peripheral_type(p: &str) -> Result<String> {
             Kind::Adc => "::rp1_hal::adc::Token".into(),
             Kind::Pwm => format!("::rp1_hal::pwm::Token<{}>", i.number),
             Kind::Dma => "::rp1_hal::dma::Token".into(),
+            Kind::Pio => "PioParts".into(),
         }),
         None => Err(crate::board::undeclarable(&name)
             .filter(|_| p == name.to_ascii_uppercase())
@@ -412,6 +414,8 @@ pub fn peripheral_id(p: &str) -> Result<(u8, u16)> {
         (ownership_kind::BLOCK, rp1_proto::BlockId::Adc as u16)
     } else if p == "DMA" {
         (ownership_kind::BLOCK, rp1_proto::BlockId::Dma as u16)
+    } else if p == "PIO" {
+        (ownership_kind::BLOCK, rp1_proto::BlockId::Pio as u16)
     } else {
         (
             ownership_kind::TIMER_ALARM,
@@ -479,6 +483,14 @@ impl Declaration {
         }
         if !matches!(self.clock.authority.as_str(), "rp1" | "linux") {
             return Err("invalid clock authority".into());
+        }
+        if self.owned_instances().any(|i| i.kind == Kind::Pio) {
+            if self.clock.authority != "rp1" {
+                return Err("E4: PIO requires clock.authority = rp1".into());
+            }
+            if self.linux.gpiomem != crate::board::Gpiomem::Disable {
+                return Err("E4: PIO requires linux.gpiomem = disable".into());
+            }
         }
         // The rpi-cm5 board DTB routes RP1 clocks through SCMI (clk-rp1 disabled); the overlay
         // cannot hand them back to Linux, so nothing would answer its SCMI requests (review #7).

@@ -44,6 +44,7 @@ data_files = [
     "peripherals/pads-eth.toml",
     "peripherals/pcie-apbs.toml",
     "peripherals/pio.toml",
+    "peripherals/pio-m3.toml",
     "peripherals/pll-audio.toml",
     "peripherals/pll-sys.toml",
     "peripherals/pll-video.toml",

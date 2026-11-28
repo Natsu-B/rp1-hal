@@ -1,10 +1,10 @@
 # RP1 regdb coverage
 
 - schema: `rp1-regdb-v3`
-- logical peripherals: 89
+- logical peripherals: 90
 - external-IP instances: 41
-- registers: 344
-- hidden registers: 6
+- registers: 375
+- hidden registers: 7
 - fields: 1770
 - atomic-enabled registers: 204
 - NVIC external interrupt slots: 64 (IRQn 0..63)
@@ -63,7 +63,8 @@
 - `PADS_BANK2`: 2 registers (rp1-regdb/data/peripherals/pads-bank2.toml)
 - `PADS_ETH`: 0 registers (rp1-regdb/data/peripherals/pads-eth.toml)
 - `PCIE_APBS`: 29 registers (rp1-regdb/data/peripherals/pcie-apbs.toml)
-- `PIO`: 0 registers (rp1-regdb/data/peripherals/pio.toml)
+- `PIO`: 2 registers (rp1-regdb/data/peripherals/pio.toml)
+- `PIO_M3`: 29 registers (rp1-regdb/data/peripherals/pio-m3.toml)
 - `PLL_AUDIO`: 7 registers (rp1-regdb/data/peripherals/pll-audio.toml)
 - `PLL_SYS`: 6 registers (rp1-regdb/data/peripherals/pll-sys.toml)
 - `PLL_VIDEO`: 6 registers (rp1-regdb/data/peripherals/pll-video.toml)

@@ -510,3 +510,15 @@ PWM1 has no bank-0 pin route, and GPIO28..53 remain Linux board lines. The resou
 The entire block, reset and clock are reserved, even for a single output. Another core or
 `linux.keep` cannot claim another channel of the same block. See [PWM](pwm.md) for the API,
 STATIC register evidence and proposed hardware checks.
+
+## PIO ownership (STATIC)
+
+**STATIC.** `pio = { sms = [0], pins = [12, 13, 22, 23] }` は M3 制御窓と APB FIFO 窓を
+一方のコアに予約する。`sms` は 0–3 の重複しない番号で、1 個以上が必要。
+`pins` は省略可能で、GPIO0–27 の未使用ピンを選ぶ。生成された `PioParts::SM_MASK` が
+SM の選択を示す。ピンは同じコアの `pins` に未設定の状態で渡る。
+
+`clock.authority = "rp1"` と `linux.gpiomem = "disable"` が必要。NOTE の BlockId 66 は
+PIO 全体を表し、SM の選択は生成コードに保持する。PIO APB の reset は宣言したコアが扱う。
+最終 DTB では、stock PIO と firmware RPC の無効化、GPIO の予約、PIO IRQ と DREQ の
+競合を確認する。PIO を必要とする Linux クライアントは board overlay で無効にする。

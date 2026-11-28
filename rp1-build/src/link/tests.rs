@@ -432,9 +432,21 @@ fn named_endpoint_limits() {
 fn generated_ownership_is_checked_by_rust() {
     let dir = tempfile::tempdir().unwrap();
     let mut d = fixture();
+    assert!(
+        !resources(&d, &[], &d.shm_layout().unwrap())
+            .unwrap()
+            .contains("PioParts")
+    );
     d.proc0.gpio = vec![22];
     d.proc0.gpio_irq = vec![22];
     d.proc1.timer = vec!["ALARM0".into()];
+    d.proc1.instances.insert(
+        "pio".into(),
+        crate::metadata::Instance::Pio(crate::metadata::PioSelection {
+            sms: vec![0, 3],
+            pins: vec![12],
+        }),
+    );
     d.proc1.instances.insert(
         "dma".into(),
         crate::metadata::Instance::Dma(crate::metadata::DmaChannels {
@@ -472,6 +484,8 @@ fn free_subset(dma: rp1::Proc1DmaChannels) -> Result<rp1::Proc1Dma,
     dma.try_free()
 }}
 fn gpio(p: rp1::Proc0Resources) -> rp1_hal::gpio::Pin<22> {{ p.pins.gpio22 }}
+const _: () = assert!(rp1::PioParts::SM_MASK == 9);
+fn pio(p: rp1::Proc1Resources) -> (rp1::PioParts, rp1_hal::gpio::Pin<12>) {{ (p.pio, p.pins.gpio12) }}
 #[rp1_rt::interrupt(proc0)]
 fn IO_BANK0() {{}}
 fn alarm(irq: rp1::proc1_irq::TIMER_0) -> rp1_rt::interrupt::Binding<rp1_rt::interrupt::AlarmIrq<0>, 26, 1> {{ irq }}
@@ -482,6 +496,23 @@ fn alarm(irq: rp1::proc1_irq::TIMER_0) -> rp1_rt::interrupt::Binding<rp1_rt::int
     .unwrap();
     t.pass(pass);
     for (name, body) in [
+        (
+            "ownership_pio",
+            r#"fn wrong_core(p: rp1::Proc0Resources) {
+    let _ = p.pio;
+}
+fn take(_: rp1::PioParts) {}
+fn twice(p: rp1::Proc1Resources) {
+    take(p.pio);
+    take(p.pio);
+}
+fn send<T: Send>() {}
+fn pass_between_cores() {
+    send::<rp1::PioParts>();
+}
+fn main() {}
+"#,
+        ),
         (
             "ownership_admission",
             r#"fn use_pin(_: rp1_hal::gpio::Pin<22>) {}

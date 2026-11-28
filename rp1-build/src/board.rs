@@ -20,6 +20,7 @@ pub(crate) enum Kind {
     Adc,
     Pwm,
     Dma,
+    Pio,
 }
 
 /// One declarable instance: key, family, instance number, Linux DT label and RESETS bit.
@@ -71,6 +72,8 @@ pub(crate) const INSTANCES: &[BoardInstance] = &[
     instance("pwm1", Kind::Pwm, 1, "rp1_pwm1", 1, 5),
     // RESETS CTRL0 bit 3 (inferred from the bit order, rp1_hal::linux_blocks::ALLOWED).
     instance("dma", Kind::Dma, 0, "rp1_dma", 0, 3),
+    // PIO_APBS stays outside BOARD_LINUX_RESETS. Only the PIO owner controls reset.
+    instance("pio", Kind::Pio, 0, "rp1_pio", 0, 27),
 ];
 
 /// The declaration resource that grants an IRQ line.
@@ -217,7 +220,7 @@ pub(crate) fn find_instance(name: &str) -> Option<&'static BoardInstance> {
 pub(crate) fn undeclarable(name: &str) -> Option<String> {
     let block = name.to_ascii_uppercase();
     Some(match name {
-        _ if LINUX_BLOCKS.iter().any(|(b, _)| *b == block) => {
+        _ if name != "pio" && LINUX_BLOCKS.iter().any(|(b, _)| *b == block) => {
             format!("E4: {block} is required by Linux on rpi-cm5")
         }
         "spi4" | "spi7" => format!("E4: {block} is slave-only"),
@@ -331,13 +334,19 @@ mod tests {
         for i in INSTANCES {
             assert_eq!(i.label, format!("rp1_{}", i.name));
             assert!(i.reset_mask.is_power_of_two(), "{}", i.name);
-            assert_eq!(
-                BOARD_LINUX_RESETS[i.reset_bank] & i.reset_mask,
-                i.reset_mask,
-                "{}",
-                i.name
-            );
-            let instance = Instance::parse(i.name, toml::Table::new().into(), "proc0").unwrap();
+            let table = if i.kind == Kind::Pio {
+                assert_eq!(BOARD_LINUX_RESETS[i.reset_bank] & i.reset_mask, 0);
+                toml::from_str("sms = [0]").unwrap()
+            } else {
+                assert_eq!(
+                    BOARD_LINUX_RESETS[i.reset_bank] & i.reset_mask,
+                    i.reset_mask,
+                    "{}",
+                    i.name
+                );
+                toml::Table::new()
+            };
+            let instance = Instance::parse(i.name, table.into(), "proc0").unwrap();
             assert_eq!(
                 std::mem::discriminant(&instance),
                 std::mem::discriminant(&match i.kind {
@@ -347,6 +356,7 @@ mod tests {
                     Kind::Adc => Instance::Adc {},
                     Kind::Pwm => Instance::Pwm(Default::default()),
                     Kind::Dma => Instance::Dma(Default::default()),
+                    Kind::Pio => Instance::Pio(Default::default()),
                 })
             );
             let block = i.name.to_ascii_uppercase();

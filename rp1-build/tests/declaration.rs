@@ -155,7 +155,7 @@ fn uart1_policy_pins() {
 }
 #[test]
 fn linux_required_block() {
-    for block in ["eth", "usbhost0", "usbhost1", "pcie", "pio"] {
+    for block in ["eth", "usbhost0", "usbhost1", "pcie"] {
         error(
             &format!("[proc0]\n{block}={{}}"),
             &["E4", "required by Linux on rpi-cm5"],
@@ -575,4 +575,49 @@ fn proc0_stack_always_holds_the_platform_margin() {
         parse("stack = { proc1 = '8KiB' }").stack_size(1).unwrap(),
         8192
     );
+}
+
+#[test]
+fn pio_ownership_rejections() {
+    for (body, expected) in [
+        (
+            "[proc0]\npio={sms=[0]}\n[proc1]\npio={sms=[1]}",
+            "declared by both proc0 and proc1",
+        ),
+        ("[proc1]\npio={sms=[0,0]}", "state machine 0 is repeated"),
+        (
+            "[proc1]\npio={sms=[4]}",
+            "state machine 4 is repeated or outside",
+        ),
+        ("[proc1]\npio={sms=[]}", "at least one state machine"),
+        ("[proc1]\npio={}", "missing field"),
+        ("[proc1]\npio={sms=[0],pins=[28]}", "GPIO 28 is board line"),
+        (
+            "[proc1]\npio={sms=[0],pins=[54]}",
+            "GPIO 54 is out of range",
+        ),
+        (
+            "[proc1]\npio={sms=[0],pins=[12,12]}",
+            "GPIO 12 is claimed by both",
+        ),
+        (
+            "[proc0]\ngpio=[12]\n[proc1]\npio={sms=[0],pins=[12]}",
+            "GPIO 12 is claimed by both",
+        ),
+        (
+            "clock={authority='linux'}\n[proc1]\npio={sms=[0]}",
+            "PIO requires clock.authority = rp1",
+        ),
+        (
+            "[linux]\nkeep={pio={sms=[0]}}",
+            "reserved by the stock profile",
+        ),
+        (
+            "[linux]\ngpiomem='keep'\n[proc1]\npio={sms=[0]}",
+            "PIO requires linux.gpiomem = disable",
+        ),
+        ("[proc1]\npio={sms=[0],dma=true}", "unknown field"),
+    ] {
+        error(body, &[expected]);
+    }
 }

@@ -143,6 +143,7 @@ impl<'a> Note<'a> {
         if seen & 0x2f != 0x2f {
             return Err(Error::Invalid);
         }
+        note.validate_pio()?;
         let wake_link = if version == LINK_WAKE_VERSION {
             let wake = LinkWake::parse(note.get(LINK_WAKE).ok_or(Error::Invalid)?.value)?;
             let link = Link::parse(note.get(LINK).ok_or(Error::Invalid)?.value)?;
@@ -232,6 +233,41 @@ impl<'a> Note<'a> {
             bytes: &self.bytes[32..],
         }
     }
+    fn validate_pio(&self) -> Result<(), Error> {
+        use ownership_kind::{BLOCK, CLOCK as CLOCK_CLAIM, PIN};
+        let claims = self.get(OWNERSHIP).ok_or(Error::Invalid)?.value[4..]
+            .as_chunks::<4>()
+            .0;
+        let mut pio = claims.iter().filter(|c| {
+            c[0] == BLOCK && u16::from_le_bytes([c[2], c[3]]) == crate::BlockId::Pio as u16
+        });
+        let Some(owner) = pio.next() else {
+            return Ok(());
+        };
+        let clock = self.get(CLOCK).ok_or(Error::Invalid)?.value;
+        if owner[1] == 3
+            || pio.next().is_some()
+            || clock[0] != 1
+            || u32_at(clock, 1)? != 200_000_000
+            || !claims
+                .iter()
+                .filter(|c| c[0] == CLOCK_CLAIM)
+                .eq([[CLOCK_CLAIM, 3, 0, 0]].iter())
+        {
+            return Err(Error::Mismatch);
+        }
+        // GPIO ownership is exclusive within bank 0, including the shared UART0 log pins.
+        let mut pins = 0u32;
+        for c in claims.iter().filter(|c| c[0] == PIN) {
+            let pin = u16::from_le_bytes([c[2], c[3]]);
+            if pin >= 28 || pins & (1 << pin) != 0 {
+                return Err(Error::Mismatch);
+            }
+            pins |= 1 << pin;
+        }
+        Ok(())
+    }
+
     pub fn get(&self, kind: u16) -> Option<Record<'a>> {
         self.records()
             .filter_map(Result::ok)

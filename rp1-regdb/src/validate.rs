@@ -31,6 +31,18 @@ pub fn validate(db: &Database) -> Result<(), Vec<String>> {
             &mut errors,
         );
         validate_peripheral(definition, &mut errors);
+        let p = &definition.peripheral;
+        if let Some(owner) = &p.view_of
+            && !db
+                .peripherals
+                .iter()
+                .any(|d| d.peripheral.id == *owner && d.peripheral.view_of.is_none())
+        {
+            errors.push(format!(
+                "{}: [VIEW_OWNER] {owner} is not a logical owner",
+                p.name
+            ));
+        }
     }
 
     validate_core(db, &mut errors);
@@ -185,6 +197,17 @@ fn validate_layout<'a>(
     occupied: &mut BTreeMap<u64, &'a str>,
     errors: &mut Vec<String>,
 ) {
+    if let Some(base) = register.repeat_base
+        && (register.repeat_count < 2
+            || register.repeat_stride <= u64::from(register.width / 8)
+            || register.offset.checked_sub(base).is_none_or(|offset| {
+                offset > register.repeat_stride - u64::from(register.width / 8)
+            }))
+    {
+        errors.push(format!(
+            "{context}: [REPEAT_BASE] register lies outside its interleaved element"
+        ));
+    }
     if register.width != 32 {
         errors.push(format!(
             "{context}: [REGISTER_WIDTH] only 32-bit registers are supported"

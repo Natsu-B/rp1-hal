@@ -66,7 +66,7 @@ pub(crate) fn descriptor_with_layout(
             claims.extend([ownership_kind::PIN, core]);
             short(&mut claims, u16::from(*pin));
         }
-        // DMA reserves the whole controller from Linux. Its channel list is build-time only.
+        // DMA and PIO reserve the whole block. Channel and SM selections are build-time only.
         for p in &c.peripherals() {
             let (kind, id) = peripheral_id(p)?;
             claims.extend([kind, core]);

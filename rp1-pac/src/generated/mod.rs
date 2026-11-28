@@ -10,6 +10,8 @@ pub mod pads_bank0;
 pub mod pads_bank1;
 pub mod pads_bank2;
 pub mod pcie_apbs;
+pub mod pio;
+pub mod pio_m3;
 pub mod pll_audio;
 pub mod pll_sys;
 pub mod pll_video;

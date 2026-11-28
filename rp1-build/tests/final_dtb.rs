@@ -713,3 +713,102 @@ fn v3_overlay_requires_matching_abi_and_irq_route() {
             .any(|e| e.contains("MSI-X vector 29"))
     );
 }
+
+#[test]
+fn pio_final_tree_enforces_direct_control() {
+    use rp1_dt::check::{Plan, Policy, resolve};
+
+    let d: Declaration =
+        toml::from_str("schema=2\n[proc1]\npio={sms=[0],pins=[12,13,22,23]}").unwrap();
+    let source = BASE
+        .replace("rp1_dma: dma { };", "rp1_dma: dma { #dma-cells = <1>; };")
+        .replace(
+            "@EXTRA_RP1@",
+            r#"
+            rp1-client { status = "disabled"; compatible = "raspberrypi,pwm-pio-rp1"; };
+            ws2812-client { status = "disabled"; compatible = "raspberrypi,ws2812-pio-rp1"; };
+            unnamed-client { status = "disabled"; firmware = <&rp1_firmware>; };
+            dma-client { status = "disabled"; dmas = <&rp1_dma 56>; };
+            irq-client { status = "disabled"; interrupts = <50 4>; };
+            gpio-client { status = "disabled"; reset-gpios = <&rp1_gpio 12 0>; };
+        "#,
+        );
+    let (fdt, note) = apply_declaration(&d, &source);
+    assert!(rp1_dt_check(&fdt, &note).is_empty());
+    assert_eq!(
+        rp1_dt::check::reserved_gpios(&fdt)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [12, 13, 22, 23]
+    );
+    for (path, message) in [
+        ("/rp1_firmware", "stock RP1 firmware"),
+        ("/rp1/sram@400000/shmem@ff00", "stock RP1 firmware"),
+        ("/rp1/rp1-client", "PIO client"),
+        ("/rp1/ws2812-client", "PIO client"),
+        ("/rp1/unnamed-client", "PIO client"),
+        ("/rp1/dma-client", "PIO DREQ 56"),
+        ("/rp1/irq-client", "PIO IRQ 50"),
+        ("/rp1/gpio-client", "GPIO12"),
+        ("/rp1/pio", "RP1-owned block rp1_pio"),
+    ] {
+        let mut changed = fdt.clone();
+        let node = changed.find(path).unwrap();
+        changed.set_prop(node, "status", b"okay\0".to_vec());
+        let conflicts = rp1_dt_check(&changed, &note);
+        assert!(
+            conflicts.iter().any(|c| c.contains(message)),
+            "{conflicts:?}"
+        );
+        let plan = resolve(&changed, &note, Policy::default()).unwrap();
+        if matches!(path, "/rp1/pio" | "/rp1/gpio-client") {
+            assert!(
+                matches!(plan, Plan::Disable(ref nodes) if nodes.iter().any(|n| n.path == path)),
+                "{plan:?}"
+            );
+        } else {
+            assert!(matches!(plan, Plan::Refuse(_)), "{plan:?}");
+        }
+    }
+
+    let mut changed = fdt.clone();
+    let gpio = changed.label("rp1_gpio").unwrap();
+    changed.set_prop(
+        gpio,
+        "gpio-reserved-ranges",
+        [12u32, 2, 22, 1]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    assert!(
+        rp1_dt_check(&changed, &note)
+            .iter()
+            .any(|c| c.contains("GPIO23 is not"))
+    );
+}
+
+#[test]
+fn pio_stays_protected_without_a_pio_claim() {
+    use rp1_dt::check::{Plan, Policy, resolve};
+
+    let d: Declaration = toml::from_str("schema=2\n[proc0]\ngpio=[12]").unwrap();
+    let source = BASE.replace(
+        "rp1_pio: pio { };",
+        "rp1_pio: pio { gpios = <&rp1_gpio 12 0>; };",
+    );
+    let (fdt, note) = apply_declaration(&d, &source);
+    assert!(rp1_dt_check(&fdt, &note).is_empty());
+    let mut conflict = fdt;
+    let pio = conflict.label("rp1_pio").unwrap();
+    conflict.set_prop(pio, "status", b"okay\0".to_vec());
+    let Plan::Refuse(reasons) = resolve(&conflict, &note, Policy::default()).unwrap() else {
+        panic!("stock PIO must remain protected");
+    };
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r.contains("protected: board Linux block rp1_pio"))
+    );
+}

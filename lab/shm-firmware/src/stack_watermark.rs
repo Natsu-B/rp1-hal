@@ -21,11 +21,25 @@ impl Watermark {
 #[cfg(target_arch = "arm")]
 #[inline(always)]
 pub unsafe fn paint() -> Watermark {
+    unsafe { paint_core::<1>() }
+}
+
+/// # Safety
+/// Call on the named core at entry with interrupts masked.
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+pub unsafe fn paint_core<const CORE: usize>() -> Watermark {
     unsafe extern "C" {
+        static __stack_size0: u8;
         static __stack_size1: u8;
     }
+    let stack_size = match CORE {
+        0 => core::ptr::addr_of!(__stack_size0),
+        1 => core::ptr::addr_of!(__stack_size1),
+        _ => unreachable!(),
+    };
     let top = 0x1000_4000 as *mut u32;
-    let bottom = (top as usize - core::ptr::addr_of!(__stack_size1) as usize) as *mut u32;
+    let bottom = (top as usize - stack_size as usize) as *mut u32;
     let sp: usize;
     unsafe { core::arch::asm!("mrs {}, MSP", out(reg) sp, options(nostack, preserves_flags)) };
     let mut p = bottom;

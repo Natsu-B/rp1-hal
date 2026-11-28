@@ -58,10 +58,12 @@ fn block_label(id: u16) -> Option<String> {
         56..=58 => format!("rp1_i2s{}", id - 56),
         64 => "rp1_adc".into(),
         65 => "rp1_dma".into(),
-        66 => "rp1_pio".into(),
+        PIO_BLOCK => rp1_proto::board::PIO_LABEL.into(),
         _ => return None,
     })
 }
+
+const PIO_BLOCK: u16 = rp1_proto::BlockId::Pio as u16;
 
 /// Final-DTB ownership check (declaration-and-note.md §3.2 step 3, design §9): every conflict
 /// between the note's OWNERSHIP/SHM records and what Linux would see in `dtb`.

@@ -43,6 +43,15 @@ pub struct PwmPins {
     pub channel3: Option<u8>,
 }
 
+/// The block is exclusive to one core, even when only one SM is selected.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PioSelection {
+    pub sms: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pins: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DmaChannels {
@@ -79,6 +88,7 @@ pub enum Instance {
     Spi(SpiPins),
     Adc {},
     Dma(DmaChannels),
+    Pio(PioSelection),
 }
 
 fn signal_name(signal: Signal) -> String {
@@ -177,6 +187,29 @@ impl Instance {
                 }
                 Self::Adc {}
             }
+            Kind::Pio => {
+                if owner == "linux.keep" {
+                    return Err("E4: Linux PIO is reserved by the stock profile".into());
+                }
+                let pio: PioSelection = parse_pin_table(value, &path)?;
+                if pio.sms.is_empty() {
+                    return Err(format!("E5: {path}.sms needs at least one state machine").into());
+                }
+                let mut selected = 0u8;
+                for &sm in &pio.sms {
+                    if sm >= 4 || selected & (1 << sm) != 0 {
+                        return Err(format!(
+                            "E0: {path}.sms: state machine {sm} is repeated or outside 0..3"
+                        )
+                        .into());
+                    }
+                    selected |= 1 << sm;
+                }
+                for &pin in &pio.pins {
+                    validate_pin(pin)?;
+                }
+                Self::Pio(pio)
+            }
             Kind::Dma => {
                 let dma: DmaChannels = parse_pin_table(value, &path)?;
                 if owner == "linux.keep" && (dma.channels.is_some() || dma.pool.is_some()) {
@@ -247,7 +280,7 @@ impl Instance {
                     Signal::Pwm(n, rp1_pinmux::PwmSignal::Channel3),
                 ),
             ],
-            Self::Adc {} | Self::Dma(_) => vec![],
+            Self::Adc {} | Self::Dma(_) | Self::Pio(_) => vec![],
         }
     }
     fn required(&self) -> &'static [&'static str] {
@@ -255,7 +288,7 @@ impl Instance {
             Self::Uart(_) => &["tx", "rx"],
             Self::I2c(_) => &["sda", "scl"],
             Self::Spi(_) => &["sck", "mosi", "miso"],
-            Self::Adc {} | Self::Dma(_) | Self::Pwm(_) => &[],
+            Self::Adc {} | Self::Dma(_) | Self::Pwm(_) | Self::Pio(_) => &[],
         }
     }
     fn number(name: &str) -> u8 {
@@ -264,6 +297,9 @@ impl Instance {
 
     /// Declared signal names and GPIOs for an instance key.
     pub fn pins(&self, name: &str) -> Vec<(&'static str, u8)> {
+        if let Self::Pio(p) = self {
+            return p.pins.iter().map(|&pin| ("pins", pin)).collect();
+        }
         self.signals(Self::number(name))
             .into_iter()
             .filter_map(|(role, pin, _)| pin.map(|pin| (role, pin)))

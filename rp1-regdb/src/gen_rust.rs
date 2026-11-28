@@ -239,7 +239,10 @@ fn padded_array_group<'a>(register: &'a Register, registers: &[&'a Register]) ->
     if register.repeat_count == 1 || register.repeat_stride <= byte_width {
         return vec![register];
     }
-    let bucket = register.offset / register.repeat_stride;
+    let bucket = |r: &Register| {
+        r.repeat_base
+            .unwrap_or(r.offset / r.repeat_stride * r.repeat_stride)
+    };
     let mut group: Vec<_> = registers
         .iter()
         .copied()
@@ -247,7 +250,7 @@ fn padded_array_group<'a>(register: &'a Register, registers: &[&'a Register]) ->
             candidate.repeat_count == register.repeat_count
                 && candidate.repeat_stride == register.repeat_stride
                 && candidate.width == register.width
-                && candidate.offset / candidate.repeat_stride == bucket
+                && bucket(candidate) == bucket(register)
         })
         .collect();
     group.sort_by_key(|candidate| candidate.offset);
@@ -912,6 +915,16 @@ fn peripherals(db: &Database) -> String {
         if let Some(pinmux) = &peripheral.pinmux_dependency {
             writeln!(out, "    pub const PINMUX_DEPENDENCY: &str = {pinmux:?};").unwrap();
         }
+        for view in definitions
+            .iter()
+            .map(|d| &d.peripheral)
+            .filter(|p| p.view_of.as_deref() == Some(&peripheral.id))
+        {
+            writeln!(out,
+                "    /// Alternate MMIO window of this peripheral.\n    #[inline(always)]\n    pub fn {}(&self) -> &crate::generated::{}::RegisterBlock {{ unsafe {{ &*({}::PTR.cast()) }} }}",
+                view.module, view.module, view.name
+            ).unwrap();
+        }
         writeln!(
             out,
             "    #[inline(always)]\n    pub const fn ptr() -> *const u8 {{ Self::PTR }}"
@@ -932,7 +945,10 @@ fn peripherals(db: &Database) -> String {
         writeln!(out, "unsafe impl Send for {} {{}}\n", peripheral.name).unwrap();
     }
     writeln!(out, "#[allow(non_snake_case)]\npub struct Peripherals {{").unwrap();
-    for definition in &definitions {
+    let owners = definitions
+        .iter()
+        .filter(|d| d.peripheral.view_of.is_none());
+    for definition in owners.clone() {
         writeln!(
             out,
             "    pub {}: {},",
@@ -944,7 +960,7 @@ fn peripherals(db: &Database) -> String {
     writeln!(out, "impl Peripherals {{").unwrap();
     writeln!(out, "    /// # Safety\n    /// Coordinate ownership across both cores. TAKEN is core-local, not a device-wide lock.\n    pub unsafe fn take() -> Option<Self> {{\n        TAKEN.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).ok().map(|_| unsafe {{ Self::steal() }})\n    }}").unwrap();
     writeln!(out, "    /// # Safety\n    /// The caller must ensure no other `Peripherals` instance is in use.\n    pub unsafe fn steal() -> Self {{\n        TAKEN.store(true, Ordering::Release);\n        Self {{").unwrap();
-    for definition in &definitions {
+    for definition in owners {
         writeln!(
             out,
             "            {}: {} {{ _private: () }},",

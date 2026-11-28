@@ -236,6 +236,9 @@ pub struct Peripheral {
     pub base: u64,
     pub size: u64,
     pub ownership: Ownership,
+    /// Logical peripheral ID when this window shares another window's owner.
+    #[serde(default)]
+    pub view_of: Option<String>,
     pub default_origin: Origin,
     #[serde(default)]
     pub legacy_svd_name: Option<String>,
@@ -314,6 +317,9 @@ pub struct Register {
     pub repeat_count: u32,
     #[serde(default = "four")]
     pub repeat_stride: u64,
+    /// First element's base for interleaved arrays that start off a stride boundary.
+    #[serde(default)]
+    pub repeat_base: Option<u64>,
     #[serde(default)]
     pub public_count: Option<u32>,
     pub hardware_read: ReadBehavior,

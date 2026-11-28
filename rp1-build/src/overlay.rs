@@ -133,6 +133,10 @@ pub(crate) fn dts_with_layout(d: &Declaration, note: &[u8], shm: &ShmLayout<'_>)
         &format!("gpio-reserved-ranges = <{ranges}>;"),
     );
     for i in d.owned_instances() {
+        // The RP1 clock overlay already disables the stock PIO node.
+        if i.kind == crate::board::Kind::Pio {
+            continue;
+        }
         fragment(
             &format!("target = <&{}>", i.label),
             "status = \"disabled\";",

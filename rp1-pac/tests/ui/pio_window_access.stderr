@@ -1,0 +1,91 @@
+error[E0609]: no field `PIO_M3` on type `&Peripherals`
+ --> tests/ui/pio_window_access.rs:2:15
+  |
+2 |     let _ = p.PIO_M3;
+  |               ^^^^^^ unknown field
+  |
+  = note: available fields are: `ADC`, `AUDIO_IN`, `AUDIO_OUT`, `BUSFABRIC_AXISHIM`, `BUSFABRIC_MONITOR` ... and 84 others
+
+error[E0599]: the method `read` exists for reference `&Reg<rp1_pac::generated::pio::txf::TXF_SPEC>`, but its trait bounds were not satisfied
+ --> tests/ui/pio_window_access.rs:3:26
+  |
+3 |     let _ = p.PIO.txf(0).read();
+  |                          ^^^^ method cannot be called on `&Reg<rp1_pac::generated::pio::txf::TXF_SPEC>` due to unsatisfied trait bounds
+  |
+ ::: src/generated/pio.rs
+  |
+  |     pub struct TXF_SPEC;
+  |     ------------------- doesn't satisfy `rp1_pac::generated::pio::txf::TXF_SPEC: Readable`
+  |
+  = note: the following trait bounds were not satisfied:
+          `rp1_pac::generated::pio::txf::TXF_SPEC: Readable`
+
+error[E0599]: the method `push` exists for reference `&Reg<rp1_pac::generated::pio::rxf::RXF_SPEC>`, but its trait bounds were not satisfied
+ --> tests/ui/pio_window_access.rs:4:18
+  |
+4 |     p.PIO.rxf(0).push(0);
+  |                  ^^^^ method cannot be called on `&Reg<rp1_pac::generated::pio::rxf::RXF_SPEC>` due to unsatisfied trait bounds
+  |
+ ::: src/generated/pio.rs
+  |
+  |     pub struct RXF_SPEC;
+  |     ------------------- doesn't satisfy `rp1_pac::generated::pio::rxf::RXF_SPEC: FifoPush`
+  |
+  = note: the following trait bounds were not satisfied:
+          `rp1_pac::generated::pio::rxf::RXF_SPEC: FifoPush`
+
+error[E0599]: the method `read` exists for reference `&Reg<INSTR_MEM_SPEC>`, but its trait bounds were not satisfied
+ --> tests/ui/pio_window_access.rs:6:30
+  |
+6 |     let _ = pio.instr_mem(0).read();
+  |                              ^^^^ method cannot be called on `&Reg<INSTR_MEM_SPEC>` due to unsatisfied trait bounds
+  |
+ ::: src/generated/pio_m3.rs
+  |
+  |     pub struct INSTR_MEM_SPEC;
+  |     ------------------------- doesn't satisfy `INSTR_MEM_SPEC: Readable`
+  |
+  = note: the following trait bounds were not satisfied:
+          `INSTR_MEM_SPEC: Readable`
+
+error[E0599]: the method `write_bits_unchecked` exists for reference `&Reg<SM_ADDR_SPEC>`, but its trait bounds were not satisfied
+ --> tests/ui/pio_window_access.rs:7:29
+  |
+7 |     unsafe { pio.sm_addr(0).write_bits_unchecked(0) };
+  |                             ^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&Reg<SM_ADDR_SPEC>` due to unsatisfied trait bounds
+  |
+ ::: src/generated/pio_m3.rs
+  |
+  |     pub struct SM_ADDR_SPEC;
+  |     ----------------------- doesn't satisfy `SM_ADDR_SPEC: UnsafeWritable`
+  |
+  = note: the following trait bounds were not satisfied:
+          `SM_ADDR_SPEC: UnsafeWritable`
+
+error[E0599]: the method `atomic_set_bits_unchecked` exists for reference `&Reg<rp1_pac::generated::pio_m3::ctrl::CTRL_SPEC>`, but its trait bounds were not satisfied
+ --> tests/ui/pio_window_access.rs:8:25
+  |
+8 |     unsafe { pio.ctrl().atomic_set_bits_unchecked(1) };
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+ ::: src/generated/pio_m3.rs
+  |
+  |     pub struct CTRL_SPEC;
+  |     -------------------- doesn't satisfy `_: UnsafeAtomicSet`
+  |
+  = note: the following trait bounds were not satisfied:
+          `rp1_pac::generated::pio_m3::ctrl::CTRL_SPEC: UnsafeAtomicSet`
+
+error[E0599]: the method `write_bits_unchecked` exists for reference `&Reg<FDEBUG_SPEC>`, but its trait bounds were not satisfied
+ --> tests/ui/pio_window_access.rs:9:27
+  |
+9 |     unsafe { pio.fdebug().write_bits_unchecked(1) };
+  |                           ^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&Reg<FDEBUG_SPEC>` due to unsatisfied trait bounds
+  |
+ ::: src/generated/pio_m3.rs
+  |
+  |     pub struct FDEBUG_SPEC;
+  |     ---------------------- doesn't satisfy `FDEBUG_SPEC: UnsafeWritable`
+  |
+  = note: the following trait bounds were not satisfied:
+          `FDEBUG_SPEC: UnsafeWritable`

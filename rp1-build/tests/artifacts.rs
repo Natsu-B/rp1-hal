@@ -1067,3 +1067,52 @@ fn dma_resource_is_a_controller_token_with_block_id_65() {
         "::rp1_hal::dma::Token"
     );
 }
+
+#[test]
+fn pio_claim_round_trip_and_absent_codegen() {
+    let absent = Declaration::default();
+    let old = generate("test", "0.1.0", &absent, [0; 32], [0; 20]).unwrap();
+    let declared: Declaration =
+        toml::from_str("schema=2\n[proc1]\npio={sms=[3,0],pins=[12,13,22,23]}").unwrap();
+    let a = generate("test", "0.1.0", &declared, [0; 32], [0; 20]).unwrap();
+    assert_eq!(declared.linux_resets(), absent.linux_resets());
+    let envelope = wire::elf_note(&a.note);
+    let desc = rp1_proto::note::descriptor(&envelope).unwrap();
+    let note = Note::parse(desc).unwrap();
+    let claims = &note.get(OWNERSHIP).unwrap().value[4..];
+    assert_eq!(
+        &claims[..20],
+        &[
+            1, 2, 12, 0, 1, 2, 13, 0, 1, 2, 22, 0, 1, 2, 23, 0, 2, 2, 66, 0,
+        ]
+    );
+    assert!(a.dts.contains("gpio-reserved-ranges = <12 2 22 2>;"));
+    assert_eq!(old.dts.matches("target = <&rp1_pio>").count(), 1);
+    assert_eq!(a.dts.matches("target = <&rp1_pio>").count(), 1);
+    let old_note = Note::parse(&old.note).unwrap();
+    assert!(
+        !old_note.get(OWNERSHIP).unwrap().value[4..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|c| c[0] == ownership_kind::BLOCK && c[2] == 66)
+    );
+
+    let clock =
+        note.get(rp1_proto::note::CLOCK).unwrap().value.as_ptr() as usize - desc.as_ptr() as usize;
+    let claim = claims.as_ptr() as usize - desc.as_ptr() as usize;
+    for (offset, byte) in [
+        (clock, 2),
+        (clock + 1, 1),
+        (claim + 2, 54),
+        (claim + 6, 12),
+        (claim + 17, 3),
+        (claim + 20, ownership_kind::BLOCK),
+    ] {
+        let mut bad = desc.to_vec();
+        bad[offset] = byte;
+        let crc = rp1_proto::note::crc32(&bad[32..]);
+        bad[20..24].copy_from_slice(&crc.to_le_bytes());
+        assert!(Note::parse(&bad).is_err(), "offset {offset}, value {byte}");
+    }
+}

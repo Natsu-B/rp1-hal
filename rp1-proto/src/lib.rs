@@ -47,13 +47,16 @@ pub mod link {
 /// rpi-cm5 board table shared by the build (`rp1-build`: a declaration may not own these) and
 /// the loader (`rp1-dt`: their Linux nodes are never disabled; a conflict there refuses).
 pub mod board {
+    /// Stock PIO stays protected unless a validated direct-control NOTE claims the block.
+    pub const PIO_LABEL: &str = "rp1_pio";
+
     /// RP1 blocks Linux needs on rpi-cm5, with the board DT labels of their Linux nodes.
     pub const LINUX_BLOCKS: &[(&str, &str)] = &[
         ("ETH", "rp1_eth"),
         ("USBHOST0", "rp1_usb0"),
         ("USBHOST1", "rp1_usb1"),
         ("PCIE", "pcie2"),
-        ("PIO", "rp1_pio"),
+        ("PIO", PIO_LABEL),
     ];
 }
 
@@ -173,7 +176,7 @@ pub enum BlockId {
     I2s2,
     Adc = 64,
     Dma,
-    Pio,
+    Pio = 66,
 }
 
 /// Complete posted writes before publishing metadata or ringing a doorbell.

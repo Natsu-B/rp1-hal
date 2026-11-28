@@ -8,10 +8,36 @@ size = 0x1000
 ownership = "singleton"
 default_origin = "official"
 legacy_svd_name = "PIO_RW"
-note = "Programmable I/O block built from state machines. APB bus. Plain read/write at the base; XOR, SET and CLEAR aliases at +0x1000, +0x2000 and +0x3000."
+note = "DOC: APB FIFO window (Linux rp1.dtsi and rp1-pio driver). DMA uses bus address 0xc040178000. Atomic aliases are address-map metadata; FIFO accesses use the base window."
 
 [peripheral.atomic_view]
 kind = "rp1-native"
 xor_offset = 0x1000
 set_offset = 0x2000
 clear_offset = 0x3000
+
+[[register]]
+id = "txf"
+name = "TXF"
+offset = 0x00
+width = 32
+repeat_count = 4
+hardware_read = "none"
+hardware_write = "fifo"
+verified_read = "not-applicable"
+verified_write = "official"
+[register.api]
+fifo_push = "public"
+
+[[register]]
+id = "rxf"
+name = "RXF"
+offset = 0x10
+width = 32
+repeat_count = 4
+hardware_read = "fifo"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+[register.api]
+fifo_pop = "public"

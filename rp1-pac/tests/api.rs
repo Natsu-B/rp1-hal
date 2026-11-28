@@ -101,3 +101,53 @@ fn unsafe_atomic_api_documents_its_safety_contract() {
     assert!(generic.contains("atomic_set_bits_unchecked"));
     assert!(!generic.contains("pub fn atomic_set_bits("));
 }
+
+#[test]
+fn pio_windows_have_distinct_fifo_offsets_and_interleaved_control_registers() {
+    use rp1_pac::generated::{pio, pio_m3};
+    // The test holds ordinary zero-filled storage. It never reads or writes MMIO.
+    let apb: pio::RegisterBlock = unsafe { core::mem::zeroed() };
+    let local: pio_m3::RegisterBlock = unsafe { core::mem::zeroed() };
+    let a = &raw const apb as usize;
+    let m = &raw const local as usize;
+    let offset = |reg: &_| reg as *const _ as usize - m;
+    assert_eq!(rp1_pac::PIO::PTR as usize, 0x4017_8000);
+    assert_eq!(rp1_pac::PIO_M3::PTR as usize, 0xf000_0000);
+    for sm in 0..4 {
+        assert_eq!(apb.txf(sm) as *const _ as usize - a, 4 * sm);
+        assert_eq!(apb.rxf(sm) as *const _ as usize - a, 0x10 + 4 * sm);
+        assert_eq!(local.txf(sm) as *const _ as usize - m, 0x14 + 4 * sm);
+        assert_eq!(local.rxf(sm) as *const _ as usize - m, 0x24 + 4 * sm);
+        let regs = [
+            local.sm_clkdiv(sm) as *const _ as usize,
+            local.sm_execctrl(sm) as *const _ as usize,
+            local.sm_shiftctrl(sm) as *const _ as usize,
+            local.sm_addr(sm) as *const _ as usize,
+            local.sm_instr(sm) as *const _ as usize,
+            local.sm_pinctrl(sm) as *const _ as usize,
+            local.sm_dmatx(sm) as *const _ as usize,
+            local.sm_dmarx(sm) as *const _ as usize,
+        ];
+        for (i, reg) in regs.into_iter().enumerate() {
+            assert_eq!(reg - m, 0xcc + 0x20 * sm + 4 * i);
+        }
+    }
+    assert_eq!(local.instr_mem_array().len(), 32);
+    for n in 0..32 {
+        assert_eq!(offset(local.instr_mem(n)), 0x4c + 4 * n);
+    }
+    assert_eq!(local.intr() as *const _ as usize - m, 0x14c);
+    assert_eq!(local.irq1_ints() as *const _ as usize - m, 0x164);
+    assert_eq!(core::mem::size_of_val(&local), 0x168);
+}
+
+#[allow(dead_code)]
+fn pio_access(apb: &rp1_pac::PIO) {
+    apb.txf(0).push(1);
+    let _ = apb.rxf(0).pop();
+    let pio = apb.pio_m3();
+    pio.txf(0).push(1);
+    let _ = pio.rxf(0).pop();
+    let _ = pio.sm_addr(0).read().bits();
+    unsafe { pio.instr_mem(31).write_bits_unchecked(0) };
+}

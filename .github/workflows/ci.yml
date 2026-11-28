@@ -66,6 +66,7 @@ jobs:
           - { package: pwm-loopback }
           - { package: pwm-loopback, name: motor-api, features: --features motor-api }
           - { package: timer-parity }
+          - { package: pio-parity }
           - { package: dma-parity }
           - { package: uart-parity }
           - { package: spi-parity }

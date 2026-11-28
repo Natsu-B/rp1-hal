@@ -1,0 +1,403 @@
+[peripheral]
+id = "pio_m3"
+name = "PIO_M3"
+module = "pio_m3"
+kind = "memory-mapped"
+base = 0xf0000000
+size = 0x16c
+ownership = "singleton"
+view_of = "pio"
+default_origin = "reverse-engineered"
+reset_dependency = "RESETS CTRL0 PIO_APBS"
+clock_dependency = "clk_sys"
+pinmux_dependency = "Bank 0 FUNCSEL 7"
+note = "STATIC: M3 control window (MichaelBell/rp1-hacking PIO.md and stock firmware register accesses). FIFO views share the APB window's owner."
+
+[[register]]
+id = "ctrl"
+name = "CTRL"
+offset = 0x00
+width = 32
+hardware_read = "plain"
+hardware_write = "command"
+verified_read = "static"
+verified_write = "static"
+note = "SM enable and restart commands."
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "fstat"
+name = "FSTAT"
+offset = 0x04
+width = 32
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+[register.api]
+read = "public"
+
+[[register]]
+id = "fdebug"
+name = "FDEBUG"
+offset = 0x08
+width = 32
+hardware_read = "plain"
+hardware_write = "write-one-to-clear"
+verified_read = "static"
+verified_write = "unverified"
+[register.api]
+read = "public"
+
+[[register]]
+id = "flevel"
+name = "FLEVEL"
+offset = 0x0c
+width = 32
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+note = "Level 15 also represents 16 when joined."
+[register.api]
+read = "public"
+
+[[register]]
+id = "flevel2"
+name = "FLEVEL2"
+offset = 0x10
+width = 32
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+note = "Candidate upper level bits in JOIN mode."
+[register.api]
+read = "public"
+
+[[register]]
+id = "txf"
+name = "TXF"
+offset = 0x14
+width = 32
+repeat_count = 4
+hardware_read = "none"
+hardware_write = "fifo"
+verified_read = "not-applicable"
+verified_write = "official"
+[register.api]
+fifo_push = "public"
+
+[[register]]
+id = "rxf"
+name = "RXF"
+offset = 0x24
+width = 32
+repeat_count = 4
+hardware_read = "fifo"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+[register.api]
+fifo_pop = "public"
+
+[[register]]
+id = "irq"
+name = "IRQ"
+offset = 0x34
+width = 32
+hardware_read = "plain"
+hardware_write = "write-one-to-clear"
+verified_read = "static"
+verified_write = "unverified"
+[register.api]
+read = "public"
+
+[[register]]
+id = "irq_force"
+name = "IRQ_FORCE"
+offset = 0x38
+width = 32
+hardware_read = "none"
+hardware_write = "command"
+verified_read = "not-applicable"
+verified_write = "unverified"
+
+[[register]]
+id = "input_sync_bypass"
+name = "INPUT_SYNC_BYPASS"
+offset = 0x3c
+width = 32
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "unverified"
+[register.api]
+read = "public"
+
+[[register]]
+id = "dbg_padout"
+name = "DBG_PADOUT"
+offset = 0x40
+width = 32
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+[register.api]
+read = "public"
+
+[[register]]
+id = "dbg_padoe"
+name = "DBG_PADOE"
+offset = 0x44
+width = 32
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+[register.api]
+read = "public"
+
+[[register]]
+id = "dbg_cfginfo"
+name = "DBG_CFGINFO"
+offset = 0x48
+width = 32
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+[register.api]
+read = "public"
+
+[[register]]
+id = "instr_mem"
+name = "INSTR_MEM"
+offset = 0x4c
+width = 32
+repeat_count = 32
+hardware_read = "none"
+hardware_write = "write-only"
+verified_read = "not-applicable"
+verified_write = "static"
+note = "32 instruction slots, each with a 16-bit instruction. Use word writes."
+[register.api]
+raw_write = "unsafe"
+
+[[register]]
+id = "sm_clkdiv"
+name = "SM_CLKDIV"
+offset = 0xcc
+width = 32
+repeat_count = 4
+repeat_stride = 0x20
+repeat_base = 0xcc
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "sm_execctrl"
+name = "SM_EXECCTRL"
+offset = 0xd0
+width = 32
+repeat_count = 4
+repeat_stride = 0x20
+repeat_base = 0xcc
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "sm_shiftctrl"
+name = "SM_SHIFTCTRL"
+offset = 0xd4
+width = 32
+repeat_count = 4
+repeat_stride = 0x20
+repeat_base = 0xcc
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "sm_addr"
+name = "SM_ADDR"
+offset = 0xd8
+width = 32
+repeat_count = 4
+repeat_stride = 0x20
+repeat_base = 0xcc
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+[register.api]
+read = "public"
+
+[[register]]
+id = "sm_instr"
+name = "SM_INSTR"
+offset = 0xdc
+width = 32
+repeat_count = 4
+repeat_stride = 0x20
+repeat_base = 0xcc
+hardware_read = "plain"
+hardware_write = "command"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "sm_pinctrl"
+name = "SM_PINCTRL"
+offset = 0xe0
+width = 32
+repeat_count = 4
+repeat_stride = 0x20
+repeat_base = 0xcc
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "sm_dmatx"
+name = "SM_DMATX"
+offset = 0xe4
+width = 32
+repeat_count = 4
+repeat_stride = 0x20
+repeat_base = 0xcc
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "sm_dmarx"
+name = "SM_DMARX"
+offset = 0xe8
+width = 32
+repeat_count = 4
+repeat_stride = 0x20
+repeat_base = 0xcc
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "intr"
+name = "INTR"
+offset = 0x14c
+width = 32
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+[register.api]
+read = "public"
+
+[[register]]
+id = "irq0_inte"
+name = "IRQ0_INTE"
+offset = 0x150
+width = 32
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "irq0_intf"
+name = "IRQ0_INTF"
+offset = 0x154
+width = 32
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "irq0_ints"
+name = "IRQ0_INTS"
+offset = 0x158
+width = 32
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+[register.api]
+read = "public"
+
+[[register]]
+id = "irq1_inte"
+name = "IRQ1_INTE"
+offset = 0x15c
+width = 32
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "irq1_intf"
+name = "IRQ1_INTF"
+offset = 0x160
+width = 32
+hardware_read = "plain"
+hardware_write = "plain"
+verified_read = "static"
+verified_write = "static"
+[register.api]
+read = "public"
+raw_write = "unsafe"
+
+[[register]]
+id = "irq1_ints"
+name = "IRQ1_INTS"
+offset = 0x164
+width = 32
+hardware_read = "plain"
+hardware_write = "none"
+verified_read = "static"
+verified_write = "not-applicable"
+[register.api]
+read = "public"
