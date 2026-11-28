@@ -183,16 +183,18 @@ of at least 100 MS/s. The measurements below used the previous polling driver.
 
 STATIC. Lower priority numbers preempt higher ones. The managed SPI IRQ
 and the wait alarm run at priority 4. On proc0, PCIE_OUT (IRQ53, priority 0)
-and SCMI (IRQ57, priority 1) can preempt SPI and thread mode. The 3 µs
-idle-to-return bound excludes time spent in those platform handlers. The
+and SCMI (IRQ57, priority 1) can preempt SPI and thread mode. The lab's
+3 µs idle-to-return gate excludes time spent in those platform handlers. The
 lab brackets shifter idle on proc1 and stamps proc0 ISR entry and exit.
 Only handler time overlapping the idle-to-return window is credited, with
 nested time counted once.
 
 HW (2026-11). SCMI reached 39 µs in the initial stamped boot cohort.
 One SPI0 1 MHz trial had a 10 µs upper bound with 7 µs of SCMI overlap.
-IRQ53 was enabled and recorded zero entries in that cohort. The original
-17 µs SPI3 sample predates the ISR stamps.
+IRQ53 was enabled and recorded zero entries. The original 17 µs SPI3
+sample predates the ISR stamps. In the expanded trace, 409 of 1,000 SPI3
+flushes at 1 MHz on one post-Linux boot had a 4 µs upper bound with one
+tail alarm and no platform ISR overlap. Those trials failed the 3 µs gate.
 
 `lab/shm-firmware` declares SPI0 on proc1 (GPIO8 chip select). proc1 runs `spi_proof` at boot
 and on Linux's request: with loopback off MISO reads all zeros (pad pull-down; the lab wiring
