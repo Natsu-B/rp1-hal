@@ -439,6 +439,9 @@ proc0 は現 boot と epoch が異なる要求を無視し、同じ期限で待�
 現 epoch を acquire してから置換後のフィールドを読む。同じ boot の不正要求を拒否した結果は
 その boot に保持する。
 
+`SHM_STATUS` の `0x12`（`StaleRequest`）は初期の v3 との互換性のため予約する。
+Linux は要求の seq が一致する場合に再起動として扱う。
+
 `RESULT_SEQ` は応答した `REQUEST_SEQ` と同じ値を使う。Linux は `SHM_STATUS` の acquire 後、
 同じ boot epoch/request の結果を使う。要求を受け取る前に期限が切れた場合の `RESULT_SEQ`
 は 0。proc0 は DDR を readback し、世代と結果、最後に status を SRAM に commit/readback

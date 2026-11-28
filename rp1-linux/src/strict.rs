@@ -173,6 +173,7 @@ impl Profile {
                 (Some(StartupError::Unsupported), seq) if seq == 0 || seq == request.seq => {
                     Error::Unsupported
                 }
+                // Reserved v3 status. Decode replies from earlier firmware.
                 (Some(StartupError::StaleRequest), seq) if seq == request.seq => {
                     Error::PeerDown(PeerDown::Restarted)
                 }

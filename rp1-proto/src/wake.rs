@@ -14,6 +14,7 @@ pub const IRQ_STARTUP_CAPS: u32 = IRQ_RPC_CAPS | STARTUP_WAKE;
 #[repr(u32)]
 pub enum StartupError {
     Unsupported = 0x11,
+    /// Reserved for compatibility with earlier v3 firmware.
     StaleRequest = 0x12,
     InvalidRequest = 0x13,
     Timeout = 0x14,
