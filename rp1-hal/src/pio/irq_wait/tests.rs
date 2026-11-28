@@ -61,7 +61,7 @@ impl Model {
     }
 
     fn irq(&self, slot: &TestSlot) {
-        let pending = service_source(slot, &mut Io(self), || {
+        let pending = service_source!(slot, &mut Io(self), || {
             assert_eq!(self.inte.get(), NEIGHBOR);
             self.event.set(true);
             self.wakes.set(self.wakes.get() + 1);
@@ -173,7 +173,7 @@ impl WaitAlarm for Alarm<'_> {
     }
 }
 
-impl WaitSourceContext for Alarm<'_> {
+impl Alarm<'_> {
     fn wait<T>(
         &mut self,
         end: Deadline,
@@ -195,9 +195,16 @@ fn run(slot: &TestSlot, model: &Model) -> (Result<u32, WaitError>, bool, u8) {
     if model.arrival == Arrival::BeforeArm {
         model.receive();
     }
-    let result = wait_source(slot, &mut Io(model), &mut alarm, end, RX, Io::probe, || {
-        model.time()
-    });
+    let io = &mut Io(model);
+    let mut probe = |io: &mut Io<'_>| io.probe();
+    let result = (|| {
+        wait_source! {
+            state: slot, io: io,
+            alarm: alarm.wait, deadline: end,
+            sources: RX, probe: probe,
+            now: model.time(), error: WaitError,
+        }
+    })();
     (result, alarm.armed, alarm.sleep_count)
 }
 
