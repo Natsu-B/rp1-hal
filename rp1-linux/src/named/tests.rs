@@ -282,7 +282,11 @@ mod direct {
 
     impl Direct {
         fn new() -> Self {
-            let (session, peer) = strict_session(IRQ_RPC_CAPS);
+            Self::with_caps(IRQ_RPC_CAPS)
+        }
+
+        fn with_caps(caps: u32) -> Self {
+            let (session, peer) = strict_session(caps);
             let rings = [("ping-dn", 2, true), ("ping-up", 2, true)];
             let fw = firmware(
                 named_note([None, Some(27)], &rings, &["ping"], 4),
@@ -514,6 +518,39 @@ mod direct {
         assert_eq!(client.call(&9, BUDGET).unwrap(), 9);
         fake_doorbell::clear_hook();
         assert_eq!(client.rx.tail(), 3);
+    }
+
+    #[test]
+    fn reserved_rpc_replies_do_not_force_a_second_request_wake() {
+        use shm::wake::{CREDIT_SEQ, CREDIT_WAIT};
+        let direct = Direct::with_caps(IRQ_RPC_CAPS | rp1_proto::wake::CREDIT_WAKE);
+        let mut client = direct.open().unwrap();
+        for value in [1, 2, 3] {
+            assert!(matches!(
+                client.call(&value, Duration::ZERO),
+                Err(Error::Timeout)
+            ));
+        }
+
+        let mut first = true;
+        direct.hook(move |link, up, _, requests, replies| {
+            if std::mem::take(&mut first) {
+                for value in 1..=4 {
+                    assert_eq!(requests.pop_request().unwrap().unwrap().0, value);
+                    replies.push(&value).unwrap();
+                }
+                up.write(CREDIT_WAIT, 1);
+            } else {
+                assert_eq!(link.read(UP + shm::TAIL), 4);
+                assert_eq!(requests.pop_request().unwrap().unwrap().0, 5);
+                replies.push(&5).unwrap();
+            }
+        });
+        assert_eq!(client.call(&4, BUDGET).unwrap(), 4);
+        assert_eq!(direct.link().read(UP + CREDIT_SEQ), 0);
+        assert_eq!(client.call(&5, BUDGET).unwrap(), 5);
+        fake_doorbell::clear_hook();
+        assert_eq!(client.rx.tail(), 5);
     }
 
     #[test]

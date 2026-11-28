@@ -552,3 +552,5 @@ CLR/readback と SEV を行い、thread が全 endpoint を再確認する。RPC
 未回収 request ごとに一つの reply 枠を残す。期限後に届いた返信は次の呼出しで順に
 回収し、期限切れの request を再送しない。実験用 ring DMA は §10.3 の排出を
 証明できるまで strict endpoint では使えない。
+要求 force を使う閉じた RPC では、期限内に読む返信は予約済みであり、次の要求の
+BAR2 readback が tail の公開を完了してから force する。

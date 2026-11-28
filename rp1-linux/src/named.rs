@@ -364,9 +364,8 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
             let tail = self.rx.tail();
             let reply = self.rx.inner.pop()?;
             self.rx.session.check_header()?;
-            if reply.is_some() {
-                self.rx.notify_space()?;
-            }
+            // This closed RPC pair reserves a reply slot before submission.
+            // A later request forces the server after the BAR2 tail has drained.
             if tail == index || reply.is_none() {
                 return Ok(reply);
             }
