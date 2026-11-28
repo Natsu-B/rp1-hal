@@ -50,11 +50,15 @@ help: the trait `__irq_proc1::sealed::Admitted` is not implemented for `__irq_pr
     |
 302 | pub enum IO_BANK0 {}
     | ^^^^^^^^^^^^^^^^^
-help: the trait `__irq_proc1::sealed::Admitted` is implemented for `__irq_proc1::TIMER_0`
+help: the following other types implement trait `__irq_proc1::sealed::Admitted`
    --> $GENERATED:363:1
     |
 363 | impl sealed::Admitted for TIMER_0 {}
-    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `__irq_proc1::TIMER_0`
+364 | impl sealed::Admitted for PIO_0 {}
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `__irq_proc1::PIO_0`
+365 | impl sealed::Admitted for PIO_1 {}
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `__irq_proc1::PIO_1`
 note: required for `__irq_proc1::IO_BANK0` to implement `__irq_proc1::Bank0Declared`
    --> $GENERATED:301:27
     |
@@ -80,11 +84,15 @@ help: the trait `__irq_proc1::sealed::Admitted` is not implemented for `__irq_pr
     |
 326 | pub enum SPI5 {}
     | ^^^^^^^^^^^^^
-help: the trait `__irq_proc1::sealed::Admitted` is implemented for `__irq_proc1::TIMER_0`
+help: the following other types implement trait `__irq_proc1::sealed::Admitted`
    --> $GENERATED:363:1
     |
 363 | impl sealed::Admitted for TIMER_0 {}
-    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `__irq_proc1::TIMER_0`
+364 | impl sealed::Admitted for PIO_0 {}
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `__irq_proc1::PIO_0`
+365 | impl sealed::Admitted for PIO_1 {}
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `__irq_proc1::PIO_1`
 note: required for `__irq_proc1::SPI5` to implement `__irq_proc1::Declared`
    --> $GENERATED:298:27
     |
