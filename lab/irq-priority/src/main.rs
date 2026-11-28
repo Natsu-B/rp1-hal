@@ -29,6 +29,8 @@ const TICKS: u32 = 12_000;
 const PERIOD: u32 = 1_000;
 const OBSERVED_PULSES: u32 = 256;
 const START: u32 = u32::from_le_bytes(*b"PRIO");
+const START_DEFAULT: u32 = u32::from_le_bytes(*b"PRID");
+const SERVICE_GAP_US: u32 = 100;
 const BINS: usize = 65;
 
 #[unsafe(link_section = ".shared")]
@@ -167,6 +169,10 @@ fn arm<const N: u8>(alarm: &mut Alarm<N>, first: u32) {
     alarm.try_arm(TimerInstantU32::from_ticks(first)).unwrap();
 }
 
+fn irq_priority(irq: u32) -> u8 {
+    unsafe { (0xe000_e400 as *const u8).add(irq as usize).read_volatile() >> 5 }
+}
+
 fn inventory(core: u8, allowed: &[u32]) {
     let get = |addr: usize| unsafe { (addr as *const u32).read_volatile() };
     let enabled = u64::from(get(0xe000_e100)) | (u64::from(get(0xe000_e104)) << 32);
@@ -175,11 +181,10 @@ fn inventory(core: u8, allowed: &[u32]) {
         0
     );
     for &irq in allowed {
-        let encoded = unsafe { (0xe000_e400 as *const u8).add(irq as usize).read_volatile() };
+        let priority = irq_priority(irq);
         log!(
-            "PRIO_IRQ core={core} irq={irq} enabled={} priority={}\n",
-            (enabled >> irq) & 1,
-            encoded >> 5
+            "PRIO_IRQ core={core} irq={irq} enabled={} priority={priority}\n",
+            (enabled >> irq) & 1
         )
         .unwrap();
     }
@@ -193,6 +198,7 @@ fn observe_reset(pcie: &platform::Pcie) {
         let address = rp1_proto::LINK_START as usize + rp1_proto::link::SHM_STATUS;
         let status = unsafe { (address as *const u32).read_volatile() };
         log!("PRIO_PERST lost={lost:?} shm={status:#x}\n").unwrap();
+        log!("PRIO_RESET_IRQ priority={}\n", irq_priority(53)).unwrap();
         platform_trace::platform_totals();
         loop {
             rp1_rt::wait_for_event();
@@ -200,15 +206,86 @@ fn observe_reset(pcie: &platform::Pcie) {
     }
 }
 
-fn scmi_pending() -> u32 {
+fn scmi_pending() -> bool {
     // NVIC retains pending state for a disabled line.
-    (unsafe { (0xe000_e204 as *const u32).read_volatile() } >> (57 - 32)) & 1
+    unsafe { (0xe000_e204 as *const u32).read_volatile() & (1 << (57 - 32)) != 0 }
+}
+
+#[derive(Default)]
+struct ScmiProbe {
+    last_return: Option<u32>,
+    scope_max: u32,
+    gap_min: Option<u32>,
+    pending_n: u32,
+    pending_observed_max: u32,
+    pending_upper_max: u32,
+}
+
+impl ScmiProbe {
+    // Count overlap with IRQ57 in the default path. Under deferral, count a pending
+    // line at the scope's end and bracket when it first became pending.
+    fn run<T>(
+        &mut self,
+        defer: bool,
+        pcie: &platform::Pcie,
+        f: impl FnOnce() -> T,
+    ) -> (T, u32, u32) {
+        if !defer {
+            let entries = platform_trace::scmi_entries();
+            let result = f();
+            return (
+                result,
+                u32::from(platform_trace::scmi_entries() != entries),
+                0,
+            );
+        }
+
+        if let Some(last) = self.last_return {
+            let gap = loop {
+                let gap = now().wrapping_sub(last);
+                if gap >= SERVICE_GAP_US {
+                    break gap;
+                }
+            };
+            self.gap_min = Some(self.gap_min.unwrap_or(gap).min(gap));
+        }
+        let not_pending_at = loop {
+            let stamp = now();
+            if !scmi_pending() {
+                break stamp;
+            }
+        };
+        let (result, entries, pending) = platform::with_scmi_deferred(pcie, || {
+            let entries = platform_trace::scmi_entries();
+            let result = f();
+            assert_eq!(platform_trace::scmi_entries(), entries);
+            let pending = scmi_pending().then(|| (now(), platform::scmi_stats(pcie).requests));
+            (result, entries, pending)
+        })
+        .unwrap();
+        let returned = now();
+        let scope = returned.wrapping_sub(not_pending_at);
+        self.scope_max = self.scope_max.max(scope);
+        self.last_return = Some(returned);
+        if let Some((pending_at, requests)) = pending {
+            assert_eq!(platform_trace::scmi_entries(), entries + 1);
+            let served = platform_trace::scmi_last_exit();
+            assert!(platform::scmi_stats(pcie).requests > requests);
+            let observed = served.wrapping_sub(pending_at);
+            let upper = served.wrapping_sub(not_pending_at);
+            assert!(observed <= upper && upper <= scope);
+            self.pending_n += 1;
+            self.pending_observed_max = self.pending_observed_max.max(observed);
+            self.pending_upper_max = self.pending_upper_max.max(upper);
+        }
+        (result, u32::from(pending.is_some()), scope)
+    }
 }
 
 #[entry(proc0)]
 fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let sys = rp1::platform::init(&mut core, p.platform).unwrap();
-    platform_trace::install();
+    platform_trace::install_with_scmi_exit();
     let _sense = p.pins.gpio23.into_input();
     unsafe { (&raw mut OUTPUT).write(MaybeUninit::new(p.pins.gpio13.into_output(false))) };
     let mut spi = p
@@ -225,9 +302,15 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     spi.blocking(timer).set_loopback(true).unwrap();
     p.proc1.launch(&mut core).unwrap();
     log!("PRIO_AWAIT_LINUX\n").unwrap();
-    while !platform_trace::host_requested(START) {
+    let defer = loop {
+        if platform_trace::host_requested(START) {
+            break true;
+        }
+        if platform_trace::host_requested(START_DEFAULT) {
+            break false;
+        }
         observe_reset(&sys.pcie);
-    }
+    };
     let first = now().wrapping_add(20_000);
     arm(&mut p.TIMER_ALARM0, first);
     unsafe { (&raw mut ALARM0).write(MaybeUninit::new(p.TIMER_ALARM0)) };
@@ -243,8 +326,10 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let mut spi_tail = Samples::new();
     let mut uart_tail = Samples::new();
     let mut scope_us = Samples::new();
-    let mut pending_spi = 0;
-    let mut pending_uart = 0;
+    let mut overlap_spi = 0;
+    let mut overlap_uart = 0;
+    let mut scmi = ScmiProbe::default();
+    let mut max_trial_blocked = 0;
     let before = platform::scmi_stats(&sys.pcie).requests;
     for trial in 0..1_000 {
         // Vary the phase relative to both alarms and spread the scopes across the clock load.
@@ -254,18 +339,14 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
         for value in 0..depth as u8 {
             assert_eq!(spi.try_write_word(value).unwrap(), Try::Ready(()));
         }
-        let (window, returned) = platform::with_scmi_deferred(&sys.pcie, || {
-            let entries = platform_trace::scmi_entries();
+        let ((window, returned), overlap, spi_scope) = scmi.run(defer, &sys.pcie, || {
             let end = Deadline::after(2_000.micros()).unwrap();
             let window = idle_probe::arm(status, depth as u32 * 8);
             unsafe { select.write_volatile(1) };
             spi.blocking(timer).flush_until(end).unwrap();
-            let returned = now();
-            pending_spi += scmi_pending();
-            assert_eq!(platform_trace::scmi_entries(), entries);
-            (window, returned)
-        })
-        .unwrap();
+            (window, now())
+        });
+        overlap_spi += overlap;
         let (last_busy, first_idle) = idle_probe::bracket(window, returned);
         assert_ne!(last_busy, 0);
         assert!(first_idle.wrapping_sub(last_busy) <= 12);
@@ -274,20 +355,17 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
             assert_eq!(spi.try_read_word::<u8>().unwrap(), Try::Ready(value));
         }
 
-        let (started, end, returned) = platform::with_scmi_deferred(&sys.pcie, || {
-            let entries = platform_trace::scmi_entries();
+        let ((started, end, returned), overlap, uart_scope) = scmi.run(defer, &sys.pcie, || {
             let started = now();
             let end = Deadline::after((230 + trial % 71).micros()).unwrap();
             assert_eq!(
                 uart.blocking(timer).read_until(&mut [0], end),
                 Err(uart::Error::Timeout)
             );
-            let returned = now();
-            pending_uart += scmi_pending();
-            assert_eq!(platform_trace::scmi_entries(), entries);
-            (started, end, returned)
-        })
-        .unwrap();
+            (started, end, now())
+        });
+        overlap_uart += overlap;
+        max_trial_blocked = max_trial_blocked.max(spi_scope + uart_scope);
         let deadline = end.instant().ticks() as u32;
         uart_tail.record(returned.wrapping_sub(deadline));
         scope_us.record(returned.wrapping_sub(started));
@@ -298,6 +376,7 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
         let mut rx = [0];
         stream.read_exact_until(&mut rx, end).unwrap();
         assert_eq!(rx, reply);
+        assert!(now().wrapping_sub(trial_at) < 10_000);
     }
 
     while (now().wrapping_sub(first) as i32) < (TICKS * PERIOD) as i32 {}
@@ -330,8 +409,22 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     )
     .unwrap();
     platform_trace::platform_totals();
+    if defer {
+        // A 10 ms window can intersect at most two trial groups.
+        log!(
+            "PRIO_SCMI n={} observed_max_us={} upper_max_us={} max_scope_us={} min_gap_us={} max_blocked_10ms_us={}\n",
+            scmi.pending_n,
+            scmi.pending_observed_max,
+            scmi.pending_upper_max,
+            scmi.scope_max,
+            scmi.gap_min.unwrap(),
+            2 * max_trial_blocked
+        )
+        .unwrap();
+    }
     let after = platform::scmi_stats(&sys.pcie).requests;
-    log!("PRIO_DONE requests_before={before} requests_after={after} pending_spi={pending_spi} pending_uart={pending_uart}\n").unwrap();
+    let mode = if defer { "deferred" } else { "default" };
+    log!("PRIO_DONE mode={mode} requests_before={before} requests_after={after} overlap_spi={overlap_spi} overlap_uart={overlap_uart}\n").unwrap();
     loop {
         rp1_rt::wait_for_event();
     }

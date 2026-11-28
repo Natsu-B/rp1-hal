@@ -109,6 +109,9 @@ jobs:
           arm-none-eabi-objdump -t -C target/thumbv7m-none-eabi/release/dual-core |
             awk '$3 == "F" && $4 == ".isram" && $6 == "rp1_link::generated::zero_words" { print; found = 1 }
                  END { if (!found) { print "Missing startup zero_words function in .isram" > "/dev/stderr"; exit 1 } }'
+      - name: Inspect the configurable-fault startup priority
+        if: matrix.package == 'irq-priority'
+        run: python3 lab/irq-priority/check-startup.py target/thumbv7m-none-eabi/release/irq-priority
       - name: Inspect the native PWM duty path
         if: matrix.package == 'pwm-loopback' && matrix.name == 'motor-api'
         run: python3 lab/check-pwm-native.py target/thumbv7m-none-eabi/release/pwm-loopback

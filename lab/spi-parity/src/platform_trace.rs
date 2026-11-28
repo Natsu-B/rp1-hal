@@ -34,6 +34,7 @@ impl Trace {
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static TRACES: [Trace; 2] = [Trace::new(), Trace::new()];
+static SCMI_LAST_EXIT: AtomicU32 = AtomicU32::new(0);
 
 unsafe extern "C" {
     fn __rp1_p0_PCIE_OUT();
@@ -50,8 +51,13 @@ extern "C" fn scmi() {
     stamp(1, || unsafe { __rp1_p0_PROC_MISC() });
 }
 
+#[rp1_rt::isram]
+extern "C" fn scmi_with_exit() {
+    SCMI_LAST_EXIT.store(stamp(1, || unsafe { __rp1_p0_PROC_MISC() }), Relaxed);
+}
+
 #[inline(always)]
-fn stamp(line: usize, handler: impl FnOnce()) {
+fn stamp(line: usize, handler: impl FnOnce()) -> u32 {
     let entered = now();
     handler();
     let exited = now();
@@ -70,9 +76,19 @@ fn stamp(line: usize, handler: impl FnOnce()) {
         }
         trace.count.store(slot as u32 + 1, Relaxed);
     }
+    exited
 }
 
 pub(super) fn install() {
+    install_vectors(scmi);
+}
+
+#[allow(dead_code)]
+pub(super) fn install_with_scmi_exit() {
+    install_vectors(scmi_with_exit);
+}
+
+fn install_vectors(scmi: extern "C" fn()) {
     // Platform init has checked and installed the original vectors. Only the
     // lab modifies the writable table, with proc0 interrupts briefly masked.
     rp1_rt::interrupt::__primask_free(|| unsafe {
@@ -142,6 +158,11 @@ pub(super) fn wait_for_host(marker: &str, value: u32) {
 #[allow(dead_code)]
 pub(super) fn scmi_entries() -> u32 {
     TRACES[1].total.load(Relaxed)
+}
+
+#[allow(dead_code)]
+pub(super) fn scmi_last_exit() -> u32 {
+    SCMI_LAST_EXIT.load(Relaxed)
 }
 
 pub(super) fn begin() -> u32 {
