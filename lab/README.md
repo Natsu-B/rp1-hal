@@ -506,6 +506,11 @@ STATIC (2026-11-26, reference revision `9a41f28`, rustc 1.99.1, release `cargo r
 | shm-firmware (default) | 38688 | 10464 | 3744 | 13860 | 8942 | 12404 | 3212 | 2816 (768) / 6144 | 5280 / 1952 |
 | shm-firmware (ring-dma) | 38784 | 10368 | 8028 | 16164 | 5454 | 10288 | 2504 | 2816 (768) / 6144 | 5280 / 1952 |
 
+## Bench GPIO fixtures
+
+- [`gpio-link-scan`](gpio-link-scan/README.md) admits pins using weak pulls and drives bounded pulses on one pin at a time.
+- [`edge-observer`](edge-observer/README.md) generates GPIO, PWM0, ALARM1 and SPI0 stimuli for the ESP32 timestamp observer.
+
 ## PWM loopback diagnostic (STATIC / HW 未検証)
 
 `pwm-loopback` is a separate, focused firmware example. See [the PWM API, register evidence

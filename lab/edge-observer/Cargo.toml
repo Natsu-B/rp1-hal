@@ -1,0 +1,34 @@
+[package]
+name = "edge-observer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "edge-observer"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+embedded-hal = "1"
+rp1-hal = { path = "../../rp1-hal" }
+rp1-rt = { path = "../../rp1-rt", default-features = false, features = ["critical-section-single-core"] }
+
+[build-dependencies]
+rp1-build = { path = "../../rp1-build" }
+
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+[package.metadata.rp1.linux]
+keep = {}
+gpiomem = "disable"
+on_conflict = "disable"
+
+[package.metadata.rp1.proc1]
+gpio = [7, 8, 22, 23]
+timer = ["ALARM1"]
+pwm0 = { channel0 = 12, channel1 = 13 }
+spi0 = { sck = 11, mosi = 10, miso = 9 }

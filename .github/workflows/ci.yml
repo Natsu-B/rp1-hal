@@ -63,6 +63,8 @@ jobs:
           - { package: dual-core, name: ping-test, features: --features ping-test }
           - { package: dual-core, name: ping-poll, features: --features ping-poll }
           - { package: peripherals }
+          - { package: edge-observer }
+          - { package: gpio-link-scan }
           - { package: pwm-loopback }
           - { package: pwm-loopback, name: motor-api, features: --features motor-api }
           - { package: timer-parity }

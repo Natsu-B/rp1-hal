@@ -1,0 +1,30 @@
+[package]
+name = "gpio-link-scan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gpio-link-scan"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+rp1-hal = { path = "../../rp1-hal" }
+rp1-rt = { path = "../../rp1-rt", default-features = false, features = ["critical-section-single-core"] }
+
+[build-dependencies]
+rp1-build = { path = "../../rp1-build" }
+
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+[package.metadata.rp1.linux]
+keep = {}
+gpiomem = "disable"
+on_conflict = "disable"
+
+[package.metadata.rp1.proc1]
+gpio = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]

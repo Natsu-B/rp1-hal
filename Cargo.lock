@@ -218,6 +218,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-observer"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "rp1-build",
+ "rp1-hal",
+ "rp1-rt",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -362,6 +372,15 @@ name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
+name = "gpio-link-scan"
+version = "0.1.0"
+dependencies = [
+ "rp1-build",
+ "rp1-hal",
+ "rp1-rt",
+]
 
 [[package]]
 name = "hashbrown"
