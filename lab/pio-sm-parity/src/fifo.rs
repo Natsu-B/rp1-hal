@@ -59,14 +59,20 @@ pub fn echo_example(
     slot: &mut Option<UninitStateMachine<0>>,
     timer: &Timer,
 ) -> LabResult<()> {
-    let echo = pio_asm!("pull block", "mov isr, osr", "push block");
+    let echo = pio_asm!(
+        "pull block",
+        "mov isr, osr",
+        "push block",
+        "park:",
+        "jmp park"
+    );
     let program = pio.install(&echo.program).map_err(|_| "echo install")?;
     let (sm, mut rx, mut tx) = PIOBuilder::from_installed_program(&program)
         .build(slot.take().ok_or("echo sm")?)
         .map_err(|_| "echo build")?;
+    let sent = tx.write(21);
     let running = sm.start().map_err(|_| "echo start")?;
     let start = now(timer);
-    let sent = tx.write(21);
     let word = loop {
         if let Some(word) = rx.read() {
             break Some(word);

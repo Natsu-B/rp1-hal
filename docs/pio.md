@@ -20,12 +20,12 @@ use rp1_hal::{pio::{PIOBuilder, PIOExt}, timer::Timer};
 # struct Sms { sm0: UninitStateMachine<0> }
 # fn echo_once(parts: PioParts<1, Sms>, clocks: &Clocks) {
 let (pio, sms) = parts.split_wait(clocks).unwrap();
-let echo = pio_asm!("pull block", "mov isr, osr", "push block");
+let echo = pio_asm!("pull block", "mov isr, osr", "push block", "park:", "jmp park");
 let program = pio.install(&echo.program).unwrap();
 let (sm, mut rx, mut tx) = PIOBuilder::from_installed_program(&program)
     .build(sms.sm0).unwrap();
-let running = sm.start().unwrap();
 assert!(tx.write(21));
+let running = sm.start().unwrap();
 let timer = Timer::new();
 let start = timer.now_32().ticks();
 let word = loop {
