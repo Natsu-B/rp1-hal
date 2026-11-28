@@ -522,11 +522,17 @@ fn zero_chunks(
     const CHUNK: usize = 1024;
     for offset in (0..bytes).step_by(CHUNK) {
         check_chunk()?;
-        for word in (offset..(offset + CHUNK).min(bytes)).step_by(4) {
-            write(start + word, 0);
-        }
+        zero_words(start + offset, (bytes - offset).min(CHUNK));
     }
     Ok(())
+}
+
+// Keep instruction fetches for the store loop off the shared interconnect.
+#[rp1_rt::isram]
+fn zero_words(start: usize, bytes: usize) {
+    for offset in (0..bytes).step_by(4) {
+        write(start + offset, 0);
+    }
 }
 
 pub(crate) fn wake_session() -> Result<Session, SessionError> {
@@ -805,6 +811,15 @@ mod startup_tests {
             assert_eq!(&words[..256], &[0; 256]);
             assert_eq!(&words[256..], &[1; 257]);
         }
+    }
+
+    #[test]
+    fn fill_preserves_the_words_outside_its_range() {
+        let mut words = [1u32; 259];
+        zero_chunks(words[1..].as_mut_ptr() as usize, 257 * 4, || Ok(())).unwrap();
+        assert_eq!(words[0], 1);
+        assert_eq!(&words[1..258], &[0; 257]);
+        assert_eq!(words[258], 1);
     }
 
     #[test]
