@@ -1,9 +1,9 @@
 use super::{Buffers, Rx, Tx};
-use super::{IRQ, InstalledProgram, UninitStateMachine, control, sm_reg};
+use super::{IRQ, InstalledProgram, PioPin, UninitStateMachine, control, sm_reg};
 use crate::{
     Error, FreeError,
     fugit::HertzU32,
-    gpio::{self, PadConfig, Pin},
+    gpio::{self, PadConfig},
     read, write,
 };
 use core::marker::PhantomData;
@@ -23,6 +23,18 @@ pub struct Pins {
     initial_high: u32,
     initial_dirs: u32,
     pad_bits: [u8; 28],
+    local: PhantomData<*mut ()>,
+}
+
+/// Initial latch and direction for a pin the program may drive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InitialOutput {
+    Low,
+    High,
+    /// Released, with a low latch for the next output-enable.
+    HiZLow,
+    /// Released, with a high latch for the next output-enable.
+    HiZHigh,
 }
 
 impl Pins {
@@ -30,31 +42,35 @@ impl Pins {
         Self::default()
     }
 
-    pub fn input<const N: u8>(mut self, _pin: Pin<N>, pad: PadConfig) -> Self {
+    /// Claims a pin whose pad output stays disabled.
+    pub fn input<const N: u8>(mut self, _pin: PioPin<N>, pad: PadConfig) -> Self {
         self.owned |= 1 << N;
         self.pad_bits[usize::from(N)] = pad.bits() as u8;
         self
     }
 
-    /// Claims a pin that the program can drive. Set `drive` false to begin in Hi-Z.
+    /// Claims a pin that the program may drive.
     pub fn output<const N: u8>(
         mut self,
-        _pin: Pin<N>,
+        _pin: PioPin<N>,
         pad: PadConfig,
-        high: bool,
-        drive: bool,
+        initial: InitialOutput,
     ) -> Self {
         let bit = 1 << N;
         self.owned |= bit;
         self.outputs |= bit;
-        self.initial_high |= if high { bit } else { 0 };
-        self.initial_dirs |= if drive { bit } else { 0 };
+        if matches!(initial, InitialOutput::High | InitialOutput::HiZHigh) {
+            self.initial_high |= bit;
+        }
+        if matches!(initial, InitialOutput::Low | InitialOutput::High) {
+            self.initial_dirs |= bit;
+        }
         self.pad_bits[usize::from(N)] = pad.bits() as u8;
         self
     }
 
     /// Get a typed owner back from a pin set returned by the SM or a failed build.
-    pub fn take<const N: u8>(&mut self) -> Option<Pin<N>> {
+    pub fn take<const N: u8>(&mut self) -> Option<PioPin<N>> {
         if N >= 28 || self.owned & (1 << N) == 0 {
             return None;
         }
@@ -63,7 +79,7 @@ impl Pins {
         self.initial_dirs &= !(1 << N);
         self.initial_high &= !(1 << N);
         // The bit was set by consuming this exact token and is now clear.
-        Some(unsafe { Pin::new() })
+        Some(unsafe { PioPin::__new() })
     }
 }
 
@@ -148,21 +164,22 @@ pub struct PIOBuilder<'program, 'pio> {
     in_pins: PinRange,
     out_pins: PinRange,
     set_pins: PinRange,
-    side_base: u8,
+    side_set_pin_base: u8,
     jmp_pin: Option<u8>,
     divider: Divider,
     push_threshold: u8,
     pull_threshold: u8,
-    in_shift: ShiftDirection,
-    out_shift: ShiftDirection,
+    in_shift_direction: ShiftDirection,
+    out_shift_direction: ShiftDirection,
     autopush: bool,
     autopull: bool,
     buffers: Buffers,
 }
 
 macro_rules! builder_options {
-    ($($field:ident: $type:ty),+ $(,)?) => {
+    ($($(#[$doc:meta])* $field:ident: $type:ty),+ $(,)?) => {
         $(
+            $(#[$doc])*
             pub fn $field(mut self, $field: $type) -> Self {
                 self.$field = $field;
                 self
@@ -179,13 +196,13 @@ impl<'program, 'pio> PIOBuilder<'program, 'pio> {
             in_pins: PinRange::default(),
             out_pins: PinRange::default(),
             set_pins: PinRange::default(),
-            side_base: 0,
+            side_set_pin_base: 0,
             jmp_pin: None,
             divider: Divider::Fixed(1, 0),
             push_threshold: 32,
             pull_threshold: 32,
-            in_shift: ShiftDirection::Right,
-            out_shift: ShiftDirection::Right,
+            in_shift_direction: ShiftDirection::Right,
+            out_shift_direction: ShiftDirection::Right,
             autopush: false,
             autopull: false,
             buffers: Buffers::RxTx,
@@ -193,32 +210,51 @@ impl<'program, 'pio> PIOBuilder<'program, 'pio> {
     }
 
     builder_options! {
+        /// Set the owned pins and their pad configuration.
         pins: Pins,
-        side_base: u8,
+        /// Set the first side-set pin.
+        side_set_pin_base: u8,
+        /// Set the ISR threshold in bits (1–32).
         push_threshold: u8,
+        /// Set the OSR threshold in bits (1–32).
         pull_threshold: u8,
-        in_shift: ShiftDirection,
-        out_shift: ShiftDirection,
+        /// Select the ISR shift direction.
+        in_shift_direction: ShiftDirection,
+        /// Select the OSR shift direction.
+        out_shift_direction: ShiftDirection,
+        /// Enable automatic RX pushes at the ISR threshold.
         autopush: bool,
+        /// Enable automatic TX pulls at the OSR threshold.
         autopull: bool,
+        /// Set the split or joined FIFO layout.
         buffers: Buffers,
     }
 
-    pub fn in_pins(mut self, base: u8, count: u8) -> Self {
-        self.in_pins = PinRange { base, count };
+    /// Set the first relative input pin.
+    pub fn in_pin_base(mut self, base: u8) -> Self {
+        self.in_pins.base = base;
         self
     }
 
+    /// Bound the relative inputs the program may read.
+    pub fn in_count(mut self, count: u8) -> Self {
+        self.in_pins.count = count;
+        self
+    }
+
+    /// Select the contiguous pins for OUT and MOV to PINS.
     pub fn out_pins(mut self, base: u8, count: u8) -> Self {
         self.out_pins = PinRange { base, count };
         self
     }
 
+    /// Select the contiguous pins for SET.
     pub fn set_pins(mut self, base: u8, count: u8) -> Self {
         self.set_pins = PinRange { base, count };
         self
     }
 
+    /// Select the pin tested by JMP PIN.
     pub fn jmp_pin(mut self, pin: u8) -> Self {
         self.jmp_pin = Some(pin);
         self
@@ -243,7 +279,7 @@ impl<'program, 'pio> PIOBuilder<'program, 'pio> {
         let side = self.program.side_set;
         let side_count = side.bits() - u8::from(side.optional());
         let sides = PinRange {
-            base: self.side_base,
+            base: self.side_set_pin_base,
             count: side_count,
         }
         .mask(5)?;
@@ -261,7 +297,6 @@ impl<'program, 'pio> PIOBuilder<'program, 'pio> {
         }
         if ((input | jmp | req.absolute_in) & !self.pins.owned != 0)
             || ((out | set | sides) & !self.pins.outputs != 0)
-            || self.pins.owned & !self.program.pio.pins != 0
         {
             return Err(BuildError::UnownedPin);
         }
@@ -272,7 +307,7 @@ impl<'program, 'pio> PIOBuilder<'program, 'pio> {
             | u32::from(self.set_pins.count) << 26
             | u32::from(self.out_pins.count) << 20
             | u32::from(self.in_pins.base) << 15
-            | u32::from(self.side_base) << 10
+            | u32::from(self.side_set_pin_base) << 10
             | u32::from(self.set_pins.base) << 5
             | u32::from(self.out_pins.base))
     }
@@ -284,8 +319,8 @@ impl<'program, 'pio> PIOBuilder<'program, 'pio> {
         Ok(self.buffers.bits()
             | u32::from(self.pull_threshold % 32) << 25
             | u32::from(self.push_threshold % 32) << 20
-            | u32::from(self.out_shift == ShiftDirection::Right) << 19
-            | u32::from(self.in_shift == ShiftDirection::Right) << 18
+            | u32::from(self.out_shift_direction == ShiftDirection::Right) << 19
+            | u32::from(self.in_shift_direction == ShiftDirection::Right) << 18
             | u32::from(self.autopull) << 17
             | u32::from(self.autopush) << 16)
     }
@@ -311,19 +346,20 @@ impl<'program, 'pio> PIOBuilder<'program, 'pio> {
         }
     }
 
+    fn config_bits(&self, n: u8) -> Result<(u32, u32, u32), BuildError> {
+        if !self.program.pio.clocks.sys_current_strict() {
+            return Err(BuildError::Clock);
+        }
+        Ok((
+            self.divider.bits(self.program.pio.clocks.sys().raw())?,
+            self.pinctrl(n)?,
+            self.shiftctrl()?,
+        ))
+    }
+
     #[inline(never)]
     fn configure(self, n: u8) -> Result<Machine<'program, 'pio>, FreeError<Pins, BuildError>> {
-        let config = (|| {
-            if !self.program.pio.clocks.sys_current_strict() {
-                return Err(BuildError::Clock);
-            }
-            Ok((
-                self.divider.bits(self.program.pio.clocks.sys().raw())?,
-                self.pinctrl(n)?,
-                self.shiftctrl()?,
-            ))
-        })();
-        let (divider, pinctrl, shiftctrl) = match config {
+        let (divider, pinctrl, shiftctrl) = match self.config_bits(n) {
             Ok(config) => config,
             Err(error) => return Err(FreeError::new(self.pins, error)),
         };
@@ -417,11 +453,11 @@ impl Machine<'_, '_> {
             write(sm_reg(self.n, PINCTRL), (1 << 26) | (u32::from(n) << 5));
             write(
                 sm_reg(self.n, INSTR),
-                0xe000 | ((self.pins.initial_high >> n) & 1),
+                0xe000 | ((self.pins.initial_high >> n) & 1), // SET PINS
             );
             write(
                 sm_reg(self.n, INSTR),
-                0xe080 | ((self.pins.initial_dirs >> n) & 1),
+                0xe080 | ((self.pins.initial_dirs >> n) & 1), // SET PINDIRS
             );
         }
         write(sm_reg(self.n, PINCTRL), 0);

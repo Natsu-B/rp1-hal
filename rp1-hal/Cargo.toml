@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+pio-asm = ["dep:pio"]
 eh02 = ["eh02-adc"]
 eh-nb = ["dep:embedded-hal-nb", "dep:nb"]
 embedded-io-07 = ["dep:embedded-io-07"]
@@ -14,7 +15,8 @@ eh02-adc = ["dep:embedded-hal-0-2", "dep:nb"]
 unstable-ring-dma = ["rp1-proto/unstable-ring-dma"]
 
 [dependencies]
-pio = { version = "0.3", default-features = false }
+pio-core = { version = "0.3", default-features = false }
+pio = { version = "0.3", default-features = false, optional = true }
 rp1-pac = { path = "../rp1-pac" }
 # The application picks the critical-section implementation (rp1-rt's default feature or its
 # own), so this crate must not switch the default on.
@@ -29,4 +31,6 @@ embedded-io-07 = { package = "embedded-io", version = "0.7.1", optional = true }
 embedded-hal-nb = { version = "1", optional = true }
 
 [dev-dependencies]
+critical-section = { version = "1", features = ["std"] }
+pio = { version = "0.3", default-features = false }
 trybuild = "1"

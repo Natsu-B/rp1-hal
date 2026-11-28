@@ -398,28 +398,43 @@ impl InputPin for ErasedPin<Input> {
     }
 }
 
+const IO_BANK0_RESET_CLEAR: usize = 0x4001_7004;
+const RIO_OE_CLEAR: usize = 0x400e_3004;
+const XOR: usize = 0x1000;
+const FUNCSEL_MASK: u32 = 0x1f;
+const FUNCSEL_RIO: u32 = 5;
+const FUNCSEL_PIO: u32 = 7;
+const SIGNAL_OVERRIDES: u32 = 0x3f << 12;
+const OEOVER_DISABLE: u32 = 2 << 14;
+const PAD_OD: u32 = 1 << 7;
+const PAD_IE: u32 = 1 << 6;
+
 /// Disconnect both the pad and the mux before handing a GPIO to PIO.
 pub(crate) fn pio_prepare(n: u8, pad_bits: u8) {
-    write(0x4001_7004, 1 << 19);
-    write(pad(n), 0xc0 | u32::from(pad_bits));
-    write(0x400e_3004, 1 << n);
-    write(ctrl(n), (2 << 14) | 7);
+    write(IO_BANK0_RESET_CLEAR, 1 << 19);
+    write(pad(n), PAD_OD | PAD_IE | u32::from(pad_bits));
+    write(RIO_OE_CLEAR, 1 << n);
+    // The pad stays isolated while changing routes. Aliases keep GPIO IRQ masks intact.
+    let route = OEOVER_DISABLE | FUNCSEL_PIO;
+    write(
+        XOR + ctrl(n),
+        (read(ctrl(n)) ^ route) & (SIGNAL_OVERRIDES | FUNCSEL_MASK),
+    );
 }
 
 pub(crate) fn pio_output(n: u8, enabled: bool) {
-    // Use aliases so an independent GPIO IRQ token retains its event masks.
     if enabled {
-        write(CLR + ctrl(n), 2 << 14);
-        write(CLR + pad(n), 1 << 7);
+        write(CLR + ctrl(n), OEOVER_DISABLE);
+        write(CLR + pad(n), PAD_OD);
     } else {
-        write(SET + pad(n), 1 << 7);
-        write(SET + ctrl(n), 2 << 14);
+        write(SET + pad(n), PAD_OD);
+        write(SET + ctrl(n), OEOVER_DISABLE);
     }
 }
 
 pub(crate) fn pio_release(n: u8) {
     // RIO OE has remained clear since pio_prepare, and OD is still set.
-    write(ctrl(n), (2 << 14) | 5);
+    write(CLR + ctrl(n), FUNCSEL_PIO & !FUNCSEL_RIO);
 }
 
 #[cfg(test)]

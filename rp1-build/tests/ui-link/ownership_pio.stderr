@@ -18,22 +18,38 @@ help: a field with a similar name exists
 14 +     let _ = p.pins.gpio12;
    |
 
-error[E0609]: no field `sm1` on type `PioStateMachines`
-  --> $CASE:17:15
+error[E0308]: mismatched types
+  --> $CASE:17:45
    |
-17 |     let _ = p.sm1;
+17 |     let _ = rp1_hal::pio::Pins::new().input(p.pins.gpio13, rp1_hal::gpio::PadConfig::INPUT_DEFAULT);
+   |                                       ----- ^^^^^^^^^^^^^ expected `PioPin<_>`, found `Pin<13>`
+   |                                       |
+   |                                       arguments to this method are incorrect
+   |
+   = note: expected struct `PioPin<_>`
+              found struct `rp1_hal::gpio::Pin<13>`
+note: method defined here
+  --> $WORKSPACE/rp1-hal/src/pio/sm.rs
+   |
+   |     pub fn input<const N: u8>(mut self, _pin: PioPin<N>, pad: PadConfig) -> Self {
+   |            ^^^^^
+
+error[E0609]: no field `sm1` on type `PioStateMachines`
+  --> $CASE:20:15
+   |
+20 |     let _ = p.sm1;
    |               ^^^ unknown field
    |
 help: a field with a similar name exists
    |
-17 -     let _ = p.sm1;
-17 +     let _ = p.sm0;
+20 -     let _ = p.sm1;
+20 +     let _ = p.sm0;
    |
 
 error[E0277]: `*mut ()` cannot be sent between threads safely
-  --> $CASE:21:12
+  --> $CASE:24:12
    |
-21 |     send::<rp1::PioParts>();
+24 |     send::<rp1::PioParts>();
    |            ^^^^^^^^^^^^^ `*mut ()` cannot be sent between threads safely
    |
    = help: within `rp1_hal::pio::PioParts<9, PioStateMachines>`, the trait `Send` is not implemented for `*mut ()`
@@ -48,9 +64,9 @@ note: required because it appears within the type `rp1_hal::pio::PioParts<9, Pio
    | pub struct PioParts<const MASK: u8, S> {
    |            ^^^^^^^^
 note: required by a bound in `send`
-  --> $CASE:19:12
+  --> $CASE:22:12
    |
-19 | fn send<T: Send>() {}
+22 | fn send<T: Send>() {}
    |            ^^^^ required by this bound in `send`
 
 error[E0382]: use of moved value: `p.pio`

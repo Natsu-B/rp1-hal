@@ -9,33 +9,31 @@ fn install<'a>(pio: &'a PIO, program: &::pio::Program<32>) -> InstalledProgram<'
 
 #[test]
 fn requires_owned_and_declared_pins_in_the_correct_direction() {
-    let pio = block((1 << 12) | (1 << 22));
+    let pio = block();
     let p = ::pio::pio_asm!("in pins, 1", "set pins, 1");
     let p = install(&pio, &p.program);
     let mut b = PIOBuilder::from_installed_program(&p)
-        .in_pins(22, 1)
+        .in_pin_base(22)
+        .in_count(1)
         .set_pins(12, 1);
     assert_eq!(b.pinctrl(0), Err(BuildError::UnownedPin));
-    let pin = unsafe { Pin::<12>::new() };
+    let pin = unsafe { PioPin::<12>::__new() };
     b.pins = Pins::new()
         .input(pin, PadConfig::INPUT_DEFAULT)
-        .input(unsafe { Pin::<22>::new() }, PadConfig::INPUT_DEFAULT);
+        .input(unsafe { PioPin::<22>::__new() }, PadConfig::INPUT_DEFAULT);
     assert_eq!(b.pinctrl(0), Err(BuildError::UnownedPin));
     let pin = b.pins.take::<12>().unwrap();
-    b.pins = b.pins.output(pin, PadConfig::OUTPUT_DEFAULT, false, true);
+    b.pins = b
+        .pins
+        .output(pin, PadConfig::OUTPUT_DEFAULT, InitialOutput::Low);
     assert_eq!(b.pinctrl(0), Ok(1 << 26 | 22 << 15 | 12 << 5));
     b.in_pins = PinRange { base: 27, count: 2 };
     assert_eq!(b.pinctrl(0), Err(BuildError::PinRange));
-    b.in_pins = PinRange { base: 22, count: 1 };
-    b.pins = b
-        .pins
-        .input(unsafe { Pin::<23>::new() }, PadConfig::INPUT_DEFAULT);
-    assert_eq!(b.pinctrl(0), Err(BuildError::UnownedPin));
 }
 
 #[test]
 fn restricts_internal_flags_to_each_sm() {
-    let pio = block(0);
+    let pio = block();
     let p = ::pio::pio_asm!("irq 1", "irq set 4 rel", "wait 0 irq 0 rel");
     let p = install(&pio, &p.program);
     let b = PIOBuilder::from_installed_program(&p);
@@ -80,7 +78,7 @@ fn fifo_reset_toggles_join_before_restoring_the_requested_configuration() {
 
 #[test]
 fn forgetting_a_machine_keeps_its_program_reserved() {
-    let pio = block(0);
+    let pio = block();
     let p = ::pio::pio_asm!("nop").program;
     let program = install(&pio, &p);
     pio.active[0].set(program.mask);

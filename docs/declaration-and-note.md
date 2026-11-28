@@ -509,7 +509,7 @@ STATIC register evidence and proposed hardware checks.
 **STATIC.** `pio = { sms = [0], pins = [12, 13, 22, 23] }` は M3 制御窓と APB FIFO 窓を
 一方のコアに予約する。`sms` は 0–3 の重複しない番号で、1 個以上が必要。
 `pins` は省略可能で、GPIO0–27 の未使用ピンを選ぶ。生成された `PioParts::SM_MASK` が
-SM の選択を示す。ピンは同じコアの `pins` に未設定の状態で渡る。
+SM の選択を示す。PIO に予約したピンは同じコアの `pins` に `PioPin<N>` として渡る。
 
 `clock.authority = "rp1"` と `linux.gpiomem = "disable"` が必要。NOTE の BlockId 66 は
 PIO 全体を表し、SM の選択は生成コードに保持する。PIO APB の reset は宣言したコアが扱う。

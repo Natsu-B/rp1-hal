@@ -1,9 +1,11 @@
 use super::{BASE, PIO};
 use crate::{FreeError, write};
-use ::pio::{
+use pio_core::{
     InSource, InstructionOperands as Op, IrqIndexMode, JmpCondition, MovDestination, MovSource,
     OutDestination, PioVersion, Program, SetDestination, SideSet, WaitSource,
 };
+
+const INSTR_MEM: usize = BASE + 0x4c;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InstallError {
@@ -40,7 +42,7 @@ impl PIO {
     /// Validate and relocate a PIO v0 program before writing instruction memory.
     pub fn install(&self, program: &Program<32>) -> Result<InstalledProgram<'_>, InstallError> {
         self.install_with(program, |index, word| {
-            write(BASE + 0x4c + index * 4, word.into())
+            write(INSTR_MEM + index * 4, word.into())
         })
     }
 

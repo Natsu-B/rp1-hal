@@ -1,8 +1,8 @@
-use rp1_hal::gpio::PadConfig;
-use rp1_hal::pio::{InstalledProgram, PIOBuilder, Pins, Running, Rx, StateMachine, Stopped, Tx, UninitStateMachine};
+use rp1_hal::gpio::{PadConfig, Pin};
+use rp1_hal::pio::{InstalledProgram, PIOBuilder, Pins, PioPin, Running, Rx, StateMachine, Stopped, Tx, UninitStateMachine};
 
-fn unowned_pin() {
-    let _ = Pins::new().input(22, PadConfig::INPUT_DEFAULT);
+fn unowned_pin(gpio: Pin<22>) {
+    let _ = Pins::new().input(gpio, PadConfig::INPUT_DEFAULT);
 }
 
 fn reused_sm(program: &InstalledProgram<'_>, sm: UninitStateMachine<0>) {
@@ -21,6 +21,8 @@ fn wrong_core() {
     fn send<T: Send>() {}
     send::<UninitStateMachine<0>>();
     send::<Tx<0>>();
+    send::<PioPin<22>>();
+    send::<Pins>();
 }
 
 fn stopped_with_one_half(sm: StateMachine<'_, '_, 0, Stopped>, rx: Rx<0>) {

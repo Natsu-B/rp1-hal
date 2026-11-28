@@ -1,17 +1,17 @@
 error[E0308]: mismatched types
  --> tests/ui/pio_ownership.rs:5:31
   |
-5 |     let _ = Pins::new().input(22, PadConfig::INPUT_DEFAULT);
-  |                         ----- ^^ expected `Pin<_>`, found integer
+5 |     let _ = Pins::new().input(gpio, PadConfig::INPUT_DEFAULT);
+  |                         ----- ^^^^ expected `PioPin<_>`, found `Pin<22>`
   |                         |
   |                         arguments to this method are incorrect
   |
-  = note: expected struct `rp1_hal::gpio::Pin<_>`
-               found type `{integer}`
+  = note: expected struct `PioPin<_>`
+             found struct `rp1_hal::gpio::Pin<22>`
 note: method defined here
  --> src/pio/sm.rs
   |
-  |     pub fn input<const N: u8>(mut self, _pin: Pin<N>, pad: PadConfig) -> Self {
+  |     pub fn input<const N: u8>(mut self, _pin: PioPin<N>, pad: PadConfig) -> Self {
   |            ^^^^^
 
 error[E0277]: `*mut ()` cannot be sent between threads safely
@@ -60,10 +60,56 @@ note: required by a bound in `send`
 21 |     fn send<T: Send>() {}
    |                ^^^^ required by this bound in `send`
 
-error[E0061]: this method takes 2 arguments but 1 argument was supplied
-  --> tests/ui/pio_ownership.rs:27:16
+error[E0277]: `*mut ()` cannot be sent between threads safely
+  --> tests/ui/pio_ownership.rs:24:12
    |
-27 |     let _ = sm.uninit(rx);
+24 |     send::<PioPin<22>>();
+   |            ^^^^^^^^^^ `*mut ()` cannot be sent between threads safely
+   |
+   = help: within `PioPin<22>`, the trait `Send` is not implemented for `*mut ()`
+note: required because it appears within the type `PhantomData<*mut ()>`
+  --> $RUST/core/src/marker.rs
+   |
+   | pub struct PhantomData<T: PointeeSized>;
+   |            ^^^^^^^^^^^
+note: required because it appears within the type `PioPin<22>`
+  --> src/pio.rs
+   |
+   | pub struct PioPin<const N: u8>(PhantomData<*mut ()>);
+   |            ^^^^^^
+note: required by a bound in `send`
+  --> tests/ui/pio_ownership.rs:21:16
+   |
+21 |     fn send<T: Send>() {}
+   |                ^^^^ required by this bound in `send`
+
+error[E0277]: `*mut ()` cannot be sent between threads safely
+  --> tests/ui/pio_ownership.rs:25:12
+   |
+25 |     send::<Pins>();
+   |            ^^^^ `*mut ()` cannot be sent between threads safely
+   |
+   = help: within `rp1_hal::pio::Pins`, the trait `Send` is not implemented for `*mut ()`
+note: required because it appears within the type `PhantomData<*mut ()>`
+  --> $RUST/core/src/marker.rs
+   |
+   | pub struct PhantomData<T: PointeeSized>;
+   |            ^^^^^^^^^^^
+note: required because it appears within the type `rp1_hal::pio::Pins`
+  --> src/pio/sm.rs
+   |
+   | pub struct Pins {
+   |            ^^^^
+note: required by a bound in `send`
+  --> tests/ui/pio_ownership.rs:21:16
+   |
+21 |     fn send<T: Send>() {}
+   |                ^^^^ required by this bound in `send`
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+  --> tests/ui/pio_ownership.rs:29:16
+   |
+29 |     let _ = sm.uninit(rx);
    |                ^^^^^^---- argument #2 of type `rp1_hal::pio::Tx<0>` is missing
    |
 note: method defined here
@@ -73,13 +119,13 @@ note: method defined here
    |            ^^^^^^
 help: provide the argument
    |
-27 |     let _ = sm.uninit(rx, /* Tx<0> */);
+29 |     let _ = sm.uninit(rx, /* Tx<0> */);
    |                         +++++++++++++
 
 error[E0308]: mismatched types
-  --> tests/ui/pio_ownership.rs:31:23
+  --> tests/ui/pio_ownership.rs:33:23
    |
-31 |     let _ = sm.uninit(rx, tx);
+33 |     let _ = sm.uninit(rx, tx);
    |                ------ ^^ expected `0`, found `1`
    |                |
    |                arguments to this method are incorrect
@@ -93,9 +139,9 @@ note: method defined here
    |            ^^^^^^
 
 error[E0599]: no method named `uninit` found for struct `StateMachine<'_, '_, 0, rp1_hal::pio::Running>` in the current scope
-  --> tests/ui/pio_ownership.rs:35:16
+  --> tests/ui/pio_ownership.rs:37:16
    |
-35 |     let _ = sm.uninit(rx, tx);
+37 |     let _ = sm.uninit(rx, tx);
    |                ^^^^^^ method not found in `StateMachine<'_, '_, 0, rp1_hal::pio::Running>`
    |
    = note: the method was found for `StateMachine<'program, 'pio, N, Stopped>`

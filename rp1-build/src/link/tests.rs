@@ -439,6 +439,7 @@ fn generated_ownership_is_checked_by_rust() {
     );
     d.proc0.gpio = vec![22];
     d.proc0.gpio_irq = vec![22];
+    d.proc1.gpio = vec![13];
     d.proc1.timer = vec!["ALARM0".into()];
     d.proc1.instances.insert(
         "pio".into(),
@@ -491,7 +492,7 @@ fn pio_sms(parts: rp1::PioParts, clocks: &rp1_hal::clocks::Clocks) {{
     let _: rp1_hal::pio::UninitStateMachine<0> = sms.sm0;
     let _: rp1_hal::pio::UninitStateMachine<3> = sms.sm3;
 }}
-fn pio(p: rp1::Proc1Resources) -> (rp1::PioParts, rp1_hal::gpio::Pin<12>) {{ (p.pio, p.pins.gpio12) }}
+fn pio(p: rp1::Proc1Resources) -> (rp1::PioParts, rp1_hal::pio::PioPin<12>) {{ (p.pio, p.pins.gpio12) }}
 #[rp1_rt::interrupt(proc0)]
 fn IO_BANK0() {{}}
 fn alarm(irq: rp1::proc1_irq::TIMER_0) -> rp1_rt::interrupt::Binding<rp1_rt::interrupt::AlarmIrq<0>, 26, 1> {{ irq }}
@@ -514,6 +515,9 @@ fn twice(p: rp1::Proc1Resources) {
 }
 fn missing_pin(p: rp1::Proc1Resources) {
     let _ = p.pins.gpio22;
+}
+fn ordinary_gpio_is_not_pio(p: rp1::Proc1Resources) {
+    let _ = rp1_hal::pio::Pins::new().input(p.pins.gpio13, rp1_hal::gpio::PadConfig::INPUT_DEFAULT);
 }
 fn missing_sm(p: rp1::PioStateMachines) {
     let _ = p.sm1;

@@ -12,10 +12,9 @@ mod stack_watermark;
 mod wave;
 
 use rp1_hal::{
-    Error,
     clocks::Clocks,
-    gpio::{PadConfig, Pin, Pull},
-    pio::{PIO, PIOExt},
+    gpio::{PadConfig, Pull},
+    pio::{PIO, PIOExt, PioPin},
     timer::Timer,
 };
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
@@ -57,14 +56,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let clocks =
         Clocks::wait_from_proc0(&core, rp1_hal::fugit::MicrosDurationU32::micros(10_000)).unwrap();
     let timer = Timer::new();
-    let mut b = p.pio;
-    let (pio, sms) = loop {
-        match b.split(&clocks) {
-            Ok(parts) => break parts,
-            Err(error) if *error.error() == Error::NotReady => b = error.into_driver(),
-            Err(error) => panic!("{error:?}"),
-        }
-    };
+    let (pio, sms) = p.pio.split_wait(&clocks).unwrap();
     let mut w = wave::Bench {
         sm0: Some(sms.sm0),
         sm1: Some(sms.sm1),
@@ -121,7 +113,7 @@ fn check(pio: &PIO, bench: &mut wave::Bench, timer: &Timer) -> LabResult<()> {
     Ok(())
 }
 
-fn input_only<const N: u8>(pin: Pin<N>) -> Pin<N> {
+fn input_only<const N: u8>(pin: PioPin<N>) -> PioPin<N> {
     let ctrl = 0x400d_0004 + usize::from(N) * 8;
     let pad = 0x400f_0004 + usize::from(N) * 4;
     // This declaration owns N. Set OD and IE before switching its mux.

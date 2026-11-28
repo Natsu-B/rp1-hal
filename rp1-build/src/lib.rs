@@ -433,15 +433,30 @@ fn resources(
             })
             .collect::<Result<Vec<_>>>()?;
         // The doorbell pin's force bit belongs to the doorbell, not to a `Pin`.
-        let pins: Vec<u8> = c
+        let pio_pins = c
+            .instances
+            .values()
+            .find_map(|instance| match instance {
+                metadata::Instance::Pio(pio) => Some(pio.pins.as_slice()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let pins: Vec<_> = c
             .pins()
             .into_iter()
             .filter(|p| Some(*p) != c.doorbell)
             .filter(|p| !parts.iter().any(|(_, _, used)| used.contains(p)))
+            .map(|pin| {
+                if pio_pins.contains(&pin) {
+                    (pin, "pio::PioPin", "__new")
+                } else {
+                    (pin, "gpio::Pin", "new")
+                }
+            })
             .collect();
         s.push_str(&format!("pub struct Proc{index}Pins {{\n_private: ::core::marker::PhantomData<::core::cell::Cell<()>>,\n"));
-        for pin in &pins {
-            s.push_str(&format!("pub gpio{pin}: ::rp1_hal::gpio::Pin<{pin}>,\n"));
+        for (pin, ty, _) in &pins {
+            writeln!(s, "pub gpio{pin}: ::rp1_hal::{ty}<{pin}>,")?;
         }
         let lines: Vec<_> = board::irq_routes()
             .filter(|line| {
@@ -553,10 +568,11 @@ fn resources(
             }
         }
         s.push_str(&format!("_core: ::core::marker::PhantomData<::rp1_rt::Proc{index}>,\n}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub(crate) unsafe fn new() -> Self {{ Self {{ _core: ::core::marker::PhantomData, pins: Proc{index}Pins {{\n_private: ::core::marker::PhantomData,\n"));
-        for pin in &pins {
-            s.push_str(&format!(
-                "gpio{pin}: unsafe {{ ::rp1_hal::gpio::Pin::new() }},\n"
-            ));
+        for (pin, ty, constructor) in &pins {
+            writeln!(
+                s,
+                "gpio{pin}: unsafe {{ ::rp1_hal::{ty}::{constructor}() }},"
+            )?;
         }
         s.push_str("},\n");
         s.push_str(&format!(
@@ -672,7 +688,6 @@ fn instance_resource(
         Instance::Dma(_) => unreachable!("DMA has a declaration-specific channel set"),
         Instance::Pio(pio) => {
             let mask = pio.sms.iter().fold(0u8, |mask, &sm| mask | (1 << sm));
-            let pins = pio.pins.iter().fold(0u32, |mask, &pin| mask | (1 << pin));
             writeln!(
                 source,
                 "/// The declared state machines.\npub struct PioStateMachines {{"
@@ -693,7 +708,7 @@ fn instance_resource(
             // Pins remain unconfigured in ProcNPins until the application selects their roles.
             return Ok((
                 "PioParts".into(),
-                format!("unsafe {{ PioParts::__new(PioStateMachines {{ {sms} }}, {pins:#x}) }}"),
+                format!("unsafe {{ PioParts::__new(PioStateMachines {{ {sms} }}) }}"),
                 Vec::new(),
             ));
         }

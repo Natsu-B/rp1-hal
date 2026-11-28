@@ -5,7 +5,7 @@
 #[path = "../../shm-firmware/src/stack_watermark.rs"]
 mod stack_watermark;
 
-use rp1_hal::{gpio::Pin, log, pac, timer::Timer};
+use rp1_hal::{log, pac, pio::PioPin, timer::Timer};
 use rp1_proto::board::{PIO_IRQ0, PIO_IRQ1};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 
@@ -80,15 +80,19 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     }
 }
 
-fn input_only<const N: u8>(pin: Pin<N>) -> bool {
-    let _pin = pin.into_input();
-    // The declared pad is already out of drive before the override is changed.
+fn input_only<const N: u8>(_pin: PioPin<N>) -> bool {
+    // Isolate the declared pad before changing its mux.
     let io = unsafe { &*pac::IO_BANK0::PTR.cast::<pac::generated::io_bank0::RegisterBlock>() };
     let pads =
         unsafe { &*pac::PADS_BANK0::PTR.cast::<pac::generated::pads_bank0::RegisterBlock>() };
     let ctrl = io.gpio_ctrl(N.into());
     let disable = pac::generated::io_bank0::gpio_ctrl::oeover::DISABLE;
-    unsafe { ctrl.write_bits_unchecked((ctrl.read().bits() & !(3 << 14)) | (disable << 14)) };
+    unsafe {
+        (0x4001_7004 as *mut u32).write_volatile(1 << 19);
+        pads.gpio(N.into()).write_bits_unchecked(0xc6);
+        (0x400e_3004 as *mut u32).write_volatile(1 << N);
+        ctrl.write_bits_unchecked((disable << 14) | 5);
+    };
     let pad = pads.gpio(N.into()).read();
     pad.ie().bits() && pad.od().bits() && ctrl.read().oeover().bits() == disable
 }

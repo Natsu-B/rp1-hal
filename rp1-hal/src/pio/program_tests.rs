@@ -5,7 +5,7 @@ fn words<const L: usize>(len: usize) -> Program<L> {
     Program {
         code: (0..len).map(|_| 0xa042).collect(),
         origin: None,
-        wrap: ::pio::Wrap {
+        wrap: pio_core::Wrap {
             source: len.saturating_sub(1) as u8,
             target: 0,
         },
@@ -16,7 +16,7 @@ fn words<const L: usize>(len: usize) -> Program<L> {
 
 #[test]
 fn placement_handles_boundaries_holes_and_fixed_origins() {
-    let pio = block(0);
+    let pio = block();
     let install = |program: &Program<32>| pio.install_with(program, |_, _| {});
     assert_eq!(install(&words(0)).err(), Some(InstallError::InvalidProgram));
     assert_eq!(
@@ -50,11 +50,13 @@ fn placement_handles_boundaries_holes_and_fixed_origins() {
 
 #[test]
 fn relocates_jmp_and_wrap_at_a_fixed_origin() {
-    let pio = block(0);
-    let mut p = words::<32>(4).set_origin(Some(24)).set_wrap(::pio::Wrap {
-        source: 3,
-        target: 1,
-    });
+    let pio = block();
+    let mut p = words::<32>(4)
+        .set_origin(Some(24))
+        .set_wrap(pio_core::Wrap {
+            source: 3,
+            target: 1,
+        });
     p.code[1] = 0x0563;
     let mut mem = [0; 32];
     let installed = pio
@@ -67,7 +69,7 @@ fn relocates_jmp_and_wrap_at_a_fixed_origin() {
 
 #[test]
 fn invalid_programs_never_write_instruction_memory() {
-    let pio = block(0);
+    let pio = block();
     let reject = |p: &Program<32>| {
         pio.install_with(p, |_, _| panic!("wrote before validation"))
             .err()
@@ -105,7 +107,7 @@ fn invalid_programs_never_write_instruction_memory() {
 
 #[test]
 fn reused_and_forgotten_leases_cannot_be_overwritten() {
-    let pio = block(0);
+    let pio = block();
     let program = words::<32>(1).set_origin(Some(31));
     let install = || pio.install_with(&program, |_, _| {});
     let original = install().unwrap();

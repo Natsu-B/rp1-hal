@@ -1,14 +1,17 @@
-//! RP1's four state machines and shared 32-word instruction memory.
+#![doc = include_str!("../../docs/pio.md")]
 
 mod fifo;
 mod program;
 mod sm;
 
-pub use ::pio::{Program, pio_asm, pio_file};
+#[cfg(feature = "pio-asm")]
+pub use ::pio::{pio_asm, pio_file};
 pub use fifo::{Buffers, Rx, Tx};
+pub use pio_core::Program;
 pub use program::{InstallError, InstalledProgram};
 pub use sm::{
-    BuildError, PIOBuilder, Pins, Running, ShiftDirection, StateMachine, Stopped, SyncStart,
+    BuildError, InitialOutput, PIOBuilder, Pins, Running, ShiftDirection, StateMachine, Stopped,
+    SyncStart,
 };
 
 use crate::{Error, FreeError, TIMER_RAWL, clocks::Clocks, read, write};
@@ -26,6 +29,10 @@ const FSTAT: usize = BASE + 4;
 const FLEVEL: usize = BASE + 0x0c;
 const FLEVEL2: usize = BASE + 0x10;
 const IRQ: usize = BASE + 0x34;
+const IRQ0_INTE: usize = BASE + 0x150;
+const IRQ0_INTF: usize = BASE + 0x154;
+const IRQ1_INTE: usize = BASE + 0x15c;
+const IRQ1_INTF: usize = BASE + 0x160;
 
 const fn sm_reg(n: u8, offset: usize) -> usize {
     BASE + 0xcc + 0x20 * n as usize + offset
@@ -34,7 +41,6 @@ const fn sm_reg(n: u8, offset: usize) -> usize {
 /// The PIO declaration and its exact set of SM tokens.
 pub struct PioParts<const MASK: u8, S> {
     sms: S,
-    pins: u32,
     reset: Reset,
     local: PhantomData<*mut ()>,
 }
@@ -44,15 +50,27 @@ impl<const MASK: u8, S> PioParts<MASK, S> {
 
     /// # Safety
     /// Call once on the declaring core, with exclusive ownership of PIO and its reset bit.
-    /// Supply one token for each SM in MASK and exactly the GPIOs reserved for PIO.
+    /// Supply one token for each SM in MASK.
     #[doc(hidden)]
-    pub const unsafe fn __new(sms: S, pins: u32) -> Self {
+    pub const unsafe fn __new(sms: S) -> Self {
         Self {
             sms,
-            pins,
             reset: Reset::Fresh,
             local: PhantomData,
         }
+    }
+}
+
+/// An unconfigured bank-0 pad reserved by the core's PIO declaration.
+pub struct PioPin<const N: u8>(PhantomData<*mut ()>);
+
+impl<const N: u8> PioPin<N> {
+    /// # Safety
+    /// Only the declaration may issue this token, once on the core that reserves N for PIO.
+    #[doc(hidden)]
+    pub const unsafe fn __new() -> Self {
+        assert!(N < 28);
+        Self(PhantomData)
     }
 }
 
@@ -72,7 +90,6 @@ impl<const N: u8> UninitStateMachine<N> {
 /// The instruction memory owner. Dropped programs retain their allocation.
 pub struct PIO {
     clocks: Clocks,
-    pins: u32,
     used: Cell<u32>,
     active: [Cell<u32>; 4],
     local: PhantomData<*mut ()>,
@@ -88,6 +105,21 @@ pub trait PIOExt: sealed::Parts + Sized {
 
     /// Initialize PIO. Retry with the returned parts on `Error::NotReady`.
     fn split(self, clocks: &Clocks) -> Result<(PIO, Self::StateMachines), FreeError<Self, Error>>;
+
+    /// Initialize PIO, polling the 1 MHz timer. Each reset transition has a 1 ms deadline.
+    /// On failure, returns the parts and the clock or timeout error.
+    fn split_wait(
+        mut self,
+        clocks: &Clocks,
+    ) -> Result<(PIO, Self::StateMachines), FreeError<Self, Error>> {
+        loop {
+            match self.split(clocks) {
+                Err(error) if *error.error() == Error::NotReady => self = error.into_driver(),
+                result => return result,
+            }
+            core::hint::spin_loop();
+        }
+    }
 }
 
 impl<const MASK: u8, S> PIOExt for PioParts<MASK, S> {
@@ -102,12 +134,11 @@ impl<const MASK: u8, S> PIOExt for PioParts<MASK, S> {
         }
         write(CTRL, 0);
         // The reset also clears FIFO state and the DMA request enables.
-        for offset in [0x150, 0x154, 0x15c, 0x160] {
-            write(BASE + offset, 0);
+        for register in [IRQ0_INTE, IRQ0_INTF, IRQ1_INTE, IRQ1_INTF] {
+            write(register, 0);
         }
         let pio = PIO {
             clocks: *clocks,
-            pins: self.pins,
             used: Cell::new(0),
             active: [const { Cell::new(0) }; 4],
             local: PhantomData,

@@ -1,8 +1,8 @@
 use super::{DOWN, LIMIT_US, LabResult, OUTPUT, dma_enables, now, pad_state, reg};
 use rp1_hal::{
-    gpio::Pin,
     pio::{
-        PIO, PIOBuilder, Pins, Program, Rx, ShiftDirection, SyncStart, UninitStateMachine, pio_asm,
+        InitialOutput, PIO, PIOBuilder, Pins, PioPin, Program, Rx, ShiftDirection, SyncStart,
+        UninitStateMachine, pio_asm,
     },
     timer::Timer,
 };
@@ -12,10 +12,10 @@ pub struct Bench {
     pub sm1: Option<UninitStateMachine<1>>,
     pub sm2: Option<UninitStateMachine<2>>,
     pub sm3: Option<UninitStateMachine<3>>,
-    pub gpio12: Option<Pin<12>>,
-    pub gpio13: Option<Pin<13>>,
-    pub gpio22: Option<Pin<22>>,
-    pub gpio23: Option<Pin<23>>,
+    pub gpio12: Option<PioPin<12>>,
+    pub gpio13: Option<PioPin<13>>,
+    pub gpio22: Option<PioPin<22>>,
+    pub gpio23: Option<PioPin<23>>,
 }
 
 // Each branch path takes five instructions at 50 MHz. X timestamps each edge
@@ -357,15 +357,18 @@ impl Bench {
             .map_err(|_| "sampler build")?;
         let builder = PIOBuilder::from_installed_program(&emit)
             .clock_divisor_fixed_point(case.integer, case.fraction)
-            .out_shift(ShiftDirection::Right)
+            .out_shift_direction(ShiftDirection::Right)
             .pins(Pins::new().output(
                 self.gpio12.take().ok_or("gpio12")?,
                 OUTPUT,
-                case.dirs,
-                !case.dirs,
+                if case.dirs {
+                    InitialOutput::HiZHigh
+                } else {
+                    InitialOutput::Low
+                },
             ));
         let builder = if case.side {
-            builder.side_base(12)
+            builder.side_set_pin_base(12)
         } else {
             builder.set_pins(12, 1)
         };
@@ -432,8 +435,7 @@ impl Bench {
                     .pins(Pins::new().output(
                         self.$pin.take().ok_or("phase output")?,
                         OUTPUT,
-                        false,
-                        true,
+                        InitialOutput::Low,
                     ))
                     .build(self.$sm.take().ok_or("phase sm")?)
                     .map_err(|_| "phase output build")?

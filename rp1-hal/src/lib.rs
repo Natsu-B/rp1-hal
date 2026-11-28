@@ -254,8 +254,16 @@ pub enum Error {
     Hardware,
     NotReady,
 }
+#[cfg(test)]
+#[path = "pio/test_mmio.rs"]
+mod test_mmio;
+
 #[inline(always)]
 pub(crate) fn read(address: usize) -> u32 {
+    #[cfg(test)]
+    if let Some(value) = test_mmio::read(address) {
+        return value;
+    }
     unsafe { (address as *const u32).read_volatile() }
 }
 #[inline(always)]
@@ -266,6 +274,10 @@ pub(crate) fn write(address: usize, value: u32) {
 /// A volatile store for callers that order a sequence of writes themselves.
 #[inline(always)]
 pub(crate) fn write_relaxed(address: usize, value: u32) {
+    #[cfg(test)]
+    if test_mmio::write(address, value) {
+        return;
+    }
     unsafe {
         (address as *mut u32).write_volatile(value);
     }

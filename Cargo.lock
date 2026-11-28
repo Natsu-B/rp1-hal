@@ -865,6 +865,7 @@ dependencies = [
 name = "rp1-hal"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
  "embedded-hal-nb",
@@ -873,6 +874,7 @@ dependencies = [
  "fugit",
  "nb 1.1.0",
  "pio",
+ "pio-core",
  "rp1-pac",
  "rp1-proto",
  "rp1-rt",

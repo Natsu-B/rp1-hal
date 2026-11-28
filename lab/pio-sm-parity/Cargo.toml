@@ -10,7 +10,7 @@ test = false
 bench = false
 
 [dependencies]
-rp1-hal = { path = "../../rp1-hal" }
+rp1-hal = { path = "../../rp1-hal", features = ["pio-asm"] }
 rp1-link = { path = "../../rp1-link" }
 rp1-proto = { path = "../../rp1-proto" }
 rp1-rt = { path = "../../rp1-rt" }
