@@ -197,10 +197,18 @@ fn serial_irq_declarations_require_exclusive_ownership() {
             ),
             &["E3", &instance.to_ascii_uppercase(), "proc0", "proc1"],
         );
-        error(
-            &format!("[proc0]\ncustom_{instance}_handler=true"),
-            &["E5", &format!("custom_{instance}_handler needs {instance}")],
-        );
+        let custom = format!("[proc0]\ncustom_{instance}_handler=true");
+        if matches!(instance, "spi2" | "spi5") {
+            error(
+                &custom,
+                &["E0", &format!("unknown key 'custom_{instance}_handler'")],
+            );
+        } else {
+            error(
+                &custom,
+                &["E5", &format!("custom_{instance}_handler needs {instance}")],
+            );
+        }
     }
 }
 
