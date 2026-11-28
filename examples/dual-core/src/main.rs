@@ -77,7 +77,7 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let bss = bss_check(0xb55_0000 | private);
     log!("proc0 ready private={} bss=0x{:x}\n", private, bss).unwrap();
     LOCAL.get(&core).set(1);
-    // Poll the single v3 startup transfer to leave ISRAM for the reply loop.
+    // v3 polls only this startup ID probe (one 100 ms deadline) to fit the ISRAM reply loop.
     let mut bus = p
         .spi0
         .init(
