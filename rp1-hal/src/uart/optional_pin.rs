@@ -47,6 +47,7 @@ fn optional_cts_keeps_required_aliases_and_call_shape() {
                 &mut tests::Fake::new(),
                 50.MHz(),
                 115_200.Hz().into(),
+                false,
                 |tx, rx| (tx.assume(), rx.assume()),
             )
             .unwrap()

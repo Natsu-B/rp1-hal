@@ -185,8 +185,8 @@ impl<const IRQ: u8> Line<IRQ> {
 /// An owned NVIC line with its number erased.
 #[doc(hidden)]
 pub struct OwnedLine {
-    bank_offset: usize,
     bit: core::num::NonZeroU32,
+    bank_offset: usize,
     _core: core::marker::PhantomData<*mut ()>,
 }
 
@@ -198,6 +198,12 @@ impl OwnedLine {
 
     pub fn disable(&mut self) {
         Hardware.write(ICER + self.bank_offset, self.bit.get());
+    }
+
+    #[doc(hidden)]
+    pub fn set_priority(&mut self, priority: Priority) {
+        let irq = (self.bank_offset as u8) * 8 + self.bit.get().trailing_zeros() as u8;
+        Nvic(Hardware).set_priority(irq, priority);
     }
 
     pub fn enable(&mut self) {
@@ -236,8 +242,8 @@ impl<S, const IRQ: u8, const CORE: u8> Binding<S, IRQ, CORE> {
     #[doc(hidden)]
     pub fn into_owned_line(self) -> OwnedLine {
         OwnedLine {
+            bit: const { core::num::NonZeroU32::new(irq_bit(IRQ)).unwrap() },
             bank_offset: irq_bank_offset(IRQ),
-            bit: core::num::NonZeroU32::new(irq_bit(IRQ)).unwrap(),
             _core: core::marker::PhantomData,
         }
     }

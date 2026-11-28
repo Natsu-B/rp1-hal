@@ -12,7 +12,7 @@ use crate::{
 pub struct Irq<const N: u8, const CORE: u8>(PhantomData<core::cell::Cell<()>>);
 
 driver_irq::device_irq!(State, Registers, wait_device,
-    (instance: u8, wait: &mut WaitTimer, end: Deadline, operation: Operation<'_>) -> Result<usize, Error>;
+    (base: usize, wait: &mut WaitTimer, end: Deadline, operation: Operation<'_>) -> Result<usize, Error>;
     0 => Uart0, UART0;
     1 => Uart1, UART1;
     2 => Uart2, UART2;
@@ -56,6 +56,7 @@ impl State {
 
 impl<R: Registers> Source<R> for State {
     type Error = Error;
+    const INLINE_CHECK: bool = true;
 
     fn is_armed(&self) -> bool {
         self.source != 0
@@ -113,15 +114,15 @@ enum Operation<'a> {
 impl Operation<'_> {
     // The initial probe and the wake probe share FIFO access code.
     #[inline(never)]
-    fn probe(&mut self, instance: u8, io: &mut Mmio) -> Option<Result<usize, Error>> {
+    fn probe(&mut self, base: usize, io: &mut Mmio) -> Option<Result<usize, Error>> {
         match self {
-            Self::Read(first) => read_byte(io, instance).transpose().map(|value| {
+            Self::Read(first) => read_byte(io, base).transpose().map(|value| {
                 **first = value?;
                 Ok(1)
             }),
-            Self::Write(tx, bytes) => tx.enqueue(instance, bytes).map(Ok),
+            Self::Write(tx, bytes) => tx.enqueue(base, bytes).map(Ok),
             Self::TxRoom => {
-                let flags = io.read(base(instance) + FR);
+                let flags = io.read(base + FR);
                 (flags & FR_TXFF == 0).then_some(Ok(flags as usize))
             }
         }
@@ -135,7 +136,7 @@ fn read_flags<const N: u8>() -> u32 {
 #[rp1_rt::isram]
 fn wait_device<const CORE: u8>(
     state: &IrqState<CORE>,
-    instance: u8,
+    base: usize,
     wait: &mut WaitTimer,
     end: Deadline,
     mut operation: Operation<'_>,
@@ -145,7 +146,7 @@ fn wait_device<const CORE: u8>(
         Operation::Write(..) | Operation::TxRoom => int::TX,
     };
     driver_irq::wait_for(state, &mut Mmio, wait, Limit::Absolute(end), source, |io| {
-        operation.probe(instance, io)
+        operation.probe(base, io)
     })
 }
 
@@ -240,7 +241,7 @@ impl<const CORE: u8, const N: u8> BlockingRx<'_, N, CORE> {
         if self.rx.resetting {
             return Err(Error::Busy);
         }
-        wait_for_irq::<N, CORE>(N, self.wait, end, Operation::Read(first))
+        wait_for_irq::<N, CORE>(base(N), self.wait, end, Operation::Read(first))
     }
 
     /// Read the whole slice with one deadline. On failure the received prefix remains in it.
@@ -261,7 +262,7 @@ impl<const CORE: u8, const N: u8> BlockingTx<'_, N, CORE> {
         if self.tx.resetting {
             return Err(Error::Busy);
         }
-        wait_for_irq::<N, CORE>(N, self.wait, end, Operation::Write(self.tx, bytes))
+        wait_for_irq::<N, CORE>(base(N), self.wait, end, Operation::Write(self.tx, bytes))
     }
 
     /// Queue the whole slice with one deadline. On failure an accepted prefix still transmits.
@@ -282,17 +283,20 @@ impl<const CORE: u8, const N: u8> BlockingTx<'_, N, CORE> {
             return Err(Error::Busy);
         }
         // A full FIFO guarantees a later crossing of the TX watermark.
-        let flags = wait_for_irq::<N, CORE>(N, self.wait, end, Operation::TxRoom)? as u32;
+        let flags = wait_for_irq::<N, CORE>(base(N), self.wait, end, Operation::TxRoom)? as u32;
         if flags & FR_BUSY == 0 {
             return Ok(());
         }
-        let queued = self.tx.pending(flags, Mmio.read(base(N) + RIS));
         let bit_us = self.tx.divisor.div_ceil(DIVISOR_PER_BIT_US);
         let now = Timer::new().now();
         let tail_us = self
             .tx
             .remaining_ticks(now.ticks() as u32)
-            .min(self.tx.frame_ticks(queued));
+            .min(self.tx.frame_ticks(if flags & FR_TXFE == 0 {
+                FIFO_SIZE as u8
+            } else {
+                0
+            }));
         let first = now.ticks().saturating_add(u64::from(tail_us));
         let mut context = self.wait.thread_context()?;
         flush_tail(
@@ -610,39 +614,23 @@ mod tests {
     }
 
     #[test]
-    fn latched_tx_watermark_caps_the_queued_tail() {
-        let mut tx = TxState {
-            bound_us: 5_000,
-            divisor: 1736,
-            earliest_end: 0,
-            queued: 32,
-            resetting: false,
-        };
-        tx.record_write(FR_BUSY, int::TX, 2, 10);
-        assert_eq!(tx.queued, TX_WATERMARK + 2);
-        tx.record_write(FR_BUSY, 0, 20, 20);
-        assert_eq!(tx.queued, FIFO_SIZE as u8);
-        tx.record_write(FR_BUSY | FR_TXFE, int::TX, 1, 2000);
-        assert_eq!(tx.queued, 1);
-    }
-
-    #[test]
     fn flush_hint_decays_with_time_and_across_wrap() {
         let mut tx = TxState {
             bound_us: 5_000,
             divisor: 1736,
             earliest_end: 0,
-            queued: FIFO_SIZE as u8,
             resetting: false,
         };
         let before = u32::MAX - 100;
-        tx.record_write(FR_BUSY | FR_TXFF, 0, 0, before);
-        tx.record_write(FR_BUSY, int::TX, 2, before.wrapping_add(16 * 87));
-        assert_eq!(tx.queued, TX_WATERMARK + 2);
+        tx.record_write(FR_BUSY | FR_TXFF, 0, before);
+        tx.record_write(FR_BUSY, 2, before.wrapping_add(16 * 87));
         let after = before.wrapping_add(2_777 + 173);
         assert_eq!(tx.earliest_end, after);
         assert_eq!(tx.remaining_ticks(after.wrapping_sub(7)), 7);
         assert_eq!(tx.remaining_ticks(after.wrapping_add(1)), 0);
+
+        tx.record_write(FR_BUSY | FR_TXFE, 1, before);
+        assert_eq!(tx.earliest_end, before.wrapping_add(86));
     }
 
     #[test]

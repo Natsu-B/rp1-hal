@@ -6,14 +6,15 @@
 //! waits through [`Uart::blocking`]. Use [`Uart::polling`] for explicit polling
 //! and `try_*` for immediate I/O. The wait timer serializes the split halves.
 //! UART0 is available to the driver when the declaration leaves out the log sink.
+//! Internal loopback disconnects the pads.
 //!
 //! | UART | Hardware evidence |
 //! |---|---|
-//! | UART0 | HW, PL011 loopback with RX, RT and TX IRQs and SHM reporting |
+//! | UART0 | HW, internal PL011 loopback with RX, RT and TX IRQs and SHM reporting |
 //! | UART1 | HW, IRQ waits and exact data with an FT230X peer |
-//! | UART2 | HW, PL011 loopback with RX, RT and TX IRQs, deadline and re-arm |
-//! | UART3 | HW, PL011 loopback with RX, RT and TX IRQs, deadline and re-arm |
-//! | UART4 | HW, PL011 loopback with RX, RT and TX IRQs, deadline and re-arm |
+//! | UART2 | HW, internal PL011 loopback with RX, RT and TX IRQs, deadline and re-arm |
+//! | UART3 | HW, internal PL011 loopback with RX, RT and TX IRQs, deadline and re-arm |
+//! | UART4 | HW, internal PL011 loopback with RX, RT and TX IRQs, deadline and re-arm |
 use crate::{
     clocks::Clocks,
     gpio::{Alternate, Pin},
@@ -49,7 +50,6 @@ const FR_TXFE: u32 = 1 << 7;
 const FIFO_SIZE: usize = 32;
 /// RX and TX watermarks at half of their 32-byte FIFOs.
 const IFLS_HALF: u32 = (2 << 3) | 2;
-const TX_WATERMARK: u8 = 16;
 // Clocks admits clk_uart at the XOSC rate. The PL011 bit period is
 // 16 * divisor / clk_uart; the stored divisor is scaled by 64.
 const DIVISOR_PER_BIT_US: u32 = crate::clocks::XOSC_HZ / 250_000;
@@ -274,7 +274,6 @@ struct TxState {
     bound_us: u32,
     divisor: u32,
     earliest_end: u32,
-    queued: u8,
     resetting: bool,
 }
 
@@ -405,7 +404,7 @@ where
     }
 
     /// Initialize PL011 internal loopback with both pads disconnected.
-    /// Free and reinitialize the UART to connect it to the pads.
+    /// A reset clears loopback. Free and reinitialize the UART to use it again.
     pub fn init_loopback(
         self,
         clocks: &Clocks,
@@ -423,7 +422,7 @@ where
         if !clocks.still_current() {
             return Err(InitError::new(Error::Precondition, self));
         }
-        let uart = self.init_on(&mut Mmio, clocks.uart(), config, |tx, rx| {
+        self.init_on(&mut Mmio, clocks.uart(), config, loopback, |tx, rx| {
             if loopback {
                 const DISCONNECTED: u8 = 31;
                 (
@@ -436,11 +435,7 @@ where
                     rx.into_alternate(<Pin<RX> as RxPin<N>>::FUNC, IDLE_PAD, IDLE_PAD),
                 )
             }
-        })?;
-        if loopback {
-            Mmio.write(base(N) + CR, CR_ENABLE | CR_LBE);
-        }
-        Ok(uart)
+        })
     }
 
     fn init_on(
@@ -448,6 +443,7 @@ where
         io: &mut impl Hardware,
         clock: HertzU32,
         config: Config,
+        loopback: bool,
         route: impl FnOnce(Pin<TX>, Pin<RX>) -> (Pin<TX, Alternate>, Pin<RX, Alternate>),
     ) -> Result<Uart<N, PinTuple<TX, RX>, I>, InitError<N, PinTuple<TX, RX>, I>> {
         debug_assert!(N != 1 || clock.raw() == crate::clocks::XOSC_HZ);
@@ -455,6 +451,9 @@ where
             Ok((integer, fraction)) => {
                 let (tx, rx) = self.pins.0;
                 let (tx, rx) = route(tx, rx);
+                if loopback {
+                    io.write(base(N) + CR, CR_ENABLE | CR_LBE);
+                }
                 Ok(Uart::join(
                     Tx {
                         pin: tx,
@@ -463,7 +462,6 @@ where
                             bound_us: tx_bound_us(config.baud),
                             divisor: 64 * integer + fraction,
                             earliest_end: 0,
-                            queued: 0,
                             resetting: false,
                         },
                         #[cfg(test)]
@@ -558,46 +556,46 @@ fn wait(
     }
 }
 /// Service at most one FIFO of TX data even if the peripheral drains during the call.
-fn enqueue(io: &mut impl Registers, n: u8, bytes: &[u8]) -> usize {
+fn enqueue(io: &mut impl Registers, base: usize, bytes: &[u8]) -> usize {
     let mut count = 0;
     for &byte in bytes.iter().take(FIFO_SIZE) {
-        if io.read(base(n) + FR) & FR_TXFF != 0 {
+        if io.read(base + FR) & FR_TXFF != 0 {
             break;
         }
-        io.write(base(n) + DR, u32::from(byte));
+        io.write(base + DR, u32::from(byte));
         count += 1;
     }
     count
 }
 
 /// Pops the RX FIFO, which must not be empty.
-fn take(io: &mut impl Registers, n: u8) -> Result<u8, Error> {
-    let data = io.read(base(n) + DR);
+fn take(io: &mut impl Registers, base: usize) -> Result<u8, Error> {
+    let data = io.read(base + DR);
     match receive_error(data) {
         Some(error) => {
-            io.write(base(n) + ICR, (data >> 1) & RX_ERRORS);
-            io.write(base(n) + ECR, 0);
+            io.write(base + ICR, (data >> 1) & RX_ERRORS);
+            io.write(base + ECR, 0);
             Err(error)
         }
         None => Ok(data as u8),
     }
 }
-fn read_byte(io: &mut impl Registers, n: u8) -> Result<Option<u8>, Error> {
-    if io.read(base(n) + FR) & FR_RXFE == 0 {
-        return take(io, n).map(Some);
+fn read_byte(io: &mut impl Registers, base: usize) -> Result<Option<u8>, Error> {
+    if io.read(base + FR) & FR_RXFE == 0 {
+        return take(io, base).map(Some);
     }
 
     // OE can be asserted without being copied to a FIFO entry if the peer stops.
     // Read RIS before rechecking FIFO state so a newly arrived DR entry keeps its error bits.
-    let errors = io.read(base(n) + RIS) & RX_ERRORS;
+    let errors = io.read(base + RIS) & RX_ERRORS;
     if errors == 0 {
         return Ok(None);
     }
-    if io.read(base(n) + FR) & FR_RXFE == 0 {
-        return take(io, n).map(Some);
+    if io.read(base + FR) & FR_RXFE == 0 {
+        return take(io, base).map(Some);
     }
-    io.write(base(n) + ICR, errors);
-    io.write(base(n) + ECR, 0);
+    io.write(base + ICR, errors);
+    io.write(base + ECR, 0);
     receive_error(errors << 1).map_or(Ok(None), Err)
 }
 
@@ -642,34 +640,19 @@ pub fn divisors(clock: HertzU32, baud: HertzU32) -> Result<(u32, u32), Error> {
     Ok(((scaled / 64) as u32, (scaled % 64) as u32))
 }
 impl TxState {
-    // Bound the FIFO tail at the next flush. The latched TX watermark stays
-    // asserted until the FIFO is refilled above half. The shifter is separate.
-    fn pending(&self, flags: u32, ris: u32) -> u8 {
-        if flags & FR_TXFE != 0 {
-            0
-        } else if ris & int::TX != 0 {
-            self.queued.min(TX_WATERMARK)
-        } else {
-            self.queued
-        }
-    }
-
     fn frame_ticks(&self, count: u8) -> u32 {
         // Round down only after multiplying the frames. This is a lower
         // bound on the time it takes to transmit those complete frames.
-        u32::from(count) * 10 * self.divisor / DIVISOR_PER_BIT_US
+        u32::from(count) * self.divisor / (DIVISOR_PER_BIT_US / 10)
     }
 
     fn remaining_ticks(&self, now: u32) -> u32 {
         (self.earliest_end.wrapping_sub(now) as i32).max(0) as u32
     }
 
-    fn record_write(&mut self, flags: u32, ris: u32, count: usize, now: u32) {
-        let previous = self.pending(flags, ris);
-        self.queued = (previous + count as u8).min(FIFO_SIZE as u8);
-
-        // Bound the earliest possible end as well as the FIFO depth. A depth
-        // seen on the last write can be stale by the time flush is called.
+    fn record_write(&mut self, flags: u32, count: usize, now: u32) {
+        // A full FIFO gives a fresh lower bound even after earlier writes
+        // were interrupted. An empty FIFO discards any stale timestamp.
         let remaining = if flags & FR_TXFF != 0 {
             self.frame_ticks(FIFO_SIZE as u8)
         } else if flags & FR_TXFE != 0 {
@@ -682,18 +665,13 @@ impl TxState {
             .wrapping_add(self.frame_ticks(count as u8));
     }
 
-    fn enqueue(&mut self, n: u8, bytes: &[u8]) -> Option<usize> {
+    fn enqueue(&mut self, base: usize, bytes: &[u8]) -> Option<usize> {
         // Timestamp before FR so a full FIFO guarantees 32 complete frames
-        // after that tick. Observe RIS before any refill clears its TX bit.
-        let sample = (n == 1).then(|| {
-            let now = Timer::new().now_32().ticks();
-            let flags = Mmio.read(base(n) + FR);
-            (now, flags, Mmio.read(base(n) + RIS))
-        });
-        let count = enqueue(&mut Mmio, n, bytes);
-        if let Some((now, flags, ris)) = sample {
-            self.record_write(flags, ris, count, now);
-        }
+        // after that tick.
+        let now = Timer::new().now_32().ticks();
+        let flags = Mmio.read(base + FR);
+        let count = enqueue(&mut Mmio, base, bytes);
+        self.record_write(flags, count, now);
         (count != 0).then_some(count)
     }
 }
@@ -709,15 +687,12 @@ impl<const N: u8, const PIN: u8, I> Tx<N, PIN, I> {
         if self.state.resetting {
             return Err(Error::Busy);
         }
+        let now = Timer::new().now_32().ticks();
         let flags = Mmio.read(base(N) + FR);
         if flags & FR_TXFF != 0 {
             return Ok(false);
         }
-        if N == 1 {
-            let now = Timer::new().now_32().ticks();
-            self.state
-                .record_write(flags, Mmio.read(base(N) + RIS), 1, now);
-        }
+        self.state.record_write(flags, 1, now);
         Mmio.write(base(N) + DR, u32::from(byte));
         Ok(true)
     }
@@ -775,7 +750,7 @@ impl<const N: u8, const PIN: u8, I> Rx<N, PIN, I> {
         if self.state.resetting {
             return Err(Error::Busy);
         }
-        read_byte(&mut Mmio, N)
+        read_byte(&mut Mmio, base(N))
     }
 
     /// Clears the receive interrupt bits selected by `mask`.
@@ -878,19 +853,6 @@ where
     /// Selects the synchronous polling engine.
     pub fn polling(&mut self) -> Polling<'_, Self> {
         Polling(self)
-    }
-
-    /// Feed transmitted data back into RX. Change this while RX is quiescent
-    /// and the transmitter is idle. The GPIO routing stays as configured.
-    pub fn set_loopback(&mut self, on: bool) -> Result<(), Error> {
-        let mut io = Mmio;
-        let base = base(N);
-        if self.halves.0.state.resetting || io.read(base + FR) & FR_BUSY != 0 {
-            return Err(Error::Busy);
-        }
-        let cr = io.read(base + CR);
-        io.write(base + CR, (cr & !CR_LBE) | if on { CR_LBE } else { 0 });
-        Ok(())
     }
 
     /// See [`Tx::try_write_byte`].
@@ -1115,7 +1077,7 @@ impl<const N: u8, const PIN: u8, I> Tx<N, PIN, I> {
         if self.state.resetting {
             return Err(Error::Busy);
         }
-        poll(end, || self.state.enqueue(N, bytes))
+        poll(end, || self.state.enqueue(base(N), bytes))
     }
 
     /// Poll for wire idle. A timeout leaves queued bytes on their way to the peer.
@@ -1363,6 +1325,33 @@ mod tests {
         assert_eq!([RESETS_SET1, RESETS_CLR1], [ctrl1 + 0x2000, ctrl1 + 0x3000]);
     }
     #[test]
+    fn loopback_is_enabled_after_disconnect_and_reset_clears_it() {
+        let mut io = Fake::new();
+        let parts = Parts::new(
+            unsafe { Token::<N>::new() },
+            Pins::builder()
+                .tx(unsafe { Pin::<4>::new() })
+                .rx(unsafe { Pin::<5>::new() }),
+        );
+        let uart = parts
+            .init_on(
+                &mut io,
+                50_000_000.Hz(),
+                115_200.Hz().into(),
+                true,
+                |tx, rx| {
+                    // The host checks UART writes. The target also changes the pad mux.
+                    (tx.assume(), rx.assume())
+                },
+            )
+            .unwrap();
+        assert_eq!(io.writes.last(), Some(&(base(N) + CR, CR_ENABLE | CR_LBE)));
+        let _ = uart;
+        assert!(try_reset(&mut io, N));
+        start::<true>(&mut io, N, 50_000_000.Hz(), 115_200.Hz()).unwrap();
+        assert_eq!(io.writes.last(), Some(&(base(N) + CR, CR_ENABLE)));
+    }
+    #[test]
     fn start_releases_the_reset_then_programs_8n1_and_enables() {
         let mut f = Fake::new();
         start::<true>(&mut f, N, 50_000_000.Hz(), 115_200.Hz()).unwrap();
@@ -1412,7 +1401,7 @@ mod tests {
     #[test]
     fn receive_errors_are_told_apart_and_replace_their_character() {
         let mut f = Fake::new();
-        assert_eq!(read_byte(&mut f, N), Ok(None));
+        assert_eq!(read_byte(&mut f, base(N)), Ok(None));
         f.rx.extend([
             0x41,
             DR_FE | 0x42,
@@ -1423,7 +1412,7 @@ mod tests {
         ]);
         let mut got = Vec::new();
         while !f.rx.is_empty() {
-            got.push(read_byte(&mut f, N));
+            got.push(read_byte(&mut f, base(N)));
         }
         assert_eq!(
             got,
@@ -1482,7 +1471,7 @@ mod tests {
         f.tx_room = 3;
         let send = |f: &mut Fake, b: &[u8]| {
             model_poll(f, 1_000, |f| {
-                let count = enqueue(f, N, b);
+                let count = enqueue(f, base(N), b);
                 (count != 0).then_some(count)
             })
         };
@@ -1492,7 +1481,7 @@ mod tests {
         assert_eq!(f.tx, b"hel");
         f.tx_room = 32;
         assert_eq!(send(&mut f, b"lo"), Ok(2));
-        assert_eq!(enqueue(&mut f, N, b""), 0);
+        assert_eq!(enqueue(&mut f, base(N), b""), 0);
         assert_eq!(f.tx, b"hello");
     }
 
@@ -1553,9 +1542,9 @@ mod tests {
         let mut io = Fake::new();
         io.regs.insert(base(N) + RIS, int::OE);
         io.rx.push_back(0x41);
-        assert_eq!(read_byte(&mut io, N), Ok(Some(0x41)));
+        assert_eq!(read_byte(&mut io, base(N)), Ok(Some(0x41)));
         assert!(io.writes.is_empty());
-        assert_eq!(read_byte(&mut io, N), Err(Error::Overrun));
+        assert_eq!(read_byte(&mut io, base(N)), Err(Error::Overrun));
         assert_eq!(io.writes, [(base(N) + ICR, int::OE), (base(N) + ECR, 0)]);
     }
 
@@ -1563,7 +1552,7 @@ mod tests {
     fn a_read_waits_for_a_byte_that_arrives_in_time() {
         let mut f = Fake::new();
         f.rx_later = Some((40_000, 0x55));
-        let receive = |f: &mut Fake| read_byte(f, N).transpose();
+        let receive = |f: &mut Fake| read_byte(f, base(N)).transpose();
         assert_eq!(model_poll(&mut f, 30_000, receive), Err(Error::Timeout));
         assert_eq!(model_poll(&mut f, 30_000, receive), Ok(Ok(0x55)));
         f.rx_later = Some((0, DR_FE));
@@ -1583,7 +1572,6 @@ mod tests {
                 bound_us: 5_000,
                 divisor: 1736,
                 earliest_end: 0,
-                queued: 0,
                 resetting: false,
             },
             cts: None,
@@ -1625,7 +1613,6 @@ mod tests {
                 bound_us: 5_000,
                 divisor: 1736,
                 earliest_end: 0,
-                queued: 0,
                 resetting: false,
             },
             cts: None,
@@ -1670,7 +1657,7 @@ mod tests {
                 hold_in_reset(&mut f, N);
             }
             start::<true>(&mut f, N, 50_000_000.Hz(), 115_200.Hz()).unwrap();
-            assert_eq!((read_byte(&mut f, N), f.tx_room), (Ok(None), 32));
+            assert_eq!((read_byte(&mut f, base(N)), f.tx_room), (Ok(None), 32));
             assert_eq!(f.accesses_in_reset, 0);
         }
     }
@@ -1679,8 +1666,8 @@ mod tests {
     fn a_uart_held_in_reset_ignores_writes_and_reads_as_reset() {
         let mut f = Fake::new();
         hold_in_reset(&mut f, N);
-        assert_eq!(enqueue(&mut f, N, b"x"), 1);
-        assert_eq!(read_byte(&mut f, N), Ok(None));
+        assert_eq!(enqueue(&mut f, base(N), b"x"), 1);
+        assert_eq!(read_byte(&mut f, base(N)), Ok(None));
         assert_eq!((f.tx.len(), f.accesses_in_reset), (0, 4));
     }
     #[test]

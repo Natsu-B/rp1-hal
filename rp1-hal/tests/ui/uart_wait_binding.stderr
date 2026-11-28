@@ -29,7 +29,7 @@ note: associated function defined here
   ::: src/uart/irq_wait.rs
    |
    | / driver_irq::device_irq!(State, Registers, wait_device,
-   | |     (instance: u8, wait: &mut WaitTimer, end: Deadline, operation: Operation<'_>) -> Result<usize, Error>;
+   | |     (base: usize, wait: &mut WaitTimer, end: Deadline, operation: Operation<'_>) -> Result<usize, Error>;
    | |     0 => Uart0, UART0;
    | |     1 => Uart1, UART1;
 ...  |
@@ -57,7 +57,7 @@ note: associated function defined here
   ::: src/uart/irq_wait.rs
    |
    | / driver_irq::device_irq!(State, Registers, wait_device,
-   | |     (instance: u8, wait: &mut WaitTimer, end: Deadline, operation: Operation<'_>) -> Result<usize, Error>;
+   | |     (base: usize, wait: &mut WaitTimer, end: Deadline, operation: Operation<'_>) -> Result<usize, Error>;
    | |     0 => Uart0, UART0;
    | |     1 => Uart1, UART1;
 ...  |

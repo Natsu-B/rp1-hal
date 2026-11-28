@@ -20,6 +20,8 @@ pub(crate) enum Limit {
 
 pub(crate) trait Source<I> {
     type Error: From<Error> + From<timer::Error>;
+    // UART only checks here. The other serial blocks reuse their transfer preflight.
+    const INLINE_CHECK: bool = false;
 
     fn is_armed(&self) -> bool;
     fn arm(&mut self, io: &mut I, mask: u32) -> Result<bool, Self::Error>;
@@ -52,7 +54,6 @@ impl SlotLine {
     pub(crate) fn new<S, const IRQ: u8, const CORE: u8>(
         line: rp1_rt::interrupt::Binding<S, IRQ, CORE>,
     ) -> Self {
-        // Startup sets priority 4. The generator gives the waiter exclusive ownership.
         Self(line.into_owned_line())
     }
 }
@@ -63,39 +64,48 @@ impl DeviceLine for SlotLine {
     }
 
     fn start(&mut self) {
+        self.0.set_priority(PRIORITY);
         self.0.enable();
     }
 }
 
-pub(crate) struct Managed<S, L> {
+struct Delivery<L> {
     line: Option<L>,
     started: bool,
-    source: S,
 }
 
-impl<S, L: DeviceLine> Managed<S, L> {
-    pub(crate) const fn new(source: S) -> Self {
-        Self {
-            line: None,
-            started: false,
-            source,
-        }
-    }
-
+impl<L: DeviceLine> Delivery<L> {
     // Only the first arm may enable the NVIC line. Later removal is an error.
-    fn check_line(&self) -> Result<(), Error> {
+    fn check(&self) -> Result<(), Error> {
         match &self.line {
             Some(line) if !self.started || line.is_enabled() => Ok(()),
             _ => Err(Error::IrqUnavailable),
         }
     }
 
-    fn start_line(&mut self) {
-        if !self.started
-            && let Some(line) = &mut self.line
-        {
+    // First arm alone programs NVIC delivery, outside the steady wake path.
+    #[rp1_rt::cold]
+    fn start(&mut self) {
+        if let Some(line) = &mut self.line {
             line.start();
             self.started = true;
+        }
+    }
+}
+
+pub(crate) struct Managed<S, L> {
+    delivery: Delivery<L>,
+    source: S,
+}
+
+impl<S, L: DeviceLine> Managed<S, L> {
+    pub(crate) const fn new(source: S) -> Self {
+        Self {
+            delivery: Delivery {
+                line: None,
+                started: false,
+            },
+            source,
         }
     }
 }
@@ -105,18 +115,25 @@ pub(crate) type CoreState<S, L, const CORE: u8> = Slot<Managed<S, L>, CORE, CEIL
 #[inline(always)]
 pub(crate) fn bind<S, L: DeviceLine, const CORE: u8>(slot: &CoreState<S, L, CORE>, line: L) {
     let stored = slot.try_with(|state| {
-        state.line = Some(line);
-        state.started = false;
+        state.delivery = Delivery {
+            line: Some(line),
+            started: false,
+        };
     });
     debug_assert!(stored.is_some());
 }
 
+#[inline(always)]
+fn check<S, L: DeviceLine, const CORE: u8>(slot: &CoreState<S, L, CORE>) -> Result<(), Error> {
+    slot.__try_with_compact(|state| state.delivery.check())
+        .ok_or(Error::Busy)?
+}
+
 #[inline(never)]
-pub(crate) fn check<S, L: DeviceLine, const CORE: u8>(
+pub(crate) fn check_before_transfer<S, L: DeviceLine, const CORE: u8>(
     slot: &CoreState<S, L, CORE>,
 ) -> Result<(), Error> {
-    slot.try_with(|state| state.check_line())
-        .ok_or(Error::Busy)?
+    check(slot)
 }
 
 #[inline(always)]
@@ -141,7 +158,11 @@ pub(crate) fn wait_for<S: Source<I>, L: DeviceLine, const CORE: u8, I, T>(
     mut probe: impl FnMut(&mut I) -> Option<Result<T, S::Error>>,
 ) -> Result<T, S::Error> {
     let mut context = wait.thread_context()?;
-    check(slot)?;
+    if S::INLINE_CHECK {
+        check(slot)?;
+    } else {
+        check_before_transfer(slot)?;
+    }
     let end = match limit {
         Limit::Absolute(end) => {
             end.check(Timer::new().now())?;
@@ -163,7 +184,7 @@ pub(crate) fn wait_for<S: Source<I>, L: DeviceLine, const CORE: u8, I, T>(
                 return probe(io);
             }
             let fired = slot
-                .try_with(|state| !state.source.is_armed())
+                .__try_with_compact(|state| !state.source.is_armed())
                 .unwrap_or(false);
             if !fired {
                 // Unrelated events do not turn an armed wait into polling.
@@ -177,10 +198,10 @@ pub(crate) fn wait_for<S: Source<I>, L: DeviceLine, const CORE: u8, I, T>(
                 return Ok(false);
             }
             let armed = slot
-                .try_with(|state| {
+                .__try_with_compact(|state| {
                     let armed = state.source.arm(io, mask)?;
-                    if armed {
-                        state.start_line();
+                    if armed && !state.delivery.started {
+                        state.delivery.start();
                     }
                     Ok::<_, S::Error>(armed)
                 })
@@ -191,7 +212,7 @@ pub(crate) fn wait_for<S: Source<I>, L: DeviceLine, const CORE: u8, I, T>(
     });
     if active {
         // Thread admission prevents overlapping borrows with the ISR.
-        slot.try_with(|state| state.source.retire(io))
+        slot.__try_with_compact(|state| state.source.retire(io))
             .ok_or(Error::Busy)?;
     }
     result?
@@ -277,9 +298,9 @@ macro_rules! device_irq {
         #[inline(always)]
         fn check_irq<const N: u8, const CORE: u8>() -> Result<(), $crate::driver_irq::Error> {
             if CORE == 0 {
-                $crate::driver_irq::check(irq_state0::<N>())
+                $crate::driver_irq::check_before_transfer(irq_state0::<N>())
             } else {
-                $crate::driver_irq::check(irq_state1::<N>())
+                $crate::driver_irq::check_before_transfer(irq_state1::<N>())
             }
         }
 
