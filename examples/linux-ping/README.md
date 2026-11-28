@@ -27,7 +27,7 @@ DOC. On a dedicated CM5, reserve CPU 2 for the request thread. Add these
 settings to the Linux kernel command line and reboot.
 
 ```text
-isolcpus=domain,managed_irq,2 nohz_full=2 irqaffinity=0-1,3 cpuidle.off=1
+isolcpus=domain,managed_irq,2 irqaffinity=0-1,3 cpuidle.off=1
 ```
 
 `lab/ping/rtt-realtime.sh` checks that Linux applied the isolation. It stops

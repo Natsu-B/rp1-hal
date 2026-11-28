@@ -8,10 +8,9 @@ housekeeping=0-1,3
 isolated=2
 cat /proc/cmdline
 test "$(cat "$cpu/isolated")" = "$isolated"
-test "$(cat "$cpu/nohz_full")" = "$isolated"
-test "$(cat "$irq/default_smp_affinity")" = b
-printf 'isolated=%s nohz_full=%s default_irq_mask=%s\n' \
-    "$(cat "$cpu/isolated")" "$(cat "$cpu/nohz_full")" "$(cat "$irq/default_smp_affinity")"
+mask=$(cat "$irq/default_smp_affinity")
+test "$((0x$mask))" -eq 11
+printf 'isolated=%s default_irq_mask=%s\n' "$isolated" "$mask"
 
 if command -v systemctl >/dev/null && systemctl is-active --quiet irqbalance; then
     systemctl stop irqbalance
