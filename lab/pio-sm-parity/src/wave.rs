@@ -202,13 +202,15 @@ impl Case {
                 .program
             }
             "pindirs" => {
+                // The fixture's weak pull-down takes about 9 us to cross
+                // the input threshold after release. Drive for 40 us.
                 pio_asm!(
                     ".side_set 1 pindirs",
                     "pull block side 0",
                     "mov x, osr side 0",
                     "pulse:",
-                    "nop side 1 [9]",
-                    "nop side 0 [8]",
+                    "nop side 1 [7]",
+                    "nop side 0 [10]",
                     "jmp x-- pulse side 0",
                     "park:",
                     "jmp park side 0"
