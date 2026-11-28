@@ -1,0 +1,23 @@
+[package]
+name = "uart-parity"
+version = "0.1.0"
+
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+linux.keep = {}
+
+[package.metadata.rp1.proc0]
+uart0 = { tx = 14, rx = 15 }
+wait_timer = "ALARM1"
+timer = ["ALARM0"]
+
+[[package.metadata.rp1.shm]]
+name = "report"
+kind = "ring"
+direction = "rp1-to-linux"
+core = "proc0"
+message = "Report"
+depth = 2
+notify = "poll"

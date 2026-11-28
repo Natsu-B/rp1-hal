@@ -1,4 +1,4 @@
-//! SPI0 timing, internal loopback and GPIO chip-select parity.
+//! SPI timing, internal loopback and GPIO chip-select parity.
 #![no_std]
 #![no_main]
 
@@ -20,6 +20,7 @@ use rp1_hal::{
 use rp1_rt::{Proc0, Proc1, entry, interrupt, interrupt::Slot};
 
 rp1_rt::bind!();
+include!(concat!(env!("OUT_DIR"), "/instance.rs"));
 
 static RX: AtomicU32 = AtomicU32::new(0);
 static TX: AtomicU32 = AtomicU32::new(0);
@@ -45,7 +46,7 @@ const CS0_HIGH: u32 = 1 << 12;
 const CS1_HIGH: u32 = 1 << 13;
 const CS_IDLE: u32 = CS0_HIGH | CS1_HIGH;
 
-type Bus<'a> = Blocking<'a, rp1::Spi0Pins, 0>;
+type Bus<'a> = Blocking<'a, N, DriverPins, 0>;
 
 fn now() -> u32 {
     Timer::new().now_32().ticks()
@@ -59,7 +60,7 @@ fn add(counter: &AtomicU32, flag: bool) {
 }
 
 #[inline(always)]
-fn observe_spi0(dispatch: impl FnOnce() -> u32) {
+fn observe_device(dispatch: impl FnOnce() -> u32) {
     use pac::dw_ssi::int;
     let status = dispatch();
     let rx = status & int::RXFI != 0;
@@ -90,13 +91,13 @@ fn TIMER_0() {
     INJECT.with(|alarm| alarm.clear_interrupt());
     add(&CS_BAD, cs_sense() != CS1_HIGH);
     INJECTED_AT.store(now(), Relaxed);
-    // SAFETY: this image owns SPI0. SER is zero and RX is empty. Reading DR
+    // SAFETY: this image owns the controller. SER is zero and RX is empty. Reading DR
     // here raises RX underflow without modifying a frame under test.
     unsafe { spi_reg(offset_of!(pac::dw_ssi::RegisterBlock, dr)).read_volatile() };
 }
 
 fn spi_reg(offset: usize) -> *mut u32 {
-    pac::SPI0::PTR
+    Registers::PTR
         .cast_mut()
         .cast::<u8>()
         .wrapping_add(offset)
@@ -118,7 +119,7 @@ fn select_wire(selected: bool) {
 }
 
 fn spi_status() -> u32 {
-    // SAFETY: read-only controller status on this core's SPI0.
+    // SAFETY: read-only controller status on this core's controller.
     unsafe { spi_reg(offset_of!(pac::dw_ssi::RegisterBlock, sr)).read_volatile() }
 }
 
@@ -159,8 +160,10 @@ fn bulk(bus: &mut Bus<'_>, gate: &mut Pin<8, Output>, hz: u32) -> Result<(), Err
     Ok(())
 }
 
+mod idle_probe;
+
 fn tx_flush(
-    spi: &mut rp1::Spi0,
+    spi: &mut Driver,
     timer: &mut WaitTimer,
     gate: &mut Pin<8, Output>,
     hz: u32,
@@ -184,11 +187,13 @@ fn tx_flush(
         let tx = TX.load(Relaxed);
         let alarms = WAIT_ALARM.load(Relaxed);
         let end = Deadline::after(100.millis())?;
+        let window = idle_probe::arm(burst_us);
         let launch = now();
         select_wire(true);
         gate.set_high().unwrap();
         let start = now();
         spi.blocking(timer).flush_until(end)?;
+        let returned = now();
         // TFE and !BUSY establish that both the FIFO and shifter are empty at return.
         let status = spi_status();
         let elapsed = now().wrapping_sub(start);
@@ -206,6 +211,7 @@ fn tx_flush(
             hz, trial, elapsed, from_launch, late, tx_irq, tail_alarms
         )
         .unwrap();
+        idle_probe::report(window, returned, hz, trial);
         assert!(from_launch >= earliest && late <= SLACK_US && elapsed <= burst_us + SLACK_US);
         assert_eq!(tx_irq, 1);
         if require_tail_alarm {
@@ -228,7 +234,7 @@ fn tx_flush(
     Ok(())
 }
 
-fn timeout_rearm(spi: &mut rp1::Spi0, timer: &mut WaitTimer) -> Result<(), Error> {
+fn timeout_rearm(spi: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
     spi.blocking(timer).set_frequency(1.MHz())?;
     let mut max_timeout = 0;
     let tx_before = TX.load(Relaxed);
@@ -379,6 +385,13 @@ fn devices(bus: &mut Bus<'_>, mut cs0: Pin<22>, mut cs1: Pin<23>) -> Result<(), 
 
 fn run(core: &mut Proc0, mut p: rp1::Proc0Resources) -> Result<(), Error> {
     let sys = rp1::platform::init(core, p.platform).unwrap();
+    p.proc1.launch(core).unwrap();
+    log!(
+        "SPI_INSTANCE instance={}
+",
+        N
+    )
+    .unwrap();
     let mut inject = p.TIMER_ALARM0;
     inject.clear_interrupt();
     inject.enable_interrupt();
@@ -387,8 +400,7 @@ fn run(core: &mut Proc0, mut p: rp1::Proc0Resources) -> Result<(), Error> {
         .unwrap_or_else(|_| panic!("fault injection alarm slot occupied"));
     p.irq.TIMER_0.enable();
 
-    let mut spi = p
-        .spi0
+    let mut spi = parts!(p)
         .init(&sys.clocks, Config::new(1.MHz(), MODE_0))
         .map_err(|error| *error.error())?;
     let wait = &mut p.wait_timer;
@@ -444,7 +456,7 @@ fn main(mut core: Proc0, p: rp1::Proc0Resources) -> ! {
 
 #[entry(proc1)]
 fn park(_core: Proc1, _p: rp1::Proc1Resources) -> ! {
-    idle()
+    idle_probe::observe()
 }
 
 fn idle() -> ! {

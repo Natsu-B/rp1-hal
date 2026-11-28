@@ -972,6 +972,8 @@ dependencies = [
  "embedded-io 0.6.1",
  "rp1-build",
  "rp1-hal",
+ "rp1-link",
+ "rp1-linux",
  "rp1-rt",
 ]
 

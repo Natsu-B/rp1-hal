@@ -9,10 +9,28 @@ name = "uart-parity"
 test = false
 bench = false
 
+[[bin]]
+name = "uart-parity-report"
+path = "src/report.rs"
+test = false
+bench = false
+required-features = ["uart0-report"]
+
+[features]
+uart0 = ["dep:rp1-link"]
+uart0-report = ["dep:rp1-linux"]
+uart2 = []
+uart3 = []
+uart4 = []
+
 [dependencies]
 embedded-io = "0.6"
 rp1-hal = { path = "../../rp1-hal" }
+rp1-link = { path = "../../rp1-link", optional = true }
 rp1-rt = { path = "../../rp1-rt" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rp1-linux = { path = "../../rp1-linux", optional = true }
 
 [build-dependencies]
 rp1-build = { path = "../../rp1-build" }

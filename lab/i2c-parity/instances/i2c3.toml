@@ -1,0 +1,15 @@
+[package]
+name = "i2c-parity"
+version = "0.1.0"
+
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+log = { sink = "uart0", baudrate = 115200 }
+stack = { proc0 = "6KiB" }
+
+[package.metadata.rp1.proc0]
+gpio = [12, 13]
+i2c3 = { sda = 22, scl = 23 }
+wait_timer = "ALARM1"

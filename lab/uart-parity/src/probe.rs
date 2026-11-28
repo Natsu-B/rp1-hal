@@ -1,12 +1,10 @@
-//! Read-only observation of UART1 on proc1, using the same 1 MHz timer as proc0.
+//! Read-only observation of the selected UART on proc1, using the same 1 MHz timer as proc0.
+use crate::{now, registers as uart};
 use core::sync::atomic::{
     AtomicU32,
     Ordering::{Acquire, Relaxed, Release},
 };
-use rp1_hal::{
-    pac::{UART1, pl011::RegisterBlock, pl011::int},
-    timer::Timer,
-};
+use rp1_hal::pac::pl011::int;
 use rp1_rt::{send_event, wait_for_event};
 
 pub const BUSY: u32 = 1 << 3;
@@ -19,17 +17,6 @@ static REQUEST: AtomicU32 = AtomicU32::new(0);
 static STATE: AtomicU32 = AtomicU32::new(0);
 #[unsafe(link_section = ".shared")]
 static EDGES: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
-
-#[inline(always)]
-pub fn now() -> u32 {
-    Timer::new().now_32().ticks()
-}
-
-#[inline(always)]
-pub fn uart() -> &'static RegisterBlock {
-    // Both observers read only nondestructive registers on the owning fixture's UART1.
-    unsafe { &*UART1::ptr().cast() }
-}
 
 fn await_state(state: u32) {
     let start = now();

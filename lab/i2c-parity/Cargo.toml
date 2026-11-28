@@ -9,6 +9,10 @@ name = "i2c-parity"
 test = false
 bench = false
 
+[features]
+i2c2 = []
+i2c3 = []
+
 [dependencies]
 embedded-hal = "1"
 rp1-hal = { path = "../../rp1-hal" }

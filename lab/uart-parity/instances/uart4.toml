@@ -1,0 +1,14 @@
+[package]
+name = "uart-parity"
+version = "0.1.0"
+
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+log = { sink = "uart0", baudrate = 115200 }
+linux.keep = {}
+
+[package.metadata.rp1.proc0]
+uart4 = { tx = 12, rx = 13 }
+wait_timer = "ALARM1"

@@ -1,0 +1,16 @@
+[package]
+name = "spi-parity"
+version = "0.1.0"
+
+[package.metadata.rp1]
+schema = 2
+board = "rpi-cm5"
+clock = { authority = "rp1", clk_sys_hz = 200000000 }
+log = { sink = "uart0", baudrate = 115200 }
+stack = { proc0 = "6KiB" }
+
+[package.metadata.rp1.proc0]
+gpio = [8, 12, 13, 22, 23] # Strobe, CS sense inputs, CS outputs.
+spi1 = { sck = 21, mosi = 20, miso = 19 }
+timer = ["ALARM0"] # Inject RX underflow at a known point inside a CS transaction.
+wait_timer = "ALARM1"

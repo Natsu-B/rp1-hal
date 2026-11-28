@@ -9,6 +9,10 @@ name = "spi-parity"
 test = false
 bench = false
 
+[features]
+spi1 = []
+spi3 = []
+
 [dependencies]
 embedded-hal = "1"
 rp1-hal = { path = "../../rp1-hal" }
