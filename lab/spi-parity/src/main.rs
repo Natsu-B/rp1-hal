@@ -180,6 +180,7 @@ fn traced_flushes(
     tx_flush(spi, timer, gate, 100_000, true)?;
     platform_trace::inventory();
     platform_trace::platform_totals();
+    assert_eq!(INJECTED_AT.load(Relaxed), 0);
     log!("ATTR_END instance={N} phase={phase}\n").unwrap();
     Ok(())
 }
@@ -258,10 +259,13 @@ fn tx_flush(
                 &mut summary,
                 hz,
                 trial as usize,
-                start,
-                returned,
-                last_busy,
-                first_idle,
+                platform_trace::Flush {
+                    start,
+                    returned,
+                    last_busy,
+                    first_idle,
+                    tail_alarms,
+                },
             );
         }
         assert!(from_launch >= earliest && late <= SLACK_US && elapsed <= burst_us + SLACK_US);

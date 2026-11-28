@@ -9,7 +9,8 @@ const PLATFORM: [u32; 2] = [53, 57];
 const SPI_IRQ: u32 = if N == 0 { 19 } else { 22 };
 const ISER: *const u32 = 0xe000_e100 as *const u32;
 const IPR: *const u8 = 0xe000_e400 as *const u8;
-const CAPACITY: usize = 8;
+// An SCMI burst can span a whole flush and contain many separate entries.
+const CAPACITY: usize = 64;
 pub(super) const TRIALS: usize = 1_000;
 const TRIGGER: *mut u32 = (rp1_proto::LINK_START + 0x28) as *mut u32;
 const START: u32 = u32::from_le_bytes(*b"SPIT");
@@ -149,15 +150,22 @@ pub(super) struct Summary {
     pub(super) max_preempted: u32,
 }
 
-pub(super) fn assess(
-    totals: &mut Summary,
-    hz: u32,
-    trial: usize,
-    start: u32,
-    returned: u32,
-    last_busy: u32,
-    first_idle: u32,
-) -> u8 {
+pub(super) struct Flush {
+    pub(super) start: u32,
+    pub(super) returned: u32,
+    pub(super) last_busy: u32,
+    pub(super) first_idle: u32,
+    pub(super) tail_alarms: u32,
+}
+
+pub(super) fn assess(totals: &mut Summary, hz: u32, trial: usize, flush: Flush) -> u8 {
+    let Flush {
+        start,
+        returned,
+        last_busy,
+        first_idle,
+        tail_alarms,
+    } = flush;
     let bracket = last_busy != 0
         && first_idle.wrapping_sub(last_busy) <= 6
         && (returned.wrapping_sub(last_busy) as i32) >= 0;
@@ -171,9 +179,11 @@ pub(super) fn assess(
     }; CAPACITY * 2];
     let mut len = 0;
     let mut overflow = false;
+    let counts = TRACES
+        .each_ref()
+        .map(|trace| trace.count.load(Relaxed) as usize);
     let duration = returned.wrapping_sub(start);
-    for (irq, trace) in PLATFORM.into_iter().zip(&TRACES) {
-        let count = trace.count.load(Relaxed) as usize;
+    for ((irq, trace), count) in PLATFORM.into_iter().zip(&TRACES).zip(counts) {
         overflow |= count > CAPACITY;
         for [entered, exited] in trace.timestamps.iter().take(count) {
             let entered = entered.load(Relaxed);
@@ -212,8 +222,8 @@ pub(super) fn assess(
     totals.failed += usize::from(!pass);
     if !spans.is_empty() || !pass {
         log!(
-            "ATTR_SAMPLE hz={hz} trial={trial} start={start} busy={last_busy} idle={first_idle} returned={returned} upper={upper} credit={credited} overflow={} pass={}\n",
-            u8::from(overflow), u8::from(pass),
+            "ATTR_SAMPLE hz={hz} trial={trial} start={start} busy={last_busy} idle={first_idle} returned={returned} upper={upper} credit={credited} tail_alarms={tail_alarms} irq53_count={} irq57_count={} overflow={} pass={}\n",
+            counts[0], counts[1], u8::from(overflow), u8::from(pass),
         )
         .unwrap();
         for span in spans {
