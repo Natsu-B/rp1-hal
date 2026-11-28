@@ -29,7 +29,7 @@ linux.keep = {}
 gpio = [13, 23]
 spi0 = { sck = 11, mosi = 10, miso = 9 }
 uart1 = { tx = 0, rx = 1 }
-timer = ["ALARM0"]
+timer = ["ALARM0", "ALARM3"]
 wait_timer = "ALARM2"
 
 [package.metadata.rp1.proc1]

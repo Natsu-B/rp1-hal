@@ -15,7 +15,10 @@ use rp1_hal::{
     timer::{Alarm, Deadline, Timer},
     uart,
 };
-use rp1_rt::{Proc0, Proc1, entry, interrupt, interrupt::Priority};
+use rp1_rt::{
+    Proc0, Proc1, entry, interrupt,
+    interrupt::{Priority, Slot},
+};
 
 rp1_rt::bind!();
 
@@ -28,7 +31,9 @@ mod platform_trace;
 const TICKS: u32 = 12_000;
 const PERIOD: u32 = 1_000;
 const OBSERVED_PULSES: u32 = 256;
+const OBSERVER_PULSE_US: u32 = 50;
 const START: u32 = u32::from_le_bytes(*b"PRIO");
+const START_LOAD: u32 = u32::from_le_bytes(*b"PRIL");
 const START_DEFAULT: u32 = u32::from_le_bytes(*b"PRID");
 const SERVICE_GAP_US: u32 = 100;
 const BINS: usize = 65;
@@ -46,7 +51,12 @@ static PROC1_IRQ_MAX: AtomicU32 = AtomicU32::new(0);
 
 static mut ALARM0: MaybeUninit<Alarm<0>> = MaybeUninit::uninit();
 static mut ALARM1: MaybeUninit<Alarm<1>> = MaybeUninit::uninit();
-static mut OUTPUT: MaybeUninit<Pin<13, Output>> = MaybeUninit::uninit();
+struct Strobe {
+    pin: Pin<13, Output>,
+    fall: Alarm<3>,
+}
+
+static STROBE: Slot<Option<Strobe>, 0, 2> = Slot::empty();
 // Each core has its own DSRAM copy. Only the control IRQ updates its copy.
 static mut CONTROL: Samples = Samples::new();
 static mut NEXT: u32 = 0;
@@ -135,12 +145,31 @@ fn TIMER_0() {
         let alarm = unsafe { (*(&raw mut ALARM0)).assume_init_mut() };
         tick(alarm, entered);
         if unsafe { (*(&raw const CONTROL)).count } <= OBSERVED_PULSES {
-            let out = unsafe { (*(&raw mut OUTPUT)).assume_init_mut() };
-            out.set_high().unwrap();
-            let high_at = now();
-            while now().wrapping_sub(high_at) < 3 {}
-            out.set_low().unwrap();
+            STROBE
+                .with(|strobe| {
+                    strobe.pin.set_high().unwrap();
+                    // Leave enough time for the observer to capture both edges.
+                    strobe
+                        .fall
+                        .try_arm(TimerInstantU32::from_ticks(
+                            now().wrapping_add(OBSERVER_PULSE_US),
+                        ))
+                        .unwrap();
+                })
+                .unwrap();
         }
+    });
+}
+
+#[interrupt(proc0)]
+fn TIMER_3() {
+    stamp::<29>(|| {
+        STROBE
+            .with(|strobe| {
+                strobe.fall.clear_interrupt();
+                strobe.pin.set_low().unwrap();
+            })
+            .unwrap();
     });
 }
 
@@ -287,7 +316,18 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     let sys = rp1::platform::init(&mut core, p.platform).unwrap();
     platform_trace::install_with_scmi_exit();
     let _sense = p.pins.gpio23.into_input();
-    unsafe { (&raw mut OUTPUT).write(MaybeUninit::new(p.pins.gpio13.into_output(false))) };
+    let mut fall = p.TIMER_ALARM3;
+    fall.clear_interrupt();
+    fall.enable_interrupt();
+    STROBE
+        .put(Strobe {
+            pin: p.pins.gpio13.into_output(false),
+            fall,
+        })
+        .ok()
+        .unwrap();
+    p.irq.TIMER_3.set_priority(Priority::new(7).unwrap());
+    p.irq.TIMER_3.enable();
     let mut spi = p
         .spi0
         .init(&sys.clocks, Config::new(1.MHz(), MODE_0))
@@ -302,12 +342,15 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     spi.blocking(timer).set_loopback(true).unwrap();
     p.proc1.launch(&mut core).unwrap();
     log!("PRIO_AWAIT_LINUX\n").unwrap();
-    let defer = loop {
+    let (defer, loaded) = loop {
         if platform_trace::host_requested(START) {
-            break true;
+            break (true, false);
+        }
+        if platform_trace::host_requested(START_LOAD) {
+            break (true, true);
         }
         if platform_trace::host_requested(START_DEFAULT) {
-            break false;
+            break (false, true);
         }
         observe_reset(&sys.pcie);
     };
@@ -343,6 +386,9 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
             let end = Deadline::after(2_000.micros()).unwrap();
             let window = idle_probe::arm(status, depth as u32 * 8);
             unsafe { select.write_volatile(1) };
+            if loaded && trial <= 9 && trial % 3 == 0 {
+                platform_trace::publish_host_marker(0x1000_0000 | trial);
+            }
             spi.blocking(timer).flush_until(end).unwrap();
             (window, now())
         });
@@ -358,6 +404,9 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
         let ((started, end, returned), overlap, uart_scope) = scmi.run(defer, &sys.pcie, || {
             let started = now();
             let end = Deadline::after((230 + trial % 71).micros()).unwrap();
+            if loaded && (12..=21).contains(&trial) && trial % 3 == 0 {
+                platform_trace::publish_host_marker(0x2000_0000 | trial);
+            }
             assert_eq!(
                 uart.blocking(timer).read_until(&mut [0], end),
                 Err(uart::Error::Timeout)
@@ -394,8 +443,8 @@ fn run(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
     spi_tail.report("spi_tail");
     uart_tail.report("uart_overshoot");
     scope_us.report("uart_scope");
-    inventory(0, &[19, 26, 28, 42, 53, 57]);
-    for irq in [19, 26, 28, 42] {
+    inventory(0, &[19, 26, 28, 29, 42, 53, 57]);
+    for irq in [19, 26, 28, 29, 42] {
         log!(
             "PRIO_ISR core=0 irq={irq} n={} max_us={}\n",
             IRQ_COUNT[irq].load(Ordering::Relaxed),

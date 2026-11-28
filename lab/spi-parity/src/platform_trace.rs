@@ -147,6 +147,12 @@ pub(super) fn host_requested(value: u32) -> bool {
     unsafe { TRIGGER.read_volatile() == value }
 }
 
+#[allow(dead_code)]
+pub(super) fn publish_host_marker(value: u32) {
+    unsafe { TRIGGER.write_volatile(value) };
+    rp1_proto::barrier();
+}
+
 pub(super) fn wait_for_host(marker: &str, value: u32) {
     log!("{marker}\n").unwrap();
     // The root console writes this only after Linux reaches multi-user.
