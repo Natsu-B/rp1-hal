@@ -189,6 +189,11 @@ lab brackets shifter idle on proc1 and stamps proc0 ISR entry and exit.
 Only handler time overlapping the idle-to-return window is credited, with
 nested time counted once.
 
+HW (2026-11). SCMI reached 39 µs in the initial stamped boot cohort.
+One SPI0 1 MHz trial had a 10 µs upper bound with 7 µs of SCMI overlap.
+IRQ53 was enabled and recorded zero entries in that cohort. The original
+17 µs SPI3 sample predates the ISR stamps.
+
 `lab/shm-firmware` declares SPI0 on proc1 (GPIO8 chip select). proc1 runs `spi_proof` at boot
 and on Linux's request: with loopback off MISO reads all zeros (pad pull-down; the lab wiring
 has only ESP32 inputs on these pins), then internal loopback at 1, 10, 25 and 50 MHz with 8-,
