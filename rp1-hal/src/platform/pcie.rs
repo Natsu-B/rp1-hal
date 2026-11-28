@@ -9,10 +9,14 @@ use super::{
     Pcie, PcieState,
     perstn::{self, PERSTN_EDGE},
 };
-use crate::cold::{LINK, PCIE_INTR, PCIE_MONITOR2};
+use crate::{
+    cold::{LINK, PCIE_INTR, PCIE_MONITOR2},
+    timer::{Deadline, Timer},
+};
 use rp1_proto::{
     barrier,
     link::{self, SHM_READY},
+    wake::{StartupError, mailbox},
 };
 
 const SELECT: usize = 0x4010_8000;
@@ -61,6 +65,22 @@ pub enum EnableError {
     WindowLost,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StartupEnableError {
+    /// The window transaction could not proceed.
+    Window(EnableError),
+    /// The core-local one-shot could not be used.
+    Wait(crate::timer::Error),
+    /// Proc0 committed this failure for the current boot.
+    Rejected(StartupError),
+}
+
+impl From<EnableError> for StartupEnableError {
+    fn from(error: EnableError) -> Self {
+        Self::Window(error)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Window {
     phys: u64,
@@ -102,6 +122,37 @@ impl Pcie {
             Window { phys, size },
             |_| initialize(),
         )
+    }
+
+    /// Map once, leaving the reservation unpublished until the startup transaction commits.
+    ///
+    /// # Safety
+    /// As for [`Self::__publish_shm`]. Only generated v3 startup code may call this.
+    #[doc(hidden)]
+    pub unsafe fn __map_startup_window(&mut self, phys: u64, size: u32) -> Result<(), EnableError> {
+        map_window(&mut Mmio, &mut self.shm_pinned, Window { phys, size })?;
+        // A partially initialized reservation cannot be reused in this boot.
+        self.shm_pinned = true;
+        Ok(())
+    }
+
+    /// Commit the v3 startup result after checking the reset latch and the absolute deadline.
+    ///
+    /// # Safety
+    /// Only the generated proc0 startup owner may call this. On success the validated
+    /// reservation must be fully initialized and its outbound writes drained.
+    #[doc(hidden)]
+    pub unsafe fn __commit_startup(
+        &mut self,
+        seq: u32,
+        result: Result<(u32, u32), StartupError>,
+        end: Deadline,
+    ) -> Result<u32, StartupEnableError> {
+        let result = commit_startup(&mut Mmio, seq, result, || {
+            Timer::new().now() >= end.instant()
+        });
+        rp1_rt::send_event();
+        result
     }
 
     /// Map region 0 for the pre-Ready lab probe without pinning or publishing it.
@@ -146,6 +197,61 @@ fn publish<I: Io>(
         *pinned = true;
         Ok(generation)
     })
+}
+
+/// Check on either core before touching the window or attempting a startup MSI-X pulse.
+#[doc(hidden)]
+pub fn __startup_window_live() -> bool {
+    rp1_proto::status::PcieState::Up == perstn::pcie_state() && endpoint_up(&mut Mmio)
+}
+
+fn endpoint_up(io: &mut impl Io) -> bool {
+    io.read(PCIE_MONITOR2) & ENDPOINT_UP == ENDPOINT_UP && io.read(PCIE_INTR) & PERSTN_EDGE == 0
+}
+
+fn commit_startup(
+    io: &mut impl Io,
+    seq: u32,
+    result: Result<(u32, u32), StartupError>,
+    expired: impl FnOnce() -> bool,
+) -> Result<u32, StartupEnableError> {
+    let result = io.masked(|io| -> Result<_, EnableError> {
+        let result = result.and_then(|ready| {
+            if expired() {
+                Err(StartupError::Timeout)
+            } else {
+                Ok(ready)
+            }
+        });
+        if io.detector() != PcieState::Up || !endpoint_up(io) {
+            return Err(EnableError::WindowLost);
+        }
+        if io.read(SHM_STATUS) != 0 {
+            return Err(EnableError::Pinned);
+        }
+        let (generation, caps, status) = match result {
+            Ok((generation, caps)) => (generation, caps, SHM_READY),
+            Err(error) => (0, 0, error as u32),
+        };
+        io.write(SHM_GENERATION, generation);
+        io.write(word(mailbox::ACCEPTED_CAPS), caps);
+        io.write(word(mailbox::RESULT_SEQ), seq);
+        io.barrier();
+        if !endpoint_up(io) {
+            return Err(EnableError::WindowLost);
+        }
+        io.write(SHM_STATUS, status);
+        let _ = io.read(SHM_STATUS);
+        io.barrier();
+        Ok(result
+            .map(|(generation, _)| generation)
+            .map_err(StartupEnableError::Rejected))
+    })?;
+    // IRQ53 can run on unmask. An edge during the commit supersedes either outcome.
+    if io.detector() != PcieState::Up || !endpoint_up(io) {
+        return Err(EnableError::WindowLost.into());
+    }
+    result
 }
 
 fn map_window(io: &mut impl Io, pinned: &mut bool, window: Window) -> Result<(), EnableError> {

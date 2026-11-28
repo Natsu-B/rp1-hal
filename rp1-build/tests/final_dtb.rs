@@ -687,10 +687,10 @@ fn dma_subset_claims_the_linux_provider_and_requires_consumer_opt_in() {
 #[test]
 fn v3_overlay_requires_matching_abi_and_irq_route() {
     let d: Declaration =
-        toml::from_str("schema=2\nlink_wake='experimental'\n[proc1]\nhost_irq=true\ndoorbell=27")
+        toml::from_str("schema=2\nlink_wake='experimental'\nstartup_doorbell=26\n[proc0]\nwait_timer='ALARM1'\n[proc1]\nhost_irq=true\ndoorbell=27")
             .unwrap();
     let (fdt, note) = apply_declaration(&d, BASE);
-    assert!(rp1_dt_check(&fdt, &note).is_empty());
+    assert_eq!(rp1_dt_check(&fdt, &note), Vec::<String>::new());
     let fw = fdt.find("/rp1-firmware").unwrap();
     let irq = fdt
         .child(fdt.label("rp1").unwrap(), "rp1-irq@c040108000")

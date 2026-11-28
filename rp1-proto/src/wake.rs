@@ -8,6 +8,30 @@ pub const RPC_REPLY_WAKE: u32 = 1 << 3;
 pub const KNOWN_CAPS: u32 = LATCHED_WAKE | STARTUP_WAKE | CREDIT_WAKE | RPC_REPLY_WAKE;
 /// Capabilities offered by the IRQ profile with request-carried reply wake.
 pub const IRQ_RPC_CAPS: u32 = LATCHED_WAKE | RPC_REPLY_WAKE;
+pub const IRQ_STARTUP_CAPS: u32 = IRQ_RPC_CAPS | STARTUP_WAKE;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum StartupError {
+    Unsupported = 0x11,
+    StaleRequest = 0x12,
+    InvalidRequest = 0x13,
+    Timeout = 0x14,
+    Initialization = 0x15,
+}
+
+impl StartupError {
+    pub fn from_status(status: u32) -> Option<Self> {
+        match status {
+            0x11 => Some(Self::Unsupported),
+            0x12 => Some(Self::StaleRequest),
+            0x13 => Some(Self::InvalidRequest),
+            0x14 => Some(Self::Timeout),
+            0x15 => Some(Self::Initialization),
+            _ => None,
+        }
+    }
+}
 
 /// Link-page offsets. Every field is an aligned LE u32 with one writer.
 pub mod mailbox {
@@ -31,6 +55,7 @@ pub mod mailbox {
     pub const SEQ: usize = START + 32;
     pub const ACK: usize = START + 36;
     pub const REQUEST_OPCODE: u32 = 3;
+    pub const FIRST_REQUEST: u32 = 1;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

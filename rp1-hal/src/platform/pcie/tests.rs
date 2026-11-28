@@ -460,3 +460,78 @@ fn region0_translates_the_last_word_of_the_reservation() {
         0x10_2200_0000
     );
 }
+
+#[test]
+fn v3_commit_checks_deadline_and_flushes_result() {
+    let mut f = armed(Delivery::Pulse);
+    let seq = mailbox::FIRST_REQUEST;
+    let caps = rp1_proto::wake::IRQ_STARTUP_CAPS;
+    assert_eq!(
+        commit_startup(&mut f, seq, Ok((GENERATION, caps)), || true),
+        Err(StartupEnableError::Rejected(StartupError::Timeout))
+    );
+    assert_eq!(f.get(SHM_GENERATION), 0);
+    assert_eq!(f.get(word(mailbox::ACCEPTED_CAPS)), 0);
+    assert_eq!(f.get(word(mailbox::RESULT_SEQ)), seq);
+    assert_eq!(f.get(SHM_STATUS), StartupError::Timeout as u32);
+    assert!(thread_ops(&f).windows(3).any(|ops| ops
+        == [
+            Op::Write(SHM_STATUS, StartupError::Timeout as u32),
+            Op::Read(SHM_STATUS, StartupError::Timeout as u32),
+            Op::Barrier,
+        ]));
+    assert_eq!(
+        commit_startup(&mut f, seq, Ok((GENERATION, caps)), || false),
+        Err(StartupEnableError::Window(EnableError::Pinned))
+    );
+    assert_eq!(f.writes(SHM_STATUS).len(), 1);
+}
+
+#[test]
+fn v3_reset_wins_over_ready_and_explicit_error_at_each_commit_access() {
+    let seq = mailbox::FIRST_REQUEST;
+    for (outcome, status) in [
+        (
+            Ok((GENERATION, rp1_proto::wake::IRQ_STARTUP_CAPS)),
+            SHM_READY,
+        ),
+        (
+            Err(StartupError::Unsupported),
+            StartupError::Unsupported as u32,
+        ),
+    ] {
+        let mut clean = armed(Delivery::Pulse);
+        let _ = commit_startup(&mut clean, seq, outcome, || false);
+        let clean_ops = thread_ops(&clean);
+        let commit = clean_ops
+            .iter()
+            .position(|op| *op == Op::Write(SHM_STATUS, status))
+            .unwrap();
+        let reads_latch = clean_ops[..commit]
+            .iter()
+            .rposition(|op| matches!(op, Op::Read(PCIE_INTR, _)))
+            .unwrap();
+        // An edge through the last latch read blocks the store outright. The
+        // remaining masked boundaries are superseded by IRQ53 on unmask.
+        let until = clean_ops.iter().position(|op| *op == Op::Unmask).unwrap();
+        for at in 0..=until {
+            let mut reset = armed(Delivery::Pulse);
+            reset
+                .injections
+                .push((At::Thread(at), Event::Edge(Edge::Down)));
+            assert_eq!(
+                commit_startup(&mut reset, seq, outcome, || false),
+                Err(StartupEnableError::Window(EnableError::WindowLost)),
+                "reset at {at} for status {status}"
+            );
+            assert_eq!(reset.get(SHM_STATUS), link::SHM_WINDOW_LOST);
+            if at <= reads_latch {
+                assert!(
+                    !reset
+                        .writes(SHM_STATUS)
+                        .contains(&(Context::Thread, status))
+                );
+            }
+        }
+    }
+}

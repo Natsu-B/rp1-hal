@@ -1,12 +1,19 @@
-use crate::{Error, Firmware, Mapping, Result, Session, SessionHeader, notify::listener::Listener};
+use crate::{
+    Error, Firmware, Mapping, PeerDown, Result, Session, SessionHeader,
+    notify::{
+        Doorbell,
+        listener::{Listener, poll_until},
+    },
+};
 use rp1_proto::{
     self as proto, barrier, link,
     note::LinkWake,
     shm::wake::Words,
-    wake::{self, BootEpoch, Request, SessionError, mailbox},
+    wake::{self, BootEpoch, Request, SessionError, StartupError, mailbox},
 };
 use std::{
     cell::{Cell, RefCell},
+    os::fd::{AsFd, AsRawFd},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -17,16 +24,18 @@ pub(crate) type Ticket<S> = proto::shm::wake::Waiter<S, Live<S>>;
 pub(crate) struct Profile {
     config: LinkWake,
     epoch: Cell<Option<BootEpoch>>,
+    pin: u8,
 }
 
 impl Profile {
     pub(crate) fn open(config: LinkWake) -> Result<Self> {
-        if config.required_caps & !wake::IRQ_RPC_CAPS != 0 {
+        if config.required_caps & !wake::IRQ_STARTUP_CAPS != 0 {
             return Err(Error::Unsupported);
         }
         Ok(Self {
             config,
             epoch: Cell::new(None),
+            pin: config.startup_doorbell.ok_or(Error::Unsupported)?,
         })
     }
 
@@ -35,79 +44,212 @@ impl Profile {
             .checked_add(timeout)
             .ok_or(Error::InvalidDeadline)?;
         let listener = Rc::new(Listener::open()?);
-        let epoch = loop {
-            let word = fw.link.read(mailbox::BOOT_EPOCH);
-            if word == u32::MAX {
-                return Err(Error::LinkDown);
-            }
-            if let Ok(epoch) = BootEpoch::new(word) {
-                break epoch;
-            }
-            startup_pause(end)?;
-        };
-        if self.epoch.get().is_some_and(|old| old != epoch) {
-            return Err(Error::PeerDown(crate::PeerDown::Restarted));
+        let (scope, caps) = self.startup(&fw.link, &listener, end, |pin| Doorbell::open(0, pin))?;
+        let session = Session::open(&fw.note, &fw.area, &fw.link, Some((scope, caps, listener)))?;
+        session.check()?;
+        session.check_link_generation()?;
+        Ok(session)
+    }
+
+    fn startup(
+        &self,
+        page: &Mapping,
+        listener: &Listener,
+        end: Instant,
+        doorbell: impl FnOnce(u8) -> Result<Doorbell>,
+    ) -> Result<(wake::Session, u32)> {
+        let word = page.read(mailbox::BOOT_EPOCH);
+        if word == u32::MAX {
+            return Err(Error::LinkDown);
         }
+        // proc0 advertises before PCIe bring-up, so BAR2 availability implies
+        // the mailbox is already published.
+        let epoch = BootEpoch::new(word)?;
+        if self.epoch.get().is_some_and(|old| old != epoch) {
+            return Err(Error::PeerDown(PeerDown::Restarted));
+        }
+        self.check_startup_peer(page, epoch)?;
         self.epoch.set(Some(epoch));
         barrier();
-        let offered = fw.link.read(mailbox::OFFERED_CAPS);
-        if offered != self.config.offered_caps || offered & wake::LATCHED_WAKE == 0 {
+        let offered = page.read(mailbox::OFFERED_CAPS);
+        if offered != self.config.offered_caps || offered & REQUIRED != REQUIRED {
             return Err(Error::Unsupported);
         }
-        check_epoch(&fw.link, epoch)?;
-        check_status_epoch(&fw.link, epoch)?;
         let request = Request {
             epoch: epoch.word(),
-            seq: 1,
-            required_caps: self.config.required_caps | wake::LATCHED_WAKE,
+            seq: mailbox::FIRST_REQUEST,
+            required_caps: self.config.required_caps | REQUIRED,
         };
-        // One request identity per boot. A same-boot reopen reads the committed
-        // result, including when the initial requester exited before Ready.
-        if fw.link.read(link::SHM_REQUEST) != mailbox::REQUEST_OPCODE
-            && fw.link.read(link::SHM_STATUS) == 0
-        {
-            fw.link.write(mailbox::REQUEST_EPOCH, request.epoch);
-            fw.link.write(mailbox::REQUEST_SEQ, request.seq);
-            // Opt in when offered. The configured requirements also permit older peers.
-            fw.link.write(
-                mailbox::REQUIRED_CAPS,
-                request.required_caps | (offered & wake::RPC_REPLY_WAKE),
-            );
-            fw.link.write(link::SHM_REQUEST, mailbox::REQUEST_OPCODE);
-            let _ = fw.link.read(link::SHM_REQUEST);
-            fw.signal_enable_request();
+        let result = || self.startup_result(page, epoch, request);
+        if let Some(ready) = result()? {
+            return Ok(ready);
         }
-        loop {
-            check_epoch(&fw.link, epoch)?;
-            crate::Peer::check_core(&fw.link, self.config.owner)?;
-            if self.config.owner != 0 {
-                crate::Peer::check_core(&fw.link, 0)?;
+        if Instant::now() >= end {
+            return Err(Error::Timeout);
+        }
+        let doorbell = doorbell(self.pin)?;
+        let live = || ticket_epoch(page, epoch);
+        let mut ticket = unsafe { Words::link(page.ptr()).waiter(epoch, live) }?;
+        ticket.arm()?;
+        let ready = (|| {
+            if let Some(ready) = result()? {
+                return Ok(ready);
             }
-            match fw.link.read(link::SHM_STATUS) {
-                link::SHM_READY => break,
-                link::SHM_WINDOW_LOST | u32::MAX => return Err(Error::LinkDown),
-                0 => startup_pause(end)?,
-                _ => return Err(Error::Unsupported),
+            if Instant::now() >= end {
+                return Err(Error::Timeout);
             }
+            Self::publish_request(page, request, offered, &doorbell)?;
+            wait_startup(listener, end, result)
+        })();
+        let cleanup = ticket.acknowledge_and_cancel();
+        ready.and_then(|ready| {
+            cleanup?;
+            Ok(ready)
+        })
+    }
+
+    fn publish_request(
+        page: &Mapping,
+        request: Request,
+        offered: u32,
+        doorbell: &Doorbell,
+    ) -> Result<()> {
+        let epoch = BootEpoch::new(request.epoch)?;
+        check_epoch(page, epoch)?;
+        check_status_epoch(page, epoch)?;
+        match page.read(link::SHM_REQUEST) {
+            0 => {
+                page.write(mailbox::REQUEST_EPOCH, request.epoch);
+                page.write(mailbox::REQUEST_SEQ, request.seq);
+                page.write(
+                    mailbox::REQUIRED_CAPS,
+                    request.required_caps | (offered & wake::RPC_REPLY_WAKE),
+                );
+                barrier();
+                page.write(link::SHM_REQUEST, mailbox::REQUEST_OPCODE);
+            }
+            // An exited launcher can leave the request committed before it rang.
+            mailbox::REQUEST_OPCODE
+                if page.read(mailbox::REQUEST_EPOCH) == request.epoch
+                    && page.read(mailbox::REQUEST_SEQ) == request.seq => {}
+            u32::MAX => return Err(Error::PeerDown(PeerDown::LinkDown)),
+            _ => return Err(Error::Unsupported),
+        }
+        let _ = page.read(link::SHM_REQUEST);
+        barrier();
+        check_epoch(page, epoch)?;
+        check_status_epoch(page, epoch)?;
+        match page.read(link::SHM_STATUS) {
+            0 => doorbell.ring_flushed(),
+            link::SHM_WINDOW_LOST | u32::MAX => return Err(Error::PeerDown(PeerDown::LinkDown)),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn startup_result(
+        &self,
+        page: &Mapping,
+        epoch: BootEpoch,
+        request: Request,
+    ) -> Result<Option<(wake::Session, u32)>> {
+        self.check_startup_peer(page, epoch)?;
+        let status = page.read(link::SHM_STATUS);
+        if status == 0 {
+            return Ok(None);
         }
         barrier();
-        let caps = fw.link.read(mailbox::ACCEPTED_CAPS);
+        let seq = page.read(mailbox::RESULT_SEQ);
+        let caps = page.read(mailbox::ACCEPTED_CAPS);
+        let generation = page.read(link::SHM_GENERATION);
+        self.check_startup_peer(page, epoch)?;
+        if status != link::SHM_READY {
+            let error = match (StartupError::from_status(status), seq) {
+                (Some(StartupError::Timeout), seq) if seq == 0 || seq == request.seq => {
+                    Error::Timeout
+                }
+                (Some(StartupError::Unsupported), seq) if seq == 0 || seq == request.seq => {
+                    Error::Unsupported
+                }
+                (Some(StartupError::StaleRequest), seq) if seq == request.seq => {
+                    Error::PeerDown(PeerDown::Restarted)
+                }
+                (Some(error), seq) if seq == request.seq => Error::Startup(error),
+                _ => Error::from(proto::Error::Mismatch),
+            };
+            return Err(error);
+        }
         request
-            .check_result(
-                epoch.word(),
-                fw.link.read(mailbox::RESULT_SEQ),
-                caps,
-                offered,
-            )
+            .check_result(epoch.word(), seq, caps, self.config.offered_caps)
             .map_err(|error| match error {
                 SessionError::NotReady => Error::from(proto::Error::Mismatch),
                 error => Error::from(error),
             })?;
-        let scope = wake::Session::new(epoch.word(), fw.link.read(link::SHM_GENERATION))?;
-        let session = Session::open(&fw.note, &fw.area, &fw.link, Some((scope, caps, listener)))?;
-        session.check()?;
-        check_epoch(&fw.link, epoch)?;
-        Ok(session)
+        if caps != page.read(mailbox::REQUIRED_CAPS) {
+            return Err(proto::Error::Mismatch.into());
+        }
+        let scope = wake::Session::new(epoch.word(), generation)?;
+        self.check_startup_peer(page, epoch)?;
+        Ok(Some((scope, caps)))
+    }
+
+    fn check_startup_peer(&self, page: &Mapping, epoch: BootEpoch) -> Result<()> {
+        check_epoch(page, epoch)?;
+        check_status_epoch(page, epoch)?;
+        let pcie = page.read(proto::status::PLAT_PCIE);
+        if matches!(
+            page.read(link::SHM_STATUS),
+            link::SHM_WINDOW_LOST | u32::MAX
+        ) || pcie == u32::MAX
+            || matches!(
+                proto::status::PcieState::from_word(pcie),
+                proto::status::PcieState::Lost { .. }
+            )
+        {
+            return Err(Error::PeerDown(PeerDown::LinkDown));
+        }
+        crate::Peer::check_core(page, 0)?;
+        if self.config.owner != 0 {
+            crate::Peer::check_core(page, self.config.owner)?;
+        }
+        Ok(())
+    }
+}
+
+const REQUIRED: u32 = wake::LATCHED_WAKE | wake::STARTUP_WAKE;
+
+fn wait_startup<T>(
+    listener: &Listener,
+    end: Instant,
+    mut result: impl FnMut() -> Result<Option<T>>,
+) -> Result<T> {
+    if let Some(ready) = result()? {
+        return Ok(ready);
+    }
+    let mut fds = [libc::pollfd {
+        fd: listener.as_fd().as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    }];
+    loop {
+        poll_until(&mut fds, Some(end))?;
+        let woke = listener.intake();
+        let ready = result()?;
+        let woke = woke?;
+        let revents = fds[0].revents;
+        if revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return Err(Error::setup(format!("rp1:irq poll flags {revents:#x}")));
+        }
+        if let Some(ready) = ready {
+            return if !woke && Instant::now() >= end {
+                Err(Error::NotifyLost)
+            } else {
+                Ok(ready)
+            };
+        }
+        if Instant::now() >= end {
+            return Err(Error::Timeout);
+        }
     }
 }
 
@@ -120,8 +262,7 @@ impl StrictSession {
     ) -> Result<StrictSession> {
         let epoch = BootEpoch::new(scope.epoch())?;
         let live_link = link.clone();
-        let live: Box<dyn Fn() -> _> =
-            Box::new(move || BootEpoch::new(live_link.read(mailbox::BOOT_EPOCH)));
+        let live: Box<dyn Fn() -> _> = Box::new(move || ticket_epoch(&live_link, epoch));
         let mailbox = unsafe { Words::link(link.ptr()).waiter(epoch, live) }?;
         Ok(StrictSession {
             listener,
@@ -155,6 +296,7 @@ impl StrictSession {
 
     pub(crate) fn check_link(&self, link: &Mapping) -> Result<()> {
         check_epoch(link, self.epoch)?;
+        check_status_epoch(link, self.epoch)?;
         Self::check_ready(link)
     }
 
@@ -182,6 +324,22 @@ impl Drop for ListenerGuard<'_> {
     fn drop(&mut self) {
         self.0.set(false);
     }
+}
+
+fn ticket_epoch(
+    link: &Mapping,
+    expected: BootEpoch,
+) -> std::result::Result<BootEpoch, SessionError> {
+    // The runtime invalidates status::EPOCH before resetting the mailbox.
+    if check_status_epoch(link, expected).is_err()
+        || matches!(
+            link.read(proto::link::SHM_STATUS),
+            proto::link::SHM_WINDOW_LOST | u32::MAX
+        )
+    {
+        return Err(SessionError::Restarted);
+    }
+    BootEpoch::new(link.read(mailbox::BOOT_EPOCH))
 }
 
 fn check_epoch(link: &Mapping, epoch: BootEpoch) -> Result<()> {
@@ -269,12 +427,5 @@ impl RingPublisher {
     }
 }
 
-fn startup_pause(end: Instant) -> Result<()> {
-    // B2 retains the compatibility startup retry until the startup doorbell PR.
-    let delay = end.saturating_duration_since(Instant::now());
-    if delay.is_zero() {
-        return Err(Error::Timeout);
-    }
-    std::thread::sleep(delay.min(Duration::from_millis(1)));
-    Ok(())
-}
+#[cfg(test)]
+mod startup_tests;

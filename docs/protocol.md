@@ -413,8 +413,11 @@ MSI-X vector 29 の owner は 1 コア。v3 の `rp1-to-linux` ring で `notify 
 各語は aligned LE `u32` で、初期化後は単一 writer。proc0 の `rp1-rt::status` 初期化は
 `0xc0..0xff` をゼロ化する。proc0 は提供 caps を書いてから `BOOT_EPOCH` を公開する。
 `BOOT_EPOCH` は status の `EPOCH` のコピーで、mailbox と提供 caps の公開を示す。
-v3 は request/result を照合し、起動時は従来の 1 ms / 10 ms 再確認を使う。
-startup doorbell と Ready のイベント配送は後続の実装に残る。
+proc0 は PCIe の初期化前に mailbox を公開する。Linux は UIO を enable し、世代と
+caps を照合してから ticket を arm/readback する。request と opcode を BAR2 で commit/readback
+し、proc0 の startup force を設定して同じバンクで readback する。proc0 は force を
+CLR/readback して SEV し、request・PCIe・期限を再確認する。両側の通常の起動待ちは
+IRQ と絶対期限を使う。schema 2 の旧 client は従来の再確認を使う。
 
 | Offset | Field | Writer | Commit |
 |---|---|---|---|
@@ -431,7 +434,10 @@ startup doorbell と Ready のイベント配送は後続の実装に残る。
 | `0xe8..0xff` | 予約 0 | proc0 (初期化) | — |
 
 `RESULT_SEQ` は応答した `REQUEST_SEQ` と同じ値を使う。Linux は `SHM_STATUS` の acquire 後、
-同じ boot epoch/request の結果を使う。
+同じ boot epoch/request の結果を使う。要求を受け取る前に期限が切れた場合の `RESULT_SEQ`
+は 0。proc0 は DDR を readback し、世代と結果、最後に status を SRAM に commit/readback
+して SEV する。proc1 が vector owner の場合は専用 force で引き渡し、proc1 は起動時にも
+mailbox を確認する。IRQ53 の窓喪失を Ready と起動エラーより優先する。
 
 ### 10.2 Ring と ticket
 

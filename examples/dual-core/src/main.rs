@@ -72,6 +72,8 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
             panic!("platform init failed");
         }
     };
+    #[cfg(feature = "link-wake")]
+    let startup_end = rp1_hal::timer::Deadline::after(10.secs()).unwrap();
     log!("PLAT_INIT ok=1 {}\n", sys.report).unwrap();
     let private = PRIVATE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let bss = bss_check(0xb55_0000 | private);
@@ -98,15 +100,34 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
         .transaction(&mut [Operation::Write(&[0x9f]), Operation::Read(&mut id)])
         .unwrap();
     log!("proc0 spi0 {frequency} Hz id={id:x?}\n").unwrap();
+    #[cfg(feature = "link-wake")]
+    {
+        p.proc1.launch(&mut core).unwrap();
+        let mut context = p.wait_timer.thread_context().unwrap();
+        if rp1::link::enable(
+            &mut sys.pcie,
+            &mut p.irq.IO_BANK0,
+            &mut context,
+            startup_end,
+        )
+        .is_err()
+        {
+            park_after_startup_error();
+        }
+    }
+
     let mut alarm = p.TIMER_ALARM0;
     alarm.enable_interrupt();
     alarm.try_arm(next_tick()).unwrap();
     ALARM0.put(alarm).ok().unwrap();
     p.irq.TIMER_0.enable();
 
-    p.proc1.launch(&mut core).unwrap();
-    rp1::link::enable(&mut sys.pcie, &mut p.TIMER_ALARM1, &mut p.irq.TIMER_1)
-        .expect("SHM enable failed");
+    #[cfg(not(feature = "link-wake"))]
+    {
+        p.proc1.launch(&mut core).unwrap();
+        rp1::link::enable(&mut sys.pcie, &mut p.TIMER_ALARM1, &mut p.irq.TIMER_1)
+            .expect("SHM enable failed");
+    }
 
     let mut rx = VALUES.consumer(&mut core);
     let mut logged = 0;
@@ -136,7 +157,10 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
 }
 
 #[entry(proc1)]
-fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
+#[allow(unused_mut)]
+fn main1(mut core: Proc1, mut p: rp1::Proc1Resources) -> ! {
+    #[cfg(feature = "link-wake")]
+    let startup_end = rp1_hal::timer::Deadline::after(10.secs()).unwrap();
     let private = PRIVATE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let bss = bss_check(0xb55_1000 | private);
     log!("proc1 ready private={} bss=0x{:x}\n", private, bss).unwrap();
@@ -153,7 +177,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     let _i2c = p.i2c1.init(&clocks, rp1_hal::i2c::Speed::Standard).unwrap();
     let mut tx = VALUES.producer(&mut core);
     tx.push(increment(core::hint::black_box(41))).unwrap();
-    #[cfg(not(feature = "ping-poll"))]
+    #[cfg(not(any(feature = "ping-poll", feature = "link-wake")))]
     let link = {
         let mut irq = p.irq.IO_BANK0;
         p.link.open(&mut irq).expect("link open failed")
@@ -161,9 +185,26 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
     #[cfg(feature = "ping-poll")]
     let link = p.link.open().expect("link open failed");
     #[cfg(feature = "link-wake")]
-    ping_test::run_wake(link, p.host_irq);
+    {
+        let mut context = p.wait_timer.thread_context().unwrap();
+        let Ok(link) = p
+            .link
+            .open_until(&mut p.irq.IO_BANK0, &mut context, startup_end)
+        else {
+            park_after_startup_error()
+        };
+        ping_test::run_wake(link, p.host_irq);
+    }
     #[cfg(not(feature = "link-wake"))]
     run_link(link)
+}
+
+#[cfg(feature = "link-wake")]
+fn park_after_startup_error() -> ! {
+    // Leave the committed startup diagnosis visible to Linux.
+    loop {
+        rp1_rt::wait_for_event();
+    }
 }
 
 #[cfg(not(feature = "link-wake"))]

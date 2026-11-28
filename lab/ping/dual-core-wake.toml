@@ -5,17 +5,20 @@ version.workspace = true
 [package.metadata.rp1]
 schema = 2
 link_wake = "experimental"
+startup_doorbell = 26
 board = "rpi-cm5"
 clock = { authority = "rp1", clk_sys_hz = 200000000 }
 log = { sink = "uart0", baudrate = 115200 }
 
 [package.metadata.rp1.proc0]
 gpio = [8, 22] # 8 = SPI0 chip select driven as GPIO
-timer = ["ALARM0", "ALARM1"]
+timer = ["ALARM0"]
+wait_timer = "ALARM1"
 heartbeat = { period_ms = 1000 } # TIMER_0 beats once per tick
 spi0 = { sck = 11, mosi = 10, miso = 9 }
 
 [package.metadata.rp1.proc1]
+wait_timer = "ALARM2"
 doorbell = 27
 host_irq = true
 adc = {}

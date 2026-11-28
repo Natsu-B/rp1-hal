@@ -117,6 +117,7 @@ pub(crate) fn dts_with_layout(d: &Declaration, note: &[u8], shm: &ShmLayout<'_>)
         .iter()
         .chain(&d.proc1.pins())
         .copied()
+        .chain(d.startup_doorbell)
         .collect();
     if d.log.is_some() {
         pins.extend([14, 15]);

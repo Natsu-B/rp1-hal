@@ -40,7 +40,13 @@ pub fn run(args: &[String]) -> Result<()> {
         println!("PING_STATUS pcie={:?} shm={:?}", status.pcie, status.shm);
         return Ok(());
     }
-    let generation = fw.wait_ready(Duration::from_secs(10))?;
+    let start = Instant::now();
+    let result = fw.wait_ready(Duration::from_secs(10));
+    let elapsed_ns = start.elapsed().as_nanos();
+    if step == "ready" {
+        println!("PING_STARTUP elapsed_ns={elapsed_ns} result={result:?}");
+    }
+    let generation = result?;
     if step == "ready" {
         let status = fw.status()?;
         if status.pcie != PcieState::Up

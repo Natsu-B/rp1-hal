@@ -37,7 +37,7 @@ pub(crate) mod perstn;
 pub use crate::cold::ColdError;
 pub use irq::{ScmiState, ScmiStats, scmi_state};
 mod pcie;
-pub use pcie::EnableError;
+pub use pcie::{__startup_window_live, EnableError, StartupEnableError};
 
 pub use perstn::{DetectorReport, LostDetail, PcieState, pcie_state};
 

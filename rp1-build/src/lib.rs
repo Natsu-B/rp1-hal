@@ -320,13 +320,14 @@ fn resources(
         elf_note.len(),
         elf_note
     );
-    let experimental_wake = d.link_wake.is_some();
+    let wake = d.wake_config();
+    let experimental_wake = wake.is_some();
     if experimental_wake {
         s.push_str("const _: () = ::rp1_rt::status::__REQUIRES_EXPERIMENTAL_LINK_WAKE;\n");
     }
     if experimental_wake || !shm.regions.is_empty() {
         s.push_str("pub mod link {\n");
-        s.push_str(&link::generate(shm, note, experimental_wake)?);
+        s.push_str(&link::generate(shm, note, wake)?);
         s.push_str("}\n");
     }
     for (index, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
@@ -349,8 +350,11 @@ fn resources(
             .regions
             .iter()
             .any(|r| usize::from(r.core()) == index + 1);
-        let doorbell = !c.custom_doorbell_handler
+        let data_bell = !c.custom_doorbell_handler
             && shm.regions.iter().any(|r| r.receives_doorbell(index as u8));
+        let startup_pin = d.startup_doorbell.filter(|_| index == 0 || c.host_irq);
+        let owner_kick = index == 1 && startup_pin.is_some();
+        let doorbell = data_bell || startup_pin.is_some();
         if doorbell {
             let ack = if experimental_wake {
                 "__ack_and_signal_wake"
@@ -359,12 +363,32 @@ fn resources(
             };
             writeln!(
                 s,
-                "#[unsafe(export_name = \"__rp1_p{index}_IO_BANK0\")]\n\
-                #[unsafe(link_section = \".isram.text.__rp1_p{index}_IO_BANK0\")]\n\
-                unsafe extern \"C\" fn doorbell_proc{index}() {{\n\
-                    unsafe {{ Doorbell{index}::new() }}.{ack}();\n\
-                }}"
+                "#[unsafe(export_name = \"__rp1_p{index}_IO_BANK0\")]
+\
+                 #[unsafe(link_section = \".isram.text.__rp1_p{index}_IO_BANK0\")]
+\
+                 unsafe extern \"C\" fn doorbell_proc{index}() {{"
             )?;
+            if let Some(pin) = startup_pin {
+                if owner_kick {
+                    writeln!(
+                        s,
+                        "unsafe {{ ::rp1_link::notify::__startup_owner_irq::<{pin}>() }};"
+                    )?;
+                } else {
+                    writeln!(
+                        s,
+                        "unsafe {{ ::rp1_link::notify::Doorbell::<{pin}, 0>::new() }}.__ack_and_signal_wake();"
+                    )?;
+                }
+            }
+            if data_bell {
+                writeln!(s, "unsafe {{ Doorbell{index}::new() }}.{ack}();")?;
+            }
+            s.push_str(
+                "}
+",
+            );
         }
         let wait_alarm = c
             .wait_timer
@@ -465,7 +489,9 @@ fn resources(
                     .any(|(_, managed_line)| managed_line.name == line.name)
             })
             .filter(|line| match line.owner {
-                board::IrqOwner::GpioBank0 => !c.gpio_irq.is_empty() || c.doorbell.is_some(),
+                board::IrqOwner::GpioBank0 => {
+                    !c.gpio_irq.is_empty() || c.doorbell.is_some() || startup_pin.is_some()
+                }
                 board::IrqOwner::Alarm(alarm) => c.timer.contains(&format!("ALARM{alarm}")),
                 // By block, not name: the ADC's line is ADC_FIFO.
                 board::IrqOwner::Instance(_) => c.instances.keys().any(|key| {
@@ -567,7 +593,12 @@ fn resources(
                 s.push_str("pub platform: ::rp1_hal::platform::Token,\n");
             }
         }
-        s.push_str(&format!("_core: ::core::marker::PhantomData<::rp1_rt::Proc{index}>,\n}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub(crate) unsafe fn new() -> Self {{ Self {{ _core: ::core::marker::PhantomData, pins: Proc{index}Pins {{\n_private: ::core::marker::PhantomData,\n"));
+        let resource_init = match (startup_pin, index) {
+            (_, _) if owner_kick => "let mut resources = Self",
+            (Some(_), 0) => "let resources = Self",
+            _ => "Self",
+        };
+        s.push_str(&format!("_core: ::core::marker::PhantomData<::rp1_rt::Proc{index}>,\n}}\nimpl {ty} {{\n/// # Safety\n/// Runtime only, once on the owning core.\npub(crate) unsafe fn new() -> Self {{ {resource_init} {{ _core: ::core::marker::PhantomData, pins: Proc{index}Pins {{\n_private: ::core::marker::PhantomData,\n"));
         for (pin, ty, constructor) in &pins {
             writeln!(
                 s,
@@ -636,7 +667,22 @@ fn resources(
                 s.push_str(&format!("platform: unsafe {{ ::rp1_hal::platform::Token::new(::rp1_hal::linux_blocks::LinuxBlocks::new([{r0:#x}, {r1:#x}, {r2:#x}]), {sys_hz}) }},\n"));
             }
         }
-        s.push_str("} } }\n");
+        if startup_pin.is_some() {
+            s.push_str("};\n");
+            if let Some(config) = wake.filter(|_| index == 0) {
+                writeln!(
+                    s,
+                    "unsafe {{ ::rp1_link::generated::startup_advertise({}) }};",
+                    config.offered_caps
+                )?;
+            }
+            if owner_kick {
+                s.push_str("resources.irq.IO_BANK0.enable();\nunsafe { ::rp1_link::notify::__startup_owner_enter() };\n");
+            }
+            s.push_str("resources } }\n");
+        } else {
+            s.push_str("} } }\n");
+        }
     }
     if d.clock.authority == "rp1" {
         // Step 3 of the platform init is the declared log, if there is one.

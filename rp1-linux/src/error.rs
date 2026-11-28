@@ -1,6 +1,6 @@
 //! The one error type of rp1-linux.
 use rp1_proto::status::{ABI_VERSION, CoreState};
-use rp1_proto::wake::SessionError;
+use rp1_proto::wake::{SessionError, StartupError};
 use std::{fmt, io};
 
 /// Why an rp1-linux call failed.
@@ -23,6 +23,8 @@ pub enum Error {
     InvalidDeadline,
     /// The firmware or endpoint does not support this wait or capability.
     Unsupported,
+    /// RP1 rejected shared-memory startup for the current boot.
+    Startup(StartupError),
     /// Another owner holds the endpoint, or all RPC slots have outstanding requests.
     Busy,
     /// The firmware's note has no such endpoint (or, for status, no LINK record).
@@ -96,6 +98,7 @@ impl fmt::Display for Error {
             Self::Timeout => write!(f, "timed out"),
             Self::NotifyLost => write!(f, "work was published without a wake before the deadline"),
             Self::InvalidDeadline => write!(f, "invalid monotonic deadline"),
+            Self::Startup(reason) => write!(f, "RP1 startup failed ({reason:?})"),
             Self::Unsupported => write!(f, "unsupported link capability or wait mode"),
             Self::Busy => write!(f, "the endpoint is held or all RPC slots are outstanding"),
             Self::Unknown => write!(f, "the firmware's note has no such endpoint"),

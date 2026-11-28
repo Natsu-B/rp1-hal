@@ -15,6 +15,7 @@ use std::{
 struct InputDeclaration {
     schema: Option<u32>,
     link_wake: Option<LinkWakeProfile>,
+    startup_doorbell: Option<u8>,
     board: String,
     clock: Clock,
     log: Option<Log>,
@@ -30,6 +31,7 @@ impl Default for InputDeclaration {
         Self {
             schema: None,
             link_wake: None,
+            startup_doorbell: None,
             board: "rpi-cm5".into(),
             clock: Clock::default(),
             log: None,
@@ -54,6 +56,9 @@ pub struct Declaration {
     pub schema: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_wake: Option<LinkWakeProfile>,
+    /// Force-only IO_BANK0 pin for proc0 startup and the peer owner kick.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_doorbell: Option<u8>,
     pub board: String,
     pub clock: Clock,
     pub log: Option<Log>,
@@ -71,6 +76,7 @@ impl Default for Declaration {
         Self {
             schema: 2,
             link_wake: None,
+            startup_doorbell: None,
             board: "rpi-cm5".into(),
             clock: Clock::default(),
             log: None,
@@ -108,6 +114,7 @@ impl Declaration {
         Ok(Self {
             schema: 2,
             link_wake: input.link_wake,
+            startup_doorbell: input.startup_doorbell,
             board: input.board,
             clock: input.clock,
             log: input.log,
@@ -121,11 +128,14 @@ impl Declaration {
         })
     }
     pub(crate) fn wake_config(&self) -> Option<rp1_proto::note::LinkWake> {
+        let startup = self
+            .startup_doorbell
+            .map_or(0, |_| rp1_proto::wake::STARTUP_WAKE);
         self.link_wake.map(|_| rp1_proto::note::LinkWake {
-            required_caps: rp1_proto::wake::LATCHED_WAKE,
-            offered_caps: rp1_proto::wake::IRQ_RPC_CAPS,
+            required_caps: rp1_proto::wake::LATCHED_WAKE | startup,
+            offered_caps: rp1_proto::wake::IRQ_RPC_CAPS | startup,
             owner: u8::from(self.proc1.host_irq),
-            startup_doorbell: None,
+            startup_doorbell: self.startup_doorbell,
         })
     }
 
@@ -510,6 +520,21 @@ impl Declaration {
         self.validate_ownership()?;
         if self.link_wake.is_some() && !(self.proc0.host_irq || self.proc1.host_irq) {
             return Err("experimental link_wake requires one host_irq owner".into());
+        }
+        if self.startup_doorbell.is_some() {
+            if self.link_wake.is_none() || self.proc0.wait_timer.is_none() {
+                return Err("startup_doorbell requires link_wake and proc0.wait_timer".into());
+            }
+            for core in [&self.proc0, &self.proc1]
+                .into_iter()
+                .take(if self.proc1.host_irq { 2 } else { 1 })
+            {
+                if core.custom_doorbell_handler || !core.gpio_irq.is_empty() {
+                    return Err("startup_doorbell needs the generated IO_BANK0 dispatcher".into());
+                }
+            }
+        } else if self.link_wake.is_some() && !self.shm.is_empty() {
+            return Err("v3 shared memory requires startup_doorbell".into());
         }
         let mut names = BTreeSet::new();
         let mut region_count = 0;

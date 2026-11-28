@@ -19,7 +19,7 @@ pub mod generated;
 
 pub use channel::Channel;
 pub use ring::{RingRx, RingTx};
-pub use rp1_hal::platform::EnableError;
+pub use rp1_hal::platform::{EnableError, StartupEnableError};
 pub use rp1_proto::{
     Error, Message,
     shm::{Block, BlockReader, BlockWriter, Overflow, Progress},
@@ -35,6 +35,13 @@ pub enum OpenError<Init> {
     Reset,
     /// An invalid status or a failed endpoint attachment. The token is spent.
     Attach(Error),
+}
+
+/// Failure of a deadline-bounded startup attachment.
+#[derive(Debug)]
+pub enum OpenUntilError {
+    Open(OpenError<core::convert::Infallible>),
+    Wait(rp1_hal::timer::Error),
 }
 
 /// Drain posted DDR writes while the published window is Ready.

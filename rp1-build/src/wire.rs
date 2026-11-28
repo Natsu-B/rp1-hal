@@ -72,7 +72,14 @@ pub(crate) fn descriptor_with_layout(
             claims.extend([kind, core]);
             short(&mut claims, id);
         }
-        if !c.gpio_irq.is_empty() || c.doorbell.is_some() {
+        if core == 1
+            && let Some(pin) = d.startup_doorbell
+        {
+            claims.extend([ownership_kind::PIN, core]);
+            short(&mut claims, u16::from(pin));
+        }
+        let startup_bank = d.startup_doorbell.is_some() && (core == 1 || c.host_irq);
+        if !c.gpio_irq.is_empty() || c.doorbell.is_some() || startup_bank {
             claims.extend([ownership_kind::GPIO_IRQ_BANK, core]);
             short(&mut claims, 0);
         }

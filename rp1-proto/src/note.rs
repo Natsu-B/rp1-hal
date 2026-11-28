@@ -148,6 +148,18 @@ impl<'a> Note<'a> {
             let wake = LinkWake::parse(note.get(LINK_WAKE).ok_or(Error::Invalid)?.value)?;
             let link = Link::parse(note.get(LINK).ok_or(Error::Invalid)?.value)?;
             wake.check_routes(link)?;
+            if let Some(pin) = wake.startup_doorbell {
+                let ownership = note.get(OWNERSHIP).ok_or(Error::Invalid)?.value;
+                let entries = ownership[4..].as_chunks::<4>().0;
+                let has_bank =
+                    |core| entries.contains(&[ownership_kind::GPIO_IRQ_BANK, core, 0, 0]);
+                if !entries.contains(&[ownership_kind::PIN, 1, pin, 0])
+                    || !has_bank(1)
+                    || (wake.owner == 1 && !has_bank(2))
+                {
+                    return Err(Error::Mismatch);
+                }
+            }
             Some(link)
         } else {
             None

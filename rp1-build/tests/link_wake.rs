@@ -6,8 +6,10 @@ use rp1_build::{
 use rp1_proto::{
     Error,
     note::{self, Note, ShmArea, ShmRegion},
-    wake::{LATCHED_WAKE, RPC_REPLY_WAKE, mailbox},
+    wake::{IRQ_STARTUP_CAPS, LATCHED_WAKE, STARTUP_WAKE, mailbox},
 };
+
+const STARTUP: &str = "link_wake='experimental'\nstartup_doorbell=26\n[proc0]\nwait_timer='ALARM1'";
 
 const DECLARATION: &str = r#"
 [proc1]
@@ -35,7 +37,7 @@ fn artifacts(profile: &str) -> rp1_build::Artifacts {
 fn schemas_keep_v2_and_v3_note_layouts_distinct() {
     for (profile, version, ty, start) in [
         ("", 2u16, note::ELF_TYPE, 0xc0),
-        ("link_wake='experimental'", 3, note::ELF_TYPE_V3, 0x100),
+        (STARTUP, 3, note::ELF_TYPE_V3, 0x100),
     ] {
         let a = artifacts(profile);
         let envelope = wire::elf_note(&a.note);
@@ -53,11 +55,11 @@ fn schemas_keep_v2_and_v3_note_layouts_distinct() {
             assert_eq!(wake.flags, 1);
             assert_eq!(
                 wake.value,
-                [1, 0, 0xc0, 0, 64, 0, 1, 0xff, 1, 0, 0, 0, 9, 0, 0, 0]
+                [1, 0, 0xc0, 0, 64, 0, 1, 26, 3, 0, 0, 0, 11, 0, 0, 0]
             );
             let config = note::LinkWake::parse(wake.value).unwrap();
-            assert_eq!(config.required_caps, LATCHED_WAKE);
-            assert_eq!(config.offered_caps, LATCHED_WAKE | RPC_REPLY_WAKE);
+            assert_eq!(config.required_caps, LATCHED_WAKE | STARTUP_WAKE);
+            assert_eq!(config.offered_caps, IRQ_STARTUP_CAPS);
         } else {
             assert!(wake.is_none());
         }
@@ -76,7 +78,7 @@ fn reseal(bytes: &mut [u8]) {
 
 #[test]
 fn malformed_v3_record_and_stale_layout_are_rejected() {
-    let a = artifacts("link_wake='experimental'");
+    let a = artifacts(STARTUP);
     let note = Note::parse(&a.note).unwrap();
     let offset = |kind| note.get(kind).unwrap().value.as_ptr() as usize - a.note.as_ptr() as usize;
     let wake = offset(note::LINK_WAKE);
@@ -89,8 +91,9 @@ fn malformed_v3_record_and_stale_layout_are_rejected() {
         (wake + 2, 0x80, Error::Invalid),  // mailbox overlaps status
         (wake + 4, 32, Error::Invalid),    // mailbox truncated
         (wake + 6, 0, Error::Mismatch),    // wrong vector owner
-        (wake + 7, 26, Error::Mismatch),   // unadvertised startup route
-        (wake + 8, 3, Error::Mismatch),    // required capability absent
+        (wake + 7, 27, Error::Mismatch),   // collides with the data force
+        (wake + 7, 25, Error::Mismatch),   // no claim for the new pin
+        (wake + 8, 7, Error::Mismatch),    // required capability absent
         (wake + 8, 0x80, Error::Mismatch), // unknown required capability
         (wake + 12, 0, Error::Mismatch),   // promised capabilities absent
         (route, 58, Error::Mismatch),      // wrong MSI-X vector
@@ -166,9 +169,28 @@ fn experimental_route_respects_the_existing_ownership_checks() {
             "[proc0]\ngpio=[27]\n[proc1]\nhost_irq=true\ndoorbell=27",
             false,
         ),
+        (
+            "[proc0]\nwait_timer='ALARM1'\n[proc1]\nhost_irq=true\ndoorbell=26",
+            false,
+        ),
+        (
+            "[proc0]\nwait_timer='ALARM1'\n[proc1]\nhost_irq=true\ndoorbell=27",
+            true,
+        ),
+        (
+            "[proc0]\nwait_timer='ALARM1'\n[proc1]\nhost_irq=true\ndoorbell=27\ncustom_doorbell_handler=true",
+            false,
+        ),
     ] {
-        let d: Declaration =
-            toml::from_str(&format!("schema=2\nlink_wake='experimental'\n{cores}")).unwrap();
+        let startup = if cores.contains("ALARM1") {
+            "startup_doorbell=26\n"
+        } else {
+            ""
+        };
+        let d: Declaration = toml::from_str(&format!(
+            "schema=2\nlink_wake='experimental'\n{startup}{cores}"
+        ))
+        .unwrap();
         assert_eq!(d.validate().is_ok(), valid, "{cores}");
     }
 }

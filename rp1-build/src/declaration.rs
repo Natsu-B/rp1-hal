@@ -541,6 +541,10 @@ impl Declaration {
                 .into());
             }
         }
+        if let Some(pin) = self.startup_doorbell {
+            validate_pin(pin)?;
+            claim_pin(&mut pins, pin, "proc0.startup_doorbell".into())?;
+        }
         for (owner, core) in [("proc0", &self.proc0), ("proc1", &self.proc1)] {
             for pin in &core.gpio {
                 validate_pin(*pin)?;

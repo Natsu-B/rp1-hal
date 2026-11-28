@@ -322,6 +322,84 @@ impl VectorOwner {
     }
 }
 
+/// Notify the vector owner after proc0 commits a startup result.
+///
+/// # Safety
+/// Generated proc0 startup only; PIN and OWNER are the validated startup route.
+#[doc(hidden)]
+pub unsafe fn __kick_startup_owner<const PIN: u8, const OWNER: u8>() {
+    if OWNER == 0 {
+        deliver_startup();
+    } else {
+        type Kick<const P: u8> = Doorbell<P, 1>;
+        write(Kick::<PIN>::INTF_SET, Kick::<PIN>::BIT);
+        let _ = read(Kick::<PIN>::INTF);
+        rp1_proto::barrier();
+    }
+}
+
+/// Scan after taking ownership, even when reset cleared a kick that arrived first.
+///
+/// # Safety
+/// Generated code on the proc1 vector owner, after taking over the vector.
+#[doc(hidden)]
+pub unsafe fn __startup_owner_enter() {
+    deliver_startup();
+}
+
+/// # Safety
+/// Generated proc1 vector-owner dispatcher only; this force belongs to startup.
+#[doc(hidden)]
+pub unsafe fn __startup_owner_irq<const PIN: u8>() {
+    on_startup_kick::<PIN>(deliver_startup);
+}
+
+fn on_startup_kick<const PIN: u8>(deliver: impl FnOnce()) {
+    let kick = unsafe { Doorbell::<PIN, 1>::new() };
+    if kick.is_pending() {
+        kick.__ack_and_signal_wake();
+        deliver();
+    }
+}
+
+#[rp1_rt::cold]
+fn deliver_startup() {
+    deliver_startup_from(
+        rp1_proto::LINK_START as *mut u8,
+        rp1_hal::platform::__startup_window_live,
+    );
+}
+
+fn deliver_startup_from(link: *mut u8, window_live: impl Fn() -> bool) {
+    // Entry and IRQ can both observe the commit. Serialize link-ticket publication
+    // with local pulses, while leaving PERSTn and SCMI service available.
+    mmio::section(|| {
+        let word = |offset| unsafe { link.add(offset).cast::<u32>().read_volatile() };
+        let status = || word(rp1_proto::link::SHM_STATUS);
+        if matches!(status(), 0 | rp1_proto::link::SHM_WINDOW_LOST) || !window_live() {
+            return;
+        }
+        let live = || {
+            let epoch = BootEpoch::new(word(mailbox::BOOT_EPOCH))?;
+            if epoch.word() != word(rp1_proto::status::EPOCH) {
+                return Err(rp1_proto::wake::SessionError::Restarted);
+            }
+            Ok(epoch)
+        };
+        if let Ok(epoch) = live()
+            && let Ok(mut publisher) = unsafe { Words::link(link).publisher(epoch, live) }
+            && publisher
+                .publish(|| {
+                    let _ = status();
+                })
+                .unwrap_or(false)
+            && window_live()
+        {
+            let _ = VectorOwner::pulse_owned();
+        }
+    });
+}
+
 fn publish_terminal_ticket() {
     let link = rp1_proto::LINK_START as usize;
     let live = || BootEpoch::new(read(link + mailbox::BOOT_EPOCH));
@@ -928,5 +1006,68 @@ mod tests {
         assert!(bell.is_pending());
         // Another pin's force is not this doorbell.
         assert!(!unsafe { Doorbell::<27, 0>::new() }.is_pending());
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    use crate::mmio::fake::{self, Access};
+    use rp1_proto::{link, status};
+
+    #[test]
+    fn proc1_recovers_a_kick_that_arrived_before_its_vector_was_enabled() {
+        type Kick = Doorbell<26, 1>;
+        fake::alias(Kick::INTF_SET, Kick::INTF, true);
+        fake::alias(Kick::INTF_CLR, Kick::INTF, false);
+        fake::alias(MSIX_CFG_SET, MSIX_CFG, true);
+        fake::alias(MSIX_CFG_CLR, MSIX_CFG, false);
+        fake::trace_reads();
+
+        let mut page = [0u32; mailbox::END / 4];
+        page[status::EPOCH / 4] = 2;
+        page[mailbox::BOOT_EPOCH / 4] = 2;
+        page[mailbox::WAIT / 4] = 1;
+        page[link::SHM_STATUS / 4] = link::SHM_READY;
+        let base = page.as_mut_ptr().cast();
+
+        unsafe { __kick_startup_owner::<26, 1>() };
+        assert_eq!(
+            fake::take(),
+            [
+                Access::Write(Kick::INTF_SET, 1 << 26),
+                Access::Read(Kick::INTF),
+            ]
+        );
+        // A pending-vector reset can drop the first kick. The owner's initial
+        // scan still delivers the retained result once.
+        deliver_startup_from(base, || true);
+        assert_eq!(page[mailbox::SEQ / 4], 1);
+        assert_eq!(
+            fake::take()
+                .iter()
+                .filter(|op| **op == Access::Write(MSIX_CFG_SET, MSIX_CFG_TEST))
+                .count(),
+            1
+        );
+        on_startup_kick::<26>(|| deliver_startup_from(base, || true));
+        let accesses = fake::take();
+        assert_eq!(
+            &accesses[..3],
+            &[
+                Access::Read(Kick::INTF),
+                Access::Write(Kick::INTF_CLR, 1 << 26),
+                Access::Read(Kick::INTF),
+            ]
+        );
+        assert!(!accesses.contains(&Access::Write(MSIX_CFG_SET, MSIX_CFG_TEST)));
+        assert_eq!(fake::read(Kick::INTF), 0);
+
+        // An old kick with an armed word cannot publish into an invalidated boot.
+        page[status::EPOCH / 4] = 3;
+        page[mailbox::WAIT / 4] = 3;
+        deliver_startup_from(base, || true);
+        assert_eq!(page[mailbox::SEQ / 4], 1);
+        assert!(!fake::take().contains(&Access::Write(MSIX_CFG_SET, MSIX_CFG_TEST)));
     }
 }

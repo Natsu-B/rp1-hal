@@ -90,12 +90,16 @@ schema = 2
 host_irq = true
 ```
 
-The delivery fixture selects the experimental wire and enables the runtime feature.
+The v3 startup profile selects the experimental wire and enables the runtime feature.
+Reserve an unused pin for the force-only startup doorbell and an alarm on proc0.
 
 ```toml
 [package.metadata.rp1]
 schema = 2
 link_wake = "experimental"
+startup_doorbell = 26
+[package.metadata.rp1.proc0]
+wait_timer = "ALARM1"
 [package.metadata.rp1.proc1]
 host_irq = true
 [dependencies]
@@ -109,8 +113,8 @@ sizes and use reserved words for notification. The opt-in generates typed endpoi
 `VectorOwner`. Update the loader, firmware and Linux client as a set.
 Default manifests continue to generate the schema-2 wire profile.
 
-**STATIC.** NOTE v3 `offered_caps` changes from 1 to 9. The new bit 3,
-`RPC_REPLY_WAKE`, allows IRQ RPC requests to encode a reply-wake flag as
+**STATIC.** V3 startup requires `STARTUP_WAKE` and uses IRQ/WFE with a one-shot
+deadline. `RPC_REPLY_WAKE` allows IRQ RPC requests to encode a reply-wake flag as
 `seq = index ^ 0x80000000`. The full 32-bit ring index still wraps.
 The caller arms a reply ticket only if its local reply scan is empty.
 The earlier v3 profile uses the ticket fallback in protocol §10.4.

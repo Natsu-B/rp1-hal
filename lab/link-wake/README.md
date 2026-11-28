@@ -29,3 +29,8 @@ If PCIe is down, the terminal stays eligible for a later scan after a
 doorbell or terminal event. IRQ53 signals loss, and the fixture has no
 automatic transition back to Up or dedicated retry event.
 Start from a cold boot with old writers and posted accesses drained.
+
+A legacy executable needs the matching schema-2 boot set. With the
+`linux-ping` lab build, run
+`lab/ping/legacy-launch.sh ./linux-ping irq ./old-client`. The launcher
+waits for Ready, releases its mappings and then executes the client.
