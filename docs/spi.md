@@ -171,9 +171,9 @@ the RP1 `+0x108` output gate and unmasks the selected sources.
 |---|---|
 | SPI0 | HW, IRQ waits, internal loopback, wire idle and deadline re-arm |
 | SPI1 | HW, DW SSI loopback, RX/TX IRQs, shifter idle and deadline re-arm |
-| SPI2 | STATIC route, polling only. Bench GPIO2/3 connect to the ESP32 I²C controller. |
+| SPI2 | HW, IRQ21 sweep and detached internal loopback. The full-pad equality and early 1 MHz flush gates failed. Polling remains the public route. |
 | SPI3 | HW, DW SSI loopback, RX/TX IRQs and deadline re-arm. The 1 MHz idle-lag gate failed on one of two original boots (17 µs against 3 µs). |
-| SPI5 | STATIC route, polling only. Bench GPIO15 connects to FTDI TX. |
+| SPI5 | HW, IRQ24 sweep and detached internal loopback. All 18,000 flushes met the 3 µs bound after measured IRQ overlap credit. The full-pad equality gate failed during Linux boot. Polling remains the public route. |
 
 STATIC (2026-11-27). `lab/spi-parity` checks internal loopback, RX/TX delivery,
 timeouts, shifter idle and sensed CS levels with the RP1 timer.

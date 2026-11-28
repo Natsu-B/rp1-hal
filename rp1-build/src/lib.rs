@@ -1176,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn unverified_spi_routes_stay_polling_with_a_wait_timer() {
+    fn spi2_and_spi5_stay_polling_until_hardware_qualification_passes() {
         for (n, pins) in [(2, "sck=3,mosi=2,miso=1"), (5, "sck=15,mosi=14,miso=13")] {
             let input = format!(
                 "schema=2\n[linux]\nkeep={{}}\n[proc0]\nwait_timer='ALARM1'\nspi{n}={{{pins}}}"
@@ -1189,6 +1189,7 @@ mod tests {
             )));
             assert!(!source.contains(&format!("impl sealed::Admitted for SPI{n}")));
             assert!(!source.contains(&format!("export_name = \"__rp1_p0_SPI{n}\"")));
+            assert!(board::irq_routes().all(|line| line.irq != 19 + n));
             let custom = format!("{input}\ncustom_spi{n}_handler=true");
             let error = toml::from_str::<metadata::Declaration>(&custom).unwrap_err();
             assert!(
@@ -1196,6 +1197,22 @@ mod tests {
                     .to_string()
                     .contains(&format!("unknown key 'custom_spi{n}_handler'"))
             );
+        }
+    }
+
+    #[test]
+    fn unverified_irqs_stay_unexposed_with_a_wait_timer() {
+        for core in 0..2 {
+            let input = format!("schema=2\n[proc{core}]\nwait_timer='ALARM1'\ndma={{}}");
+            let decl: metadata::Declaration = toml::from_str(&input).unwrap();
+            decl.validate().unwrap();
+            let source = resources(&decl, &[], &decl.shm_layout().unwrap()).unwrap();
+            assert_eq!(irq_fields(&source, core), "");
+            for vector in ["DMA", "SPI4", "SPI6", "SPI7", "SPI8"] {
+                assert!(!source.contains(&format!("impl sealed::Admitted for {vector}")));
+                assert!(!source.contains(&format!("export_name = \"__rp1_p{core}_{vector}\"")));
+                assert!(board::irq_routes().all(|line| line.name != vector));
+            }
         }
     }
 

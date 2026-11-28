@@ -340,6 +340,12 @@ SPI2 and SPI5 use polling. Their managed IRQ and raw `p.irq.SPI2` /
 `p.irq.SPI5` routes and `custom_spi2_handler` / `custom_spi5_handler`
 declaration keys were removed.
 
+HW (2026-11-28, two cold boots). With the SPI pads detached, the proc0 sweep
+observed IRQ21 for SPI2 and IRQ24 for SPI5. Internal loopback confirmed IRQ
+delivery and timeout recovery. The full-pad equality gate failed during Linux
+boot. SPI2 also exceeded the 3 µs idle-to-return bound after measured
+SCMI overlap was deducted.
+
 ## Interrupt priorities
 
 STATIC (2026-11-28). See [Interrupt priorities](interrupts.md#優先度).

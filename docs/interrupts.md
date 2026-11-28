@@ -87,7 +87,7 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | `adc` と同じコアの `wait_timer` | `rp1::AdcParts` が線を所有し、ISRAM の ADC_FIFO ハンドラを生成 |
 | raw `adc` | `ADC_FIFO: Line<52>` |
 
-- 生成と ELF 検査は `rp1_build::board::irq_routes()` を共用する。SPI2 / SPI5 は NVIC 未確認のため公開しない。
+- 生成と ELF 検査は `rp1_build::board::irq_routes()` を共用する。SPI2 / SPI5 は実機の受入条件を満たさなかったためポーリングを継続する（§4）。
 - `cargo rp1 check` / `build` は、既定ハンドラ以外のベクタを note の OWNERSHIP と照合する。所有しない線や
   表に無い線にハンドラを置くとビルドエラー。
 - 渡さない線: `log` の UART0、`host_irq = true` のときの `TIMER_3`、システム用の PCIE_OUT（53）・
@@ -164,6 +164,7 @@ NVIC だけを見ている。proc1 で受けたのは TIMER_1・IO_BANK0・SPI0 
 | SPI0 / SPI1 / SPI3（19 / 20 / 22） | DW SSI 内部ループバックで proc0 の RX / TX IRQ、データ一致、タイムアウト後の転送を確認。SPI3 の 1 MHz 復帰時間は 2 起動中 1 回で上限 3 µs 超過（17 µs） | HW（2026-11） |
 | critical section | 割り込みと競合させて torn 0、最長マスク 4 µs 以下 | HW（同上） |
 | I2C0 / I2C2 / I2C3（7 / 9 / 10）、SPI1 / SPI3（20 / 22） | TX FIFO 空を源に、`+0x108` 閉で 0/3、開で 3/3 | HW（2026-11、2 種のイメージで各 2 起動、同じ結果） |
+| SPI2 / SPI5（21 / 24） | ピンを mux せず proc0 で掃引。TX FIFO 空を源に `+0x108` 閉で 0/3、開で 3/3。開で対応する pending bit だけが新たに立つ。内部ループバックで RX / TX IRQ と deadline 後の再アームを確認 | HW（2026-11-28、cold boot 2 回） |
 | I2C2 / I2C3（9 / 10） | オープンドレインのジャンパ配線で TX_ABRT を proc0 に配送し、AddressNack を確認 | HW（2026-11） |
 | ADC_FIFO（52） | force と内部温度の実変換の両方で 3/3 | HW（同上） |
 | PWM1（41） | force で 3/3 | HW（同上） |
@@ -175,6 +176,10 @@ NVIC だけを見ている。proc1 で受けたのは TIMER_1・IO_BANK0・SPI0 
 | Linux に残したブロック（上の表を立てた rp1-hal ファーム） | Linux 側で割り込みが届くのを見たのは I2C2 / I2C6 / SPI1 / ETH / USB。I2C0/3/4/5、SPI2..8、I2S は値が標準ファームと同じことまで | HW（2026-11、cold boot と再起動で各 1 回） |
 | PIO_0 / PIO_1（50 / 51） | 個別 force で両コアの pending を観測し、proc1 の ISR に配送。各線・各 SM の RX not-empty / TX not-full とタイムアウト後の再転送を確認 | HW（2026-11-28、cold boot 2 回、idle と Linux・SCMI・ネットワーク負荷、`lab/pio-irq-parity`）。公開は proc1 |
 | DMA（40）、CLOCKS（59）、VBUS（60） | 安全な刺激が無く未確認 | 公開しない |
+
+SPI2 / SPI5 の掃引前後は全 54 パッドの GPIO CTRL と PADS 値が一致した。Linux 起動中の比較では
+バンク 2 の値が変わり、全パッド一致の受入条件は不成立だった。SPI2 の早期 1 MHz flush は上限が
+26 µs で、計測した SCMI の重複 21 µs を差し引くと 5 µs となり、3 µs の条件を超えた（HW）。
 
 PWM0 と TIMER_3 は試作ファームでの観測を根拠に `IRQ_VERIFIED` に入れて公開している。線の配線は RP1 の
 ものなのでファームが変わっても同じはず（HYP）だが、rp1-hal で再確認するまで regdb ではこの 2 本を `static` にしてある。

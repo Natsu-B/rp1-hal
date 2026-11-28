@@ -309,8 +309,9 @@ handling) are STATIC until the next run.
 | 41 | PWM1 | `INTF` forced; no channel is enabled | GPIO45 (fan) selects no function (FUNCSEL = NULL) |
 | 1, 2 | IO_BANK1, IO_BANK2 | one bit of `PROC0_INTF` forced | `PROC0_INTE`, `PROC0_INTF`, `PROC0_INTS` all read 0 |
 
-DMA (40), SPI5 (24), PIO (50/51), CLOCKS (59) and VBUS (60) have no safe stimulus and are not
-in the table; the image fails to build, and the checker fails, if one is added.
+The build and checker restrict this image's sweep table. DMA (40), SPI5 (24),
+PIO (50/51), CLOCKS (59) and VBUS (60) are outside that table. The separate
+pad-detached SPI2/SPI5 observations are recorded in [Interrupts](../docs/interrupts.md#4-根拠).
 
 For each line: prerequisites, then three trials of each stimulus. A trial checks the block's
 baseline (explicit masks and values), clears the target pending bit, raises the source, reads
