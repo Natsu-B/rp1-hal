@@ -1,6 +1,6 @@
 //! Core-local delivery for generator-owned synchronous device IRQs.
 
-use crate::timer::{self, Deadline, Timer, WaitTimer};
+use crate::timer::{self, Deadline, Instant, Timer, WaitContext, WaitTimer};
 use rp1_rt::interrupt::{Line, OwnedLine, Priority, Slot};
 
 const CEILING: u8 = 4;
@@ -129,11 +129,6 @@ fn check<S, L: DeviceLine, const CORE: u8>(slot: &CoreState<S, L, CORE>) -> Resu
         .ok_or(Error::Busy)?
 }
 
-#[inline(always)]
-fn is_armed<I>(source: &impl Source<I>, _: &I) -> bool {
-    source.is_armed()
-}
-
 #[inline(never)]
 pub(crate) fn check_before_transfer<S, L: DeviceLine, const CORE: u8>(
     slot: &CoreState<S, L, CORE>,
@@ -141,70 +136,94 @@ pub(crate) fn check_before_transfer<S, L: DeviceLine, const CORE: u8>(
     check(slot)
 }
 
-// Keep the same wait and ISR bodies in the host race fixture. The firmware
-// still uses its concrete alarm and event instructions at these call sites.
-macro_rules! service_source {
-    ($slot:ident, $io:expr, $signal:expr) => {{
-        let pending = $slot
-            .try_with(|state| state.source.service($io))
-            .unwrap_or(0);
-        if pending != 0 {
-            $signal();
-        }
-        pending
-    }};
+// The host race model runs the same source retirement and wake logic as the ISR.
+#[inline(always)]
+fn service_source<S: Source<I>, L: DeviceLine, const CORE: u8, I>(
+    slot: &CoreState<S, L, CORE>,
+    io: &mut I,
+    signal: impl FnOnce(),
+) -> u32 {
+    let pending = slot.try_with(|state| state.source.service(io)).unwrap_or(0);
+    if pending != 0 {
+        signal();
+    }
+    pending
 }
 
-macro_rules! wait_source {
-    ($slot:ident, $io:ident, $context:ident.$wait:ident, $end:ident, $mask:expr,
-     $probe:ident, $now:expr, $error:ty) => {{
-        let mut active = false;
-        let mut post_alarm_probe = true;
-        let result = $context.$wait($end, |final_probe| {
-            if final_probe {
-                return $probe($io);
-            }
-            if active {
-                // The first probe after alarm arm closes the arm/check race.
-                // If it misses, a device IRQ can still leave an event for WFE.
-                if core::mem::take(&mut post_alarm_probe) {
-                    return $probe($io);
-                }
-                let fired = $slot
-                    .__try_with_compact(|state| !is_armed(&state.source, $io))
-                    .unwrap_or(false);
-                if !fired {
-                    // Unrelated events do not turn an armed wait into polling.
-                    return None;
-                }
-            }
-            $crate::driver_irq::probe_and_arm($io, &mut $probe, |io| {
-                // Arming can start device work. A preemption before that
-                // point can span a timer wrap.
-                if $now >= $end.instant() {
-                    return Ok(false);
-                }
-                let armed = $slot
-                    .__try_with_compact(|state| {
-                        let armed = state.source.arm(io, $mask)?;
-                        if armed && !state.delivery.started {
-                            state.delivery.start();
-                        }
-                        Ok::<_, $error>(armed)
-                    })
-                    .ok_or($crate::driver_irq::Error::Busy)??;
-                active |= armed;
-                Ok(armed)
-            })
-        });
-        if active {
-            // Thread admission prevents overlapping borrows with the ISR.
-            $slot
-                .__try_with_compact(|state| state.source.retire($io))
-                .ok_or($crate::driver_irq::Error::Busy)?;
+trait WaitSourceContext {
+    fn wait<T>(
+        &mut self,
+        end: Deadline,
+        probe: impl FnMut(bool) -> Option<T>,
+    ) -> Result<T, timer::Error>;
+}
+
+impl WaitSourceContext for WaitContext<'_> {
+    #[inline(always)]
+    fn wait<T>(
+        &mut self,
+        end: Deadline,
+        probe: impl FnMut(bool) -> Option<T>,
+    ) -> Result<T, timer::Error> {
+        self.wait_accepted(end, probe)
+    }
+}
+
+#[inline(always)]
+fn wait_source<S: Source<I>, L: DeviceLine, const CORE: u8, I, T>(
+    slot: &CoreState<S, L, CORE>,
+    io: &mut I,
+    context: &mut impl WaitSourceContext,
+    end: Deadline,
+    mask: u32,
+    mut probe: impl FnMut(&mut I) -> Option<Result<T, S::Error>>,
+    mut now: impl FnMut() -> Instant,
+) -> Result<T, S::Error> {
+    let mut active = false;
+    let mut post_alarm_probe = true;
+    let result = context.wait(end, |final_probe| {
+        if final_probe {
+            return probe(io);
         }
-        result?
-    }};
+        if active {
+            // The first probe after alarm arm closes the arm/check race.
+            // If it misses, a device IRQ can still leave an event for WFE.
+            if core::mem::take(&mut post_alarm_probe) {
+                return probe(io);
+            }
+            let fired = slot
+                .__try_with_compact(|state| !state.source.is_armed())
+                .unwrap_or(false);
+            if !fired {
+                // Unrelated events do not turn an armed wait into polling.
+                return None;
+            }
+        }
+        probe_and_arm(io, &mut probe, |io| {
+            // Arming can start device work. A preemption before that
+            // point can span a timer wrap.
+            if now() >= end.instant() {
+                return Ok(false);
+            }
+            let armed = slot
+                .__try_with_compact(|state| {
+                    let armed = state.source.arm(io, mask)?;
+                    if armed && !state.delivery.started {
+                        state.delivery.start();
+                    }
+                    Ok::<_, S::Error>(armed)
+                })
+                .ok_or(Error::Busy)??;
+            active |= armed;
+            Ok(armed)
+        })
+    });
+    if active {
+        // Thread admission prevents overlapping borrows with the ISR.
+        slot.__try_with_compact(|state| state.source.retire(io))
+            .ok_or(Error::Busy)?;
+    }
+    result?
 }
 
 #[cfg(test)]
@@ -216,7 +235,7 @@ pub(crate) fn on_interrupt<S: Source<I>, L: DeviceLine, const CORE: u8, I>(
     slot: &CoreState<S, L, CORE>,
     io: &mut I,
 ) -> u32 {
-    service_source!(slot, io, rp1_rt::send_event)
+    service_source(slot, io, rp1_rt::send_event)
 }
 
 #[inline]
@@ -226,7 +245,7 @@ pub(crate) fn wait_for<S: Source<I>, L: DeviceLine, const CORE: u8, I, T>(
     wait: &mut WaitTimer,
     limit: Limit,
     mask: u32,
-    mut probe: impl FnMut(&mut I) -> Option<Result<T, S::Error>>,
+    probe: impl FnMut(&mut I) -> Option<Result<T, S::Error>>,
 ) -> Result<T, S::Error> {
     let mut context = wait.thread_context()?;
     if S::INLINE_CHECK {
@@ -242,16 +261,9 @@ pub(crate) fn wait_for<S: Source<I>, L: DeviceLine, const CORE: u8, I, T>(
         // Relative calls already checked the deadline at their entry tick.
         Limit::Relative(end) => end,
     };
-    wait_source!(
-        slot,
-        io,
-        context.wait_accepted,
-        end,
-        mask,
-        probe,
-        Timer::new().now(),
-        S::Error
-    )
+    wait_source(slot, io, &mut context, end, mask, probe, || {
+        Timer::new().now()
+    })
 }
 pub(crate) fn probe_and_arm<I, T, E>(
     io: &mut I,

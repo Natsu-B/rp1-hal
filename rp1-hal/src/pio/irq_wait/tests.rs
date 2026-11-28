@@ -41,6 +41,7 @@ impl Model {
             arrival,
             now: Cell::new(1),
             inte: Cell::new(NEIGHBOR),
+            // Keep a neighboring source high to check that servicing RX preserves its mask.
             raw: Cell::new(NEIGHBOR),
             word: Cell::new(None),
             probes: Cell::new(0),
@@ -60,7 +61,7 @@ impl Model {
     }
 
     fn irq(&self, slot: &TestSlot) {
-        let pending = service_source!(slot, &mut Io(self), || {
+        let pending = service_source(slot, &mut Io(self), || {
             assert_eq!(self.inte.get(), NEIGHBOR);
             self.event.set(true);
             self.wakes.set(self.wakes.get() + 1);
@@ -172,7 +173,7 @@ impl WaitAlarm for Alarm<'_> {
     }
 }
 
-impl Alarm<'_> {
+impl WaitSourceContext for Alarm<'_> {
     fn wait<T>(
         &mut self,
         end: Deadline,
@@ -194,20 +195,9 @@ fn run(slot: &TestSlot, model: &Model) -> (Result<u32, WaitError>, bool, u8) {
     if model.arrival == Arrival::BeforeArm {
         model.receive();
     }
-    let io = &mut Io(model);
-    let mut probe = |io: &mut Io<'_>| io.probe();
-    let result = (|| {
-        wait_source!(
-            slot,
-            io,
-            alarm.wait,
-            end,
-            RX,
-            probe,
-            model.time(),
-            WaitError
-        )
-    })();
+    let result = wait_source(slot, &mut Io(model), &mut alarm, end, RX, Io::probe, || {
+        model.time()
+    });
     (result, alarm.armed, alarm.sleep_count)
 }
 
@@ -257,6 +247,7 @@ fn a_timeout_rearms_the_same_source_and_a_stuck_level_cannot_redeliver() {
     let model = Model::new(Arrival::BeforeSleep);
     let mut source = FifoSource::new(IRQ0_INTE);
     let mut io = Io(&model);
+    // Exercise the ISR mask logic with two armed bits in the same snapshot.
     assert!(source.arm(&mut io, RX | NEIGHBOR).unwrap());
     model.receive();
     assert_eq!(source.service(&mut io), RX | NEIGHBOR);
