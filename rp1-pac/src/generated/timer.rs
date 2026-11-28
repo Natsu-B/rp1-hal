@@ -39,7 +39,7 @@ impl RegisterBlock {
     }
     /// Writing an alarm value arms that channel; represented as a command rather than ordinary RW state.
     /// Hardware access: read Plain; write Command.
-    /// Command write; ordinary read, write, and modify APIs are not generated.
+    /// Command write; ordinary write and modify APIs are not generated.
     /// Array layout: 4 physical entries, 4 public entries, stride 0x4 bytes.
     #[inline(always)]
     pub fn alarm(&self, index: usize) -> &ALARM {
@@ -53,7 +53,7 @@ impl RegisterBlock {
     /// Alarm writes set ARMED and firing automatically clears it. Explicit W1C disarm is not hardware-verified and is not exposed.
     /// Hardware access: read Plain; write WriteOneToClear.
     /// Write-one-to-clear register; general write and modify APIs are not generated.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn armed(&self) -> &ARMED {
         &self.armed
@@ -207,12 +207,12 @@ pub mod timelr {
 
 /// Writing an alarm value arms that channel; represented as a command rather than ordinary RW state.
 /// Hardware access: read Plain; write Command.
-/// Command write; ordinary read, write, and modify APIs are not generated.
+/// Command write; ordinary write and modify APIs are not generated.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x4 bytes.
 pub type ALARM = Reg<alarm::ALARM_SPEC>;
 /// Writing an alarm value arms that channel; represented as a command rather than ordinary RW state.
 /// Hardware access: read Plain; write Command.
-/// Command write; ordinary read, write, and modify APIs are not generated.
+/// Command write; ordinary write and modify APIs are not generated.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x4 bytes.
 pub mod alarm {
     pub struct ALARM_SPEC;
@@ -246,12 +246,12 @@ pub mod alarm {
 /// Alarm writes set ARMED and firing automatically clears it. Explicit W1C disarm is not hardware-verified and is not exposed.
 /// Hardware access: read Plain; write WriteOneToClear.
 /// Write-one-to-clear register; general write and modify APIs are not generated.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type ARMED = Reg<armed::ARMED_SPEC>;
 /// Alarm writes set ARMED and firing automatically clears it. Explicit W1C disarm is not hardware-verified and is not exposed.
 /// Hardware access: read Plain; write WriteOneToClear.
 /// Write-one-to-clear register; general write and modify APIs are not generated.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod armed {
     pub struct ARMED_SPEC;
     impl crate::RegisterSpec for ARMED_SPEC {

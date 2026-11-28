@@ -39,7 +39,7 @@ impl RegisterBlock {
     }
     /// Per-pad control: function select, input filtering, interrupt event masks and signal overrides.
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     /// Array layout: 20 physical entries, 20 public entries, stride 0x8 bytes.
     #[inline(always)]
     pub fn gpio_ctrl(&self, index: usize) -> &GPIO_CTRL {
@@ -308,12 +308,12 @@ pub mod gpio_status {
 
 /// Per-pad control: function select, input filtering, interrupt event masks and signal overrides.
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 20 physical entries, 20 public entries, stride 0x8 bytes.
 pub type GPIO_CTRL = Reg<gpio_ctrl::GPIO_CTRL_SPEC>;
 /// Per-pad control: function select, input filtering, interrupt event masks and signal overrides.
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 20 physical entries, 20 public entries, stride 0x8 bytes.
 pub mod gpio_ctrl {
     pub struct GPIO_CTRL_SPEC;

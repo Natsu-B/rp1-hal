@@ -241,6 +241,7 @@ fn generated_rustdoc_explains_restricted_operations() {
     let timer = fs::read_to_string(source.join("generated/timer.rs")).unwrap();
     let watchdog = fs::read_to_string(source.join("generated/watchdog.rs")).unwrap();
     let resets = fs::read_to_string(source.join("generated/resets.rs")).unwrap();
+    let pio_m3 = fs::read_to_string(source.join("generated/pio_m3.rs")).unwrap();
 
     assert!(timer.contains("PAUSE"));
     assert!(timer.contains("Write API is not exposed"));
@@ -248,6 +249,10 @@ fn generated_rustdoc_explains_restricted_operations() {
     assert!(watchdog.contains("Command write"));
     assert!(resets.contains("inferred"));
     assert!(resets.contains("Typed write API is not exposed"));
+    let (_, ctrl) = pio_m3.split_once("pub type CTRL =").unwrap();
+    let (ctrl, _) = ctrl.split_once("pub mod ctrl {").unwrap();
+    assert!(ctrl.contains("Generated writes require unsafe raw access"));
+    assert!(!ctrl.contains("Write API is not exposed"));
 }
 
 #[test]

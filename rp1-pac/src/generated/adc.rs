@@ -22,7 +22,7 @@ pub struct RegisterBlock {
 impl RegisterBlock {
     /// Control and status. \[Source: Linux RP1 ADC hwmon driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn cs(&self) -> &CS {
         &self.cs
@@ -35,7 +35,7 @@ impl RegisterBlock {
     }
     /// FIFO control and status. \[Source: Linux RP1 ADC hwmon driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn fcs(&self) -> &FCS {
         &self.fcs
@@ -48,7 +48,7 @@ impl RegisterBlock {
     }
     /// Free-running sample period divider. \[Source: Linux RP1 ADC hwmon driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn div(&self) -> &DIV {
         &self.div
@@ -61,14 +61,14 @@ impl RegisterBlock {
     }
     /// Interrupt enable (Linux writes 0). \[Source: Linux RP1 ADC hwmon driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn inte(&self) -> &INTE {
         &self.inte
     }
     /// Interrupt force. \[Source: Linux RP1 ADC hwmon driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn intf(&self) -> &INTF {
         &self.intf
@@ -83,11 +83,11 @@ impl RegisterBlock {
 
 /// Control and status. \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CS = Reg<cs::CS_SPEC>;
 /// Control and status. \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod cs {
     pub struct CS_SPEC;
     impl crate::RegisterSpec for CS_SPEC {
@@ -248,11 +248,11 @@ pub mod result {
 
 /// FIFO control and status. \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type FCS = Reg<fcs::FCS_SPEC>;
 /// FIFO control and status. \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod fcs {
     pub struct FCS_SPEC;
     impl crate::RegisterSpec for FCS_SPEC {
@@ -433,11 +433,11 @@ pub mod fifo {
 
 /// Free-running sample period divider. \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type DIV = Reg<div::DIV_SPEC>;
 /// Free-running sample period divider. \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod div {
     pub struct DIV_SPEC;
     impl crate::RegisterSpec for DIV_SPEC {
@@ -495,11 +495,11 @@ pub mod intr {
 
 /// Interrupt enable (Linux writes 0). \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type INTE = Reg<inte::INTE_SPEC>;
 /// Interrupt enable (Linux writes 0). \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod inte {
     pub struct INTE_SPEC;
     impl crate::RegisterSpec for INTE_SPEC {
@@ -512,11 +512,11 @@ pub mod inte {
 
 /// Interrupt force. \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type INTF = Reg<intf::INTF_SPEC>;
 /// Interrupt force. \[Source: Linux RP1 ADC hwmon driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod intf {
     pub struct INTF_SPEC;
     impl crate::RegisterSpec for INTF_SPEC {

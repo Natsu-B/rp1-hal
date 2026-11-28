@@ -28,6 +28,7 @@ pub mod generated;
 mod interrupts;
 pub mod metadata;
 mod peripherals;
+mod pio_m3;
 
 pub use interrupts::{
     DEFINED_INTERRUPT_COUNT, INTERRUPT_NAMES, Interrupt, NVIC_INTERRUPT_COUNT, NVIC_PRIO_BITS,

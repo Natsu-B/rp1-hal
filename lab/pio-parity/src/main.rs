@@ -6,6 +6,7 @@
 mod stack_watermark;
 
 use rp1_hal::{gpio::Pin, log, pac, timer::Timer};
+use rp1_proto::board::{PIO_IRQ0, PIO_IRQ1};
 use rp1_rt::{Proc0, Proc1, entry, shared, sync::Spsc};
 
 rp1_rt::bind!();
@@ -17,7 +18,8 @@ const QUIET_US: u32 = 1_000;
 const RESET_PIO: u32 = 1 << 27;
 const RX_EMPTY: u32 = 1 << 8;
 const DREQ_ENABLE_MASK: u16 = 0xaaaa;
-const NVIC_PIO: u32 = (1 << (50 - 32)) | (1 << (51 - 32));
+const DREQ_RX_STATUS_MASK: u16 = 0x5500;
+const NVIC_PIO: u32 = (1 << (PIO_IRQ0 - 32)) | (1 << (PIO_IRQ1 - 32));
 const RESET_FSTAT: u32 = 0x0f00_0f00;
 const PROGRAM: [u32; 4] = [0xe035, 0xa0c1, 0x8020, 0x0003];
 const _: () = assert!(rp1::PioParts::SM_MASK == 1);
@@ -45,7 +47,7 @@ impl Trial {
         self.done_at.wrapping_sub(self.release_at).saturating_add(1)
     }
 
-    fn completed(self) -> bool {
+    fn passed(self) -> bool {
         self.reset_done
             && self.upper_us() <= TIMEOUT_US
             && self.pc == 3
@@ -54,11 +56,7 @@ impl Trial {
             && self.popped
             && self.empty
             && self.raw_irq == 0
-            && self.raw_dreq & DREQ_ENABLE_MASK == 0
-    }
-
-    fn passed(self) -> bool {
-        self.completed() && self.raw_dreq == 0
+            && self.raw_dreq & (DREQ_ENABLE_MASK | DREQ_RX_STATUS_MASK) == 0
     }
 }
 
@@ -127,7 +125,7 @@ fn main1(mut core: Proc1, p: rp1::Proc1Resources) -> ! {
                 for trial in &mut trials {
                     *trial = probe.trial(&timer);
                     count += 1;
-                    if !trial.completed() {
+                    if !trial.passed() {
                         break;
                     }
                 }
@@ -211,7 +209,7 @@ impl Probe {
     fn sample_quiet(&self, trial: &mut Trial) {
         let pio = self.pio;
         // INTR includes TX-not-full even with no enabled IRQ. Sample masked status and
-        // core-local pending, plus the enable and live request bits for every direction.
+        // core-local pending, plus the enable and candidate raw request bits.
         let pending = unsafe { (0xe000_e204 as *const u32).read_volatile() };
         trial.raw_irq |=
             pio.irq0_ints().read().bits() | pio.irq1_ints().read().bits() | (pending & NVIC_PIO);
@@ -255,15 +253,15 @@ impl Probe {
             return t;
         }
         t.reset_dreq = self.dreq();
-        if t.reset_dreq & DREQ_ENABLE_MASK != 0 {
+        if t.reset_dreq & (DREQ_ENABLE_MASK | DREQ_RX_STATUS_MASK) != 0 {
             return t;
         }
         // Keep TX threshold zero and RX above both FIFO levels exercised here.
         // Leave all DREQ enables clear.
         for sm in 0..4 {
             unsafe {
-                pio.sm_dmatx(sm).write_bits_unchecked(0);
-                pio.sm_dmarx(sm).write_bits_unchecked(2);
+                pio.sm_dmatx(sm).write_disabled_threshold(0);
+                pio.sm_dmarx(sm).write_disabled_threshold(2);
             }
             if pio.sm_dmatx(sm).read().bits() & 0x1f != 0
                 || pio.sm_dmarx(sm).read().bits() & 0x1f != 2

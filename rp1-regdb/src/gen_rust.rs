@@ -166,12 +166,20 @@ fn register_docs(out: &mut String, register: &Register, indent: &str) {
         WriteBehavior::Command | WriteBehavior::WriteOnly => rustdoc(
             out,
             indent,
-            "Command write; ordinary read, write, and modify APIs are not generated.",
+            if register.api.read == ApiExposure::Public {
+                "Command write; ordinary write and modify APIs are not generated."
+            } else {
+                "Command write; ordinary read, write, and modify APIs are not generated."
+            },
         ),
         WriteBehavior::Fifo => rustdoc(
             out,
             indent,
-            "FIFO/data port; only dedicated FIFO operations are generated.",
+            if register.api.raw_write == RawWriteExposure::Unsafe {
+                "FIFO/data port."
+            } else {
+                "FIFO/data port; only dedicated FIFO operations are generated."
+            },
         ),
         WriteBehavior::StateMachineOnly => rustdoc(
             out,
@@ -184,11 +192,12 @@ fn register_docs(out: &mut String, register: &Register, indent: &str) {
         && !register.api.has_safe_write()
         && !register.atomic.has_typed()
     {
-        rustdoc(
-            out,
-            indent,
-            "Write API is not exposed because the verified operation semantics are insufficient.",
-        );
+        let write_doc = if register.api.raw_write == RawWriteExposure::Unsafe {
+            "Generated writes require unsafe raw access."
+        } else {
+            "Write API is not exposed because the verified operation semantics are insufficient."
+        };
+        rustdoc(out, indent, write_doc);
     }
     if register.repeat_count > 1 {
         rustdoc(

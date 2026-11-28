@@ -89,3 +89,31 @@ error[E0599]: the method `write_bits_unchecked` exists for reference `&Reg<FDEBU
   |
   = note: the following trait bounds were not satisfied:
           `FDEBUG_SPEC: UnsafeWritable`
+
+error[E0599]: the method `write_bits_unchecked` exists for reference `&Reg<SM_DMATX_SPEC>`, but its trait bounds were not satisfied
+  --> tests/ui/pio_window_access.rs:10:30
+   |
+10 |     unsafe { pio.sm_dmatx(0).write_bits_unchecked(1 << 31) };
+   |                              ^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&Reg<SM_DMATX_SPEC>` due to unsatisfied trait bounds
+   |
+  ::: src/generated/pio_m3.rs
+   |
+   |     pub struct SM_DMATX_SPEC;
+   |     ------------------------ doesn't satisfy `SM_DMATX_SPEC: UnsafeWritable`
+   |
+   = note: the following trait bounds were not satisfied:
+           `SM_DMATX_SPEC: UnsafeWritable`
+
+error[E0599]: the method `write_bits_unchecked` exists for reference `&Reg<SM_DMARX_SPEC>`, but its trait bounds were not satisfied
+  --> tests/ui/pio_window_access.rs:11:30
+   |
+11 |     unsafe { pio.sm_dmarx(0).write_bits_unchecked(1 << 31) };
+   |                              ^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&Reg<SM_DMARX_SPEC>` due to unsatisfied trait bounds
+   |
+  ::: src/generated/pio_m3.rs
+   |
+   |     pub struct SM_DMARX_SPEC;
+   |     ------------------------ doesn't satisfy `SM_DMARX_SPEC: UnsafeWritable`
+   |
+   = note: the following trait bounds were not satisfied:
+           `SM_DMARX_SPEC: UnsafeWritable`

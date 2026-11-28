@@ -7,6 +7,8 @@ fn access(p: &rp1_pac::Peripherals) {
     unsafe { pio.sm_addr(0).write_bits_unchecked(0) };
     unsafe { pio.ctrl().atomic_set_bits_unchecked(1) };
     unsafe { pio.fdebug().write_bits_unchecked(1) };
+    unsafe { pio.sm_dmatx(0).write_bits_unchecked(1 << 31) };
+    unsafe { pio.sm_dmarx(0).write_bits_unchecked(1 << 31) };
 }
 
 fn main() {}

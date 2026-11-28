@@ -19,42 +19,42 @@ pub struct RegisterBlock {
 impl RegisterBlock {
     /// PLL control/status. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn cs(&self) -> &CS {
         &self.cs
     }
     /// PLL power control. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn pwr(&self) -> &PWR {
         &self.pwr
     }
     /// Integer feedback divider; exact implemented width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn fbdiv_int(&self) -> &FBDIV_INT {
         &self.fbdiv_int
     }
     /// Fractional feedback divider; exact implemented width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn fbdiv_frac(&self) -> &FBDIV_FRAC {
         &self.fbdiv_frac
     }
     /// Primary PLL divider and phase-output control. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn prim(&self) -> &PRIM {
         &self.prim
     }
     /// Secondary PLL divider and phase-output control. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn sec(&self) -> &SEC {
         &self.sec
@@ -63,11 +63,11 @@ impl RegisterBlock {
 
 /// PLL control/status. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CS = Reg<cs::CS_SPEC>;
 /// PLL control/status. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod cs {
     pub struct CS_SPEC;
     impl crate::RegisterSpec for CS_SPEC {
@@ -111,11 +111,11 @@ pub mod cs {
 
 /// PLL power control. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type PWR = Reg<pwr::PWR_SPEC>;
 /// PLL power control. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod pwr {
     pub struct PWR_SPEC;
     impl crate::RegisterSpec for PWR_SPEC {
@@ -199,11 +199,11 @@ pub mod pwr {
 
 /// Integer feedback divider; exact implemented width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type FBDIV_INT = Reg<fbdiv_int::FBDIV_INT_SPEC>;
 /// Integer feedback divider; exact implemented width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod fbdiv_int {
     pub struct FBDIV_INT_SPEC;
     impl crate::RegisterSpec for FBDIV_INT_SPEC {
@@ -237,11 +237,11 @@ pub mod fbdiv_int {
 
 /// Fractional feedback divider; exact implemented width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type FBDIV_FRAC = Reg<fbdiv_frac::FBDIV_FRAC_SPEC>;
 /// Fractional feedback divider; exact implemented width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod fbdiv_frac {
     pub struct FBDIV_FRAC_SPEC;
     impl crate::RegisterSpec for FBDIV_FRAC_SPEC {
@@ -275,11 +275,11 @@ pub mod fbdiv_frac {
 
 /// Primary PLL divider and phase-output control. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type PRIM = Reg<prim::PRIM_SPEC>;
 /// Primary PLL divider and phase-output control. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod prim {
     pub struct PRIM_SPEC;
     impl crate::RegisterSpec for PRIM_SPEC {
@@ -343,11 +343,11 @@ pub mod prim {
 
 /// Secondary PLL divider and phase-output control. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type SEC = Reg<sec::SEC_SPEC>;
 /// Secondary PLL divider and phase-output control. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod sec {
     pub struct SEC_SPEC;
     impl crate::RegisterSpec for SEC_SPEC {

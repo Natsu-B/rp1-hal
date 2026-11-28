@@ -137,21 +137,21 @@ pub struct RegisterBlock {
 impl RegisterBlock {
     /// General-purpose clock output-enable control; individual bit names remain raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn gpclk_oe_ctrl(&self) -> &GPCLK_OE_CTRL {
         &self.gpclk_oe_ctrl
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_sys_ctrl(&self) -> &CLK_SYS_CTRL {
         &self.clk_sys_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_sys_div_int(&self) -> &CLK_SYS_DIV_INT {
         &self.clk_sys_div_int
@@ -164,14 +164,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_slow_sys_ctrl(&self) -> &CLK_SLOW_SYS_CTRL {
         &self.clk_slow_sys_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_slow_sys_div_int(&self) -> &CLK_SLOW_SYS_DIV_INT {
         &self.clk_slow_sys_div_int
@@ -184,14 +184,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_dma_ctrl(&self) -> &CLK_DMA_CTRL {
         &self.clk_dma_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_dma_div_int(&self) -> &CLK_DMA_DIV_INT {
         &self.clk_dma_div_int
@@ -204,14 +204,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_uart_ctrl(&self) -> &CLK_UART_CTRL {
         &self.clk_uart_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_uart_div_int(&self) -> &CLK_UART_DIV_INT {
         &self.clk_uart_div_int
@@ -224,14 +224,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_eth_ctrl(&self) -> &CLK_ETH_CTRL {
         &self.clk_eth_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_eth_div_int(&self) -> &CLK_ETH_DIV_INT {
         &self.clk_eth_div_int
@@ -244,21 +244,21 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_pwm0_ctrl(&self) -> &CLK_PWM0_CTRL {
         &self.clk_pwm0_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_pwm0_div_int(&self) -> &CLK_PWM0_DIV_INT {
         &self.clk_pwm0_div_int
     }
     /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_pwm0_div_frac(&self) -> &CLK_PWM0_DIV_FRAC {
         &self.clk_pwm0_div_frac
@@ -271,21 +271,21 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_pwm1_ctrl(&self) -> &CLK_PWM1_CTRL {
         &self.clk_pwm1_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_pwm1_div_int(&self) -> &CLK_PWM1_DIV_INT {
         &self.clk_pwm1_div_int
     }
     /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_pwm1_div_frac(&self) -> &CLK_PWM1_DIV_FRAC {
         &self.clk_pwm1_div_frac
@@ -298,14 +298,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_audio_in_ctrl(&self) -> &CLK_AUDIO_IN_CTRL {
         &self.clk_audio_in_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_audio_in_div_int(&self) -> &CLK_AUDIO_IN_DIV_INT {
         &self.clk_audio_in_div_int
@@ -318,14 +318,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_audio_out_ctrl(&self) -> &CLK_AUDIO_OUT_CTRL {
         &self.clk_audio_out_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_audio_out_div_int(&self) -> &CLK_AUDIO_OUT_DIV_INT {
         &self.clk_audio_out_div_int
@@ -338,14 +338,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_i2s_ctrl(&self) -> &CLK_I2S_CTRL {
         &self.clk_i2s_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_i2s_div_int(&self) -> &CLK_I2S_DIV_INT {
         &self.clk_i2s_div_int
@@ -358,14 +358,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_mipi0_cfg_ctrl(&self) -> &CLK_MIPI0_CFG_CTRL {
         &self.clk_mipi0_cfg_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_mipi0_cfg_div_int(&self) -> &CLK_MIPI0_CFG_DIV_INT {
         &self.clk_mipi0_cfg_div_int
@@ -378,14 +378,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_mipi1_cfg_ctrl(&self) -> &CLK_MIPI1_CFG_CTRL {
         &self.clk_mipi1_cfg_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_mipi1_cfg_div_int(&self) -> &CLK_MIPI1_CFG_DIV_INT {
         &self.clk_mipi1_cfg_div_int
@@ -398,14 +398,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_pcie_aux_ctrl(&self) -> &CLK_PCIE_AUX_CTRL {
         &self.clk_pcie_aux_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_pcie_aux_div_int(&self) -> &CLK_PCIE_AUX_DIV_INT {
         &self.clk_pcie_aux_div_int
@@ -418,14 +418,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_usbh0_microframe_ctrl(&self) -> &CLK_USBH0_MICROFRAME_CTRL {
         &self.clk_usbh0_microframe_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_usbh0_microframe_div_int(&self) -> &CLK_USBH0_MICROFRAME_DIV_INT {
         &self.clk_usbh0_microframe_div_int
@@ -438,14 +438,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_usbh1_microframe_ctrl(&self) -> &CLK_USBH1_MICROFRAME_CTRL {
         &self.clk_usbh1_microframe_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_usbh1_microframe_div_int(&self) -> &CLK_USBH1_MICROFRAME_DIV_INT {
         &self.clk_usbh1_microframe_div_int
@@ -458,14 +458,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_usbh0_suspend_ctrl(&self) -> &CLK_USBH0_SUSPEND_CTRL {
         &self.clk_usbh0_suspend_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_usbh0_suspend_div_int(&self) -> &CLK_USBH0_SUSPEND_DIV_INT {
         &self.clk_usbh0_suspend_div_int
@@ -478,14 +478,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_usbh1_suspend_ctrl(&self) -> &CLK_USBH1_SUSPEND_CTRL {
         &self.clk_usbh1_suspend_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_usbh1_suspend_div_int(&self) -> &CLK_USBH1_SUSPEND_DIV_INT {
         &self.clk_usbh1_suspend_div_int
@@ -498,14 +498,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_eth_tsu_ctrl(&self) -> &CLK_ETH_TSU_CTRL {
         &self.clk_eth_tsu_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_eth_tsu_div_int(&self) -> &CLK_ETH_TSU_DIV_INT {
         &self.clk_eth_tsu_div_int
@@ -518,14 +518,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_adc_ctrl(&self) -> &CLK_ADC_CTRL {
         &self.clk_adc_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_adc_div_int(&self) -> &CLK_ADC_DIV_INT {
         &self.clk_adc_div_int
@@ -538,14 +538,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_sdio_timer_ctrl(&self) -> &CLK_SDIO_TIMER_CTRL {
         &self.clk_sdio_timer_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_sdio_timer_div_int(&self) -> &CLK_SDIO_TIMER_DIV_INT {
         &self.clk_sdio_timer_div_int
@@ -558,14 +558,14 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_sdio_alt_src_ctrl(&self) -> &CLK_SDIO_ALT_SRC_CTRL {
         &self.clk_sdio_alt_src_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_sdio_alt_src_div_int(&self) -> &CLK_SDIO_ALT_SRC_DIV_INT {
         &self.clk_sdio_alt_src_div_int
@@ -578,21 +578,21 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp0_ctrl(&self) -> &CLK_GP0_CTRL {
         &self.clk_gp0_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp0_div_int(&self) -> &CLK_GP0_DIV_INT {
         &self.clk_gp0_div_int
     }
     /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp0_div_frac(&self) -> &CLK_GP0_DIV_FRAC {
         &self.clk_gp0_div_frac
@@ -605,21 +605,21 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp1_ctrl(&self) -> &CLK_GP1_CTRL {
         &self.clk_gp1_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp1_div_int(&self) -> &CLK_GP1_DIV_INT {
         &self.clk_gp1_div_int
     }
     /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp1_div_frac(&self) -> &CLK_GP1_DIV_FRAC {
         &self.clk_gp1_div_frac
@@ -632,21 +632,21 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp2_ctrl(&self) -> &CLK_GP2_CTRL {
         &self.clk_gp2_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp2_div_int(&self) -> &CLK_GP2_DIV_INT {
         &self.clk_gp2_div_int
     }
     /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp2_div_frac(&self) -> &CLK_GP2_DIV_FRAC {
         &self.clk_gp2_div_frac
@@ -659,21 +659,21 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp3_ctrl(&self) -> &CLK_GP3_CTRL {
         &self.clk_gp3_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp3_div_int(&self) -> &CLK_GP3_DIV_INT {
         &self.clk_gp3_div_int
     }
     /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp3_div_frac(&self) -> &CLK_GP3_DIV_FRAC {
         &self.clk_gp3_div_frac
@@ -686,21 +686,21 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp4_ctrl(&self) -> &CLK_GP4_CTRL {
         &self.clk_gp4_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp4_div_int(&self) -> &CLK_GP4_DIV_INT {
         &self.clk_gp4_div_int
     }
     /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp4_div_frac(&self) -> &CLK_GP4_DIV_FRAC {
         &self.clk_gp4_div_frac
@@ -713,21 +713,21 @@ impl RegisterBlock {
     }
     /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp5_ctrl(&self) -> &CLK_GP5_CTRL {
         &self.clk_gp5_ctrl
     }
     /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp5_div_int(&self) -> &CLK_GP5_DIV_INT {
         &self.clk_gp5_div_int
     }
     /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_gp5_div_frac(&self) -> &CLK_GP5_DIV_FRAC {
         &self.clk_gp5_div_frac
@@ -740,56 +740,56 @@ impl RegisterBlock {
     }
     /// System-clock resuscitation control; fields remain raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_sys_resus_ctrl(&self) -> &CLK_SYS_RESUS_CTRL {
         &self.clk_sys_resus_ctrl
     }
     /// Slow-system-clock resuscitation control; fields remain raw. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn clk_slow_sys_resus_ctrl(&self) -> &CLK_SLOW_SYS_RESUS_CTRL {
         &self.clk_slow_sys_resus_ctrl
     }
     /// Frequency-counter reference frequency in kHz. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn fc0_ref_khz(&self) -> &FC0_REF_KHZ {
         &self.fc0_ref_khz
     }
     /// Frequency-counter minimum expected kHz. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn fc0_min_khz(&self) -> &FC0_MIN_KHZ {
         &self.fc0_min_khz
     }
     /// Frequency-counter maximum expected kHz. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn fc0_max_khz(&self) -> &FC0_MAX_KHZ {
         &self.fc0_max_khz
     }
     /// Frequency-counter start delay. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn fc0_delay(&self) -> &FC0_DELAY {
         &self.fc0_delay
     }
     /// Frequency-counter measurement interval. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn fc0_interval(&self) -> &FC0_INTERVAL {
         &self.fc0_interval
     }
     /// Frequency-counter source selector. \[Source: Linux RP1 common-clock driver.\]
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn fc0_src(&self) -> &FC0_SRC {
         &self.fc0_src
@@ -810,11 +810,11 @@ impl RegisterBlock {
 
 /// General-purpose clock output-enable control; individual bit names remain raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type GPCLK_OE_CTRL = Reg<gpclk_oe_ctrl::GPCLK_OE_CTRL_SPEC>;
 /// General-purpose clock output-enable control; individual bit names remain raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod gpclk_oe_ctrl {
     pub struct GPCLK_OE_CTRL_SPEC;
     impl crate::RegisterSpec for GPCLK_OE_CTRL_SPEC {
@@ -848,11 +848,11 @@ pub mod gpclk_oe_ctrl {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_SYS_CTRL = Reg<clk_sys_ctrl::CLK_SYS_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_sys_ctrl {
     pub struct CLK_SYS_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_SYS_CTRL_SPEC {
@@ -896,11 +896,11 @@ pub mod clk_sys_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_SYS_DIV_INT = Reg<clk_sys_div_int::CLK_SYS_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_sys_div_int {
     pub struct CLK_SYS_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_SYS_DIV_INT_SPEC {
@@ -960,11 +960,11 @@ pub mod clk_sys_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_SLOW_SYS_CTRL = Reg<clk_slow_sys_ctrl::CLK_SLOW_SYS_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_slow_sys_ctrl {
     pub struct CLK_SLOW_SYS_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_SLOW_SYS_CTRL_SPEC {
@@ -1008,11 +1008,11 @@ pub mod clk_slow_sys_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_SLOW_SYS_DIV_INT = Reg<clk_slow_sys_div_int::CLK_SLOW_SYS_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_slow_sys_div_int {
     pub struct CLK_SLOW_SYS_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_SLOW_SYS_DIV_INT_SPEC {
@@ -1072,11 +1072,11 @@ pub mod clk_slow_sys_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_DMA_CTRL = Reg<clk_dma_ctrl::CLK_DMA_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_dma_ctrl {
     pub struct CLK_DMA_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_DMA_CTRL_SPEC {
@@ -1120,11 +1120,11 @@ pub mod clk_dma_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_DMA_DIV_INT = Reg<clk_dma_div_int::CLK_DMA_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_dma_div_int {
     pub struct CLK_DMA_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_DMA_DIV_INT_SPEC {
@@ -1184,11 +1184,11 @@ pub mod clk_dma_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_UART_CTRL = Reg<clk_uart_ctrl::CLK_UART_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_uart_ctrl {
     pub struct CLK_UART_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_UART_CTRL_SPEC {
@@ -1232,11 +1232,11 @@ pub mod clk_uart_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_UART_DIV_INT = Reg<clk_uart_div_int::CLK_UART_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_uart_div_int {
     pub struct CLK_UART_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_UART_DIV_INT_SPEC {
@@ -1296,11 +1296,11 @@ pub mod clk_uart_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_ETH_CTRL = Reg<clk_eth_ctrl::CLK_ETH_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_eth_ctrl {
     pub struct CLK_ETH_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_ETH_CTRL_SPEC {
@@ -1344,11 +1344,11 @@ pub mod clk_eth_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_ETH_DIV_INT = Reg<clk_eth_div_int::CLK_ETH_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_eth_div_int {
     pub struct CLK_ETH_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_ETH_DIV_INT_SPEC {
@@ -1408,11 +1408,11 @@ pub mod clk_eth_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_PWM0_CTRL = Reg<clk_pwm0_ctrl::CLK_PWM0_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_pwm0_ctrl {
     pub struct CLK_PWM0_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_PWM0_CTRL_SPEC {
@@ -1456,11 +1456,11 @@ pub mod clk_pwm0_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_PWM0_DIV_INT = Reg<clk_pwm0_div_int::CLK_PWM0_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_pwm0_div_int {
     pub struct CLK_PWM0_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_PWM0_DIV_INT_SPEC {
@@ -1494,11 +1494,11 @@ pub mod clk_pwm0_div_int {
 
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_PWM0_DIV_FRAC = Reg<clk_pwm0_div_frac::CLK_PWM0_DIV_FRAC_SPEC>;
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_pwm0_div_frac {
     pub struct CLK_PWM0_DIV_FRAC_SPEC;
     impl crate::RegisterSpec for CLK_PWM0_DIV_FRAC_SPEC {
@@ -1558,11 +1558,11 @@ pub mod clk_pwm0_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_PWM1_CTRL = Reg<clk_pwm1_ctrl::CLK_PWM1_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_pwm1_ctrl {
     pub struct CLK_PWM1_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_PWM1_CTRL_SPEC {
@@ -1606,11 +1606,11 @@ pub mod clk_pwm1_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_PWM1_DIV_INT = Reg<clk_pwm1_div_int::CLK_PWM1_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_pwm1_div_int {
     pub struct CLK_PWM1_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_PWM1_DIV_INT_SPEC {
@@ -1644,11 +1644,11 @@ pub mod clk_pwm1_div_int {
 
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_PWM1_DIV_FRAC = Reg<clk_pwm1_div_frac::CLK_PWM1_DIV_FRAC_SPEC>;
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_pwm1_div_frac {
     pub struct CLK_PWM1_DIV_FRAC_SPEC;
     impl crate::RegisterSpec for CLK_PWM1_DIV_FRAC_SPEC {
@@ -1708,11 +1708,11 @@ pub mod clk_pwm1_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_AUDIO_IN_CTRL = Reg<clk_audio_in_ctrl::CLK_AUDIO_IN_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_audio_in_ctrl {
     pub struct CLK_AUDIO_IN_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_AUDIO_IN_CTRL_SPEC {
@@ -1756,11 +1756,11 @@ pub mod clk_audio_in_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_AUDIO_IN_DIV_INT = Reg<clk_audio_in_div_int::CLK_AUDIO_IN_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_audio_in_div_int {
     pub struct CLK_AUDIO_IN_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_AUDIO_IN_DIV_INT_SPEC {
@@ -1820,11 +1820,11 @@ pub mod clk_audio_in_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_AUDIO_OUT_CTRL = Reg<clk_audio_out_ctrl::CLK_AUDIO_OUT_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_audio_out_ctrl {
     pub struct CLK_AUDIO_OUT_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_AUDIO_OUT_CTRL_SPEC {
@@ -1868,11 +1868,11 @@ pub mod clk_audio_out_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_AUDIO_OUT_DIV_INT = Reg<clk_audio_out_div_int::CLK_AUDIO_OUT_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_audio_out_div_int {
     pub struct CLK_AUDIO_OUT_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_AUDIO_OUT_DIV_INT_SPEC {
@@ -1932,11 +1932,11 @@ pub mod clk_audio_out_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_I2S_CTRL = Reg<clk_i2s_ctrl::CLK_I2S_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_i2s_ctrl {
     pub struct CLK_I2S_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_I2S_CTRL_SPEC {
@@ -1980,11 +1980,11 @@ pub mod clk_i2s_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_I2S_DIV_INT = Reg<clk_i2s_div_int::CLK_I2S_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_i2s_div_int {
     pub struct CLK_I2S_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_I2S_DIV_INT_SPEC {
@@ -2044,11 +2044,11 @@ pub mod clk_i2s_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_MIPI0_CFG_CTRL = Reg<clk_mipi0_cfg_ctrl::CLK_MIPI0_CFG_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_mipi0_cfg_ctrl {
     pub struct CLK_MIPI0_CFG_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_MIPI0_CFG_CTRL_SPEC {
@@ -2092,11 +2092,11 @@ pub mod clk_mipi0_cfg_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_MIPI0_CFG_DIV_INT = Reg<clk_mipi0_cfg_div_int::CLK_MIPI0_CFG_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_mipi0_cfg_div_int {
     pub struct CLK_MIPI0_CFG_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_MIPI0_CFG_DIV_INT_SPEC {
@@ -2156,11 +2156,11 @@ pub mod clk_mipi0_cfg_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_MIPI1_CFG_CTRL = Reg<clk_mipi1_cfg_ctrl::CLK_MIPI1_CFG_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_mipi1_cfg_ctrl {
     pub struct CLK_MIPI1_CFG_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_MIPI1_CFG_CTRL_SPEC {
@@ -2204,11 +2204,11 @@ pub mod clk_mipi1_cfg_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_MIPI1_CFG_DIV_INT = Reg<clk_mipi1_cfg_div_int::CLK_MIPI1_CFG_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_mipi1_cfg_div_int {
     pub struct CLK_MIPI1_CFG_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_MIPI1_CFG_DIV_INT_SPEC {
@@ -2268,11 +2268,11 @@ pub mod clk_mipi1_cfg_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_PCIE_AUX_CTRL = Reg<clk_pcie_aux_ctrl::CLK_PCIE_AUX_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_pcie_aux_ctrl {
     pub struct CLK_PCIE_AUX_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_PCIE_AUX_CTRL_SPEC {
@@ -2316,11 +2316,11 @@ pub mod clk_pcie_aux_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_PCIE_AUX_DIV_INT = Reg<clk_pcie_aux_div_int::CLK_PCIE_AUX_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_pcie_aux_div_int {
     pub struct CLK_PCIE_AUX_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_PCIE_AUX_DIV_INT_SPEC {
@@ -2380,11 +2380,11 @@ pub mod clk_pcie_aux_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_USBH0_MICROFRAME_CTRL = Reg<clk_usbh0_microframe_ctrl::CLK_USBH0_MICROFRAME_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_usbh0_microframe_ctrl {
     pub struct CLK_USBH0_MICROFRAME_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_USBH0_MICROFRAME_CTRL_SPEC {
@@ -2428,12 +2428,12 @@ pub mod clk_usbh0_microframe_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_USBH0_MICROFRAME_DIV_INT =
     Reg<clk_usbh0_microframe_div_int::CLK_USBH0_MICROFRAME_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_usbh0_microframe_div_int {
     pub struct CLK_USBH0_MICROFRAME_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_USBH0_MICROFRAME_DIV_INT_SPEC {
@@ -2493,11 +2493,11 @@ pub mod clk_usbh0_microframe_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_USBH1_MICROFRAME_CTRL = Reg<clk_usbh1_microframe_ctrl::CLK_USBH1_MICROFRAME_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_usbh1_microframe_ctrl {
     pub struct CLK_USBH1_MICROFRAME_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_USBH1_MICROFRAME_CTRL_SPEC {
@@ -2541,12 +2541,12 @@ pub mod clk_usbh1_microframe_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_USBH1_MICROFRAME_DIV_INT =
     Reg<clk_usbh1_microframe_div_int::CLK_USBH1_MICROFRAME_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_usbh1_microframe_div_int {
     pub struct CLK_USBH1_MICROFRAME_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_USBH1_MICROFRAME_DIV_INT_SPEC {
@@ -2606,11 +2606,11 @@ pub mod clk_usbh1_microframe_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_USBH0_SUSPEND_CTRL = Reg<clk_usbh0_suspend_ctrl::CLK_USBH0_SUSPEND_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_usbh0_suspend_ctrl {
     pub struct CLK_USBH0_SUSPEND_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_USBH0_SUSPEND_CTRL_SPEC {
@@ -2654,11 +2654,11 @@ pub mod clk_usbh0_suspend_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_USBH0_SUSPEND_DIV_INT = Reg<clk_usbh0_suspend_div_int::CLK_USBH0_SUSPEND_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_usbh0_suspend_div_int {
     pub struct CLK_USBH0_SUSPEND_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_USBH0_SUSPEND_DIV_INT_SPEC {
@@ -2718,11 +2718,11 @@ pub mod clk_usbh0_suspend_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_USBH1_SUSPEND_CTRL = Reg<clk_usbh1_suspend_ctrl::CLK_USBH1_SUSPEND_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_usbh1_suspend_ctrl {
     pub struct CLK_USBH1_SUSPEND_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_USBH1_SUSPEND_CTRL_SPEC {
@@ -2766,11 +2766,11 @@ pub mod clk_usbh1_suspend_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_USBH1_SUSPEND_DIV_INT = Reg<clk_usbh1_suspend_div_int::CLK_USBH1_SUSPEND_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_usbh1_suspend_div_int {
     pub struct CLK_USBH1_SUSPEND_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_USBH1_SUSPEND_DIV_INT_SPEC {
@@ -2830,11 +2830,11 @@ pub mod clk_usbh1_suspend_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_ETH_TSU_CTRL = Reg<clk_eth_tsu_ctrl::CLK_ETH_TSU_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_eth_tsu_ctrl {
     pub struct CLK_ETH_TSU_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_ETH_TSU_CTRL_SPEC {
@@ -2878,11 +2878,11 @@ pub mod clk_eth_tsu_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_ETH_TSU_DIV_INT = Reg<clk_eth_tsu_div_int::CLK_ETH_TSU_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_eth_tsu_div_int {
     pub struct CLK_ETH_TSU_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_ETH_TSU_DIV_INT_SPEC {
@@ -2942,11 +2942,11 @@ pub mod clk_eth_tsu_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_ADC_CTRL = Reg<clk_adc_ctrl::CLK_ADC_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_adc_ctrl {
     pub struct CLK_ADC_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_ADC_CTRL_SPEC {
@@ -2990,11 +2990,11 @@ pub mod clk_adc_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_ADC_DIV_INT = Reg<clk_adc_div_int::CLK_ADC_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_adc_div_int {
     pub struct CLK_ADC_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_ADC_DIV_INT_SPEC {
@@ -3054,11 +3054,11 @@ pub mod clk_adc_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_SDIO_TIMER_CTRL = Reg<clk_sdio_timer_ctrl::CLK_SDIO_TIMER_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_sdio_timer_ctrl {
     pub struct CLK_SDIO_TIMER_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_SDIO_TIMER_CTRL_SPEC {
@@ -3102,11 +3102,11 @@ pub mod clk_sdio_timer_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_SDIO_TIMER_DIV_INT = Reg<clk_sdio_timer_div_int::CLK_SDIO_TIMER_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_sdio_timer_div_int {
     pub struct CLK_SDIO_TIMER_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_SDIO_TIMER_DIV_INT_SPEC {
@@ -3166,11 +3166,11 @@ pub mod clk_sdio_timer_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_SDIO_ALT_SRC_CTRL = Reg<clk_sdio_alt_src_ctrl::CLK_SDIO_ALT_SRC_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_sdio_alt_src_ctrl {
     pub struct CLK_SDIO_ALT_SRC_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_SDIO_ALT_SRC_CTRL_SPEC {
@@ -3214,11 +3214,11 @@ pub mod clk_sdio_alt_src_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_SDIO_ALT_SRC_DIV_INT = Reg<clk_sdio_alt_src_div_int::CLK_SDIO_ALT_SRC_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_sdio_alt_src_div_int {
     pub struct CLK_SDIO_ALT_SRC_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_SDIO_ALT_SRC_DIV_INT_SPEC {
@@ -3278,11 +3278,11 @@ pub mod clk_sdio_alt_src_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP0_CTRL = Reg<clk_gp0_ctrl::CLK_GP0_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp0_ctrl {
     pub struct CLK_GP0_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_GP0_CTRL_SPEC {
@@ -3326,11 +3326,11 @@ pub mod clk_gp0_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP0_DIV_INT = Reg<clk_gp0_div_int::CLK_GP0_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp0_div_int {
     pub struct CLK_GP0_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_GP0_DIV_INT_SPEC {
@@ -3364,11 +3364,11 @@ pub mod clk_gp0_div_int {
 
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP0_DIV_FRAC = Reg<clk_gp0_div_frac::CLK_GP0_DIV_FRAC_SPEC>;
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp0_div_frac {
     pub struct CLK_GP0_DIV_FRAC_SPEC;
     impl crate::RegisterSpec for CLK_GP0_DIV_FRAC_SPEC {
@@ -3428,11 +3428,11 @@ pub mod clk_gp0_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP1_CTRL = Reg<clk_gp1_ctrl::CLK_GP1_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp1_ctrl {
     pub struct CLK_GP1_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_GP1_CTRL_SPEC {
@@ -3476,11 +3476,11 @@ pub mod clk_gp1_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP1_DIV_INT = Reg<clk_gp1_div_int::CLK_GP1_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp1_div_int {
     pub struct CLK_GP1_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_GP1_DIV_INT_SPEC {
@@ -3514,11 +3514,11 @@ pub mod clk_gp1_div_int {
 
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP1_DIV_FRAC = Reg<clk_gp1_div_frac::CLK_GP1_DIV_FRAC_SPEC>;
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp1_div_frac {
     pub struct CLK_GP1_DIV_FRAC_SPEC;
     impl crate::RegisterSpec for CLK_GP1_DIV_FRAC_SPEC {
@@ -3578,11 +3578,11 @@ pub mod clk_gp1_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP2_CTRL = Reg<clk_gp2_ctrl::CLK_GP2_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp2_ctrl {
     pub struct CLK_GP2_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_GP2_CTRL_SPEC {
@@ -3626,11 +3626,11 @@ pub mod clk_gp2_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP2_DIV_INT = Reg<clk_gp2_div_int::CLK_GP2_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp2_div_int {
     pub struct CLK_GP2_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_GP2_DIV_INT_SPEC {
@@ -3664,11 +3664,11 @@ pub mod clk_gp2_div_int {
 
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP2_DIV_FRAC = Reg<clk_gp2_div_frac::CLK_GP2_DIV_FRAC_SPEC>;
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp2_div_frac {
     pub struct CLK_GP2_DIV_FRAC_SPEC;
     impl crate::RegisterSpec for CLK_GP2_DIV_FRAC_SPEC {
@@ -3728,11 +3728,11 @@ pub mod clk_gp2_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP3_CTRL = Reg<clk_gp3_ctrl::CLK_GP3_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp3_ctrl {
     pub struct CLK_GP3_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_GP3_CTRL_SPEC {
@@ -3776,11 +3776,11 @@ pub mod clk_gp3_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP3_DIV_INT = Reg<clk_gp3_div_int::CLK_GP3_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp3_div_int {
     pub struct CLK_GP3_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_GP3_DIV_INT_SPEC {
@@ -3814,11 +3814,11 @@ pub mod clk_gp3_div_int {
 
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP3_DIV_FRAC = Reg<clk_gp3_div_frac::CLK_GP3_DIV_FRAC_SPEC>;
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp3_div_frac {
     pub struct CLK_GP3_DIV_FRAC_SPEC;
     impl crate::RegisterSpec for CLK_GP3_DIV_FRAC_SPEC {
@@ -3878,11 +3878,11 @@ pub mod clk_gp3_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP4_CTRL = Reg<clk_gp4_ctrl::CLK_GP4_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp4_ctrl {
     pub struct CLK_GP4_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_GP4_CTRL_SPEC {
@@ -3926,11 +3926,11 @@ pub mod clk_gp4_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP4_DIV_INT = Reg<clk_gp4_div_int::CLK_GP4_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp4_div_int {
     pub struct CLK_GP4_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_GP4_DIV_INT_SPEC {
@@ -3964,11 +3964,11 @@ pub mod clk_gp4_div_int {
 
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP4_DIV_FRAC = Reg<clk_gp4_div_frac::CLK_GP4_DIV_FRAC_SPEC>;
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp4_div_frac {
     pub struct CLK_GP4_DIV_FRAC_SPEC;
     impl crate::RegisterSpec for CLK_GP4_DIV_FRAC_SPEC {
@@ -4028,11 +4028,11 @@ pub mod clk_gp4_sel {
 
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP5_CTRL = Reg<clk_gp5_ctrl::CLK_GP5_CTRL_SPEC>;
 /// Generated-clock control. Primary SRC begins at bit 0 but its clock-specific width remains raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp5_ctrl {
     pub struct CLK_GP5_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_GP5_CTRL_SPEC {
@@ -4076,11 +4076,11 @@ pub mod clk_gp5_ctrl {
 
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP5_DIV_INT = Reg<clk_gp5_div_int::CLK_GP5_DIV_INT_SPEC>;
 /// Integer clock divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp5_div_int {
     pub struct CLK_GP5_DIV_INT_SPEC;
     impl crate::RegisterSpec for CLK_GP5_DIV_INT_SPEC {
@@ -4114,11 +4114,11 @@ pub mod clk_gp5_div_int {
 
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_GP5_DIV_FRAC = Reg<clk_gp5_div_frac::CLK_GP5_DIV_FRAC_SPEC>;
 /// Sixteen-bit fractional divider. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_gp5_div_frac {
     pub struct CLK_GP5_DIV_FRAC_SPEC;
     impl crate::RegisterSpec for CLK_GP5_DIV_FRAC_SPEC {
@@ -4178,11 +4178,11 @@ pub mod clk_gp5_sel {
 
 /// System-clock resuscitation control; fields remain raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_SYS_RESUS_CTRL = Reg<clk_sys_resus_ctrl::CLK_SYS_RESUS_CTRL_SPEC>;
 /// System-clock resuscitation control; fields remain raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_sys_resus_ctrl {
     pub struct CLK_SYS_RESUS_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_SYS_RESUS_CTRL_SPEC {
@@ -4216,11 +4216,11 @@ pub mod clk_sys_resus_ctrl {
 
 /// Slow-system-clock resuscitation control; fields remain raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type CLK_SLOW_SYS_RESUS_CTRL = Reg<clk_slow_sys_resus_ctrl::CLK_SLOW_SYS_RESUS_CTRL_SPEC>;
 /// Slow-system-clock resuscitation control; fields remain raw. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod clk_slow_sys_resus_ctrl {
     pub struct CLK_SLOW_SYS_RESUS_CTRL_SPEC;
     impl crate::RegisterSpec for CLK_SLOW_SYS_RESUS_CTRL_SPEC {
@@ -4254,11 +4254,11 @@ pub mod clk_slow_sys_resus_ctrl {
 
 /// Frequency-counter reference frequency in kHz. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type FC0_REF_KHZ = Reg<fc0_ref_khz::FC0_REF_KHZ_SPEC>;
 /// Frequency-counter reference frequency in kHz. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod fc0_ref_khz {
     pub struct FC0_REF_KHZ_SPEC;
     impl crate::RegisterSpec for FC0_REF_KHZ_SPEC {
@@ -4292,11 +4292,11 @@ pub mod fc0_ref_khz {
 
 /// Frequency-counter minimum expected kHz. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type FC0_MIN_KHZ = Reg<fc0_min_khz::FC0_MIN_KHZ_SPEC>;
 /// Frequency-counter minimum expected kHz. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod fc0_min_khz {
     pub struct FC0_MIN_KHZ_SPEC;
     impl crate::RegisterSpec for FC0_MIN_KHZ_SPEC {
@@ -4330,11 +4330,11 @@ pub mod fc0_min_khz {
 
 /// Frequency-counter maximum expected kHz. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type FC0_MAX_KHZ = Reg<fc0_max_khz::FC0_MAX_KHZ_SPEC>;
 /// Frequency-counter maximum expected kHz. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod fc0_max_khz {
     pub struct FC0_MAX_KHZ_SPEC;
     impl crate::RegisterSpec for FC0_MAX_KHZ_SPEC {
@@ -4368,11 +4368,11 @@ pub mod fc0_max_khz {
 
 /// Frequency-counter start delay. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type FC0_DELAY = Reg<fc0_delay::FC0_DELAY_SPEC>;
 /// Frequency-counter start delay. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod fc0_delay {
     pub struct FC0_DELAY_SPEC;
     impl crate::RegisterSpec for FC0_DELAY_SPEC {
@@ -4406,11 +4406,11 @@ pub mod fc0_delay {
 
 /// Frequency-counter measurement interval. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type FC0_INTERVAL = Reg<fc0_interval::FC0_INTERVAL_SPEC>;
 /// Frequency-counter measurement interval. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod fc0_interval {
     pub struct FC0_INTERVAL_SPEC;
     impl crate::RegisterSpec for FC0_INTERVAL_SPEC {
@@ -4444,11 +4444,11 @@ pub mod fc0_interval {
 
 /// Frequency-counter source selector. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type FC0_SRC = Reg<fc0_src::FC0_SRC_SPEC>;
 /// Frequency-counter source selector. \[Source: Linux RP1 common-clock driver.\]
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod fc0_src {
     pub struct FC0_SRC_SPEC;
     impl crate::RegisterSpec for FC0_SRC_SPEC {

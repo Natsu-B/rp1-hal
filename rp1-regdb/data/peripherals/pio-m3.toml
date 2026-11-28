@@ -4,7 +4,7 @@ name = "PIO_M3"
 module = "pio_m3"
 kind = "memory-mapped"
 base = 0xf0000000
-size = 0x16c
+size = 0x168
 ownership = "singleton"
 view_of = "pio"
 default_origin = "reverse-engineered"
@@ -86,9 +86,9 @@ repeat_count = 4
 hardware_read = "none"
 hardware_write = "fifo"
 verified_read = "not-applicable"
-verified_write = "official"
+verified_write = "static"
 [register.api]
-fifo_push = "public"
+raw_write = "unsafe"
 
 [[register]]
 id = "rxf"
@@ -294,9 +294,9 @@ hardware_read = "plain"
 hardware_write = "plain"
 verified_read = "static"
 verified_write = "static"
+note = "Bit 30 is a read-only raw request status candidate. Bit 31 enables the DMA request."
 [register.api]
 read = "public"
-raw_write = "unsafe"
 
 [[register]]
 id = "sm_dmarx"
@@ -310,9 +310,9 @@ hardware_read = "plain"
 hardware_write = "plain"
 verified_read = "static"
 verified_write = "static"
+note = "Bit 30 is a read-only raw request status candidate. Bit 31 enables the DMA request."
 [register.api]
 read = "public"
-raw_write = "unsafe"
 
 [[register]]
 id = "intr"

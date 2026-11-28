@@ -46,8 +46,8 @@ pub struct RegisterBlock {
 impl RegisterBlock {
     /// SM enable and restart commands.
     /// Hardware access: read Plain; write Command.
-    /// Command write; ordinary read, write, and modify APIs are not generated.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Command write; ordinary write and modify APIs are not generated.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn ctrl(&self) -> &CTRL {
         &self.ctrl
@@ -77,7 +77,8 @@ impl RegisterBlock {
         &self.flevel2
     }
     /// Hardware access: read None; write Fifo.
-    /// FIFO/data port; only dedicated FIFO operations are generated.
+    /// FIFO/data port.
+    /// Generated writes require unsafe raw access.
     /// Array layout: 4 physical entries, 4 public entries, stride 0x4 bytes.
     #[inline(always)]
     pub fn txf(&self, index: usize) -> &TXF {
@@ -130,7 +131,7 @@ impl RegisterBlock {
     /// 32 instruction slots, each with a 16-bit instruction. Use word writes.
     /// Hardware access: read None; write WriteOnly.
     /// Command write; ordinary read, write, and modify APIs are not generated.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     /// Array layout: 32 physical entries, 32 public entries, stride 0x4 bytes.
     #[inline(always)]
     pub fn instr_mem(&self, index: usize) -> &INSTR_MEM {
@@ -142,7 +143,7 @@ impl RegisterBlock {
         &self.instr_mem[..32]
     }
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
     #[inline(always)]
     pub fn sm_clkdiv(&self, index: usize) -> &SM_CLKDIV {
@@ -150,7 +151,7 @@ impl RegisterBlock {
         &self.sm_clkdiv[index].sm_clkdiv
     }
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
     #[inline(always)]
     pub fn sm_execctrl(&self, index: usize) -> &SM_EXECCTRL {
@@ -158,7 +159,7 @@ impl RegisterBlock {
         &self.sm_clkdiv[index].sm_execctrl
     }
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
     #[inline(always)]
     pub fn sm_shiftctrl(&self, index: usize) -> &SM_SHIFTCTRL {
@@ -173,8 +174,8 @@ impl RegisterBlock {
         &self.sm_clkdiv[index].sm_addr
     }
     /// Hardware access: read Plain; write Command.
-    /// Command write; ordinary read, write, and modify APIs are not generated.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Command write; ordinary write and modify APIs are not generated.
+    /// Generated writes require unsafe raw access.
     /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
     #[inline(always)]
     pub fn sm_instr(&self, index: usize) -> &SM_INSTR {
@@ -182,13 +183,14 @@ impl RegisterBlock {
         &self.sm_clkdiv[index].sm_instr
     }
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
     #[inline(always)]
     pub fn sm_pinctrl(&self, index: usize) -> &SM_PINCTRL {
         assert!(index < 4);
         &self.sm_clkdiv[index].sm_pinctrl
     }
+    /// Bit 30 is a read-only raw request status candidate. Bit 31 enables the DMA request.
     /// Hardware access: read Plain; write Plain.
     /// Write API is not exposed because the verified operation semantics are insufficient.
     /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
@@ -197,6 +199,7 @@ impl RegisterBlock {
         assert!(index < 4);
         &self.sm_clkdiv[index].sm_dmatx
     }
+    /// Bit 30 is a read-only raw request status candidate. Bit 31 enables the DMA request.
     /// Hardware access: read Plain; write Plain.
     /// Write API is not exposed because the verified operation semantics are insufficient.
     /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
@@ -211,13 +214,13 @@ impl RegisterBlock {
         &self.intr
     }
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn irq0_inte(&self) -> &IRQ0_INTE {
         &self.irq0_inte
     }
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn irq0_intf(&self) -> &IRQ0_INTF {
         &self.irq0_intf
@@ -228,13 +231,13 @@ impl RegisterBlock {
         &self.irq0_ints
     }
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn irq1_inte(&self) -> &IRQ1_INTE {
         &self.irq1_inte
     }
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn irq1_intf(&self) -> &IRQ1_INTF {
         &self.irq1_intf
@@ -248,13 +251,13 @@ impl RegisterBlock {
 
 /// SM enable and restart commands.
 /// Hardware access: read Plain; write Command.
-/// Command write; ordinary read, write, and modify APIs are not generated.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Command write; ordinary write and modify APIs are not generated.
+/// Generated writes require unsafe raw access.
 pub type CTRL = Reg<ctrl::CTRL_SPEC>;
 /// SM enable and restart commands.
 /// Hardware access: read Plain; write Command.
-/// Command write; ordinary read, write, and modify APIs are not generated.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Command write; ordinary write and modify APIs are not generated.
+/// Generated writes require unsafe raw access.
 pub mod ctrl {
     pub struct CTRL_SPEC;
     impl crate::RegisterSpec for CTRL_SPEC {
@@ -322,18 +325,20 @@ pub mod flevel2 {
 }
 
 /// Hardware access: read None; write Fifo.
-/// FIFO/data port; only dedicated FIFO operations are generated.
+/// FIFO/data port.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x4 bytes.
 pub type TXF = Reg<txf::TXF_SPEC>;
 /// Hardware access: read None; write Fifo.
-/// FIFO/data port; only dedicated FIFO operations are generated.
+/// FIFO/data port.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x4 bytes.
 pub mod txf {
     pub struct TXF_SPEC;
     impl crate::RegisterSpec for TXF_SPEC {
         type Ux = u32;
     }
-    impl crate::FifoPush for TXF_SPEC {}
+    impl crate::UnsafeWritable for TXF_SPEC {}
 }
 
 /// Hardware access: read Fifo; write None.
@@ -432,13 +437,13 @@ pub mod dbg_cfginfo {
 /// 32 instruction slots, each with a 16-bit instruction. Use word writes.
 /// Hardware access: read None; write WriteOnly.
 /// Command write; ordinary read, write, and modify APIs are not generated.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 32 physical entries, 32 public entries, stride 0x4 bytes.
 pub type INSTR_MEM = Reg<instr_mem::INSTR_MEM_SPEC>;
 /// 32 instruction slots, each with a 16-bit instruction. Use word writes.
 /// Hardware access: read None; write WriteOnly.
 /// Command write; ordinary read, write, and modify APIs are not generated.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 32 physical entries, 32 public entries, stride 0x4 bytes.
 pub mod instr_mem {
     pub struct INSTR_MEM_SPEC;
@@ -449,11 +454,11 @@ pub mod instr_mem {
 }
 
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub type SM_CLKDIV = Reg<sm_clkdiv::SM_CLKDIV_SPEC>;
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub mod sm_clkdiv {
     pub struct SM_CLKDIV_SPEC;
@@ -466,11 +471,11 @@ pub mod sm_clkdiv {
 }
 
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub type SM_EXECCTRL = Reg<sm_execctrl::SM_EXECCTRL_SPEC>;
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub mod sm_execctrl {
     pub struct SM_EXECCTRL_SPEC;
@@ -483,11 +488,11 @@ pub mod sm_execctrl {
 }
 
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub type SM_SHIFTCTRL = Reg<sm_shiftctrl::SM_SHIFTCTRL_SPEC>;
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub mod sm_shiftctrl {
     pub struct SM_SHIFTCTRL_SPEC;
@@ -514,13 +519,13 @@ pub mod sm_addr {
 }
 
 /// Hardware access: read Plain; write Command.
-/// Command write; ordinary read, write, and modify APIs are not generated.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Command write; ordinary write and modify APIs are not generated.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub type SM_INSTR = Reg<sm_instr::SM_INSTR_SPEC>;
 /// Hardware access: read Plain; write Command.
-/// Command write; ordinary read, write, and modify APIs are not generated.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Command write; ordinary write and modify APIs are not generated.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub mod sm_instr {
     pub struct SM_INSTR_SPEC;
@@ -533,11 +538,11 @@ pub mod sm_instr {
 }
 
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub type SM_PINCTRL = Reg<sm_pinctrl::SM_PINCTRL_SPEC>;
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub mod sm_pinctrl {
     pub struct SM_PINCTRL_SPEC;
@@ -549,10 +554,12 @@ pub mod sm_pinctrl {
     impl crate::UnsafeWritable for SM_PINCTRL_SPEC {}
 }
 
+/// Bit 30 is a read-only raw request status candidate. Bit 31 enables the DMA request.
 /// Hardware access: read Plain; write Plain.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub type SM_DMATX = Reg<sm_dmatx::SM_DMATX_SPEC>;
+/// Bit 30 is a read-only raw request status candidate. Bit 31 enables the DMA request.
 /// Hardware access: read Plain; write Plain.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
@@ -563,13 +570,14 @@ pub mod sm_dmatx {
     }
     impl crate::Readable for SM_DMATX_SPEC {}
     pub type R = crate::R<SM_DMATX_SPEC>;
-    impl crate::UnsafeWritable for SM_DMATX_SPEC {}
 }
 
+/// Bit 30 is a read-only raw request status candidate. Bit 31 enables the DMA request.
 /// Hardware access: read Plain; write Plain.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
 pub type SM_DMARX = Reg<sm_dmarx::SM_DMARX_SPEC>;
+/// Bit 30 is a read-only raw request status candidate. Bit 31 enables the DMA request.
 /// Hardware access: read Plain; write Plain.
 /// Write API is not exposed because the verified operation semantics are insufficient.
 /// Array layout: 4 physical entries, 4 public entries, stride 0x20 bytes.
@@ -580,7 +588,6 @@ pub mod sm_dmarx {
     }
     impl crate::Readable for SM_DMARX_SPEC {}
     pub type R = crate::R<SM_DMARX_SPEC>;
-    impl crate::UnsafeWritable for SM_DMARX_SPEC {}
 }
 
 /// Hardware access: read Plain; write None.
@@ -596,10 +603,10 @@ pub mod intr {
 }
 
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type IRQ0_INTE = Reg<irq0_inte::IRQ0_INTE_SPEC>;
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod irq0_inte {
     pub struct IRQ0_INTE_SPEC;
     impl crate::RegisterSpec for IRQ0_INTE_SPEC {
@@ -611,10 +618,10 @@ pub mod irq0_inte {
 }
 
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type IRQ0_INTF = Reg<irq0_intf::IRQ0_INTF_SPEC>;
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod irq0_intf {
     pub struct IRQ0_INTF_SPEC;
     impl crate::RegisterSpec for IRQ0_INTF_SPEC {
@@ -638,10 +645,10 @@ pub mod irq0_ints {
 }
 
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type IRQ1_INTE = Reg<irq1_inte::IRQ1_INTE_SPEC>;
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod irq1_inte {
     pub struct IRQ1_INTE_SPEC;
     impl crate::RegisterSpec for IRQ1_INTE_SPEC {
@@ -653,10 +660,10 @@ pub mod irq1_inte {
 }
 
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type IRQ1_INTF = Reg<irq1_intf::IRQ1_INTF_SPEC>;
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod irq1_intf {
     pub struct IRQ1_INTF_SPEC;
     impl crate::RegisterSpec for IRQ1_INTF_SPEC {

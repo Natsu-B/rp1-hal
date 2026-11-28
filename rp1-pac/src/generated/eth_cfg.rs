@@ -66,7 +66,7 @@ impl RegisterBlock {
     }
     /// Raw interrupt sources, before the enable mask.
     /// Hardware access: read Plain; write Plain.
-    /// Write API is not exposed because the verified operation semantics are insufficient.
+    /// Generated writes require unsafe raw access.
     #[inline(always)]
     pub const fn intr(&self) -> &INTR {
         &self.intr
@@ -794,11 +794,11 @@ pub mod clk2fc {
 
 /// Raw interrupt sources, before the enable mask.
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub type INTR = Reg<intr::INTR_SPEC>;
 /// Raw interrupt sources, before the enable mask.
 /// Hardware access: read Plain; write Plain.
-/// Write API is not exposed because the verified operation semantics are insufficient.
+/// Generated writes require unsafe raw access.
 pub mod intr {
     pub struct INTR_SPEC;
     impl crate::RegisterSpec for INTR_SPEC {

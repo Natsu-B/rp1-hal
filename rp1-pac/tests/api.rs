@@ -146,7 +146,7 @@ fn pio_access(apb: &rp1_pac::PIO) {
     apb.txf(0).push(1);
     let _ = apb.rxf(0).pop();
     let pio = apb.pio_m3();
-    pio.txf(0).push(1);
+    unsafe { pio.txf(0).write_bits_unchecked(1) };
     let _ = pio.rxf(0).pop();
     let _ = pio.sm_addr(0).read().bits();
     unsafe { pio.instr_mem(31).write_bits_unchecked(0) };
