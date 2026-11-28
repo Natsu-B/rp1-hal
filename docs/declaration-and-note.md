@@ -179,13 +179,13 @@ STATIC（2026-11-27）: `ProcNResources.irq` は、宣言でそのコアに割�
 | UART / SPI / I2C と同じコアの `wait_timer` | インスタンスの Parts が線を所有し、ハンドラを生成 |
 | raw `uart0`..`uart4` | IRQ25（UART0）、IRQ42〜45（UART1〜4） |
 | raw `i2c0`..`i2c3` | `I2Cn: Binding<BlockIrq<ID>, {7+n}, CORE>` |
-| raw `spi0` / `spi1` / `spi2` / `spi3` / `spi5` | `SPIn: Binding<BlockIrq<ID>, {19+n}, CORE>` |
+| raw `spi0` / `spi1` / `spi3` | `SPIn: Binding<BlockIrq<ID>, {19+n}, CORE>` |
 | `pwm0` / `pwm1` | `PWM0: Binding<BlockIrq<48>, 5, CORE>` / `PWM1: Binding<BlockIrq<49>, 41, CORE>` |
 | `adc` と同じコアの `wait_timer` | `rp1::AdcParts` が線を所有し、ADC_FIFO ハンドラを生成 |
 | raw `adc` | `ADC_FIFO: Binding<BlockIrq<ID>, 52, CORE>` |
 
 STATIC: 生成と ELF 検査は `rp1-build::board::irq_routes()` を共用する。
-SPI2 と SPI5 の番号は PAC に基づく（STATIC）。他の線の実機根拠と I2C / SPI の出力イネーブルは
+SPI2 と SPI5 はポーリング専用。公開する線の実機根拠と I2C / SPI の出力イネーブルは
 [割り込み](interrupts.md)を参照。
 
 `gpio_irq` のピンは通常の `pins.gpioN` と別に割り込み権限を持つ。両コアがそれぞれ `gpio_irq` を宣言すると、
@@ -206,7 +206,7 @@ IRQ53/57 はプラットフォーム専用。ハンドラを定義せず線を�
 GPIO との共有や独自処理が必要な場合は `custom_doorbell_handler = true` を宣言し、
 そのコアの `IO_BANK0` で `doorbell.ack_and_signal()` と各 GPIO source を処理する。
 
-STATIC: UART0–4、SPI0/1/2/3/5、I2C0–3 は同じコアの `wait_timer` で
+STATIC: UART0–4、SPI0/1/3、I2C0–3 は同じコアの `wait_timer` で
 インスタンスの IRQ ハンドラを生成し、初期化後に `blocking(&mut p.wait_timer)` を使う。
 `custom_uart1_handler = true` などで raw IRQ を選べる。そのコアに対応する
 `#[interrupt(procN)] fn UART1()` などが必要になる。

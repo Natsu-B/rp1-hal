@@ -870,9 +870,9 @@ mod tests {
             ("i2c3={sda=6,scl=7}", Some(("I2C3", 10))),
             ("spi0={sck=11,mosi=10,miso=9}", Some(("SPI0", 19))),
             ("spi1={sck=21,mosi=20,miso=19}", Some(("SPI1", 20))),
-            ("spi2={sck=3,mosi=2,miso=1}", Some(("SPI2", 21))),
+            ("spi2={sck=3,mosi=2,miso=1}", None),
             ("spi3={sck=7,mosi=6,miso=5}", Some(("SPI3", 22))),
-            ("spi5={sck=15,mosi=14,miso=13}", Some(("SPI5", 24))),
+            ("spi5={sck=15,mosi=14,miso=13}", None),
             ("pwm0={}", Some(("PWM0", 5))),
             ("pwm1={}", Some(("PWM1", 41))),
             ("adc={}", Some(("ADC_FIFO", 52))),
@@ -969,9 +969,7 @@ mod tests {
             ("uart", "Uart", 4, 4, 45, "tx=12,rx=13"),
             ("spi", "Spi", 0, 16, 19, "sck=11,mosi=10,miso=9"),
             ("spi", "Spi", 1, 17, 20, "sck=21,mosi=20,miso=19"),
-            ("spi", "Spi", 2, 18, 21, "sck=3,mosi=2,miso=1"),
             ("spi", "Spi", 3, 19, 22, "sck=7,mosi=6,miso=5"),
-            ("spi", "Spi", 5, 21, 24, "sck=15,mosi=14,miso=13"),
             ("i2c", "I2c", 0, 32, 7, "sda=8,scl=9"),
             ("i2c", "I2c", 1, 33, 8, "sda=2,scl=3"),
             ("i2c", "I2c", 2, 34, 9, "sda=4,scl=5"),
@@ -997,6 +995,10 @@ mod tests {
                     let decl: metadata::Declaration = toml::from_str(input).unwrap();
                     decl.validate().unwrap();
                     let source = resources(&decl, &[], &decl.shm_layout().unwrap()).unwrap();
+                    if instance == "uart0" {
+                        assert_eq!(source.contains("pub type Uart0Parts"), managed);
+                        assert!(!source.contains("mod log"));
+                    }
                     for pattern in [
                         format!("export_name = \"{symbol}\""),
                         format!(".isram.text.{symbol}"),
@@ -1036,6 +1038,30 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn unverified_spi_routes_stay_polling_with_a_wait_timer() {
+        for (n, pins) in [(2, "sck=3,mosi=2,miso=1"), (5, "sck=15,mosi=14,miso=13")] {
+            let input = format!(
+                "schema=2\n[linux]\nkeep={{}}\n[proc0]\nwait_timer='ALARM1'\nspi{n}={{{pins}}}"
+            );
+            let decl: metadata::Declaration = toml::from_str(&input).unwrap();
+            decl.validate().unwrap();
+            let source = resources(&decl, &[], &decl.shm_layout().unwrap()).unwrap();
+            assert!(source.contains(&format!(
+                "pub spi{n}: ::rp1_hal::spi::Parts<{n}, Spi{n}Pins>"
+            )));
+            assert!(!source.contains(&format!("impl sealed::Admitted for SPI{n}")));
+            assert!(!source.contains(&format!("export_name = \"__rp1_p0_SPI{n}\"")));
+            let custom = format!("{input}\ncustom_spi{n}_handler=true");
+            let error = toml::from_str::<metadata::Declaration>(&custom).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown key 'custom_spi{n}_handler'"))
+            );
         }
     }
 

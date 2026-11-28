@@ -610,7 +610,7 @@ keep = {}
 [proc0]
 wait_timer = "ALARM1"
 uart2 = { tx = 4, rx = 5 }
-spi2 = { sck = 3, mosi = 2, miso = 1 }
+spi1 = { sck = 21, mosi = 20, miso = 19 }
 i2c3 = { sda = 22, scl = 23 }
 "#,
     )
@@ -631,7 +631,7 @@ i2c3 = { sda = 22, scl = 23 }
 #[rp1_rt::interrupt(proc0)]
 fn UART2() {}
 #[rp1_rt::interrupt(proc0)]
-fn SPI2() {}
+fn SPI1() {}
 #[rp1_rt::interrupt(proc0)]
 fn I2C3() {}
 fn main() {}

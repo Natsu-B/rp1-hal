@@ -38,7 +38,7 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | `doorbell = N` | `IO_BANK0: Line<0>`（`gpio_irq` と共用で 1 本）。ドアベル自体は `ProcNResources.doorbell: rp1::DoorbellK` |
 | `pwm0` / `pwm1` | `PWM0: Line<5>` / `PWM1: Line<41>` |
 | `i2c0`〜`i2c3` | `I2C0: Line<7>`、`I2C1: Line<8>`、`I2C2: Line<9>`、`I2C3: Line<10>` |
-| raw `spi0` / `spi1` / `spi2` / `spi3` / `spi5` | `SPIn: Line<{19+n}>` |
+| raw `spi0` / `spi1` / `spi3` | `SPIn: Line<{19+n}>` |
 | `timer = ["ALARMn"]` | `TIMER_n: Line<{26+n}>` |
 | `wait_timer = "ALARMn"` | `ProcNResources.wait_timer: WaitTimer` と自動 TIMER_n ハンドラ |
 | UART / SPI / I2C と同じコアの `wait_timer` | インスタンスの Parts が線を所有し、ISRAM のハンドラを生成 |
@@ -46,7 +46,7 @@ STATIC（`rp1-build`、`cargo-rp1`）: 線は宣言で所有したコアにだ�
 | `adc` と同じコアの `wait_timer` | `rp1::AdcParts` が線を所有し、ISRAM の ADC_FIFO ハンドラを生成 |
 | raw `adc` | `ADC_FIFO: Line<52>` |
 
-- 生成と ELF 検査は `rp1_build::board::irq_routes()` を共用する。SPI2 / SPI5 は PAC に基づく（STATIC）。
+- 生成と ELF 検査は `rp1_build::board::irq_routes()` を共用する。SPI2 / SPI5 は NVIC 未確認のため公開しない。
 - `cargo rp1 check` / `build` は、既定ハンドラ以外のベクタを note の OWNERSHIP と照合する。所有しない線や
   表に無い線にハンドラを置くとビルドエラー。
 - 渡さない線: `log` の UART0、`host_irq = true` のときの `TIMER_3`、システム用の PCIE_OUT（53）・
@@ -147,6 +147,7 @@ HW 未確認）。`PCIE_INTE` を bit 1（PERSTn の辺）だけにし、入場�
 
 ## 5. まだ無いもの
 
-- I2C / SPI / UART0・2〜4 の割り込み駆動の転送。
-- PWM / ADC / DMA の割り込み API と、DMA の周辺転送。
+- I2C / SPI / UART の async API と、ISR 内で進行する転送。
+- I2C ターゲットモード。
+- PWM / DMA の割り込み API と、DMA の周辺転送。
 - 入れ子（システム割り込み + 利用者のハンドラ）のスタック量の実測。

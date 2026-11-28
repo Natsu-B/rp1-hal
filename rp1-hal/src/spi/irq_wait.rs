@@ -12,9 +12,7 @@ pub struct Irq<const N: u8, const CORE: u8>(PhantomData<core::cell::Cell<()>>);
 driver_irq::device_irq!(SpiSource, Io,
     0 => Spi0, SPI0;
     1 => Spi1, SPI1;
-    2 => Spi2, SPI2;
     3 => Spi3, SPI3;
-    5 => Spi5, SPI5;
 );
 
 /// # Safety
@@ -447,9 +445,7 @@ mod tests {
             &[
                 (0, 16, 19),
                 (1, 17, 20),
-                (2, 18, 21),
-                (3, 19, 22),
-                (5, 21, 24)
+                (3, 19, 22)
             ]
         );
         for (n, address, clock) in [

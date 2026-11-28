@@ -217,23 +217,9 @@ pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
     },
 ];
 
-// STATIC: PAC routes from the regdb. These lack a firmware NVIC observation.
-const IRQ_STATIC: &[VerifiedIrq] = &[
-    VerifiedIrq {
-        name: "SPI2",
-        irq: rp1_pac::Interrupt::SPI2 as u8,
-        owner: IrqOwner::Instance(BlockId::Spi2),
-    },
-    VerifiedIrq {
-        name: "SPI5",
-        irq: rp1_pac::Interrupt::SPI5 as u8,
-        owner: IrqOwner::Instance(BlockId::Spi5),
-    },
-];
-
-/// IRQ routes supported by the declaration generator.
+/// Hardware-observed IRQ routes supported by the declaration generator.
 pub fn irq_routes() -> impl Iterator<Item = &'static VerifiedIrq> {
-    IRQ_VERIFIED.iter().chain(IRQ_STATIC)
+    IRQ_VERIFIED.iter()
 }
 
 pub(crate) fn find_instance(name: &str) -> Option<&'static BoardInstance> {

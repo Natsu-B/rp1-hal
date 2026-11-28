@@ -1018,8 +1018,8 @@ mod tests {
                         check_irq_tables(&object::File::parse(bytes.as_slice()).unwrap(), &note);
                     let owned = (irq == 0 && gpio_irq)
                         || match core {
-                            0 => [19, 21, 26, 53, 57].contains(&irq),
-                            _ => [24, 27, 41, 43, 52].contains(&irq),
+                            0 => [19, 26, 53, 57].contains(&irq),
+                            _ => [27, 41, 43, 52].contains(&irq),
                         };
                     assert_eq!(result.is_ok(), owned, "proc{core} IRQ{irq}: {result:?}");
                     if let Err(error) = result {

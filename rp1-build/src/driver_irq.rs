@@ -12,7 +12,8 @@ pub(crate) struct DriverIrq {
     pub module: &'static str,
 }
 
-// The same route supplies the binding and the generated handler.
+// Each row must agree with board::INSTANCES, the verified route and the HAL binding.
+// driver_bindings_match_the_board_and_pac and the serial generator test cover this.
 macro_rules! drivers {
     ($($module:literal: $($instance:literal => $vector:literal),+;) +) => {
         &[$($(DriverIrq {
@@ -27,8 +28,7 @@ macro_rules! drivers {
 pub(crate) const DRIVERS: &[DriverIrq] = drivers! {
     "uart": "uart0" => "UART0", "uart1" => "UART1", "uart2" => "UART2",
         "uart3" => "UART3", "uart4" => "UART4";
-    "spi": "spi0" => "SPI0", "spi1" => "SPI1", "spi2" => "SPI2",
-        "spi3" => "SPI3", "spi5" => "SPI5";
+    "spi": "spi0" => "SPI0", "spi1" => "SPI1", "spi3" => "SPI3";
     "i2c": "i2c0" => "I2C0", "i2c1" => "I2C1", "i2c2" => "I2C2", "i2c3" => "I2C3";
     "adc": "adc" => "ADC_FIFO";
 };

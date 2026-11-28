@@ -1,11 +1,11 @@
 # SPI master
 
-STATIC. SPI0/1/2/3/5 use `spi.blocking(&mut p.wait_timer)` for synchronous
+STATIC. SPI0/1/3 use `spi.blocking(&mut p.wait_timer)` for synchronous
 embedded-hal 1.0 `SpiBus<u8 | u16 | u32>` and `SpiDevice`. The IRQ binding
 and wait alarm belong to the declaring core. When the same core declares
 `spi0` and `wait_timer`, the generator emits the ISRAM dispatcher and
 returns `rp1::Spi0Parts` with the IRQ capability. All supported controllers offer
-the same synchronous traits through explicit `spi.polling()`.
+the same synchronous traits through explicit `spi.polling()`. SPI2 and SPI5 expose polling only.
 
 ```toml
 [package.metadata.rp1]
@@ -134,7 +134,8 @@ probe, leaving the controller disabled and the pins untouched for a retry.
 Build `Config` with `Config::new(frequency, mode)` and the `with_*` setters. The frequency
 is a `HertzU32`. Dropping the controller leaves it enabled and the pins muxed.
 `try_free()` checks TX FIFO empty and BUSY clear before disabling. `free_polling()`
-waits up to 100 ms for the same wire-idle condition. IRQ-capable controllers also have `free_until()`. All return the controller in `FreeError` when stop cannot be
+waits up to 100 ms for the same wire-idle condition. IRQ-capable controllers also have `free_until()`.
+All return the controller in `FreeError` when stop cannot be
 confirmed. `try_cancel()` requests disable immediately and may truncate a
 frame and discard both FIFOs. Both synchronous adapters report `Busy` during
 recovery, and raw interrupt controls cannot reopen the wrapper. Restore the
