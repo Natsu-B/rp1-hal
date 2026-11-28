@@ -21,7 +21,7 @@ const ROUNDS: u32 = 5_000;
 pub fn run(args: &[String]) -> Result<()> {
     let [mode, step] = args else {
         return Err(
-            "usage: linux-ping --test irq|poll|wake ready|rtt|late|panic|stop|fault|proc0-panic|idle|idle60|burst-idle|drop|backpressure|credit|credit-edges|load|reopen|status"
+            "usage: linux-ping --test irq|poll|wake ready|rtt|late|panic|stop|fault|proc0-panic|idle|idle60|burst-idle|drop|backpressure|credit|credit-edges|credit-drop|load|reopen|status"
                 .into(),
         );
     };
@@ -79,6 +79,9 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     if strict && step == "credit-edges" {
         return credit_edges(&fw);
+    }
+    if strict && step == "credit-drop" {
+        return credit_drop(&fw);
     }
     let mut client = fw.client("ping")?;
     match step.as_str() {
@@ -459,6 +462,63 @@ fn fence(tx: &mut rp1_linux::RingTx<u32>, rx: &mut rp1_linux::RingRx<u32>) -> Re
     Ok(())
 }
 
+fn credit_drop(fw: &Firmware) -> Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let (mut tx, mut rx) = fw.channel::<u32, u32>("channel")?.split();
+    let (mut control, mut done) = fw.channel::<u32, u32>("dropped")?.split();
+    let first = [0, 1, 2, 3, 4, 5, 6, 7];
+    let next = [8, 9, 10, 11, 12, 13, 14, 15];
+    assert_eq!(tx.send_slice(&first)?, first.len());
+    fence(&mut control, &mut done)?;
+    assert_eq!(rx.available(), 8);
+    assert_eq!(tx.send_slice(&next)?, next.len());
+    fence(&mut control, &mut done)?;
+    assert_eq!(tx.free(), 0);
+
+    let mut endpoints = [&mut tx as &mut dyn Waitable];
+    let mut wait = fw.wait_set(&mut endpoints)?;
+    let start = Instant::now();
+    let end = start + Duration::from_millis(10);
+    assert_eq!(wait.prepare(end)?, WaitState::Armed);
+    let fd = wait.as_fd().as_raw_fd();
+    let irq_control = |enable: i32| -> Result<()> {
+        // Fault injection on the lab's exclusive UIO listener.
+        let n = unsafe { libc::write(fd, std::ptr::from_ref(&enable).cast(), size_of::<i32>()) };
+        if n == size_of::<i32>() as isize {
+            Ok(())
+        } else if n < 0 {
+            Err(std::io::Error::last_os_error().into())
+        } else {
+            Err("short UIO irqcontrol write".into())
+        }
+    };
+    irq_control(0)?;
+    let result = (|| -> Result<_> {
+        assert_eq!(rx.try_recv()?, Some(0));
+        Ok(poll_armed(&mut wait, end))
+    })();
+    let elapsed = start.elapsed();
+    // Restore delivery even if the fault injection failed.
+    irq_control(1)?;
+    assert!(matches!(result?, Err(Error::NotifyLost)));
+    assert!((Duration::from_millis(10)..=Duration::from_millis(15)).contains(&elapsed));
+    drop(wait);
+    assert_eq!(tx.free(), 1);
+    assert_eq!(tx.wait_stats().deadline_checks, 1);
+    assert_eq!(tx.wait_stats().woken, 0);
+    tx.send(&16)?;
+    for value in 1..=16 {
+        rx.wait(Instant::now() + CALL_TIMEOUT)?;
+        assert_eq!(rx.try_recv()?, Some(value));
+    }
+    println!(
+        "CREDIT_DROP result=NotifyLost elapsed_ns={} ordered=1",
+        elapsed.as_nanos()
+    );
+    Ok(())
+}
+
 fn credit(fw: &Firmware) -> Result<()> {
     let (mut tx, mut rx) = fw.channel::<u32, u32>("channel")?.split();
     let (mut control, mut done) = fw.channel::<u32, u32>("dropped")?.split();
@@ -611,20 +671,18 @@ fn credit_edges(fw: &Firmware) -> Result<()> {
                 assert_eq!(unsafe { libc::poll(&mut fd, 1, 5) }, 1);
                 assert_eq!(fd.revents, libc::POLLIN);
             }
-            let before = (edge == "near-clr")
-                .then(|| -> Result<_> {
-                    control.send(&commands::SERVICE_FENCE)?;
-                    Ok((Instant::now(), doorbell.pending()))
-                })
-                .transpose()?;
+            // Exercise both orderings of the credit and data force writes.
+            let near_clear = edge == "near-clr";
+            let data_first = trial % 2 == 0;
+            let start = Instant::now();
+            if near_clear && data_first {
+                control.send(&commands::SERVICE_FENCE)?;
+            }
             assert_eq!(rx.try_recv()?, Some(first));
-            let clr = before.map(|(start, pending)| {
-                (
-                    u8::from(pending),
-                    u8::from(doorbell.pending()),
-                    start.elapsed().as_nanos(),
-                )
-            });
+            if near_clear && !data_first {
+                control.send(&commands::SERVICE_FENCE)?;
+            }
+            let clr = near_clear.then(|| (start.elapsed().as_nanos(), doorbell.pending()));
             if edge == "masked" {
                 // Keep the count unread through the credit publication.
                 std::thread::sleep(Duration::from_micros(100));
@@ -646,9 +704,11 @@ fn credit_edges(fw: &Firmware) -> Result<()> {
                 assert_eq!(rx.try_recv()?, Some(value));
             }
             assert_eq!(rx.try_recv()?, None);
-            if let Some((before, after, ns)) = clr {
+            if let Some((ns, pending)) = clr {
+                let first = if data_first { "data" } else { "credit" };
                 println!(
-                    "CREDIT_CLR trial={trial} before_pending={before} after_pending={after} ns={ns}"
+                    "CREDIT_CLR trial={trial} first={first} pending={} ns={ns}",
+                    u8::from(pending)
                 );
             }
             println!("CREDIT_EDGE edge={edge} trial={trial} ok=1");
