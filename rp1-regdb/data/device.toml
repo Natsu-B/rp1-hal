@@ -726,12 +726,12 @@ verified = "static"
 name = "PIO_0"
 number = 50
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "PIO_1"
 number = 51
 origin = "linux"
-verified = "static"
+verified = "hardware"
 [[interrupt]]
 name = "ADC_FIFO"
 number = 52

@@ -1259,6 +1259,13 @@ mod tests {
                 )
             })
             .collect();
+        assert_eq!(
+            published
+                .iter()
+                .map(|line| (line.name, line.irq))
+                .collect::<Vec<_>>(),
+            [("PIO_0", 50), ("PIO_1", 51)],
+        );
         let mask = published.iter().fold(0, |mask, line| {
             mask | (1 << (line.irq - rp1_proto::board::PIO_IRQ0 as u8))
         });
@@ -1283,11 +1290,6 @@ mod tests {
         assert!(!irq_fields(&wrong_core, 0).contains("pub PIO_"));
         assert!(!wrong_core.contains("impl sealed::Admitted for PIO_"));
 
-        if published.is_empty() {
-            assert!(!managed.contains("::rp1_hal::pio::__bind_irq"));
-            assert!(custom.validate().is_err());
-            return;
-        }
         let custom_source = render(&custom);
         let custom_checks = custom_irq_assertions(&custom);
         assert!(!custom_source.contains("::rp1_hal::pio::__bind_irq"));

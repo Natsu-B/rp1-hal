@@ -132,7 +132,8 @@ NVIC だけを見ている。proc1 で受けたのは TIMER_1・IO_BANK0・SPI0 
 | PWM0（5）、UART1（42） | 試作ファームで番号を確認。UART1 は FT230X 対向試験でハンドラへの配送も確認 | HW（試作ファームおよび `lab/uart-parity`） |
 | TIMER_3（29） | rp1-hal では `TIMER.INTF` bit 3 で Linux の MSI-X vector 29 が起きるのを確認（`host_irq`、design.md §6.2）。NVIC 29 に届いたのは試作ファームでだけ | MSI-X は HW（2026-11）、NVIC は HW（試作ファーム）。rp1-hal では NVIC を再確認していない |
 | Linux に残したブロック（上の表を立てた rp1-hal ファーム） | Linux 側で割り込みが届くのを見たのは I2C2 / I2C6 / SPI1 / ETH / USB。I2C0/3/4/5、SPI2..8、I2S は値が標準ファームと同じことまで | HW（2026-11、cold boot と再起動で各 1 回） |
-| DMA（40）、PIO（50 / 51）、CLOCKS（59）、VBUS（60） | 安全な刺激が無く未確認 | 公開しない |
+| PIO_0 / PIO_1（50 / 51） | 個別 force で両コアの pending を観測し、proc1 の ISR に配送。各線・各 SM の RX not-empty / TX not-full とタイムアウト後の再転送を確認 | HW（2026-11-28、cold boot 2 回、idle と Linux・SCMI・ネットワーク負荷、`lab/pio-irq-parity`）。公開は proc1 |
+| DMA（40）、CLOCKS（59）、VBUS（60） | 安全な刺激が無く未確認 | 公開しない |
 
 PWM0 と TIMER_3 は試作ファームでの観測を根拠に `IRQ_VERIFIED` に入れて公開している。線の配線は RP1 の
 ものなのでファームが変わっても同じはず（HYP）だが、rp1-hal で再確認するまで regdb ではこの 2 本を `static` にしてある。

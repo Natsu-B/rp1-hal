@@ -183,8 +183,11 @@ STATIC（2026-11-27）: `ProcNResources.irq` は、宣言でそのコアに割�
 | `pwm0` / `pwm1` | `PWM0: Binding<BlockIrq<48>, 5, CORE>` / `PWM1: Binding<BlockIrq<49>, 41, CORE>` |
 | `adc` と同じコアの `wait_timer` | `rp1::AdcParts` が線を所有し、ADC_FIFO ハンドラを生成 |
 | raw `adc` | `ADC_FIFO: Binding<BlockIrq<ID>, 52, CORE>` |
+| proc1 の `pio` と `wait_timer` | SM token が PIO_0 / PIO_1 の FIFO 待機 capability を持ち、ハンドラを生成 |
+| raw proc1 `pio` | `PIO_0: Binding<BlockIrq<66>, 50, 1>` / `PIO_1: Binding<BlockIrq<66>, 51, 1>` |
 
-STATIC: 生成と ELF 検査は `rp1-build::board::irq_routes()` を共用する。
+STATIC: 生成と ELF 検査は `rp1-build::board::irq_routes_for()` を共用する。
+proc1 の `custom_pio_handler = true` は両方の PIO 線をアプリに渡し、両方のハンドラを要求する。
 SPI2 と SPI5 はポーリング専用。公開する線の実機根拠と I2C / SPI の出力イネーブルは
 [割り込み](interrupts.md)を参照。
 

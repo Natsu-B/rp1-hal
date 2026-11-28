@@ -20,7 +20,7 @@ use rp1_hal::{
     timer::{Deadline, Error, Instant, Timer, WaitTimer},
 };
 use rp1_proto::board::{PIO_IRQ0, PIO_IRQ1};
-use rp1_rt::{Proc0, Proc1, entry, interrupt::Binding, shared};
+use rp1_rt::{Proc0, Proc1, entry, shared};
 
 rp1_rt::bind!();
 type PingWord = u32;
@@ -258,7 +258,7 @@ unsafe extern "C" fn irq1() {
     interrupt::<1>();
 }
 
-// Candidate routes stay out of the firmware's checked static vectors.
+// Wrap the generated dispatchers to observe ISR entry and source retirement.
 fn install_probe_vectors() {
     const VTOR: usize = 0xe000_ed08;
     const VECTOR_WORDS: usize = 80;
@@ -558,32 +558,21 @@ fn sample<const N: u8>(
     result.map(|()| (sm, pins))
 }
 
-// The fixture consumes the declaration's SM token before adding the lab binding.
-fn proof_sm<const N: u8>(_owned: UninitStateMachine<N>) -> Sm<N> {
-    unsafe { Sm::__new() }
-}
-
 #[entry(proc1)]
 fn main1(core: Proc1, mut p: rp1::Proc1Resources) -> ! {
     let watermark = unsafe { stack_watermark::paint() };
     let clocks =
         Clocks::wait_from_proc0(&core, rp1_hal::fugit::MicrosDurationU32::micros(10_000)).unwrap();
     let (pio, sms) = p.pio.split_wait(&clocks).unwrap();
-    let mut sm0 = proof_sm(sms.sm0);
-    let mut sm1 = proof_sm(sms.sm1);
-    let mut sm2 = proof_sm(sms.sm2);
-    let mut sm3 = proof_sm(sms.sm3);
+    let mut sm0 = sms.sm0;
+    let mut sm1 = sms.sm1;
+    let mut sm2 = sms.sm2;
+    let mut sm3 = sms.sm3;
     let mut pins =
         Pins::new()
             .input(p.pins.gpio22, INPUT)
             .output(p.pins.gpio13, OUTPUT, InitialOutput::Low);
     install_probe_vectors();
-    // The private fixture installs the candidate routes on proc1. Public
-    // declarations only receive a binding after the route passes this gate.
-    unsafe {
-        rp1_hal::pio::__bind_irq::<0, { PIO_IRQ0 as u8 }, 1>(Binding::new());
-        rp1_hal::pio::__bind_irq::<1, { PIO_IRQ1 as u8 }, 1>(Binding::new());
-    }
     let mut ping = p.link.open().unwrap().ping;
     let mut peer = Peer(0);
     let mut run = 0;

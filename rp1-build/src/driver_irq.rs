@@ -68,10 +68,7 @@ mod tests {
     #[test]
     fn driver_bindings_match_the_board_and_pac() {
         for driver in DRIVERS {
-            let Some(line) = driver.line(1) else {
-                assert_eq!(driver.module, "pio");
-                continue;
-            };
+            let line = driver.line(1).unwrap();
             assert_eq!(rp1_pac::INTERRUPT_NAMES[usize::from(line.irq)], line.name);
             assert!(driver.number(line).is_ok());
         }

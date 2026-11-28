@@ -11,7 +11,7 @@
 - named interrupts: 61 (IRQn 0..60)
 - reserved NVIC external interrupt slots: 3 (IRQn 61..63)
 - interrupt numbering: MSI-X source ID equals local NVIC IRQn
-- interrupt evidence: hardware-verified 21; numbered from Linux 55
+- interrupt evidence: hardware-verified 23; numbered from Linux 55
 - clock IDs: 47
 - GPIO banks: 3
 - address spaces: 2

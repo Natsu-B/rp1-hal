@@ -210,6 +210,17 @@ pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
         irq: 45,
         owner: IrqOwner::Instance(BlockId::Uart4),
     },
+    // Gate C drives real FIFO sources on both lines, with proc1 as the owner.
+    VerifiedIrq {
+        name: "PIO_0",
+        irq: rp1_proto::board::PIO_IRQ0 as u8,
+        owner: IrqOwner::Instance(BlockId::Pio),
+    },
+    VerifiedIrq {
+        name: "PIO_1",
+        irq: rp1_proto::board::PIO_IRQ1 as u8,
+        owner: IrqOwner::Instance(BlockId::Pio),
+    },
     VerifiedIrq {
         name: "ADC_FIFO",
         irq: 52,
