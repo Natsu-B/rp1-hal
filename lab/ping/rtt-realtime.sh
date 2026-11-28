@@ -1,5 +1,7 @@
 #!/bin/sh
 # Configure a dedicated CM5 boot. Run as root before starting the RTT client.
+# The stock CM5 kernel used by this fixture has no CONFIG_NO_HZ_FULL. CPU 2
+# still has a scheduler tick. FIFO priority and isolation limit runnable interference.
 set -eu
 
 cpu=/sys/devices/system/cpu

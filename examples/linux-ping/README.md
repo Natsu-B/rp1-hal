@@ -34,9 +34,6 @@ isolcpus=domain,managed_irq,2 irqaffinity=0-1,3 cpuidle.off=1
 `irqbalance` if active, moves writable IRQs and unbound workqueues off CPU 2,
 and selects the `performance` governor if CPU frequency control is exposed.
 Verify effective IRQ affinity in `/proc/irq` for the IRQs on your system.
-The stock CM5 kernel lacks `CONFIG_NO_HZ_FULL`, so the scheduler tick still
-runs on CPU 2. FIFO priority and isolation limit interference from runnable
-tasks.
 
 Launch the latency-sensitive client with `taskset -c 2 chrt -f 50 ./my-client`.
 This requires permission to set a real-time priority. In the client, lock
