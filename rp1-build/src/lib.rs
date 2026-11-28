@@ -132,6 +132,23 @@ pub fn configure_with_types(types: &[(&str, metadata::TypeInfo)]) -> Result<()> 
 
 /// Configure from an RP1 manifest path relative to the firmware package.
 pub fn configure_with_manifest(path: &Path, types: &[(&str, metadata::TypeInfo)]) -> Result<()> {
+    configure_manifest(path, types, |_| {})
+}
+
+/// Build the lab's vector delivery image without enabling link startup.
+#[cfg(feature = "internal-delivery-fixture")]
+#[doc(hidden)]
+pub fn __configure_delivery_fixture(types: &[(&str, metadata::TypeInfo)]) -> Result<()> {
+    configure_manifest(Path::new("Cargo.toml"), types, |declaration| {
+        declaration.link_wake = Some(metadata::LinkWakeProfile::DeliveryFixture);
+    })
+}
+
+fn configure_manifest(
+    path: &Path,
+    types: &[(&str, metadata::TypeInfo)],
+    setup: impl FnOnce(&mut metadata::Declaration),
+) -> Result<()> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let path = manifest_dir.join(path);
     let (name, version, mut d) = load_declaration(&path, |feature| {
@@ -139,6 +156,7 @@ pub fn configure_with_manifest(path: &Path, types: &[(&str, metadata::TypeInfo)]
         let key = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
         env::var_os(key).is_some()
     })?;
+    setup(&mut d);
     d.types = types.iter().map(|(n, t)| (n.to_string(), *t)).collect();
     d.validate()?;
     let out = PathBuf::from(env::var("OUT_DIR")?);

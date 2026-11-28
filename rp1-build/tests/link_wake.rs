@@ -161,12 +161,17 @@ fn legacy_empty_shm_area_must_still_cover_status() {
 #[test]
 fn experimental_route_respects_the_existing_ownership_checks() {
     for (cores, valid) in [
-        ("[proc1]\nhost_irq=true\ndoorbell=27", true),
-        ("[proc1]\ndoorbell=27", false),
-        ("[proc0]\nhost_irq=true\n[proc1]\nhost_irq=true", false),
-        ("[proc0]\ntimer=['ALARM3']\n[proc1]\nhost_irq=true", false),
+        ("[proc0]\nwait_timer='ALARM1'\n[proc1]\ndoorbell=27", false),
         (
-            "[proc0]\ngpio=[27]\n[proc1]\nhost_irq=true\ndoorbell=27",
+            "[proc0]\nwait_timer='ALARM1'\nhost_irq=true\n[proc1]\nhost_irq=true",
+            false,
+        ),
+        (
+            "[proc0]\nwait_timer='ALARM1'\ntimer=['ALARM3']\n[proc1]\nhost_irq=true",
+            false,
+        ),
+        (
+            "[proc0]\nwait_timer='ALARM1'\ngpio=[27]\n[proc1]\nhost_irq=true\ndoorbell=27",
             false,
         ),
         (
@@ -182,12 +187,19 @@ fn experimental_route_respects_the_existing_ownership_checks() {
             false,
         ),
     ] {
-        let profile = if cores.contains("ALARM1") {
-            "link_wake='experimental'\nstartup_doorbell=26"
-        } else {
-            "link_wake='delivery-fixture'"
-        };
-        let d: Declaration = toml::from_str(&format!("schema=2\n{profile}\n{cores}")).unwrap();
+        let d: Declaration = toml::from_str(&format!(
+            "schema=2\nlink_wake='experimental'\nstartup_doorbell=26\n{cores}"
+        ))
+        .unwrap();
         assert_eq!(d.validate().is_ok(), valid, "{cores}");
     }
+}
+
+#[test]
+fn only_the_validated_startup_profile_is_available_in_manifests() {
+    let fixture = format!("schema=2\nlink_wake='delivery-fixture'\n{DECLARATION}");
+    assert!(toml::from_str::<Declaration>(&fixture).is_err());
+    let without_startup = format!("schema=2\nlink_wake='experimental'\n{DECLARATION}");
+    let declaration: Declaration = toml::from_str(&without_startup).unwrap();
+    assert!(declaration.validate().is_err());
 }

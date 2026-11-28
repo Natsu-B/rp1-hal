@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+internal-delivery-fixture = []
+
 [dependencies]
 rp1-pac = { path = "../rp1-pac" }
 rp1-pinmux = { path = "../rp1-pinmux" }

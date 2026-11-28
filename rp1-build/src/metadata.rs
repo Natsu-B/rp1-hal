@@ -48,7 +48,9 @@ impl Default for InputDeclaration {
 #[serde(rename_all = "kebab-case")]
 pub enum LinkWakeProfile {
     Experimental,
+    #[cfg(feature = "internal-delivery-fixture")]
     #[doc(hidden)]
+    #[serde(skip_deserializing)]
     DeliveryFixture,
 }
 

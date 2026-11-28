@@ -21,11 +21,10 @@ rp1-proto = { path = "../../rp1-proto" }
 rp1-rt = { path = "../../rp1-rt" }
 
 [build-dependencies]
-rp1-build = { path = "../../rp1-build" }
+rp1-build = { path = "../../rp1-build", features = ["internal-delivery-fixture"] }
 
 [package.metadata.rp1]
 schema = 2
-link_wake = "delivery-fixture"
 
 [package.metadata.rp1.proc0]
 doorbell = 26
