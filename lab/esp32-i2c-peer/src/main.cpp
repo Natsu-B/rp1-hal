@@ -2,10 +2,16 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <driver/rmt.h>
+#include <esp_timer.h>
 #include <assert.h>
+#include "observer.h"
 
 static constexpr uint8_t ADDRESS = 0x2d;
 static constexpr int SDA_PIN = 21, SCL_PIN = 22, BOOT_GATE = 18, POWER_GATE = 19;
+// The sample mask uses these pins in order, starting at bit 0.
+static constexpr int GPIO_INPUTS[] = {4, 23, 25, 26, 27, 32, 33, 34, 35};
+static constexpr size_t GPIO_SCAN_SAMPLES = 256;
+static constexpr int64_t GPIO_SCAN_INTERVAL_US = 1000;
 static constexpr rmt_channel_t CHANNEL = RMT_CHANNEL_0;
 static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 static bool boot_active, power_active, tracing, measuring;
@@ -93,14 +99,74 @@ static void measure_status() {
       items[i].level1, items[i].duration1);
   Serial.println(); vRingbufferReturnItem(ring, items);
 }
+static void gpio_input_bias(bool pull_down) {
+  for (int pin : GPIO_INPUTS) {
+    // GPIO34/35 are input-only and have no internal pulls.
+    pinMode(pin, pull_down && pin < 34 ? INPUT_PULLDOWN : INPUT);
+    if (!pull_down) observer_float_pin(gpio_num_t(pin));
+  }
+}
+static unsigned gpio_levels() {
+  unsigned levels = 0;
+  for (size_t i = 0; i < sizeof(GPIO_INPUTS) / sizeof(GPIO_INPUTS[0]); ++i) {
+    levels |= unsigned(digitalRead(GPIO_INPUTS[i]) != LOW) << i;
+  }
+  return levels;
+}
+static void gpio_read(bool pull_down, bool scan) {
+  if (observer_active()) {
+    Serial.println("ERR observer_busy");
+    return;
+  }
+  gpio_input_bias(pull_down);
+  delayMicroseconds(1000);
+  if (!scan) {
+    const unsigned levels = gpio_levels();
+    gpio_input_bias(false);
+    Serial.print("gpio_read");
+    for (size_t i = 0; i < sizeof(GPIO_INPUTS) / sizeof(GPIO_INPUTS[0]); ++i) {
+      Serial.printf(" %d=%u", GPIO_INPUTS[i], (levels >> i) & 1u);
+    }
+    Serial.println();
+    ok();
+    return;
+  }
+
+  // Capture locally so USB/serial delays cannot miss a short pulse between host reads.
+  uint16_t samples[GPIO_SCAN_SAMPLES];
+  int64_t max_late = 0;
+  Serial.println("GPIO_SCAN_READY");
+  const int64_t start = esp_timer_get_time();
+  for (size_t i = 0; i < GPIO_SCAN_SAMPLES; ++i) {
+    const int64_t deadline = start + int64_t(i) * GPIO_SCAN_INTERVAL_US;
+    int64_t now;
+    do {
+      now = esp_timer_get_time();
+    } while (now < deadline);
+    samples[i] = gpio_levels();
+    const int64_t late = esp_timer_get_time() - deadline;
+    if (late > max_late) max_late = late;
+  }
+  gpio_input_bias(false);
+  Serial.printf("gpio_scan interval_us=%u max_late_us=%lld samples=",
+                unsigned(GPIO_SCAN_INTERVAL_US), max_late);
+  for (unsigned levels : samples) Serial.printf("%03x", levels);
+  Serial.println();
+  ok();
+}
 static void handle(String line) {
   line.trim();
-  if (line == "version") Serial.println("firmware=cm5-control-trace version=0.7.2-rp1-hal-i2c-peer");
+  if (observer_command(line)) return;
+  if (line == "version") Serial.println("firmware=cm5-control-trace version=0.8.1-rp1-hal-edge-observer");
   else if (line == "status") status();
   else if (line == "pinmap") {
     Serial.println("GPIO18 nRPIBOOT NMOS gate; GPIO19 power NMOS gate");
     Serial.println("GPIO21 SDA / GPIO22 SCL input/open-drain, RP1 GPIO2/3 I2C1");
   }
+  else if (line == "gpio_read" || line == "gpio_read none") return gpio_read(false, false);
+  else if (line == "gpio_read down") return gpio_read(true, false);
+  else if (line == "gpio_read none scan") return gpio_read(false, true);
+  else if (line == "gpio_read down scan") return gpio_read(true, true);
   else if (line == "debug_status") { status(); stats(); }
   else if (line == "i2c_stats") stats();
   else if (line == "debug_arm") tracing = true;
@@ -128,8 +194,11 @@ static void handle(String line) {
 }
 void setup() {
   gate(BOOT_GATE, false); gate(POWER_GATE, false);
-  for (int pin : {4, 23, 25, 26, 27, 32, 33}) pinMode(pin, INPUT);
+  gpio_input_bias(false);
   for (size_t i = 0; i < sizeof(reply); ++i) reply[i] = uint8_t(0x31 + i * 29);
   Serial.begin(115200); Serial.setTimeout(100); slave_start();
 }
-void loop() { if (Serial.available()) handle(Serial.readStringUntil('\n')); }
+void loop() {
+  observer_poll();
+  if (Serial.available()) handle(Serial.readStringUntil('\n'));
+}
