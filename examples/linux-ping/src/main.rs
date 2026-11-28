@@ -47,7 +47,7 @@ fn channel_echo() -> Result<()> {
     let nonce = u32::from_ne_bytes(bytes);
     // A previous timed-out run may have left a reply in the ring.
     while channel.try_recv()?.is_some() {}
-    channel.send(&nonce)?;
+    channel.send_until(&nonce, Instant::now() + CALL_TIMEOUT)?;
     let reply = channel
         .recv(Some(CALL_TIMEOUT))?
         .ok_or("channel reply timed out")?;

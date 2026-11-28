@@ -44,6 +44,44 @@ pub fn check_proc0_panic() {
     }
 }
 
+#[cfg(feature = "link-wake")]
+#[rp1_rt::cold]
+fn stop(probe: &mut Probe) -> ! {
+    rp1_rt::status::__record_stop_before_park(1);
+    probe.host_irq.pulse_terminals().expect("stop wake failed");
+    rp1_rt::status::stop(1);
+}
+
+#[cfg(feature = "link-wake")]
+#[rp1_rt::cold]
+fn report_idle(idle: Idle) {
+    let _ = rp1_hal::log!(
+        "RP1_IDLE wall_us={} wfe_us={} returns={} longest_us={}\n",
+        now().wrapping_sub(idle.started),
+        idle.slept,
+        idle.returns,
+        idle.longest
+    );
+}
+
+#[cfg(feature = "link-wake")]
+#[rp1_rt::cold]
+fn service_terminals(probe: &mut Probe) {
+    let _ = probe.host_irq.pulse_terminals();
+}
+
+#[cfg(feature = "link-wake")]
+#[rp1_rt::cold]
+fn report_channel_error(error: rp1_link::Error) {
+    let _ = rp1_hal::log!("channel stopped: {error}\n");
+}
+
+#[cfg(feature = "link-wake")]
+#[rp1_rt::cold]
+fn report_pulse_failure(failures: u32) {
+    let _ = rp1_hal::log!("PING_PULSE_FAILURES count={}\n", failures);
+}
+
 impl Probe {
     #[cfg(not(feature = "link-wake"))]
     pub fn new() -> Self {
@@ -76,11 +114,7 @@ impl Probe {
     pub fn reply(&mut self, value: u32) -> u32 {
         match value {
             #[cfg(feature = "link-wake")]
-            commands::STOP => {
-                rp1_rt::status::__record_stop_before_park(1);
-                self.host_irq.pulse_terminals().expect("stop wake failed");
-                rp1_rt::status::stop(1);
-            }
+            commands::STOP => stop(self),
             #[cfg(feature = "link-wake")]
             commands::FAULT => {
                 pause();
@@ -107,14 +141,13 @@ impl Probe {
             #[cfg(feature = "link-wake")]
             commands::IDLE_END => {
                 if let Some(idle) = self.idle.take() {
-                    let _ = rp1_hal::log!(
-                        "RP1_IDLE wall_us={} wfe_us={} returns={} longest_us={}\n",
-                        now().wrapping_sub(idle.started),
-                        idle.slept,
-                        idle.returns,
-                        idle.longest
-                    );
+                    report_idle(idle);
                 }
+                value
+            }
+            #[cfg(feature = "link-wake")]
+            commands::CONTROL_NO_IPC | commands::CONTROL_IPC => {
+                crate::control_test::request(value);
                 value
             }
             commands::COUNT => self.delayed,
@@ -195,38 +228,47 @@ fn run_wake(link: rp1::link::Proc1Link, owner: VectorOwner) -> ! {
         let progress = ping
             .serve(8, |value| probe.reply(value))
             .expect("ping serve failed");
-        let _ = probe.host_irq.pulse_terminals();
+        service_terminals(&mut probe);
+        let mut service_fence = None;
         let drop_progress = dropped_rx
-            .drain(8, |value| {
-                if value == commands::PROC0_PANIC {
+            .drain(8, |value| match value {
+                commands::PROC0_PANIC => {
                     probe.reply(value);
-                } else {
+                }
+                commands::SERVICE_FENCE => service_fence = Some(value),
+                _ => {
                     dropped_tx.push(&value).expect("drop probe reply");
                     rp1_link::flush_window();
                 }
             })
             .expect("drop probe drain");
-        if drop_progress == Progress::More {
-            continue;
-        }
+        let mut more = progress == Progress::More || drop_progress == Progress::More;
         if let Some(endpoint) = channel.as_mut() {
-            match endpoint.respond(8, |nonce| nonce) {
-                Ok(Progress::More) => continue,
+            match endpoint.respond(8, |nonce| {
+                if nonce == commands::CREDIT_RESUMED {
+                    service_fence = Some(nonce);
+                }
+                nonce
+            }) {
+                Ok(Progress::More) => more = true,
                 Ok(Progress::Idle) => {}
                 Err(error) => {
-                    let _ = rp1_hal::log!("channel stopped: {error}\n");
+                    report_channel_error(error);
                     channel = None;
                 }
             }
         }
+        if let Some(fence) = service_fence {
+            dropped_tx.send(&fence).expect("channel probe reply");
+        }
         let failures = ping.pulse_failures();
         if pulse_failures != failures {
             pulse_failures = failures;
-            let _ = rp1_hal::log!("PING_PULSE_FAILURES count={}\n", failures);
+            report_pulse_failure(failures);
             let _ = ping.retry_notification();
         }
         // Endpoints share the doorbell. Check each one before sleeping.
-        if progress == Progress::Idle {
+        if !more {
             probe.sleep();
         }
     }

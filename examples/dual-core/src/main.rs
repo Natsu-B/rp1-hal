@@ -42,19 +42,33 @@ type Nonce = u32;
 #[path = "../../../lab/ping/firmware.rs"]
 mod ping_test;
 
+#[cfg(feature = "link-wake")]
+#[path = "../../../lab/ping/control.rs"]
+mod control_test;
+
 /// proc0's heartbeat: count the tick, tell Linux (the declared `heartbeat`), arm the next one.
 #[interrupt(proc0)]
 fn TIMER_0() {
-    ALARM0.with(|alarm| {
-        alarm.clear_interrupt();
-        alarm.try_arm(next_tick()).unwrap();
-    });
+    if ALARM0.with(heartbeat_alarm) != Some(true) {
+        return;
+    }
     // The handler is the only writer: a load and a store, no read-modify-write.
     TICKS.store(TICKS.load(Relaxed) + 1, Relaxed);
     rp1_rt::status::beat();
     #[cfg(not(any(feature = "ping-poll", feature = "link-wake")))]
-    // Older Linux clients do not ring after freeing channel reply slots.
+    // Wake the legacy channel service after old clients free reply slots.
     rp1_rt::send_event();
+}
+
+#[isram]
+fn heartbeat_alarm(alarm: &mut Alarm<0>) -> bool {
+    alarm.clear_interrupt();
+    #[cfg(feature = "link-wake")]
+    if control_test::tick(alarm) {
+        return false;
+    }
+    alarm.try_arm(next_tick()).unwrap();
+    true
 }
 
 fn next_tick() -> TimerInstantU32<1_000_000> {
@@ -113,11 +127,16 @@ fn main0(mut core: Proc0, mut p: rp1::Proc0Resources) -> ! {
 
     let mut rx = VALUES.consumer(&mut core);
     let mut logged = 0;
+    #[cfg(feature = "link-wake")]
+    let mut control_mode = 0;
     #[cfg(feature = "ping-poll")]
     let mut channel = Some(p.link.open().expect("channel open failed").channel);
     loop {
         #[cfg(feature = "link-wake")]
-        ping_test::check_proc0_panic();
+        {
+            ping_test::check_proc0_panic();
+            control_test::service(&mut control_mode);
+        }
         #[cfg(feature = "ping-poll")]
         if let Some(endpoint) = channel.as_mut()
             && let Err(error) = endpoint.respond(1, |nonce| nonce)
