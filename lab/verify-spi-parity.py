@@ -33,7 +33,11 @@ def verify_uart(text):
         require(match is not None, f"expected {pattern!r}, got {line!r}")
         return tuple(map(int, match.groups()))
 
-    read(r"SPI_PARITY_READY")
+    first = next(records, "")
+    if re.fullmatch(r"SPI_INSTANCE instance=[013]", first):
+        read(r"SPI_PARITY_READY")
+    else:
+        require(first == "SPI_PARITY_READY", f"unexpected first SPI record {first!r}")
     counts = []
     depths = set()
     for hz in (1_000_000, 10_000_000):
