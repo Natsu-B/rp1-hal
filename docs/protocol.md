@@ -529,3 +529,26 @@ arm より先に返信を公開した場合にもこの確認を起こす。Linu
 ticket を確認して返信を取得する。期限時には count がなくても返信を取得できる。
 期限切れの後や shared vector 上では、遅れて届いた count が次の待機をデータなしで一度だけ起こす場合がある。
 通知できる owner は終端状態も同じ vector で伝える。Linux は起床時と期限時に検証する。
+
+### 10.6 Full と credit
+
+**STATIC.** `CREDIT_WAKE`（bit 2）を合意した IRQ reject ring では、書き手が
+Full を観測したときだけ credit を arm し、readback の後に tail を読み直す。
+読み手は tail を進めた後、同じ窓の readback を済ませてから arm を読み、
+新しい奇数 ticket があれば credit seq を公開して通知する。
+
+| ring | tail と seq の readback | 通知 |
+|---|---|---|
+| RP1 → Linux | Linux の BAR2 SRAM | RP1 の data doorbell |
+| Linux → RP1 | RP1 の outbound DDR | owner の MSI-X 29 |
+
+Linux は `RingTx::wait_writable(end)` または `send_until(&value, end)` で待つ。
+RX と credit は同じ listener と `WaitSet` を使う。RP1 の単独 wait は core-local
+`WaitContext` と絶対期限を借りる。明示 poll と overwrite ring は credit を使わない。
+
+RP1 の `respond` と `serve` は reply 枠を予約してから最大 8 件を処理する。
+reply が Full なら credit、request が空なら RX を待つ。doorbell ISR は force の
+CLR/readback と SEV を行い、thread が全 endpoint を再確認する。RPC client は
+未回収 request ごとに一つの reply 枠を残す。期限後に届いた返信は次の呼出しで順に
+回収し、期限切れの request を再送しない。実験用 ring DMA は §10.3 の排出を
+証明できるまで strict endpoint では使えない。

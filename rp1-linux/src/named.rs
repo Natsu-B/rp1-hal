@@ -36,6 +36,16 @@ impl Firmware {
     ) -> Result<(Channel<Tx, Rx>, u32, bool)> {
         let session = self.session()?;
         let (down, up) = pair::<Tx, Rx>(Note::parse(&self.note)?, name, rpc)?;
+        let legacy_space_notify =
+            !rpc && up.notify_irq && !up.overwrite && session.strict.is_none();
+        if !rpc
+            && up.notify_irq
+            && !up.overwrite
+            && !legacy_space_notify
+            && !crate::credit::enabled(&session)
+        {
+            return Err(Error::Unsupported);
+        }
         let up_map = map(&up)?;
         let down_map = map(&down)?;
 
@@ -49,12 +59,11 @@ impl Firmware {
         if direct_rpc {
             crate::strict::retire_rpc_wait(&session, up.sram_offset as usize)?;
         }
-        let mut rx = Self::attach_rx(up, up_map, session.clone())?;
+        let mut rx = self.attach_rx(up, up_map, session.clone())?;
         let tx = self.attach_tx(down, down_map, session, direct_rpc)?;
-        if !rpc && up.notify_irq && !up.overwrite {
+        if legacy_space_notify {
             rx.space_doorbell.clone_from(&tx.doorbell);
-            // A previous reader may have exited between publishing tail and the IRQ.
-            rx.notify_space();
+            rx.notify_space()?;
         }
         Ok((Channel { tx, rx }, down.depth, direct_rpc))
     }
@@ -108,6 +117,16 @@ impl<Tx: Message, Rx: Message> Channel<Tx, Rx> {
     /// Publish one message.
     pub fn send(&mut self, value: &Tx) -> Result<()> {
         self.tx.send(value)
+    }
+
+    /// Wait for one writable slot until an absolute deadline.
+    pub fn wait_writable(&mut self, end: Instant) -> Result<()> {
+        self.tx.wait_writable(end)
+    }
+
+    /// Publish one message, waiting for space until an absolute deadline.
+    pub fn send_until(&mut self, value: &Tx, end: Instant) -> Result<()> {
+        self.tx.send_until(value, end)
     }
 
     /// Publish a batch, returning the number written.
@@ -345,6 +364,9 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
             let tail = self.rx.tail();
             let reply = self.rx.inner.pop()?;
             self.rx.session.check_header()?;
+            if reply.is_some() {
+                self.rx.notify_space()?;
+            }
             if tail == index || reply.is_none() {
                 return Ok(reply);
             }
@@ -369,6 +391,9 @@ impl<Req: Message, Rep: Message> Client<Req, Rep> {
                 // The synchronous IRQ wait just checked link, terminal and generation.
                 let reply = self.rx.inner.pop()?;
                 self.rx.session.check_header()?;
+                if reply.is_some() {
+                    self.rx.notify_space()?;
+                }
                 reply
             } else {
                 self.rx.try_recv()?

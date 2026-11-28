@@ -155,6 +155,18 @@ impl<'timer> WaitContext<'timer> {
         self.wait_checked(end.into(), probe)
     }
 
+    /// Like [`Self::wait_until`], with a flag identifying the final deadline probe.
+    /// Use it when a ready condition alone cannot establish timely delivery.
+    pub fn wait_until_with_final<T>(
+        &mut self,
+        end: Deadline,
+        probe: impl FnMut(bool) -> Option<T>,
+    ) -> Result<T, Error> {
+        self.check_alarm()?;
+        end.check(Timer::new().now())?;
+        self.wait_accepted(end, probe)
+    }
+
     pub fn delay(&mut self, duration: Duration) -> Result<(), Error> {
         self.delay_us(u64::from(duration.ticks()))
     }

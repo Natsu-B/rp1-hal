@@ -546,6 +546,10 @@ pub(crate) fn wake_session() -> Result<Session, SessionError> {
     )
 }
 
+fn credit_wake(r: ShmRegion<'_>) -> bool {
+    !r.overwrite && read_link(mailbox::ACCEPTED_CAPS) & rp1_proto::wake::CREDIT_WAKE != 0
+}
+
 /// # Safety
 /// As for [`ring_tx`]. Called only for the v3 IRQ owner's ring.
 #[inline(always)]
@@ -562,7 +566,7 @@ pub unsafe fn ring_tx_v3<T: Message>(
             overflow(r),
         )
     }?;
-    let notify = unsafe { crate::notify::TicketIrq::attach(ddr(r), sram(r)) }?;
+    let notify = unsafe { crate::notify::TicketIrq::attach(ddr(r), sram(r), credit_wake(r)) }?;
     Ok(RingTx::new(ring, notify))
 }
 
@@ -591,7 +595,7 @@ unsafe fn attach_rx_v3<T: Message, const PIN: u8, const CORE: u8>(
     direct: bool,
 ) -> Result<RingRx<T, crate::notify::TicketDoorbell<PIN, CORE>>, Error> {
     let ring = unsafe {
-        shm::RingRx::attach(
+        shm::RingRx::attach_ticketed(
             sram(r),
             r.sram_len as usize,
             ddr(r),
@@ -600,7 +604,8 @@ unsafe fn attach_rx_v3<T: Message, const PIN: u8, const CORE: u8>(
             overflow(r),
         )
     }?;
-    let wake = unsafe { crate::notify::TicketDoorbell::attach(sram(r), ddr(r), direct) }?;
+    let wake =
+        unsafe { crate::notify::TicketDoorbell::attach(sram(r), ddr(r), direct, credit_wake(r)) }?;
     Ok(RingRx::open(ring, wake))
 }
 

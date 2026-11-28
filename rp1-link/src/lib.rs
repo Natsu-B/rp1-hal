@@ -13,6 +13,7 @@ mod ring;
 #[cfg(feature = "unstable-ring-dma")]
 pub mod ring_dma;
 mod rpc;
+mod wait;
 
 #[doc(hidden)]
 pub mod generated;
@@ -25,6 +26,7 @@ pub use rp1_proto::{
     shm::{Block, BlockReader, BlockWriter, Overflow, Progress},
 };
 pub use rpc::Server;
+pub use wait::{WaitError, Waitable, wait_any};
 
 /// Failure to attach the owning core's shared-memory endpoints.
 #[derive(Debug)]

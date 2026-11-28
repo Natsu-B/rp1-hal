@@ -35,20 +35,18 @@ impl<Tx: Message, Rx: Message, N: Notify, W: Wake> Channel<Tx, Rx, N, W> {
         self.rx.drain(max, f)
     }
 
-    /// Reply to up to `max` requests, leaving a request queued when there is no reply space.
+    /// Reply to at most eight requests, bounded by `max` (zero counts as one).
     ///
-    /// With two reject-mode IRQ rings, a current Linux named-channel reader rings the
-    /// doorbell after releasing reply slots. [`Progress::Idle`] then means
-    /// it is safe to sleep for either a request or reply space. For polling or legacy
-    /// peers, arrange a retry before sleeping indefinitely. A zero budget counts as one.
+    /// Strict IRQ service arms credit when replies are full, or RX when requests
+    /// are empty. Check all endpoints sharing the doorbell before sleeping.
     pub fn respond(
         &mut self,
         max: u32,
         mut handle: impl FnMut(Rx) -> Tx,
     ) -> Result<Progress, Error> {
-        crate::ring::window_ready()?;
-        let budget = self.tx.ring.writable().min(max.max(1));
+        let budget = self.tx.reserve(max.clamp(1, 8))?;
         if budget == 0 {
+            self.rx.cancel_receive()?;
             return Ok(Progress::Idle);
         }
         self.rx

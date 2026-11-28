@@ -8,7 +8,7 @@ use crate::{
     Error,
     note::{ShmKind, ShmRegion, Writer},
     shm::{
-        CONTROL_SIZE, HEAD, Header, HeaderInit, TAIL,
+        CONTROL_SIZE, HEAD, Header, HeaderInit, Overflow, RingRx, RingTx, TAIL,
         access::{ld, st},
         wake::*,
     },
@@ -222,61 +222,72 @@ fn mailbox_rejects_stale_boots_and_results_and_capability_mismatches() {
 
 #[test]
 fn stale_handles_never_store_and_reopen_advances_the_arm() {
-    let mut data = mem::<CONTROL_SIZE>();
-    let mut ctrl = mem::<CONTROL_SIZE>();
-    let base = ctrl.0.as_mut_ptr();
-    let words = unsafe { Words::rx(data.0.as_mut_ptr(), base) };
-    let session = Session::new(2, 2).unwrap();
-    let current = core::cell::Cell::new(Ok(session));
-    let live = || current.get();
-    {
+    for credit in [false, true] {
+        let mut data = mem::<CONTROL_SIZE>();
+        let mut ctrl = mem::<CONTROL_SIZE>();
+        let base = ctrl.0.as_mut_ptr();
+        let data_ptr = data.0.as_mut_ptr();
+        let (words, arm, offset) = if credit {
+            (
+                unsafe { Words::credit(data_ptr, base) },
+                data_ptr,
+                CREDIT_WAIT,
+            )
+        } else {
+            (unsafe { Words::rx(data_ptr, base) }, base, RX_WAIT)
+        };
+        let session = Session::new(2, 2).unwrap();
+        let current = core::cell::Cell::new(Ok(session));
+        let live = || current.get();
+        {
+            let mut waiter = unsafe { words.waiter(session, live) }.unwrap();
+            let mut publisher = unsafe { words.publisher(session, live) }.unwrap();
+            waiter.arm().unwrap();
+            assert!(publisher.publish(|| {}).unwrap());
+            assert!(waiter.acknowledge().unwrap());
+            assert!(!publisher.publish(|| {}).unwrap());
+            // The owner exits before releasing the arm.
+        }
         let mut waiter = unsafe { words.waiter(session, live) }.unwrap();
         let mut publisher = unsafe { words.publisher(session, live) }.unwrap();
+        assert!(!waiter.pending().unwrap());
+        assert!(!waiter.acknowledge().unwrap());
+        assert!(!waiter.cancel().unwrap());
         waiter.arm().unwrap();
+        assert_eq!(unsafe { ld(arm, offset) }, 3);
+        assert!(!waiter.pending().unwrap());
         assert!(publisher.publish(|| {}).unwrap());
-        assert!(waiter.acknowledge().unwrap());
-        assert!(!publisher.publish(|| {}).unwrap());
-        // The owner exits before releasing the arm.
-    }
-    let mut waiter = unsafe { words.waiter(session, live) }.unwrap();
-    let mut publisher = unsafe { words.publisher(session, live) }.unwrap();
-    assert!(!waiter.pending().unwrap());
-    assert!(!waiter.acknowledge().unwrap());
-    assert!(!waiter.cancel().unwrap());
-    waiter.arm().unwrap();
-    assert_eq!(unsafe { ld(base, RX_WAIT) }, 3);
-    assert!(!waiter.pending().unwrap());
-    assert!(publisher.publish(|| {}).unwrap());
-    assert!(waiter.pending().unwrap());
-    assert!(waiter.cancel().unwrap());
-    assert!(!waiter.pending().unwrap());
-    waiter.arm().unwrap();
+        assert!(waiter.pending().unwrap());
+        assert!(waiter.cancel().unwrap());
+        assert!(!waiter.pending().unwrap());
+        waiter.arm().unwrap();
 
-    let old = (data.0, ctrl.0);
-    for replacement in [
-        Session::new(4, 2), // boot changed while SHM generation is the same
-        Session::new(2, 4),
-        Session::new(2, 3), // initialization in progress
-    ] {
-        current.set(replacement);
-        assert_eq!(
-            publisher.publish(|| panic!("stale readback")),
-            Err(SessionError::Restarted)
-        );
-        assert_eq!(
-            publisher.needs_recovery_kick(),
-            Err(SessionError::Restarted)
-        );
-        assert_eq!(waiter.arm(), Err(SessionError::Restarted));
-        assert_eq!(waiter.pending(), Err(SessionError::Restarted));
-        assert_eq!(waiter.acknowledge(), Err(SessionError::Restarted));
-        assert_eq!(
-            waiter.acknowledge_and_cancel(),
-            Err(SessionError::Restarted)
-        );
-        assert_eq!(waiter.cancel(), Err(SessionError::Restarted));
+        let old = (data.0, ctrl.0);
+        for replacement in [
+            Session::new(4, 2), // boot changed while SHM generation is the same
+            Session::new(2, 4),
+            Session::new(2, 3), // initialization in progress
+        ] {
+            current.set(replacement);
+            assert_eq!(
+                publisher.publish(|| panic!("stale readback")),
+                Err(SessionError::Restarted)
+            );
+            assert_eq!(
+                publisher.needs_recovery_kick(),
+                Err(SessionError::Restarted)
+            );
+            assert_eq!(waiter.arm(), Err(SessionError::Restarted));
+            assert_eq!(waiter.pending(), Err(SessionError::Restarted));
+            assert_eq!(waiter.acknowledge(), Err(SessionError::Restarted));
+            assert_eq!(
+                waiter.acknowledge_and_cancel(),
+                Err(SessionError::Restarted)
+            );
+            assert_eq!(waiter.cancel(), Err(SessionError::Restarted));
+        }
+        assert_eq!((data.0, ctrl.0), old);
     }
-    assert_eq!((data.0, ctrl.0), old);
 }
 
 #[test]
@@ -434,21 +445,32 @@ fn invalidation_drains_posted_stores_before_reusing_the_mailbox() {
 fn stalled(credit: bool, arm_flush: bool, publish_flush: bool) -> usize {
     let mut stalls = 0;
     let runs = explore(|choose| {
-        let mut data = mem::<CONTROL_SIZE>();
-        let mut data_shadow = mem::<CONTROL_SIZE>();
+        const DATA: usize = CONTROL_SIZE + 16;
+        let mut data = mem::<DATA>();
+        let mut data_shadow = mem::<DATA>();
         let mut ctrl = mem::<CONTROL_SIZE>();
         let mut ctrl_shadow = mem::<CONTROL_SIZE>();
         let d = data.0.as_mut_ptr() as usize;
         let ds = data_shadow.0.as_mut_ptr() as usize;
         let c = ctrl.0.as_mut_ptr() as usize;
         let cs = ctrl_shadow.0.as_mut_ptr() as usize;
-        let paths = [
-            Path::new(
-                usize::from(credit),
-                ds as *const u8,
-                d as *const u8,
+        let mut writer = credit.then(|| unsafe {
+            RingTx::attach(
+                ds as *mut u8,
+                DATA,
+                c as *const u8,
                 CONTROL_SIZE,
-            ),
+                1,
+                Overflow::Reject,
+            )
+            .unwrap()
+        });
+        if let Some(writer) = &mut writer {
+            writer.push(&42u32).unwrap();
+            data.0 = data_shadow.0;
+        }
+        let paths = [
+            Path::new(usize::from(credit), ds as *const u8, d as *const u8, DATA),
             Path::new(
                 usize::from(!credit),
                 cs as *const u8,
@@ -479,15 +501,35 @@ fn stalled(credit: bool, arm_flush: bool, publish_flush: bool) -> usize {
                         words(data as *mut u8, ctrl as *mut u8).publisher(live().unwrap(), live)
                     }
                     .unwrap();
-                    unsafe { st(posted as *mut u8, commit, 1) };
-                    if publisher
-                        .publish(|| {
-                            if publish_flush {
-                                let _ = unsafe { ld(posted as *const u8, commit) };
-                            }
-                        })
-                        .unwrap()
-                    {
+                    let notify = if credit {
+                        let mut rx = unsafe {
+                            RingRx::<u32>::attach_ticketed(
+                                data as *const u8,
+                                DATA,
+                                ctrl as *mut u8,
+                                CONTROL_SIZE,
+                                1,
+                                Overflow::Reject,
+                            )
+                            .unwrap()
+                        };
+                        assert_eq!(rx.pop().unwrap(), Some(42));
+                        if publish_flush {
+                            rx.publish_credit(&mut publisher).unwrap()
+                        } else {
+                            publisher.publish(|| {}).unwrap()
+                        }
+                    } else {
+                        unsafe { st(posted as *mut u8, commit, 1) };
+                        publisher
+                            .publish(|| {
+                                if publish_flush {
+                                    let _ = unsafe { ld(posted as *const u8, commit) };
+                                }
+                            })
+                            .unwrap()
+                    };
+                    if notify {
                         sched.raise(0);
                     }
                 });
@@ -504,7 +546,13 @@ fn stalled(credit: bool, arm_flush: bool, publish_flush: bool) -> usize {
                     } else {
                         unsafe { st(arm_base as *mut u8, arm, 1) };
                     }
-                    (unsafe { ld(visible as *const u8, commit) != 0 }) || sched.wait_doorbell(1)
+                    let ready = || {
+                        writer.as_ref().map_or_else(
+                            || unsafe { ld(visible as *const u8, commit) != 0 },
+                            |writer| writer.free() == 1,
+                        )
+                    };
+                    ready() || (sched.wait_doorbell(1) && ready())
                 })
             });
             sched.drive(choose, &mut std::vec::Vec::new(), 3);
@@ -523,4 +571,33 @@ fn both_posted_readbacks_close_publish_vs_arm() {
         assert!(stalled(credit, false, true) > 0);
         assert!(stalled(credit, true, false) > 0);
     }
+}
+
+#[test]
+fn credit_seq_readback_makes_the_ticket_visible_before_notification() {
+    let mut data = mem::<CONTROL_SIZE>();
+    let mut ctrl = mem::<CONTROL_SIZE>();
+    let mut posted = mem::<CONTROL_SIZE>();
+    let data = data.0.as_mut_ptr() as usize;
+    let real = ctrl.0.as_mut_ptr() as usize;
+    let shadow = posted.0.as_mut_ptr() as usize;
+    let path = Path::new(0, shadow as *const u8, real as *const u8, CONTROL_SIZE);
+    let sched = Sched::new(1, std::vec![path]);
+    let scope = Session::new(2, 4).unwrap();
+    let words = unsafe { Words::credit(data as *mut u8, real as *mut u8) };
+    let mut waiter = unsafe { words.waiter(scope, || Ok(scope)) }.unwrap();
+    waiter.arm().unwrap();
+
+    std::thread::scope(|thread| {
+        thread.spawn(|| {
+            sched.side(0, || {
+                let words = unsafe { Words::credit(data as *mut u8, shadow as *mut u8) };
+                let mut publisher = unsafe { words.publisher(scope, || Ok(scope)) }.unwrap();
+                assert!(publisher.publish(|| {}).unwrap());
+            });
+        });
+        sched.drive(|_| 0, &mut std::vec::Vec::new(), 0);
+    });
+    assert!(waiter.acknowledge_and_cancel().is_ok());
+    assert_eq!(unsafe { ld(data as *const u8, CREDIT_ACK) }, 1);
 }

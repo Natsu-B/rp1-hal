@@ -374,7 +374,11 @@ mod direct {
                     .1;
             region.sram_offset += 0x100;
             let session = direct.rig.fw.session().unwrap();
-            let mut rx = Firmware::attach_rx::<u32>(region, channel, session.clone()).unwrap();
+            let mut rx = direct
+                .rig
+                .fw
+                .attach_rx::<u32>(region, channel, session.clone())
+                .unwrap();
             let mut ends: [&mut dyn Waitable; 1] = [&mut rx];
             let mut wait = direct.rig.fw.wait_set(&mut ends).unwrap();
             assert_eq!(

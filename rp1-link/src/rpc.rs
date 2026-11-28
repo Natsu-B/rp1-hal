@@ -11,10 +11,10 @@ use crate::{
 /// }
 /// ```
 pub struct Server<Req, Rep, N = Poll, W = Poll> {
-    tx: RingTx<Rep, N>,
-    rx: RingRx<Req, W>,
-    failed: bool,
-    reply_requested: bool,
+    pub(crate) tx: RingTx<Rep, N>,
+    pub(crate) rx: RingRx<Req, W>,
+    pub(crate) failed: bool,
+    pub(crate) reply_requested: bool,
 }
 
 impl<Req: Message, Rep: Message, N: Notify, W: Wake> Server<Req, Rep, N, W> {
@@ -27,7 +27,7 @@ impl<Req: Message, Rep: Message, N: Notify, W: Wake> Server<Req, Rep, N, W> {
         }
     }
 
-    /// Reply to up to `max` requests in order (`0` counts as one).
+    /// Reply to at most eight requests in order, bounded by `max` (zero counts as one).
     ///
     /// Readiness and notification follow [`RingRx::drain`]. If publishing a reply fails, later
     /// calls return [`Error::Reset`] because request and reply indices can no longer match.
@@ -39,12 +39,20 @@ impl<Req: Message, Rep: Message, N: Notify, W: Wake> Server<Req, Rep, N, W> {
         if self.failed {
             return Err(Error::Reset);
         }
-        let progress = self.rx.try_drain_requests(max, |request, notify| {
-            let result = self.tx.send_reply(&handle(request), notify);
-            self.failed = result.is_err();
-            self.reply_requested = notify == Some(true);
-            result
-        })?;
+        // Each unreclaimed request reserves a reply index. Verify space
+        // before consuming even if a caller does not honor that invariant.
+        let budget = self.tx.reserve(max.clamp(1, 8))?;
+        let progress = if budget == 0 {
+            self.rx.cancel_receive()?;
+            Progress::Idle
+        } else {
+            self.rx.try_drain_requests(budget, |request, notify| {
+                let result = self.tx.send_reply(&handle(request), notify);
+                self.failed = result.is_err();
+                self.reply_requested = notify == Some(true);
+                result
+            })?
+        };
         // The host can arm after the reply. Its second force runs this check
         // even if there are no requests left to drain.
         if self.reply_requested {
@@ -63,7 +71,7 @@ impl<Req, Rep, W> Server<Req, Rep, crate::notify::TicketIrq, W> {
     /// Retry a delivery whose local pulse failed. Call from the vector owner
     /// while its SHM window is live, before blocking or after another event.
     pub fn retry_notification(&mut self) -> Result<bool, Error> {
-        crate::ring::window_ready()?;
+        crate::notify::sealed::Notify::check(&self.tx.notify, Token(()))?;
         Ok(self.tx.notify.retry())
     }
 }

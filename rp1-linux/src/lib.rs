@@ -14,6 +14,7 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
+mod credit;
 mod error;
 mod named;
 mod notify;
@@ -423,16 +424,22 @@ impl Firmware {
     pub fn ring_rx<T: Message>(&self, name: &str) -> Result<RingRx<T>> {
         let session = self.session()?;
         let r = self.ring::<T>(name, ShmKind::RingToLinux)?;
-        Self::attach_rx(r, Self::map(&r)?, session)
+        self.attach_rx(r, Self::map(&r)?, session)
     }
 
     fn attach_rx<T: Message>(
+        &self,
         r: ShmRegion<'_>,
         map: Rc<Mapping>,
         session: Rc<Session>,
     ) -> Result<RingRx<T>> {
+        let attach = if r.notify_irq && session.strict.is_some() {
+            shm::RingRx::attach_ticketed
+        } else {
+            shm::RingRx::attach
+        };
         let inner = unsafe {
-            shm::RingRx::attach(
+            attach(
                 map.ptr(),
                 map.len,
                 session.link.ptr().add(r.sram_offset as usize),
@@ -441,16 +448,30 @@ impl Firmware {
                 overflow(r.overwrite),
             )
         }?;
-        Ok(RingRx {
+        let offset = r.sram_offset as usize;
+        let ctrl = unsafe { session.link.ptr().add(offset) };
+        let mut rx = RingRx {
             inner,
             irq: (r.notify_irq && session.strict.is_none())
                 .then(Irq::open)
                 .transpose()?,
             ticket: (r.notify_irq && session.strict.is_some())
-                .then(|| strict::ring_waiter(&session, &map, r.sram_offset as usize))
+                .then(|| {
+                    strict::ring_waiter(&session, unsafe { shm::wake::Words::rx(map.ptr(), ctrl) })
+                })
                 .transpose()?,
             space_doorbell: None,
-            ctrl_offset: r.sram_offset as usize,
+            credit: if r.notify_irq && !r.overwrite && credit::enabled(&session) {
+                let words = unsafe { shm::wake::Words::credit(map.ptr(), ctrl) };
+                Some(credit::Publisher::new(
+                    &session,
+                    words,
+                    self.doorbell(r.core - 1)?,
+                )?)
+            } else {
+                None
+            },
+            ctrl_offset: offset,
             peer: Peer {
                 link: session.link.clone(),
                 core: r.core - 1,
@@ -459,7 +480,14 @@ impl Firmware {
             stats: WaitStats::default(),
             _map: map,
             session,
-        })
+        };
+        if rx.inner.available() < r.depth
+            && let Some(credit) = &mut rx.credit
+        {
+            // An exclusive reopen may inherit a tail whose notification did not finish.
+            credit.reopen(&rx.inner)?;
+        }
+        Ok(rx)
     }
     /// The Linux -> RP1 ring `name`.
     pub fn ring_tx<T: Message>(&self, name: &str) -> Result<RingTx<T>> {
@@ -489,9 +517,27 @@ impl Firmware {
             .notify_irq
             .then(|| self.doorbell(r.core - 1))
             .transpose()?;
+        let offset = r.sram_offset as usize;
+        let data = unsafe { session.link.ptr().add(offset) };
         let mut tx = RingTx {
+            credit: (r.notify_irq && !r.overwrite && credit::enabled(&session))
+                .then(|| {
+                    strict::ring_waiter(&session, unsafe {
+                        shm::wake::Words::credit(data, map.ptr())
+                    })
+                })
+                .transpose()?,
+            poll: !r.notify_irq,
+            core: r.core - 1,
+            stats: WaitStats::default(),
             publisher: (doorbell.is_some() && session.strict.is_some())
-                .then(|| strict::RingPublisher::new(&session, &map, r.sram_offset as usize))
+                .then(|| {
+                    strict::RingPublisher::new(
+                        &session,
+                        unsafe { shm::wake::Words::rx(data, map.ptr()) },
+                        offset,
+                    )
+                })
                 .transpose()?,
             inner,
             doorbell,
@@ -575,8 +621,12 @@ impl Firmware {
             for endpoint in endpoints.iter() {
                 endpoint.check()?;
             }
-            let (mut waiters, irqs): (Vec<_>, Vec<_>) =
-                endpoints.iter_mut().map(|e| e.parts()).unzip();
+            let (mut waiters, irqs): (Vec<_>, Vec<_>) = endpoints
+                .iter_mut()
+                .map(|e| e.parts().ok_or(Error::Unsupported))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .unzip();
             if deadline.is_some_and(|d| Instant::now() >= d) {
                 return Ok(waiters.iter().any(|w| w.available() != 0));
             }
@@ -707,8 +757,9 @@ pub struct RingRx<T> {
     /// `notify = "irq"`: the interrupt its writer raises.
     irq: Option<Irq>,
     ticket: Option<strict::Ticket<proto::wake::Session>>,
-    /// Named IRQ channel: notify the writer when the reader releases reply slots.
+    /// Legacy named IRQ channel: wake after releasing reply slots.
     space_doorbell: Option<Doorbell>,
+    credit: Option<credit::Publisher>,
     ctrl_offset: usize,
     peer: Peer,
     spin: Duration,
@@ -720,12 +771,12 @@ impl<T: Message> RingRx<T> {
     /// The oldest message, without waiting.
     pub fn try_recv(&mut self) -> Result<Option<T>> {
         self.session.check()?;
-        let r = self.inner.pop()?;
+        let value = self.inner.pop()?;
         self.session.check()?;
-        if r.is_some() {
-            self.notify_space();
+        if value.is_some() {
+            self.notify_space()?;
         }
-        Ok(r)
+        Ok(value)
     }
     /// The oldest message, waiting up to `timeout` for one (`None`: no deadline). `Ok(None)`
     /// when the deadline passed first.
@@ -743,13 +794,8 @@ impl<T: Message> RingRx<T> {
     /// As many messages as fit in `out`, without waiting: one `tail` store per call
     /// (`rp1_proto::shm::RingRx::pop_into`).
     pub fn try_recv_into(&mut self, out: &mut [T]) -> Result<usize> {
-        self.session.check()?;
-        let n = self.inner.pop_into(out)?;
-        self.session.check()?;
-        if n != 0 {
-            self.notify_space();
-        }
-        Ok(n)
+        let (n, error) = self.try_recv_into_report(out);
+        error.map_or(Ok(n), Err)
     }
     /// [`RingRx::try_recv_into`], waiting up to `timeout` for the first message (`None`: no
     /// deadline). `Ok(0)` when the deadline passed first.
@@ -768,29 +814,23 @@ impl<T: Message> RingRx<T> {
             return (0, Some(e));
         }
         let (n, error) = self.inner.pop_into_report(out);
-        let result = error
-            .map(Error::from)
-            .or_else(|| self.session.check().err());
-        if n != 0
-            && self.space_doorbell.is_some()
-            && (result.is_none() || self.session.check().is_ok())
-        {
-            self.notify_space();
-        }
-        (n, result)
+        let live = self.session.check();
+        let wake = if n != 0 && live.is_ok() {
+            self.notify_space()
+        } else {
+            Ok(())
+        };
+        (n, error.map(Error::from).or(live.err()).or(wake.err()))
     }
 
-    fn notify_space(&self) {
-        if let Some(doorbell) = &self.space_doorbell {
-            // Order the posted tail store before setting the force bit.
+    fn notify_space(&mut self) -> Result<()> {
+        if let Some(credit) = &mut self.credit {
+            credit.publish(&self.inner)?;
+        } else if let Some(doorbell) = &self.space_doorbell {
             barrier();
-            if self.session.strict.is_some() {
-                let _ = self.session.link.read(self.ctrl_offset + shm::TAIL);
-                doorbell.ring_flushed();
-            } else {
-                doorbell.ring();
-            }
+            doorbell.ring();
         }
+        Ok(())
     }
     /// Newest published slot and its index, without consuming it (reject rings only).
     pub fn newest(&self) -> Result<Option<(u32, Result<T>)>> {
@@ -908,8 +948,8 @@ mod sealed {
         /// The session and the serving core are still up.
         fn check(&self) -> crate::Result<()>;
         /// The ring's wait handle and, for an irq ring, its interrupt.
-        fn parts(&mut self) -> (&mut dyn Waiter, Option<&mut crate::notify::Irq>);
-        fn strict_receiver(&self, session: *const ()) -> bool;
+        fn parts(&mut self) -> Option<(&mut dyn Waiter, Option<&mut crate::notify::Irq>)>;
+        fn strict_endpoint(&self, session: *const ()) -> bool;
         fn core(&self) -> u8;
         fn available(&self) -> u32;
         fn arm(&mut self) -> crate::Result<()>;
@@ -919,7 +959,7 @@ mod sealed {
         fn stats(&mut self) -> &mut crate::WaitStats;
     }
 }
-/// An endpoint [`Firmware::wait_any`] waits on: a [`RingRx`] of any message type.
+/// An endpoint [`Firmware::wait_any`] waits on for messages or writable space.
 pub trait Waitable: sealed::Waitable {}
 impl<T: Message> Waitable for RingRx<T> {}
 impl<T: Message> sealed::Waitable for RingRx<T> {
@@ -927,10 +967,10 @@ impl<T: Message> sealed::Waitable for RingRx<T> {
         self.session.check()?;
         self.peer.check()
     }
-    fn parts(&mut self) -> (&mut dyn shm::Waiter, Option<&mut Irq>) {
-        (&mut self.inner, self.irq.as_mut())
+    fn parts(&mut self) -> Option<(&mut dyn shm::Waiter, Option<&mut Irq>)> {
+        Some((&mut self.inner, self.irq.as_mut()))
     }
-    fn strict_receiver(&self, session: *const ()) -> bool {
+    fn strict_endpoint(&self, session: *const ()) -> bool {
         self.ticket.is_some() && Rc::as_ptr(&self.session).cast() == session
     }
     fn core(&self) -> u8 {
@@ -972,6 +1012,10 @@ pub struct RingTx<T> {
     /// `notify = "irq"`: the reader's doorbell.
     doorbell: Option<Doorbell>,
     publisher: Option<strict::RingPublisher>,
+    credit: Option<strict::Ticket<proto::wake::Session>>,
+    poll: bool,
+    core: u8,
+    stats: WaitStats,
     _map: Rc<Mapping>,
     session: Rc<Session>,
 }
@@ -1193,6 +1237,7 @@ mod tests {
             irq,
             ticket: None,
             space_doorbell: None,
+            credit: None,
             ctrl_offset: UP_SRAM,
             peer: Peer {
                 link: link.clone(),
@@ -1260,6 +1305,10 @@ mod tests {
             inner,
             doorbell,
             publisher: None,
+            credit: None,
+            poll: false,
+            core: 1,
+            stats: WaitStats::default(),
             _map: ddr.clone(),
             session: r.session.clone(),
         };

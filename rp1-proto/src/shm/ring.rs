@@ -133,6 +133,11 @@ impl<T: Message> RingTx<T> {
         (self.mask + 1).saturating_sub(self.head.wrapping_sub(tail))
     }
 
+    /// Whether a push can proceed now.
+    pub fn can_write(&self) -> bool {
+        !self.fenced() && (self.overflow == Overflow::Overwrite || self.free() != 0)
+    }
+
     /// Whether the reader has consumed all published messages.
     #[inline(always)]
     pub fn all_consumed(&self) -> bool {
@@ -358,14 +363,43 @@ impl<T: Message> RingRx<T> {
         depth: u32,
         overflow: Overflow,
     ) -> Result<Self, Error> {
+        unsafe { Self::attach_with_wait(data, data_len, ctrl, ctrl_len, depth, overflow, true) }
+    }
+    /// Attach without writing the legacy waiting counter. V3 ticket owners
+    /// retire or replace their arm separately under a validated session.
+    ///
+    /// # Safety
+    /// As [`Self::attach`].
+    pub unsafe fn attach_ticketed(
+        data: *const u8,
+        data_len: usize,
+        ctrl: *mut u8,
+        ctrl_len: usize,
+        depth: u32,
+        overflow: Overflow,
+    ) -> Result<Self, Error> {
+        unsafe { Self::attach_with_wait(data, data_len, ctrl, ctrl_len, depth, overflow, false) }
+    }
+    unsafe fn attach_with_wait(
+        data: *const u8,
+        data_len: usize,
+        ctrl: *mut u8,
+        ctrl_len: usize,
+        depth: u32,
+        overflow: Overflow,
+        legacy: bool,
+    ) -> Result<Self, Error> {
         check_ring::<T>(data, data_len, ctrl, ctrl_len, depth)?;
         let tail = unsafe { ld(ctrl, TAIL) };
         // Resume the sleep counter; a previous reader that died asleep is marked awake, so the
         // next sleep gets a value the writer has not notified yet.
-        let mut waiting = unsafe { ld(ctrl, WAITING) };
-        if waiting & 1 != 0 {
-            waiting = waiting.wrapping_add(1);
-            unsafe { st(ctrl, WAITING, waiting) };
+        let mut waiting = 0;
+        if legacy {
+            waiting = unsafe { ld(ctrl, WAITING) };
+            if waiting & 1 != 0 {
+                waiting = waiting.wrapping_add(1);
+                unsafe { st(ctrl, WAITING, waiting) };
+            }
         }
         Ok(Self {
             data,
@@ -520,6 +554,21 @@ impl<T: Message> RingRx<T> {
             }
         }
     }
+    /// Complete the released slots through the control window, then publish credit
+    /// for the writer's active ticket. Call once after a reject ring advances tail.
+    pub fn publish_credit<F>(
+        &self,
+        publisher: &mut super::wake::Publisher<crate::wake::Session, F>,
+    ) -> Result<bool, crate::wake::SessionError>
+    where
+        F: Fn() -> Result<crate::wake::Session, crate::wake::SessionError>,
+    {
+        debug_assert_eq!(self.overflow, Overflow::Reject);
+        publisher.publish(|| {
+            let _ = unsafe { ld(self.ctrl, TAIL) };
+        })
+    }
+
     /// Inspect the newest published reject-mode slot without releasing any slots.
     /// The index is returned even on error, so observers can count each slot once.
     #[allow(clippy::type_complexity)]

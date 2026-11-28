@@ -132,6 +132,11 @@ pub struct Waiter<S, F> {
 }
 
 impl<S: Copy + Eq, F: Fn() -> Result<S, SessionError>> Waiter<S, F> {
+    /// Verify the handle still belongs to the current session.
+    pub fn check_live(&self) -> Result<(), SessionError> {
+        check(self.scope, (self.live)())
+    }
+
     /// Arm a fresh ticket and flush it. Reopen advances even if the previous owner
     /// left an odd arm behind. The caller then acquires and rechecks its ready condition.
     pub fn arm(&mut self) -> Result<(), SessionError> {
@@ -141,6 +146,11 @@ impl<S: Copy + Eq, F: Fn() -> Result<S, SessionError>> Waiter<S, F> {
         commit(self.words.arm, self.arm);
         self.armed = true;
         Ok(())
+    }
+
+    /// Whether this handle owns an active ticket.
+    pub fn is_armed(&self) -> bool {
+        self.armed
     }
 
     /// Acquire pending work for the current ticket. The caller rechecks all readiness
@@ -214,6 +224,11 @@ pub struct Publisher<S, F> {
 }
 
 impl<S: Copy + Eq, F: Fn() -> Result<S, SessionError>> Publisher<S, F> {
+    /// Verify the handle still belongs to the current session.
+    pub fn check_live(&self) -> Result<(), SessionError> {
+        check(self.scope, (self.live)())
+    }
+
     /// Complete the previous data, tail or terminal commit with a readback through its
     /// window. Publish the current odd ticket and flush it through the seq's window.
     /// A true result asks the vector owner to signal. The seq alone proves no delivery.
@@ -252,6 +267,14 @@ impl<S: Copy + Eq, F: Fn() -> Result<S, SessionError>> Publisher<S, F> {
         commit(self.words.seq, arm);
         self.seq = arm;
         Ok(true)
+    }
+
+    /// Whether the current odd arm still needs a seq. The publisher must
+    /// sample the arm again when it commits.
+    pub fn needs_commit(&self) -> Result<bool, SessionError> {
+        self.check_live()?;
+        let arm = load(self.words.arm);
+        Ok(arm & 1 != 0 && self.seq != arm)
     }
 
     /// Use after acquiring exclusive same-session ownership and draining the old publisher.

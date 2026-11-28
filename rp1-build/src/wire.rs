@@ -132,7 +132,7 @@ pub(crate) fn descriptor_with_layout(
         cores: [core(&d.proc0), core(&d.proc1)],
     };
     tlv(&mut out, LINK, false, &link.encode());
-    if let Some(wake) = d.wake_config() {
+    if let Some(wake) = d.wake_config(shm) {
         tlv(&mut out, LINK_WAKE, true, &wake.encode());
     }
     tlv(&mut out, SHM_AREA, true, &shm.area.encode());

@@ -29,7 +29,7 @@ pub(crate) struct Profile {
 
 impl Profile {
     pub(crate) fn open(config: LinkWake) -> Result<Self> {
-        if config.required_caps & !wake::IRQ_STARTUP_CAPS != 0 {
+        if config.required_caps & !(wake::IRQ_STARTUP_CAPS | wake::CREDIT_WAKE) != 0 {
             return Err(Error::Unsupported);
         }
         Ok(Self {
@@ -273,6 +273,7 @@ impl StrictSession {
             mailbox: RefCell::new(mailbox),
             epoch,
             rpc_reply_wake: caps & wake::RPC_REPLY_WAKE != 0,
+            credit_wake: caps & wake::CREDIT_WAKE != 0,
         })
     }
 }
@@ -283,6 +284,7 @@ pub(crate) struct StrictSession {
     pub(crate) mailbox: RefCell<Ticket<BootEpoch>>,
     epoch: BootEpoch,
     pub(crate) rpc_reply_wake: bool,
+    pub(crate) credit_wake: bool,
 }
 
 impl StrictSession {
@@ -387,42 +389,45 @@ pub(crate) fn retire_rpc_wait(session: &Session, ctrl: usize) -> Result<()> {
 
 pub(crate) fn ring_waiter(
     session: &Session,
-    data: &Mapping,
-    offset: usize,
+    words: Words<wake::Session>,
 ) -> Result<Ticket<wake::Session>> {
-    let SessionHeader::V3(header) = session.header else {
-        return Err(Error::Unsupported);
-    };
-    let scope = header.session()?;
-    let live: Box<dyn Fn() -> _> = Box::new(move || header.session());
-    let words = unsafe { Words::rx(data.ptr(), session.link.ptr().add(offset)) };
+    let (scope, live) = ring_scope(session)?;
     Ok(unsafe { words.waiter(scope, live) }?)
 }
 
+fn ring_scope(session: &Session) -> Result<(wake::Session, Live<wake::Session>)> {
+    let SessionHeader::V3(header) = session.header else {
+        return Err(Error::Unsupported);
+    };
+    Ok((header.session()?, Box::new(move || header.session())))
+}
+
+pub(crate) type Publisher = proto::shm::wake::Publisher<wake::Session, Live<wake::Session>>;
+
+pub(crate) fn ring_publisher(session: &Session, words: Words<wake::Session>) -> Result<Publisher> {
+    let (scope, live) = ring_scope(session)?;
+    Ok(unsafe { words.publisher(scope, live) }?)
+}
+
 pub(crate) struct RingPublisher {
-    publisher: proto::shm::wake::Publisher<wake::Session, Live<wake::Session>>,
-    head: usize,
+    publisher: Publisher,
+    commit: usize,
 }
 
 impl RingPublisher {
-    pub(crate) fn new(session: &Session, ctrl: &Mapping, head: usize) -> Result<Self> {
-        let SessionHeader::V3(header) = session.header else {
-            return Err(Error::Unsupported);
-        };
-        let scope = header.session()?;
-        let live: Box<dyn Fn() -> _> = Box::new(move || header.session());
-        let words = unsafe { Words::rx(session.link.ptr().add(head), ctrl.ptr()) };
-        let publisher = unsafe { words.publisher(scope, live) }?;
-        Ok(Self { publisher, head })
+    pub(crate) fn new(
+        session: &Session,
+        words: Words<wake::Session>,
+        commit: usize,
+    ) -> Result<Self> {
+        let publisher = ring_publisher(session, words)?;
+        Ok(Self { publisher, commit })
     }
 
     pub(crate) fn publish(&mut self, link: &Mapping) -> Result<bool> {
-        let head = self.head;
-        Ok(self.publisher.publish(|| Self::read_head(link, head))?)
-    }
-
-    fn read_head(link: &Mapping, head: usize) {
-        let _ = link.read(head);
+        Ok(self.publisher.publish(|| {
+            let _ = link.read(self.commit);
+        })?)
     }
 
     pub(crate) fn recover(&self) -> Result<bool> {

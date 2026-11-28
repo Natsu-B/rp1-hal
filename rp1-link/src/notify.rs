@@ -83,8 +83,24 @@ pub(crate) mod sealed {
     }
 
     pub trait Notify {
+        #[inline(always)]
+        fn check(&self, _: Token) -> Result<(), Error> {
+            crate::ring::window_ready()
+        }
+
         /// Wake the reader of `ring` if it sleeps. Returns whether it notified.
         fn wake<T: Message>(&mut self, _: Token, ring: &mut shm::RingTx<T>) -> bool;
+        /// Reserve up to `max` slots. A strict writer arms credit before rechecking Full.
+        #[inline(always)]
+        fn reserve<T: Message>(
+            &mut self,
+            _: Token,
+            ring: &mut shm::RingTx<T>,
+            max: u32,
+        ) -> Result<u32, Error> {
+            Ok(ring.writable().min(max))
+        }
+
         /// Pulse for an armed, flagged reply unless the reader has already consumed it.
         fn wake_requested<T: Message>(&mut self, _: Token, _: &shm::RingTx<T>) -> bool {
             false
@@ -92,8 +108,25 @@ pub(crate) mod sealed {
     }
 
     pub trait Wake {
+        #[inline(always)]
+        fn check(&self, _: Token) -> Result<(), Error> {
+            crate::ring::window_ready()
+        }
+
         /// Make the ring just attached notifiable: the first message wakes this reader.
         fn opened<T: Message>(&mut self, _: Token, ring: &mut shm::RingRx<T>);
+        fn publish_credit<T: Message>(
+            &mut self,
+            _: Token,
+            _: &shm::RingRx<T>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn cancel_receive(&mut self, _: Token) -> Result<(), Error> {
+            Ok(())
+        }
+
         fn try_drain<T: Message>(
             &mut self,
             _: Token,
@@ -412,12 +445,13 @@ fn publish_terminal_ticket() {
     }
 }
 
-type LiveSession = fn() -> Result<Session, SessionError>;
+pub(crate) type LiveSession = fn() -> Result<Session, SessionError>;
 
 /// The v3 RX ticket publisher, called only by the generated vector owner's rings.
 #[doc(hidden)]
 pub struct TicketIrq {
     publisher: Publisher<Session, LiveSession>,
+    pub(crate) credit: Option<Waiter<Session, LiveSession>>,
     data: *mut u8,
     ctrl: *mut u8,
     pulse_pending: bool,
@@ -425,18 +459,44 @@ pub struct TicketIrq {
 }
 
 impl TicketIrq {
-    pub(crate) unsafe fn attach(data: *mut u8, ctrl: *mut u8) -> Result<Self, Error> {
+    pub(crate) unsafe fn attach(data: *mut u8, ctrl: *mut u8, credit: bool) -> Result<Self, Error> {
         let live: LiveSession = crate::generated::wake_session;
         let scope = live().map_err(|_| Error::Reset)?;
         let publisher =
             unsafe { Words::rx(data, ctrl).publisher(scope, live) }.map_err(|_| Error::Reset)?;
+        let credit = credit
+            .then(|| unsafe { Words::credit(data, ctrl).waiter(scope, live) })
+            .transpose()
+            .map_err(|_| Error::Reset)?;
         Ok(Self {
             publisher,
+            credit,
             data,
             ctrl,
             pulse_pending: false,
             pulse_failures: 0,
         })
+    }
+
+    pub(crate) fn waiting_for_credit(&self) -> bool {
+        self.credit.as_ref().is_some_and(Waiter::is_armed)
+    }
+
+    pub(crate) fn reply_wake_ready<T: Message>(
+        &self,
+        ring: &shm::RingTx<T>,
+    ) -> Result<bool, Error> {
+        Ok(self.publisher.needs_commit().map_err(|_| Error::Reset)?
+            && Self::requested_head(self.ctrl, ring))
+    }
+
+    fn requested_head<T: Message>(ctrl: *const u8, ring: &shm::RingTx<T>) -> bool {
+        let head = unsafe {
+            ctrl.add(shm::wake::RPC_WAIT_HEAD)
+                .cast::<u32>()
+                .read_volatile()
+        };
+        u32::from_le(head) == ring.head() && !ring.all_consumed()
     }
 
     pub(crate) fn retry(&mut self) -> bool {
@@ -458,6 +518,11 @@ impl TicketIrq {
 
 impl Notify for TicketIrq {}
 impl sealed::Notify for TicketIrq {
+    #[inline(always)]
+    fn check(&self, _: sealed::Token) -> Result<(), Error> {
+        self.publisher.check_live().map_err(|_| Error::Reset)
+    }
+
     fn wake<T: Message>(&mut self, _: sealed::Token, _: &mut shm::RingTx<T>) -> bool {
         match self.publisher.publish(|| {
             let _ = unsafe { self.data.cast::<u32>().read_volatile() };
@@ -469,18 +534,39 @@ impl sealed::Notify for TicketIrq {
     }
 
     #[inline(always)]
+    fn reserve<T: Message>(
+        &mut self,
+        _: sealed::Token,
+        ring: &mut shm::RingTx<T>,
+        max: u32,
+    ) -> Result<u32, Error> {
+        let free = ring.writable().min(max);
+        let Some(ticket) = &mut self.credit else {
+            return Ok(free);
+        };
+        if free == 0 || ticket.is_armed() {
+            reserve_credit(ticket, free, || ring.writable().min(max))
+        } else {
+            Ok(free)
+        }
+    }
+
+    #[inline(always)]
     fn wake_requested<T: Message>(&mut self, _: sealed::Token, ring: &shm::RingTx<T>) -> bool {
-        use shm::wake::{RPC_WAIT_HEAD, RX_WAIT};
-        let ctrl = self.ctrl;
-        let load = |offset| u32::from_le(unsafe { ctrl.add(offset).cast::<u32>().read_volatile() });
-        if load(RX_WAIT) & 1 == 0 {
+        let arm = unsafe {
+            self.ctrl
+                .add(shm::wake::RX_WAIT)
+                .cast::<u32>()
+                .read_volatile()
+        };
+        if u32::from_le(arm) & 1 == 0 {
             return false;
         }
         let fresh = self.publisher.publish_if(
             || {
                 let _ = unsafe { self.data.cast::<u32>().read_volatile() };
             },
-            || load(RPC_WAIT_HEAD) == ring.head() && !ring.all_consumed(),
+            || Self::requested_head(self.ctrl, ring),
         );
         if let Ok(fresh) = fresh {
             self.pulse_pending |= fresh;
@@ -489,41 +575,110 @@ impl sealed::Notify for TicketIrq {
     }
 }
 
+#[rp1_rt::cold]
+fn reserve_credit(
+    ticket: &mut Waiter<Session, LiveSession>,
+    mut free: u32,
+    reread: impl FnOnce() -> u32,
+) -> Result<u32, Error> {
+    let reset = |_| Error::Reset;
+    if free == 0 {
+        if !ticket.is_armed() || ticket.pending().map_err(reset)? {
+            ticket.arm().map_err(reset)?;
+            free = reread();
+        }
+        if free == 0 {
+            return Ok(0);
+        }
+    }
+    if ticket.is_armed() {
+        ticket.acknowledge_and_cancel().map_err(reset)?;
+    }
+    rp1_proto::barrier();
+    Ok(free)
+}
+
+#[rp1_rt::cold]
+fn publish_credit<T: Message>(
+    ticket: &mut Publisher<Session, LiveSession>,
+    ring: &shm::RingRx<T>,
+) -> Result<(), Error> {
+    if ring.publish_credit(ticket).map_err(|_| Error::Reset)? {
+        let _ = VectorOwner::pulse_owned();
+    }
+    Ok(())
+}
+
 /// The v3 downlink reader pairs the existing force-level ISR with v3 RX tickets.
 #[doc(hidden)]
 pub struct TicketDoorbell<const PIN: u8, const CORE: u8> {
-    ticket: Option<Waiter<Session, LiveSession>>,
-    armed: bool,
+    pub(crate) ticket: Option<Waiter<Session, LiveSession>>,
+    credit: Option<Publisher<Session, LiveSession>>,
+    scope: Session,
 }
 
 impl<const PIN: u8, const CORE: u8> TicketDoorbell<PIN, CORE> {
-    pub(crate) unsafe fn attach(data: *mut u8, ctrl: *mut u8, direct: bool) -> Result<Self, Error> {
-        if direct {
-            return Ok(Self {
-                ticket: None,
-                armed: false,
-            });
-        }
+    pub(crate) unsafe fn attach(
+        data: *mut u8,
+        ctrl: *mut u8,
+        direct: bool,
+        credit: bool,
+    ) -> Result<Self, Error> {
         let live: LiveSession = crate::generated::wake_session;
         let scope = live().map_err(|_| Error::Reset)?;
-        let ticket =
-            unsafe { Words::rx(data, ctrl).waiter(scope, live) }.map_err(|_| Error::Reset)?;
+        let reset = |_| Error::Reset;
+        let ticket = (!direct)
+            .then(|| unsafe { Words::rx(data, ctrl).waiter(scope, live) })
+            .transpose()
+            .map_err(reset)?;
+        let credit = credit
+            .then(|| unsafe { Words::credit(data, ctrl).publisher(scope, live) })
+            .transpose()
+            .map_err(reset)?;
         Ok(Self {
-            ticket: Some(ticket),
-            armed: false,
+            ticket,
+            credit,
+            scope,
         })
     }
 }
 
 impl<const PIN: u8, const CORE: u8> Wake for TicketDoorbell<PIN, CORE> {}
 impl<const PIN: u8, const CORE: u8> sealed::Wake for TicketDoorbell<PIN, CORE> {
-    fn opened<T: Message>(&mut self, _: sealed::Token, ring: &mut shm::RingRx<T>) {
+    #[inline(always)]
+    fn check(&self, _: sealed::Token) -> Result<(), Error> {
+        match crate::generated::wake_session() {
+            Ok(current) if current == self.scope => Ok(()),
+            _ => Err(Error::Reset),
+        }
+    }
+
+    fn opened<T: Message>(&mut self, _: sealed::Token, _: &mut shm::RingRx<T>) {
+        // The first thread slice scans queued work, including a publication
+        // that preceded open. The force ISR only wakes the thread.
         if let Some(ticket) = &mut self.ticket {
-            self.armed = ticket.arm().is_ok();
+            let _ = ticket.arm();
         }
-        if (self.armed || self.ticket.is_none()) && ring.available() != 0 {
-            unsafe { Doorbell::<PIN, CORE>::new() }.raise();
+    }
+
+    fn publish_credit<T: Message>(
+        &mut self,
+        _: sealed::Token,
+        ring: &shm::RingRx<T>,
+    ) -> Result<(), Error> {
+        if let Some(credit) = &mut self.credit {
+            publish_credit(credit, ring)?;
         }
+        Ok(())
+    }
+
+    fn cancel_receive(&mut self, _: sealed::Token) -> Result<(), Error> {
+        if let Some(ticket) = &mut self.ticket
+            && ticket.is_armed()
+        {
+            ticket.cancel().map_err(|_| Error::Reset)?;
+        }
+        Ok(())
     }
 
     fn try_drain<T: Message>(
@@ -545,26 +700,22 @@ impl<const PIN: u8, const CORE: u8> sealed::Wake for TicketDoorbell<PIN, CORE> {
                     handle(value, None)?;
                     budget -= 1;
                 }
-                if self.armed {
+                if ticket.is_armed() {
                     // The request was observed under this ticket. Complete the reply
                     // first so its pulse can overlap the downlink ACK and re-arm.
-                    ticket.acknowledge().map_err(reset)?;
-                    ticket.cancel().map_err(reset)?;
-                    self.armed = false;
+                    ticket.acknowledge_and_cancel().map_err(reset)?;
                 }
                 if budget == 0 {
                     return Ok(Progress::More);
                 }
             }
-            if self.armed && ticket.pending().map_err(reset)? {
+            if ticket.is_armed() && ticket.pending().map_err(reset)? {
                 // A pulse with no observed work can still consume this ticket.
                 // Re-arm and rescan so a subsequent publication can notify us.
                 ticket.cancel().map_err(reset)?;
-                self.armed = false;
             }
-            if !self.armed {
+            if !ticket.is_armed() {
                 ticket.arm().map_err(reset)?;
-                self.armed = true;
                 if ring.available() != 0 {
                     continue;
                 }
@@ -589,6 +740,13 @@ fn drain_requests<T: Message>(
         handle(value, Some(notify))?;
     }
     Ok(Progress::More)
+}
+
+// Each core has its own DSRAM copy. Only its doorbell ISR updates it.
+static DOORBELL_EVENTS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+pub(crate) fn doorbell_events() -> u32 {
+    DOORBELL_EVENTS.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Linux's doorbell for core CORE: the `PROCn_INTF` force bit of bank-0 pin PIN, declared as
@@ -643,6 +801,10 @@ impl<const PIN: u8, const CORE: u8> Doorbell<PIN, CORE> {
     pub fn __ack_and_signal_wake(self) {
         self.ack();
         let _ = read(Self::INTF);
+        DOORBELL_EVENTS.store(
+            doorbell_events().wrapping_add(1),
+            core::sync::atomic::Ordering::Relaxed,
+        );
         // send_event completes the bank read before signaling.
         rp1_rt::send_event();
     }
@@ -819,7 +981,7 @@ mod tests {
         }
         .unwrap();
         let mut irq =
-            unsafe { TicketIrq::attach(data.as_mut_ptr().cast(), ctrl.as_mut_ptr().cast()) }
+            unsafe { TicketIrq::attach(data.as_mut_ptr().cast(), ctrl.as_mut_ptr().cast(), false) }
                 .unwrap();
         ring.push(&9u32).unwrap();
         assert!(!sealed::Notify::wake(
@@ -836,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_rpc_doorbell_opens_pending_requests_and_only_armed_flagged_replies_pulse() {
+    fn v3_rpc_services_preexisting_requests_and_only_armed_flagged_replies_pulse() {
         use crate::{
             RingRx, RingTx, Server,
             mmio::fake::{self, Access},
@@ -865,15 +1027,16 @@ mod tests {
             unsafe { shm::RingTx::attach(down, 512, down_ctrl, 128, 4, ov) }.unwrap();
         let mut replies = unsafe { shm::RingRx::attach(up, 512, up_ctrl, 128, 4, ov) }.unwrap();
         requests.push_request(&17u32, true).unwrap();
-        let doorbell = unsafe { TicketDoorbell::<27, 1>::attach(down, down_ctrl, true) }.unwrap();
+        let doorbell =
+            unsafe { TicketDoorbell::<27, 1>::attach(down, down_ctrl, true, false) }.unwrap();
         let rx = RingRx::open(
             unsafe { shm::RingRx::<u32>::attach(down, 512, down_ctrl, 128, 4, ov) }.unwrap(),
             doorbell,
         );
-        assert!(fake::take().contains(&Access::Write(0x400d_2114, 1 << 27)));
+        assert!(!fake::take().contains(&Access::Write(0x400d_2114, 1 << 27)));
         let tx = RingTx::new(
             unsafe { shm::RingTx::<u32>::attach(up, 512, up_ctrl, 128, 4, ov) }.unwrap(),
-            unsafe { TicketIrq::attach(up, up_ctrl) }.unwrap(),
+            unsafe { TicketIrq::attach(up, up_ctrl, false) }.unwrap(),
         );
         let mut server = Server::new(tx, rx);
         let pulses = || {
@@ -940,6 +1103,7 @@ mod tests {
             TicketDoorbell::<27, 1>::attach(
                 data.as_mut_ptr().cast(),
                 ctrl.as_mut_ptr().cast(),
+                false,
                 false,
             )
         }
@@ -1069,5 +1233,131 @@ mod startup_tests {
         deliver_startup_from(base, || true);
         assert_eq!(page[mailbox::SEQ / 4], 1);
         assert!(!fake::take().contains(&Access::Write(MSIX_CFG_SET, MSIX_CFG_TEST)));
+    }
+}
+
+#[cfg(test)]
+mod credit_tests {
+    use super::*;
+    use crate::{Channel, RingRx, RingTx, mmio::fake};
+    use rp1_proto::{LINK_START, link, shm::Overflow};
+
+    #[repr(align(8))]
+    struct RingMemory {
+        data: [u32; 128],
+        ctrl: [u32; 32],
+    }
+
+    impl RingMemory {
+        fn wrapping() -> Self {
+            let mut mem = Self {
+                data: [0; 128],
+                ctrl: [0; 32],
+            };
+            mem.data[shm::HEAD / 4] = u32::MAX - 1;
+            mem.ctrl[shm::TAIL / 4] = u32::MAX - 1;
+            mem
+        }
+
+        fn ends(&mut self) -> (shm::RingTx<u32>, shm::RingRx<u32>, Words<Session>) {
+            let data = self.data.as_mut_ptr().cast();
+            let ctrl = self.ctrl.as_mut_ptr().cast();
+            let writer =
+                unsafe { shm::RingTx::attach(data, 512, ctrl, 128, 16, Overflow::Reject) }.unwrap();
+            let reader =
+                unsafe { shm::RingRx::attach_ticketed(data, 512, ctrl, 128, 16, Overflow::Reject) }
+                    .unwrap();
+            (writer, reader, unsafe { Words::credit(data, ctrl) })
+        }
+    }
+
+    #[test]
+    fn full_channel_reserves_replies_and_releases_wrapping_request_batches() {
+        use shm::wake::{CREDIT_ACK, CREDIT_SEQ, CREDIT_WAIT, RX_WAIT};
+        let link_base = LINK_START as usize;
+        fake::set(link_base + link::SHM_STATUS, link::SHM_READY);
+        fake::set(link_base + link::SHM_GENERATION, 2);
+        fake::set(link_base + mailbox::BOOT_EPOCH, 4);
+        fake::alias(MSIX_CFG_SET, MSIX_CFG, true);
+        fake::alias(MSIX_CFG_CLR, MSIX_CFG, false);
+        let live: LiveSession = crate::generated::wake_session;
+        let scope = live().unwrap();
+
+        let mut up = RingMemory::wrapping();
+        let (mut reply_writer, mut replies, reply_words) = up.ends();
+        assert_eq!(reply_writer.push_slice(&[0; 16]), 16);
+        let mut peer_publish = unsafe { reply_words.publisher(scope, live) }.unwrap();
+
+        let mut down = RingMemory::wrapping();
+        let (mut requests, request_reader, request_words) = down.ends();
+        let mut peer_wait = unsafe { request_words.waiter(scope, live) }.unwrap();
+        let down_data = down.data.as_mut_ptr().cast();
+        let down_ctrl = down.ctrl.as_mut_ptr().cast();
+        let up_data = up.data.as_mut_ptr().cast();
+        let up_ctrl = up.ctrl.as_mut_ptr().cast();
+        let tx = RingTx::new(
+            reply_writer,
+            unsafe { TicketIrq::attach(up_data, up_ctrl, true) }.unwrap(),
+        );
+        let rx = RingRx::open(
+            request_reader,
+            unsafe { TicketDoorbell::<27, 1>::attach(down_data, down_ctrl, false, true) }.unwrap(),
+        );
+        let mut channel = Channel { tx, rx };
+
+        assert_eq!(
+            requests.push_slice(&core::array::from_fn::<_, 16, _>(|i| i as u32 + 1)),
+            16
+        );
+        peer_wait.arm().unwrap();
+        assert_eq!(
+            channel.respond(16, |_| unreachable!("reply ring is full")),
+            Ok(Progress::Idle)
+        );
+        assert_eq!(down.ctrl[shm::TAIL / 4], u32::MAX - 1);
+        assert_eq!(down.ctrl[RX_WAIT / 4] & 1, 0);
+        assert_eq!(up.data[CREDIT_WAIT / 4] & 1, 1);
+
+        assert_eq!(replies.pop().unwrap(), Some(0));
+        assert!(replies.publish_credit(&mut peer_publish).unwrap());
+        assert_eq!(up.ctrl[CREDIT_SEQ / 4], up.data[CREDIT_WAIT / 4]);
+        assert_eq!(
+            channel.respond(16, |n| {
+                assert_eq!(n, 1);
+                n
+            }),
+            Ok(Progress::More)
+        );
+        assert_eq!(down.ctrl[shm::TAIL / 4], u32::MAX);
+        assert_eq!(up.data[CREDIT_ACK / 4], up.ctrl[CREDIT_SEQ / 4]);
+        assert!(peer_wait.acknowledge().unwrap());
+        assert!(fake::take().contains(&fake::Access::Write(MSIX_CFG_SET, MSIX_CFG_TEST)));
+
+        let mut batch = [0; 16];
+        assert_eq!(replies.pop_into(&mut batch).unwrap(), 16);
+        assert_eq!(&batch[..15], &[0; 15]);
+        assert_eq!(batch[15], 1);
+        assert_eq!(channel.respond(u32::MAX, |n| n), Ok(Progress::More));
+        assert_eq!(down.ctrl[shm::TAIL / 4], 7);
+
+        let mut other_down = RingMemory::wrapping();
+        let (mut other_requests, mut other_rx, _) = other_down.ends();
+        other_requests.push(&123).unwrap();
+        assert_eq!(other_rx.pop().unwrap(), Some(123));
+        assert_eq!(channel.respond(u32::MAX, |n| n), Ok(Progress::Idle));
+        assert_eq!(replies.pop_into(&mut batch).unwrap(), 15);
+        assert_eq!(
+            &batch[..15],
+            &core::array::from_fn::<_, 15, _>(|i| i as u32 + 2)
+        );
+        requests.push(&99).unwrap();
+        let old = (up.data, up.ctrl, down.data, down.ctrl);
+        fake::set(link_base + link::SHM_GENERATION, 4);
+        assert_eq!(
+            channel.respond(8, |_| unreachable!("stale session")),
+            Err(Error::Reset)
+        );
+        assert_eq!(channel.send(&1), Err(Error::Reset));
+        assert_eq!((up.data, up.ctrl, down.data, down.ctrl), old);
     }
 }

@@ -160,7 +160,7 @@ impl<'a> Note<'a> {
                     return Err(Error::Mismatch);
                 }
             }
-            Some(link)
+            Some((link, wake.offered_caps & crate::wake::CREDIT_WAKE != 0))
         } else {
             None
         };
@@ -185,19 +185,17 @@ impl<'a> Note<'a> {
                     return Err(Error::Invalid);
                 }
                 let r = ShmRegion::parse(record.value)?;
-                if let Some(link) = wake_link
+                if let Some((link, credit)) = wake_link
                     && r.notify_irq
                 {
                     // ShmRegion::parse admits only core numbers 1 and 2.
                     let route = link.cores[usize::from(r.core) - 1];
-                    match r.kind {
-                        ShmKind::RingToLinux if route.host_irq_vector.is_none() => {
-                            return Err(Error::Mismatch);
-                        }
-                        ShmKind::RingToRp1 if route.doorbell.is_none() => {
-                            return Err(Error::Mismatch);
-                        }
-                        _ => {}
+                    let credit = credit && !r.overwrite;
+                    if ((credit || r.kind == ShmKind::RingToLinux)
+                        && route.host_irq_vector.is_none())
+                        || ((credit || r.kind == ShmKind::RingToRp1) && route.doorbell.is_none())
+                    {
+                        return Err(Error::Mismatch);
                     }
                 }
                 if (r.sram_len != 0 && usize::from(r.sram_offset) < min)

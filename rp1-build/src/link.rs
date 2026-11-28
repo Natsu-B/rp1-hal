@@ -135,10 +135,12 @@ pub(crate) fn generate(
             .filter(|(endpoint, _)| regions[endpoint.first].core == core + 1)
             .collect();
         if !owned.is_empty() {
-            let irq = shm
-                .regions
-                .iter()
-                .any(|region| region.receives_doorbell(core));
+            let irq = shm.regions.iter().any(|region| {
+                region.receives_doorbell(
+                    core,
+                    wake.is_some_and(|w| w.offered_caps & rp1_proto::wake::CREDIT_WAKE != 0),
+                )
+            });
             write_core(&mut output, core, &regions, &owned, irq, experimental_wake)?;
         }
     }

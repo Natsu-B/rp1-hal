@@ -43,12 +43,15 @@ impl Rig {
         let inner =
             unsafe { shm::RingRx::attach(data.ptr(), len, ctrl, 128, 4, overflow) }.unwrap();
         let tx = unsafe { shm::RingTx::attach(data.ptr(), len, ctrl, 128, 4, overflow) }.unwrap();
-        let ticket = crate::strict::ring_waiter(session, &data, offset).unwrap();
+        let ticket =
+            crate::strict::ring_waiter(session, unsafe { shm::wake::Words::rx(data.ptr(), ctrl) })
+                .unwrap();
         let rx = RingRx {
             inner,
             ticket: Some(ticket),
             irq: None,
             space_doorbell: None,
+            credit: None,
             ctrl_offset: offset,
             peer: Peer {
                 link: session.link.clone(),
@@ -406,6 +409,10 @@ fn recv_and_rpc_return_data_at_the_deadline_without_a_count() {
         inner,
         doorbell: None,
         publisher: None,
+        credit: None,
+        poll: false,
+        core: 1,
+        stats: Default::default(),
         _map: data,
         session,
     };
@@ -439,4 +446,106 @@ fn solicited_reply_retires_its_ticket_before_the_mailbox_is_armed() {
     assert_eq!(control(&session.link, 0, shm::wake::RX_WAIT), 2);
     assert_eq!(control(&session.link, 0, shm::wake::RX_ACK), 0);
     assert_eq!(data.read(shm::wake::RX_SEQ), 0);
+}
+
+#[test]
+fn writable_credit_wait_distinguishes_delivery_from_deadline_and_reopens() {
+    use shm::wake::{CREDIT_ACK, CREDIT_SEQ, CREDIT_WAIT, Words};
+
+    let rig = Rig::new();
+    let data = rig.session.link.clone();
+    let offset = 0x300;
+    let base = unsafe { data.ptr().add(offset) };
+    let ctrl = anon(4096);
+    let ctrl_ptr = ctrl.ptr();
+    let len = shm::ring_body_size(4, 4).unwrap();
+    let overflow = shm::Overflow::Reject;
+    let words = unsafe { Words::credit(base, ctrl_ptr) };
+    let make_tx = || crate::RingTx {
+        inner: unsafe { shm::RingTx::attach(base, len, ctrl_ptr, 128, 4, overflow) }.unwrap(),
+        doorbell: None,
+        publisher: None,
+        credit: Some(crate::strict::ring_waiter(&rig.session, words).unwrap()),
+        poll: false,
+        core: 1,
+        stats: Default::default(),
+        _map: ctrl.clone(),
+        session: rig.session.clone(),
+    };
+    let mut reader =
+        unsafe { shm::RingRx::attach_ticketed(base, len, ctrl_ptr, 128, 4, overflow) }.unwrap();
+    let publisher = crate::strict::ring_publisher(&rig.session, words).unwrap();
+    let mut tx = make_tx();
+    assert_eq!(tx.send_slice(&[4, 5, 6, 7]).unwrap(), 4);
+    assert!(matches!(
+        tx.send(&8),
+        Err(Error::Proto(rp1_proto::Error::Full))
+    ));
+
+    assert!(matches!(
+        tx.wait_writable(Instant::now() + Duration::from_millis(10)),
+        Err(Error::Timeout)
+    ));
+    let canceled = data.read(offset + CREDIT_WAIT);
+    assert_ne!(canceled, 0);
+    assert_eq!(canceled & 1, 0);
+    assert_eq!(data.read(offset + CREDIT_ACK), 0);
+    assert_eq!(tx.wait_stats().sleeps, 1);
+    drop(tx);
+    let mut tx = make_tx();
+
+    let credit_release =
+        |mut reader: shm::RingRx<u32>, mut publisher, value, mut signal: UnixStream, deliver| {
+            let data = data.clone();
+            let ctrl = ctrl.clone();
+            Box::new(move || {
+                let arm = data.read(offset + CREDIT_WAIT);
+                assert_ne!(arm, canceled - 1);
+                assert_eq!(arm & 1, 1);
+                assert_eq!(reader.pop().unwrap(), Some(value));
+                assert!(reader.publish_credit(&mut publisher).unwrap());
+                assert_eq!(ctrl.read(CREDIT_SEQ), arm);
+                if deliver {
+                    signal.write_all(&1u32.to_ne_bytes()).unwrap();
+                }
+            })
+        };
+    BEFORE_POLL.with(|hook| {
+        hook.replace(Some(credit_release(
+            reader,
+            publisher,
+            4,
+            rig.peer.try_clone().unwrap(),
+            true,
+        )));
+    });
+    tx.send_until(&8, Instant::now() + Duration::from_secs(1))
+        .unwrap();
+    assert!(tx.wait_stats().woken > 0);
+    assert_eq!(
+        data.read(offset + CREDIT_ACK),
+        data.read(offset + CREDIT_WAIT) - 1
+    );
+    assert_eq!(tx.free(), 0);
+
+    reader =
+        unsafe { shm::RingRx::attach_ticketed(base, len, ctrl_ptr, 128, 4, overflow) }.unwrap();
+    let publisher = crate::strict::ring_publisher(&rig.session, words).unwrap();
+    BEFORE_POLL.with(|hook| {
+        hook.replace(Some(credit_release(
+            reader,
+            publisher,
+            5,
+            rig.peer.try_clone().unwrap(),
+            false,
+        )));
+    });
+    let error = tx.send_until(&9, Instant::now() + Duration::from_millis(10));
+    assert!(matches!(error, Err(Error::NotifyLost)), "{error:?}");
+    assert_eq!(tx.free(), 1);
+    let mut reader =
+        unsafe { shm::RingRx::attach_ticketed(base, len, ctrl_ptr, 128, 4, overflow) }.unwrap();
+    let mut remaining = [0; 4];
+    assert_eq!(reader.pop_into(&mut remaining).unwrap(), 3);
+    assert_eq!(&remaining[..3], &[6, 7, 8]);
 }

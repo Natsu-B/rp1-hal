@@ -6,7 +6,7 @@ use rp1_build::{
 use rp1_proto::{
     Error,
     note::{self, Note, ShmArea, ShmRegion},
-    wake::{IRQ_STARTUP_CAPS, LATCHED_WAKE, STARTUP_WAKE, mailbox},
+    wake::{CREDIT_WAKE, IRQ_STARTUP_CAPS, LATCHED_WAKE, STARTUP_WAKE, mailbox},
 };
 
 const STARTUP: &str = "link_wake='experimental'\nstartup_doorbell=26\n[proc0]\nwait_timer='ALARM1'";
@@ -55,11 +55,14 @@ fn schemas_keep_v2_and_v3_note_layouts_distinct() {
             assert_eq!(wake.flags, 1);
             assert_eq!(
                 wake.value,
-                [1, 0, 0xc0, 0, 64, 0, 1, 26, 3, 0, 0, 0, 11, 0, 0, 0]
+                [1, 0, 0xc0, 0, 64, 0, 1, 26, 7, 0, 0, 0, 15, 0, 0, 0]
             );
             let config = note::LinkWake::parse(wake.value).unwrap();
-            assert_eq!(config.required_caps, LATCHED_WAKE | STARTUP_WAKE);
-            assert_eq!(config.offered_caps, IRQ_STARTUP_CAPS);
+            assert_eq!(
+                config.required_caps,
+                LATCHED_WAKE | STARTUP_WAKE | CREDIT_WAKE
+            );
+            assert_eq!(config.offered_caps, IRQ_STARTUP_CAPS | CREDIT_WAKE);
         } else {
             assert!(wake.is_none());
         }
@@ -93,7 +96,7 @@ fn malformed_v3_record_and_stale_layout_are_rejected() {
         (wake + 6, 0, Error::Mismatch),    // wrong vector owner
         (wake + 7, 27, Error::Mismatch),   // collides with the data force
         (wake + 7, 25, Error::Mismatch),   // no claim for the new pin
-        (wake + 8, 7, Error::Mismatch),    // required capability absent
+        (wake + 8, 0x17, Error::Mismatch), // required capability absent
         (wake + 8, 0x80, Error::Mismatch), // unknown required capability
         (wake + 12, 0, Error::Mismatch),   // promised capabilities absent
         (route, 58, Error::Mismatch),      // wrong MSI-X vector

@@ -18,7 +18,7 @@ pub enum WaitState {
     Ready(usize),
 }
 
-/// A v3 wait over one or more IRQ receivers sharing an exclusive UIO listener.
+/// A v3 wait over one or more IRQ endpoints sharing an exclusive UIO listener.
 ///
 /// For external polling, call [`prepare`](Self::prepare), poll `POLLIN` on
 /// [`as_fd`](Self::as_fd), and call [`dispatch`](Self::dispatch) after every poll
@@ -45,7 +45,7 @@ struct Armed {
 }
 
 impl Firmware {
-    /// Borrow one or more IRQ receivers from this v3 session. At most one wait
+    /// Borrow one or more IRQ endpoints from this v3 session. At most one wait
     /// may be armed at a time. Drop the set before receiving from its endpoints.
     pub fn wait_set<'a, 'endpoints>(
         &self,
@@ -54,7 +54,7 @@ impl Firmware {
         WaitSet::new(self.session()?, endpoints)
     }
 
-    /// Block until a receiver is ready or the absolute deadline is reached.
+    /// Block until an endpoint is ready or the absolute deadline is reached.
     /// On v3 IRQ, `NotifyLost` leaves the data available to receive.
     pub fn wait_any(&self, endpoints: &mut [&mut dyn Waitable], end: Instant) -> Result<usize> {
         if self.strict.is_some() {
@@ -102,14 +102,14 @@ impl<T: Message> RingRx<T> {
 }
 
 impl<'a, 'endpoints> WaitSet<'a, 'endpoints> {
-    fn new(
+    pub(crate) fn new(
         session: Rc<Session>,
         endpoints: &'a mut [&'endpoints mut dyn Waitable],
     ) -> Result<Self> {
         session.strict.as_ref().ok_or(Error::Unsupported)?;
         if !endpoints
             .iter()
-            .all(|ep| ep.strict_receiver(Rc::as_ptr(&session).cast()))
+            .all(|ep| ep.strict_endpoint(Rc::as_ptr(&session).cast()))
             || endpoints.is_empty()
         {
             return Err(Error::Unsupported);

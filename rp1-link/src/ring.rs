@@ -34,6 +34,12 @@ impl<T: Message, N: Notify> RingTx<T, N> {
     pub(crate) fn new(ring: shm::RingTx<T>, notify: N) -> Self {
         Self { ring, notify }
     }
+    #[inline(always)]
+    pub(crate) fn reserve(&mut self, max: u32) -> Result<u32, Error> {
+        self.notify.check(Token(()))?;
+        self.notify.reserve(Token(()), &mut self.ring, max)
+    }
+
     /// Publish one message and wake the reader if it sleeps.
     #[inline(always)]
     pub fn send(&mut self, value: &T) -> Result<(), Error> {
@@ -46,7 +52,7 @@ impl<T: Message, N: Notify> RingTx<T, N> {
         value: &T,
         requested_wake: Option<bool>,
     ) -> Result<(), Error> {
-        window_ready()?;
+        self.notify.check(Token(()))?;
         let sent = self.ring.push(value);
         if requested_wake.is_none() {
             self.notify.wake(Token(()), &mut self.ring);
@@ -58,7 +64,7 @@ impl<T: Message, N: Notify> RingTx<T, N> {
     /// keeps a reader that went to sleep meanwhile informed.
     #[inline(always)]
     pub fn send_slice(&mut self, values: &[T]) -> Result<usize, Error> {
-        window_ready()?;
+        self.notify.check(Token(()))?;
         let sent = self.ring.push_slice(values);
         self.notify.wake(Token(()), &mut self.ring);
         Ok(sent)
@@ -67,13 +73,13 @@ impl<T: Message, N: Notify> RingTx<T, N> {
     /// [`Self::flush`].
     #[inline(always)]
     pub fn push(&mut self, value: &T) -> Result<(), Error> {
-        window_ready()?;
+        self.notify.check(Token(()))?;
         self.ring.push(value)
     }
     /// [`Self::push`] for a batch: one `head` store. Returns how many were written.
     #[inline(always)]
     pub fn push_slice(&mut self, values: &[T]) -> Result<usize, Error> {
-        window_ready()?;
+        self.notify.check(Token(()))?;
         Ok(self.ring.push_slice(values))
     }
     /// Write up to `count` messages in place, `fill(k, slot)` for the k-th; see the
@@ -84,14 +90,14 @@ impl<T: Message, N: Notify> RingTx<T, N> {
         count: usize,
         fill: impl FnMut(usize, &mut T),
     ) -> Result<usize, Error> {
-        window_ready()?;
+        self.notify.check(Token(()))?;
         Ok(self.ring.push_with(count, fill))
     }
     /// Wake the reader if it sleeps and was not woken for this sleep yet. Returns whether it
     /// did (always `false` for a `Poll` ring).
     #[inline(always)]
     pub fn flush(&mut self) -> Result<bool, Error> {
-        window_ready()?;
+        self.notify.check(Token(()))?;
         Ok(self.notify.wake(Token(()), &mut self.ring))
     }
     /// Free slots as last seen (a local load).
@@ -133,8 +139,8 @@ impl<T: Message, N: Notify> RingTx<T, N> {
 /// doorbell.raise(); // for what came before the handler could reach `down`
 /// ```
 pub struct RingRx<T, W = Poll> {
-    ring: shm::RingRx<T>,
-    wake: W,
+    pub(crate) ring: shm::RingRx<T>,
+    pub(crate) wake: W,
 }
 
 impl<T: Message, W: Wake> RingRx<T, W> {
@@ -146,15 +152,34 @@ impl<T: Message, W: Wake> RingRx<T, W> {
     /// Take the oldest message, if any.
     #[inline(always)]
     pub fn recv(&mut self) -> Result<Option<T>, Error> {
-        window_ready()?;
-        self.ring.pop()
+        self.wake.check(Token(()))?;
+        let tail = self.ring.tail();
+        let result = self.ring.pop();
+        self.publish_credit(tail)?;
+        result
     }
     /// Take up to `out.len()` messages with one `tail` store. Returns how many.
     #[inline(always)]
     pub fn recv_into(&mut self, out: &mut [T]) -> Result<usize, Error> {
-        window_ready()?;
-        self.ring.pop_into(out)
+        self.wake.check(Token(()))?;
+        let tail = self.ring.tail();
+        let result = self.ring.pop_into(out);
+        self.publish_credit(tail)?;
+        result
     }
+
+    #[inline(always)]
+    fn publish_credit(&mut self, before: u32) -> Result<(), Error> {
+        if self.ring.tail() != before {
+            self.wake.publish_credit(Token(()), &self.ring)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn cancel_receive(&mut self) -> Result<(), Error> {
+        self.wake.cancel_receive(Token(()))
+    }
+
     /// Messages available now (a local load).
     pub fn available(&self) -> u32 {
         self.ring.available()
@@ -187,8 +212,11 @@ impl<T: Message, W: Wake> RingRx<T, W> {
         max: u32,
         f: impl FnMut(T, Option<bool>) -> Result<(), Error>,
     ) -> Result<Progress, Error> {
-        window_ready()?;
-        self.wake.try_drain(Token(()), &mut self.ring, max, f)
+        self.wake.check(Token(()))?;
+        let tail = self.ring.tail();
+        let result = self.wake.try_drain(Token(()), &mut self.ring, max, f);
+        self.publish_credit(tail)?;
+        result
     }
 }
 
@@ -436,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_reply_stops_the_server() {
+    fn a_full_reply_ring_keeps_requests_queued() {
         ready();
         let mut down = Memory::new();
         let mut up = Memory::new();
@@ -445,17 +473,29 @@ mod tests {
         tx.send_slice(&[[0; 4]; DEPTH as usize]).unwrap();
         let mut server = crate::Server::new(tx, down.rx::<Doorbell<27, 1>>());
         assert_eq!(
+            server.serve(2, |_| panic!("no reservation")),
+            Ok(Progress::Idle)
+        );
+
+        let mut replies = up.rx::<Poll>();
+        assert_eq!(replies.recv(), Ok(Some([0; 4])));
+        assert_eq!(
             server.serve(2, |v| {
                 assert_eq!(v, [1; 4]);
                 v
             }),
-            Err(Error::Full)
+            Ok(Progress::More)
         );
         assert_eq!(
-            server.serve(2, |_| panic!("after failure")),
-            Err(Error::Reset)
+            server.serve(2, |_| panic!("only one slot freed")),
+            Ok(Progress::Idle)
         );
-        assert_eq!(down.waiting() & 1, 0);
+        for _ in 1..DEPTH {
+            assert_eq!(replies.recv(), Ok(Some([0; 4])));
+        }
+        assert_eq!(replies.recv(), Ok(Some([1; 4])));
+        assert_eq!(server.serve(2, |v| v), Ok(Progress::Idle));
+        assert_eq!(replies.recv(), Ok(Some([2; 4])));
     }
 
     #[test]

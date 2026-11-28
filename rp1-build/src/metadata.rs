@@ -131,16 +131,30 @@ impl Declaration {
             types: BTreeMap::new(),
         })
     }
-    pub(crate) fn wake_config(&self) -> Option<rp1_proto::note::LinkWake> {
+    pub(crate) fn wake_config(&self, shm: &ShmLayout<'_>) -> Option<rp1_proto::note::LinkWake> {
         let startup = self
             .startup_doorbell
             .map_or(0, |_| rp1_proto::wake::STARTUP_WAKE);
+        let credit = if self.credit_wake()
+            && shm.regions.iter().any(|region| {
+                region.spec.kind == "ring"
+                    && region.spec.notify() == Some("irq")
+                    && region.spec.overflow.as_deref() != Some("overwrite")
+            }) {
+            rp1_proto::wake::CREDIT_WAKE
+        } else {
+            0
+        };
         self.link_wake.map(|_| rp1_proto::note::LinkWake {
-            required_caps: rp1_proto::wake::LATCHED_WAKE | startup,
-            offered_caps: rp1_proto::wake::IRQ_RPC_CAPS | startup,
+            required_caps: rp1_proto::wake::LATCHED_WAKE | startup | credit,
+            offered_caps: rp1_proto::wake::IRQ_RPC_CAPS | startup | credit,
             owner: u8::from(self.proc1.host_irq),
             startup_doorbell: self.startup_doorbell,
         })
+    }
+
+    pub(crate) fn credit_wake(&self) -> bool {
+        matches!(self.link_wake, Some(LinkWakeProfile::Experimental))
     }
 
     /// Warnings emitted by build.rs; also available to manifest inspection tools.
@@ -644,6 +658,14 @@ impl Declaration {
                         } else {
                             &self.proc1
                         };
+                        let credit =
+                            self.credit_wake() && r.overflow.as_deref() != Some("overwrite");
+                        if credit && (!owner.host_irq || owner.doorbell.is_none()) {
+                            return Err(format!(
+                                "notify=irq on reject ring {} requires {}.host_irq and {}.doorbell for credit",
+                                r.name, r.core, r.core
+                            ).into());
+                        }
                         if r.direction.as_deref() == Some("rp1-to-linux") && !owner.host_irq {
                             return Err(format!(
                                 "notify=irq on ring {} requires {}.host_irq = true \
@@ -652,7 +674,7 @@ impl Declaration {
                             )
                             .into());
                         }
-                        if r.direction.as_deref() == Some("linux-to-rp1") {
+                        if credit || r.direction.as_deref() == Some("linux-to-rp1") {
                             if owner.doorbell.is_none() {
                                 return Err(format!(
                                     "notify=irq on ring {} requires {}.doorbell \
@@ -787,10 +809,11 @@ impl Declaration {
 }
 
 impl Region<'_> {
-    pub(crate) fn receives_doorbell(&self, core: u8) -> bool {
+    pub(crate) fn receives_doorbell(&self, core: u8, credit: bool) -> bool {
         self.core() == core + 1
-            && self.spec.direction.as_deref() == Some("linux-to-rp1")
             && self.spec.notify() == Some("irq")
+            && (self.spec.direction.as_deref() == Some("linux-to-rp1")
+                || (credit && self.spec.overflow.as_deref() != Some("overwrite")))
     }
 
     pub(crate) fn wire(&self) -> Result<ShmRegion<'_>> {

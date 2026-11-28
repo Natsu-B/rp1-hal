@@ -116,6 +116,8 @@ fn generated_v3_doorbell_handler_links() {
     let mut d = fixture();
     d.link_wake = Some(crate::metadata::LinkWakeProfile::Experimental);
     d.startup_doorbell = Some(26);
+    // The downlink reader is the MSI-X publisher for credit.
+    d.shm[1].overflow = Some("overwrite".into());
     d.proc0.wait_timer = Some("ALARM1".into());
     d.validate().unwrap();
     let shm = d.shm_layout().unwrap();

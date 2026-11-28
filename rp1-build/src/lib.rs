@@ -338,7 +338,7 @@ fn resources(
         elf_note.len(),
         elf_note
     );
-    let wake = d.wake_config();
+    let wake = d.wake_config(shm);
     let experimental_wake = wake.is_some();
     if experimental_wake {
         s.push_str("const _: () = ::rp1_rt::status::__REQUIRES_EXPERIMENTAL_LINK_WAKE;\n");
@@ -354,7 +354,12 @@ fn resources(
                 "/// proc{index}'s doorbell, which Linux rings (`doorbell = {pin}`).\n\
                  pub type Doorbell{index} = ::rp1_link::notify::Doorbell<{pin}, {index}>;\n"
             ));
-            if experimental_wake && shm.regions.iter().any(|r| r.receives_doorbell(index as u8)) {
+            if experimental_wake
+                && shm
+                    .regions
+                    .iter()
+                    .any(|r| r.receives_doorbell(index as u8, d.credit_wake()))
+            {
                 writeln!(
                     s,
                     "pub type WakeDoorbell{index} = ::rp1_link::notify::TicketDoorbell<{pin}, {index}>;"
@@ -369,7 +374,10 @@ fn resources(
             .iter()
             .any(|r| usize::from(r.core()) == index + 1);
         let data_bell = !c.custom_doorbell_handler
-            && shm.regions.iter().any(|r| r.receives_doorbell(index as u8));
+            && shm
+                .regions
+                .iter()
+                .any(|r| r.receives_doorbell(index as u8, d.credit_wake()));
         let startup_pin = d.startup_doorbell.filter(|_| index == 0 || c.host_irq);
         let owner_kick = index == 1 && startup_pin.is_some();
         let doorbell = data_bell || startup_pin.is_some();
