@@ -26,6 +26,8 @@ static OTHER: AtomicU32 = AtomicU32::new(0);
 static STRAY: AtomicU32 = AtomicU32::new(0);
 static ALARM: AtomicU32 = AtomicU32::new(0);
 static FIRST_ALARM: AtomicU32 = AtomicU32::new(0);
+#[cfg(any(feature = "i2c2", feature = "i2c3"))]
+static ABORT_AT: AtomicU32 = AtomicU32::new(0);
 static TOTAL_STRAY: AtomicU32 = AtomicU32::new(0);
 static TOTAL_OTHER: AtomicU32 = AtomicU32::new(0);
 
@@ -33,6 +35,10 @@ static TOTAL_OTHER: AtomicU32 = AtomicU32::new(0);
 fn observe_device(dispatch: impl FnOnce() -> u32) {
     use pac::dw_i2c::intr::{RX_FULL, STOP_DET, TX_ABRT, TX_EMPTY};
     let bits = dispatch();
+    #[cfg(any(feature = "i2c2", feature = "i2c3"))]
+    if bits & TX_ABRT != 0 {
+        ABORT_AT.store(Timer::new().now_32().ticks(), Relaxed);
+    }
     for (counter, seen) in [
         (&RX, bits & RX_FULL != 0),
         (&TX, bits & TX_EMPTY != 0),
@@ -123,12 +129,61 @@ fn clear_observations() {
 }
 
 #[cfg(any(feature = "i2c2", feature = "i2c3"))]
+fn address_clocks(bus: &mut Driver, address: Address7) -> Result<(u32, u32), Error> {
+    use rp1_hal::i2c::Try;
+
+    let scl = if N == 2 { 13 } else { 23 };
+    let mut ops = [Operation::Write(&[0xa5])];
+    let end = Deadline::after(DEADLINE_US.micros())?;
+    let mut transfer = bus.try_start_transaction(address, &mut ops, end)?;
+    let mut high = true;
+    let mut rising = [0; 10];
+    let mut count = 0;
+    let result = loop {
+        let level = levels() & (1 << scl) != 0;
+        if level && !high {
+            if let Some(slot) = rising.get_mut(count) {
+                *slot = Timer::new().now_32().ticks();
+            }
+            count += 1;
+        }
+        high = level;
+        match transfer.try_complete() {
+            Ok(Try::WouldBlock) => {}
+            Ok(Try::Ready(())) => break Ok(()),
+            Err(error) => break Err(error),
+        }
+    };
+    let (mut lo, mut hi) = (u32::MAX, 0);
+    for pair in rising[..9].windows(2) {
+        let ticks = pair[1].wrapping_sub(pair[0]);
+        lo = lo.min(ticks);
+        hi = hi.max(ticks);
+    }
+    log!(
+        "I2C_JUMPER_SCL instance={N} rising_edges={count} period_us={lo}..{hi} result={result:?}\n"
+    )
+    .unwrap();
+    // The address and NACK consume nine edges. STOP can release SCL once more.
+    assert_eq!(result, Err(Error::AddressNack));
+    assert!((9..=10).contains(&count) && lo > 0 && hi <= DEADLINE_US / 9);
+    Ok((lo, hi))
+}
+
+#[cfg(any(feature = "i2c2", feature = "i2c3"))]
 fn jumpers(bus: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
     const LINES: u32 = (3 << 12) | (3 << 22);
     const ABSENT: Address7 = Address7::new_const::<0x55>();
-    const MIN_US: u32 = 80;
-    const MAX_US: u32 = 250;
+    timer.delay(10.micros())?;
+    let idle_levels = levels() & LINES;
+    assert_eq!(idle_levels, LINES);
+    log!("I2C_JUMPER_IDLE instance={N} pad_levels={idle_levels:#x} pull_up=1\n").unwrap();
+    let (period_min, period_max) = address_clocks(bus, ABSENT)?;
+    // Eight intervals separate the first address edge from the NACK. Include
+    // START, STOP and thread/IRQ overhead when bounding delivery from admission.
+    let irq_bounds = (8 * period_min).saturating_sub(2)..=13 * period_max + 100;
     let mut latency = (u32::MAX, 0);
+    let mut irq_latency = (u32::MAX, 0);
     let mut nack = |bus: &mut Driver, timer: &mut WaitTimer| {
         clear_observations();
         let start = Timer::new().now();
@@ -139,6 +194,7 @@ fn jumpers(bus: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
         );
         let us = (Timer::new().now() - start).ticks() as u32;
         let abrt = ABORT.load(Relaxed);
+        let irq_us = ABORT_AT.load(Relaxed).wrapping_sub(start.ticks() as u32);
         let rx = RX.load(Relaxed);
         let tx = TX.load(Relaxed);
         let other = OTHER.load(Relaxed);
@@ -148,33 +204,30 @@ fn jumpers(bus: &mut Driver, timer: &mut WaitTimer) -> Result<(), Error> {
         if result != Err(Error::AddressNack)
             || abrt != 1
             || rx + tx + other + stray != 0
-            || !(MIN_US..=MAX_US).contains(&us)
+            || !irq_bounds.contains(&irq_us)
+            || !(irq_us..=irq_us + 1_020).contains(&us)
             || !idle
             || pads != LINES
         {
             log!(
-                "I2C_JUMPER_FAIL instance={N} step=nack result={result:?} us={us} tx_abrt={abrt} rx={rx} tx={tx} other={other} stray={stray} idle={idle} pads={pads:#x}\n"
+                "I2C_JUMPER_FAIL instance={N} step=nack result={result:?} us={us} irq_us={irq_us} tx_abrt={abrt} rx={rx} tx={tx} other={other} stray={stray} idle={idle} pads={pads:#x}\n"
             )
             .unwrap();
             panic!("I2C jumper NACK");
         }
         latency = (latency.0.min(us), latency.1.max(us));
+        irq_latency = (irq_latency.0.min(irq_us), irq_latency.1.max(irq_us));
     };
 
-    timer.delay(10.micros())?;
-    let idle_levels = levels() & LINES;
-    assert_eq!(idle_levels, LINES);
-    log!(
-        "I2C_JUMPER_IDLE instance={N} pad_levels={idle_levels:#x} pull_up=1
-"
-    )
-    .unwrap();
     for _ in 0..FAULT_TRIALS {
         nack(bus, timer);
     }
     let (lo, hi) = latency;
-    log!("I2C_JUMPER_NACK instance={N} hz=100000 trials={FAULT_TRIALS} tx_abrt={FAULT_TRIALS} min_us={lo} max_us={hi}
-").unwrap();
+    let (irq_lo, irq_hi) = irq_latency;
+    log!(
+        "I2C_JUMPER_NACK instance={N} hz=100000 trials={FAULT_TRIALS} tx_abrt={FAULT_TRIALS} min_us={lo} max_us={hi} irq_us={irq_lo}..{irq_hi}\n"
+    )
+    .unwrap();
 
     // Expire before the ninth SCL edge while leaving both controllers open drain.
     const SHORT_US: u32 = 40;
