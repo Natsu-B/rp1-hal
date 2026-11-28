@@ -302,14 +302,14 @@ fn generate_with_layout(
         d.stack_size(1)?,
         metadata::Declaration::stack_margin(0),
         include_str!("../../rp1-rt/link.x"),
-        custom_irq_assertions(d),
+        custom_irq_assertions(d)?,
         include_str!("../../rp1-pac/irq.x")
     );
     let dts = overlay::dts_with_layout(d, &note, shm)?;
     Ok(Artifacts { note, layout, dts })
 }
 
-fn custom_irq_assertions(d: &metadata::Declaration) -> String {
+fn custom_irq_assertions(d: &metadata::Declaration) -> Result<String> {
     let mut checks = String::new();
     for (core, c) in [&d.proc0, &d.proc1].into_iter().enumerate() {
         if c.custom_doorbell_handler {
@@ -317,17 +317,17 @@ fn custom_irq_assertions(d: &metadata::Declaration) -> String {
                 "ASSERT(__rp1_p{core}_IO_BANK0 != __rp1_default_irq, \"proc{core} needs a custom IO_BANK0 handler\");\n"
             ));
         }
-        for irq in driver_irq::DRIVERS
-            .iter()
-            .filter(|irq| irq.is_custom(c) && irq.line(core).is_some())
-        {
+        for irq in driver_irq::DRIVERS.iter().filter(|irq| irq.is_custom(c)) {
+            if irq.line(core)?.is_none() {
+                continue;
+            }
             let vector = irq.vector;
             checks.push_str(&format!(
                 "ASSERT(__rp1_p{core}_{vector} != __rp1_default_irq, \"proc{core} needs a custom {vector} handler\");\n"
             ));
         }
     }
-    checks
+    Ok(checks)
 }
 
 fn resources(
@@ -421,11 +421,14 @@ fn resources(
                 }}"
             )?;
         }
-        let managed: Vec<_> = driver_irq::DRIVERS
-            .iter()
-            .filter(|irq| irq.is_managed(c))
-            .filter_map(|irq| irq.line(index).map(|line| (irq, line)))
-            .collect();
+        let mut managed = Vec::new();
+        for irq in driver_irq::DRIVERS {
+            if let Some(line) = irq.line(index)?
+                && irq.is_managed(c)
+            {
+                managed.push((irq, line));
+            }
+        }
         for (irq, line) in &managed {
             let vector = line.name;
             let module = irq.module;
@@ -563,7 +566,9 @@ fn resources(
              #[allow(non_camel_case_types)]\npub mod proc{index}_irq {{"
         )?;
         for line in &lines {
-            let board::VerifiedIrq { name, irq, owner } = line;
+            let board::VerifiedIrq {
+                name, irq, owner, ..
+            } = line;
             let source = owner.source_type();
             writeln!(
                 s,
@@ -1150,6 +1155,7 @@ mod tests {
                     );
                     assert_eq!(
                         custom_irq_assertions(&decl)
+                            .unwrap()
                             .contains(&format!("{symbol} != __rp1_default_irq")),
                         custom
                     );
@@ -1204,7 +1210,7 @@ mod tests {
                 d.validate().unwrap();
                 (
                     resources(&d, &[], &d.shm_layout().unwrap()).unwrap(),
-                    custom_irq_assertions(&d),
+                    custom_irq_assertions(&d).unwrap(),
                 )
             };
 
@@ -1291,7 +1297,7 @@ mod tests {
         assert!(!wrong_core.contains("impl sealed::Admitted for PIO_"));
 
         let custom_source = render(&custom);
-        let custom_checks = custom_irq_assertions(&custom);
+        let custom_checks = custom_irq_assertions(&custom).unwrap();
         assert!(!custom_source.contains("::rp1_hal::pio::__bind_irq"));
         for line in published {
             let vector = line.name;

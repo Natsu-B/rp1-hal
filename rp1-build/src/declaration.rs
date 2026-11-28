@@ -556,15 +556,18 @@ impl Declaration {
             if core.custom_doorbell_handler && core.doorbell.is_none() {
                 return Err(format!("E5: {owner}.custom_doorbell_handler needs doorbell").into());
             }
-            for irq in crate::driver_irq::DRIVERS {
-                if irq.is_custom(core) && !core.instances.contains_key(irq.instance) {
+            let custom = crate::driver_irq::DRIVERS
+                .iter()
+                .filter(|irq| irq.is_custom(core));
+            for irq in custom.clone() {
+                if !core.instances.contains_key(irq.instance) {
                     return Err(format!("E5: {owner}.{} needs {}", irq.custom, irq.instance).into());
                 }
-                if irq.is_custom(core)
-                    && !crate::driver_irq::DRIVERS
-                        .iter()
-                        .any(|other| other.custom == irq.custom && other.line(index).is_some())
-                {
+                let mut has_route = false;
+                for candidate in custom.clone().filter(|other| other.custom == irq.custom) {
+                    has_route |= candidate.line(index)?.is_some();
+                }
+                if !has_route {
                     return Err(format!("E5: {owner}.{} has no verified route", irq.custom).into());
                 }
             }

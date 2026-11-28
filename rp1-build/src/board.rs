@@ -109,6 +109,8 @@ pub struct VerifiedIrq {
     pub name: &'static str,
     pub irq: u8,
     pub owner: IrqOwner,
+    /// Bit N admits this route on procN.
+    pub cores: u8,
 }
 
 /// HW: IRQ lines seen pending in the NVIC from their block. PWM0 and TIMER_3
@@ -119,112 +121,134 @@ pub const IRQ_VERIFIED: &[VerifiedIrq] = &[
         name: "IO_BANK0",
         irq: 0,
         owner: IrqOwner::GpioBank0,
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "PWM0",
         irq: 5,
         owner: IrqOwner::Instance(BlockId::Pwm0),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "I2C0",
         irq: 7,
         owner: IrqOwner::Instance(BlockId::I2c0),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "I2C1",
         irq: 8,
         owner: IrqOwner::Instance(BlockId::I2c1),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "I2C2",
         irq: 9,
         owner: IrqOwner::Instance(BlockId::I2c2),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "I2C3",
         irq: 10,
         owner: IrqOwner::Instance(BlockId::I2c3),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "SPI0",
         irq: 19,
         owner: IrqOwner::Instance(BlockId::Spi0),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "SPI1",
         irq: 20,
         owner: IrqOwner::Instance(BlockId::Spi1),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "SPI3",
         irq: 22,
         owner: IrqOwner::Instance(BlockId::Spi3),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "UART0",
         irq: 25,
         owner: IrqOwner::Instance(BlockId::Uart0),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "TIMER_0",
         irq: 26,
         owner: IrqOwner::Alarm(0),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "TIMER_1",
         irq: 27,
         owner: IrqOwner::Alarm(1),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "TIMER_2",
         irq: 28,
         owner: IrqOwner::Alarm(2),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "TIMER_3",
         irq: 29,
         owner: IrqOwner::Alarm(3),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "PWM1",
         irq: 41,
         owner: IrqOwner::Instance(BlockId::Pwm1),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "UART1",
         irq: 42,
         owner: IrqOwner::Instance(BlockId::Uart1),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "UART2",
         irq: 43,
         owner: IrqOwner::Instance(BlockId::Uart2),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "UART3",
         irq: 44,
         owner: IrqOwner::Instance(BlockId::Uart3),
+        cores: 0b11,
     },
     VerifiedIrq {
         name: "UART4",
         irq: 45,
         owner: IrqOwner::Instance(BlockId::Uart4),
+        cores: 0b11,
     },
     // Gate C drives real FIFO sources on both lines, with proc1 as the owner.
     VerifiedIrq {
         name: "PIO_0",
         irq: rp1_proto::board::PIO_IRQ0 as u8,
         owner: IrqOwner::Instance(BlockId::Pio),
+        cores: 0b10,
     },
     VerifiedIrq {
         name: "PIO_1",
         irq: rp1_proto::board::PIO_IRQ1 as u8,
         owner: IrqOwner::Instance(BlockId::Pio),
+        cores: 0b10,
     },
     VerifiedIrq {
         name: "ADC_FIFO",
         irq: 52,
         owner: IrqOwner::Instance(BlockId::Adc),
+        cores: 0b11,
     },
 ];
 
@@ -240,7 +264,7 @@ pub fn irq_routes_for(core: usize) -> impl Iterator<Item = &'static VerifiedIrq>
 
 impl VerifiedIrq {
     pub(crate) fn supports_core(&self, core: usize) -> bool {
-        core == 1 || !matches!(self.owner, IrqOwner::Instance(BlockId::Pio))
+        core < 2 && self.cores & (1 << core) != 0
     }
 }
 

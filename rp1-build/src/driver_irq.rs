@@ -35,10 +35,10 @@ pub(crate) const DRIVERS: &[DriverIrq] = drivers! {
 };
 
 impl DriverIrq {
-    pub fn line(&self, core: usize) -> Option<&'static board::VerifiedIrq> {
-        let ownership = metadata::peripheral_id(&self.instance.to_ascii_uppercase()).ok()?;
-        board::irq_routes_for(core)
-            .find(|line| line.name == self.vector && line.owner.ownership() == ownership)
+    pub fn line(&self, core: usize) -> Result<Option<&'static board::VerifiedIrq>> {
+        let ownership = metadata::peripheral_id(&self.instance.to_ascii_uppercase())?;
+        Ok(board::irq_routes_for(core)
+            .find(|line| line.name == self.vector && line.owner.ownership() == ownership))
     }
 
     pub fn number(&self, line: &board::VerifiedIrq) -> Result<u8> {
@@ -68,9 +68,24 @@ mod tests {
     #[test]
     fn driver_bindings_match_the_board_and_pac() {
         for driver in DRIVERS {
-            let line = driver.line(1).unwrap();
+            let line = driver.line(1).unwrap().unwrap();
+            assert_eq!(driver.line(0).unwrap().is_some(), driver.module != "pio");
             assert_eq!(rp1_pac::INTERRUPT_NAMES[usize::from(line.irq)], line.name);
             assert!(driver.number(line).is_ok());
         }
+    }
+
+    #[test]
+    fn unknown_instance_fails_route_lookup() {
+        let driver = DriverIrq {
+            instance: "unknown",
+            ..DRIVERS[0]
+        };
+        let error = driver.line(0).err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown or unsupported peripheral 'UNKNOWN'")
+        );
     }
 }
